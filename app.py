@@ -6,15 +6,15 @@ from firebase_admin import credentials, db
 app = Flask(__name__)
 
 # Initialize Firebase Admin
-cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-aca424fa71.json')  # Make sure the path is correct
+cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-aca424fa71.json')
 firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://ethiostore-17d9f-default-rtdb.firebaseio.com/'  # Replace with your DB URL
+    'databaseURL': 'https://ethiostore-17d9f-default-rtdb.firebaseio.com/'
 })
 
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
-    return render_template('parent_register.html')
+    return render_template('teacher_register.html')
 
 
 # ===================== STUDENT REGISTRATION =====================
@@ -25,13 +25,13 @@ def register_student():
     users_ref = db.reference('Users')
     students_ref = db.reference('Students')
 
-    # Check if username exists in Users
+    # Check if username exists
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == data['username']:
             return jsonify({'success': False, 'message': 'Username already exists!'})
 
-    # Create user in Users
+    # Create user
     new_user_ref = users_ref.push()
     new_user_ref.set({
         'userId': new_user_ref.key,
@@ -62,14 +62,16 @@ def register_teacher():
 
     users_ref = db.reference('Users')
     teachers_ref = db.reference('Teachers')
+    courses_ref = db.reference('Courses')
+    assignments_ref = db.reference('TeacherAssignments')
 
-    # Check if username exists in Users
+    # Check if username exists
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == data['username']:
             return jsonify({'success': False, 'message': 'Username already exists!'})
 
-    # Create user in Users
+    # Create user
     new_user_ref = users_ref.push()
     new_user_ref.set({
         'userId': new_user_ref.key,
@@ -84,12 +86,33 @@ def register_teacher():
     new_teacher_ref = teachers_ref.push()
     new_teacher_ref.set({
         'userId': new_user_ref.key,
-        
-        'grade': data['grade'],
-        'section': data['section'],
-        'subject': data['subject'],
         'status': 'active'
     })
+
+    # Process all courses
+    for course in data.get('courses', []):
+        grade = course['grade']
+        section = course['section']
+        subject = course['subject']
+
+        # Create course ID: e.g., course_english_9A
+        course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
+
+        # Check if course already exists
+        if not courses_ref.child(course_id).get():
+            courses_ref.child(course_id).set({
+                'name': subject,
+                'subject': subject,
+                'grade': grade,
+                'section': section
+            })
+
+        # Create TeacherAssignments entry
+        new_assignment_ref = assignments_ref.push()
+        new_assignment_ref.set({
+            'teacherId': new_teacher_ref.key,
+            'courseId': course_id
+        })
 
     return jsonify({'success': True, 'message': 'Teacher registered successfully!'})
 
@@ -102,17 +125,16 @@ def register_parent():
     users_ref = db.reference('Users')
     parents_ref = db.reference('Parents')
 
-    # Check if username exists in Users
+    # Check if username exists
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == data['username']:
             return jsonify({'success': False, 'message': 'Username already exists!'})
 
-    # Create user in Users node
+    # Create user
     new_user_ref = users_ref.push()
-    user_id = new_user_ref.key
     new_user_ref.set({
-        'userId': user_id,
+        'userId': new_user_ref.key,
         'username': data['username'],
         'name': data['name'],
         'password': data['password'],
@@ -120,17 +142,31 @@ def register_parent():
         'isActive': True
     })
 
+    # Ensure children list is a list
+    children_ids = data['children'] if isinstance(data['children'], list) else [x.strip() for x in data['children'].split(',')]
+
     # Create parent entry
-    children_ids = data['children']  # already an array from JS
-    parent_ref = parents_ref.child(user_id)  # same key as userId
-    parent_ref.set({
-        'name': data['name'],
+    new_parent_ref = parents_ref.push()
+    new_parent_ref.set({
+        'userId': new_user_ref.key,
         'children': {child: True for child in children_ids}
     })
 
     return jsonify({'success': True, 'message': 'Parent registered successfully!'})
 
 
+# ===================== FETCH TAKEN SUBJECTS =====================
+@app.route('/teachers/subjects/<grade>/<section>', methods=['GET'])
+def get_taken_subjects(grade, section):
+    teachers_ref = db.reference('Teachers')
+    all_teachers = teachers_ref.get() or {}
+
+    taken_subjects = []
+    for teacher in all_teachers.values():
+        if teacher.get('grade') == grade and teacher.get('section') == section:
+            taken_subjects.append(teacher.get('subject'))
+
+    return jsonify({'takenSubjects': taken_subjects})
 
 
 # ===================== RUN APP =====================

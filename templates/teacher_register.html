@@ -4,11 +4,15 @@
     <meta charset="UTF-8">
     <title>Teacher Registration</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .course-row { margin-bottom: 10px; }
+        .course-row select { margin-right: 5px; }
+        .remove-btn { color: red; cursor: pointer; }
+    </style>
 </head>
 <body>
     <h2>Teacher Registration</h2>
     <form id="teacherForm">
-
         <label>Name:</label>
         <input type="text" id="name" required><br>
 
@@ -18,36 +22,62 @@
         <label>Password:</label>
         <input type="password" id="password" required><br>
 
-        
+        <div id="coursesContainer">
+            <div class="course-row">
+                <label>Grade:</label>
+                <select class="grade" required>
+                    <option value="9">9</option>
+                    <option value="10">10</option>
+                    <option value="11">11</option>
+                    <option value="12">12</option>
+                </select>
 
-        <label>Grade:</label>
-<select id="grade" required>
-    <option value="9">9</option>
-    <option value="10">10</option>
-</select><br>
+                <label>Section:</label>
+                <select class="section" required>
+                    <option value="A">A</option>
+                    <option value="B">B</option>
+                    <option value="C">C</option>
+                </select>
 
-<label>Section:</label>
-<select id="section" required>
-    <option value="A">A</option>
-    <option value="B">B</option>
-    <option value="C">C</option>
-</select><br>
+                <label>Subject:</label>
+                <select class="subject" required>
+                    <option value="English">English</option>
+                    <option value="Math">Math</option>
+                    <option value="Science">Science</option>
+                    <option value="History">History</option>
+                    <option value="Geography">Geography</option>
+                    <option value="Physics">Physics</option>
+                    <option value="Chemistry">Chemistry</option>
+                    <option value="Biology">Biology</option>
+                </select>
 
+                <span class="remove-btn" onclick="removeCourse(this)">✖</span>
+            </div>
+        </div>
 
-        
-
-        <label>Subject:</label>
-        <select id="subject" required>
-            <option value="English">English</option>
-            <option value="Math">Math</option>
-            <option value="Science">Science</option>
-            <option value="History">History</option>
-            <!-- Add other subjects as needed -->
-        </select><br>
-
+        <button type="button" id="addCourseBtn">Add Another Course</button><br><br>
         <button type="submit">Register</button>
     </form>
 
     <script src="{{ url_for('static', filename='js/teacher_register.js') }}"></script>
+    <script>
+        // Add course row
+        document.getElementById('addCourseBtn').addEventListener('click', function() {
+            const container = document.getElementById('coursesContainer');
+            const row = container.firstElementChild.cloneNode(true);
+            row.querySelectorAll('select').forEach(sel => sel.value = sel.options[0].value);
+            container.appendChild(row);
+        });
+
+        // Remove course row
+        function removeCourse(el) {
+            const container = document.getElementById('coursesContainer');
+            if(container.children.length > 1){
+                el.parentElement.remove();
+            } else {
+                alert("At least one course is required.");
+            }
+        }
+    </script>
 </body>
 </html>
