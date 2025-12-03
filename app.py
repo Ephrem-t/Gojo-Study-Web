@@ -14,7 +14,7 @@ firebase_admin.initialize_app(cred, {
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
-    return render_template('teacher_register.html')
+    return render_template('teacher_login.html')
 
 
 # ===================== STUDENT REGISTRATION =====================
@@ -55,6 +55,13 @@ def register_student():
     return jsonify({'success': True, 'message': 'Student registered successfully!'})
 
 
+
+
+
+
+
+
+
 # ===================== TEACHER REGISTRATION =====================
 @app.route('/register/teacher', methods=['POST'])
 def register_teacher():
@@ -71,6 +78,27 @@ def register_teacher():
         if user.get('username') == data['username']:
             return jsonify({'success': False, 'message': 'Username already exists!'})
 
+    # Check for duplicate courses in the same submission
+    seen_courses = set()
+    for course in data.get('courses', []):
+        key = f"{course['subject'].lower()}_{course['grade']}{course['section'].upper()}"
+        if key in seen_courses:
+            return jsonify({'success': False, 'message': f'Duplicate course in submission: {course["subject"]} grade {course["grade"]} section {course["section"]}'})
+        seen_courses.add(key)
+
+    # Check if course already has a teacher in database
+    all_assignments = assignments_ref.get() or {}
+    for course in data.get('courses', []):
+        grade = course['grade']
+        section = course['section']
+        subject = course['subject']
+        course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
+
+        # If course exists and already assigned
+        for assignment in all_assignments.values():
+            if assignment.get('courseId') == course_id:
+                return jsonify({'success': False, 'message': f'{subject} grade {grade} section {section} already has a teacher!'})
+
     # Create user
     new_user_ref = users_ref.push()
     new_user_ref.set({
@@ -84,21 +112,19 @@ def register_teacher():
 
     # Create teacher entry
     new_teacher_ref = teachers_ref.push()
-    new_teacher_ref.set({
-        'userId': new_user_ref.key,
-        'status': 'active'
-    })
+    new_teacher_ref.set({'userId': new_user_ref.key, 'status': 'active'
+                         
+                         
+                         })
 
     # Process all courses
     for course in data.get('courses', []):
         grade = course['grade']
         section = course['section']
         subject = course['subject']
-
-        # Create course ID: e.g., course_english_9A
         course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
 
-        # Check if course already exists
+        # Create course if not exists
         if not courses_ref.child(course_id).get():
             courses_ref.child(course_id).set({
                 'name': subject,
@@ -107,7 +133,7 @@ def register_teacher():
                 'section': section
             })
 
-        # Create TeacherAssignments entry
+        # Assign teacher
         new_assignment_ref = assignments_ref.push()
         new_assignment_ref.set({
             'teacherId': new_teacher_ref.key,
@@ -115,6 +141,7 @@ def register_teacher():
         })
 
     return jsonify({'success': True, 'message': 'Teacher registered successfully!'})
+
 
 
 # ===================== PARENT REGISTRATION =====================
@@ -155,18 +182,138 @@ def register_parent():
     return jsonify({'success': True, 'message': 'Parent registered successfully!'})
 
 
+
+
+# ===================== TEACHER DASHBOARD PAGE =====================
+@app.route('/teacher/dashboard')
+def teacher_dashboard():
+    return render_template('teacher_dashboard.html')
+
 # ===================== FETCH TAKEN SUBJECTS =====================
 @app.route('/teachers/subjects/<grade>/<section>', methods=['GET'])
 def get_taken_subjects(grade, section):
-    teachers_ref = db.reference('Teachers')
-    all_teachers = teachers_ref.get() or {}
+    assignments_ref = db.reference('TeacherAssignments')
+    courses_ref = db.reference('Courses')
 
+    all_assignments = assignments_ref.get() or {}
     taken_subjects = []
-    for teacher in all_teachers.values():
-        if teacher.get('grade') == grade and teacher.get('section') == section:
-            taken_subjects.append(teacher.get('subject'))
+
+    for assign in all_assignments.values():
+        course_id = assign.get('courseId')
+        course = courses_ref.child(course_id).get()
+        if course and str(course.get('grade')) == grade and course.get('section') == section:
+            taken_subjects.append(course.get('subject'))
 
     return jsonify({'takenSubjects': taken_subjects})
+
+
+# ===================== TEACHER LOGIN =====================
+
+@app.route('/login/teacher', methods=['POST'])
+def login_teacher():
+    data = request.json
+    users_ref = db.reference('Users')
+    teachers_ref = db.reference('Teachers')
+
+    all_users = users_ref.get() or {}
+    all_teachers = teachers_ref.get() or {}
+
+    for uid, user in all_users.items():
+        if user.get('username') == data['username'] and user.get('role') == 'teacher':
+            if user.get('password') == data['password']:
+                # Find the corresponding teacher key
+                teacher_key = None
+                for tkey, tdata in all_teachers.items():
+                    if tdata.get('userId') == uid:
+                        teacher_key = tkey
+                        break
+
+                if teacher_key:
+                    return jsonify({'success': True, 'teacherId': teacher_key})
+                else:
+                    return jsonify({'success': False, 'message': 'Teacher record not found'})
+            else:
+                return jsonify({'success': False, 'message': 'Incorrect password'})
+
+    return jsonify({'success': False, 'message': 'Username not found'})
+
+
+
+
+@app.route('/api/teacher/<teacher_id>/courses', methods=['GET'])
+def get_teacher_courses(teacher_id):
+    assignments_ref = db.reference('TeacherAssignments')
+    courses_ref = db.reference('Courses')
+
+    all_assignments = assignments_ref.get() or {}
+    courses_list = []
+
+    for assign in all_assignments.values():
+        if assign.get('teacherId') == teacher_id:
+            course_id = assign.get('courseId')
+            course_data = courses_ref.child(course_id).get()
+            if course_data:
+                courses_list.append({
+                    'subject': course_data.get('subject'),
+                    'grade': course_data.get('grade'),
+                    'section': course_data.get('section')
+                })
+
+    return jsonify({'courses': courses_list})
+
+
+
+
+
+@app.route('/api/teacher/<teacher_id>/students', methods=['GET'])
+def get_teacher_students(teacher_id):
+    assignments_ref = db.reference('TeacherAssignments')
+    courses_ref = db.reference('Courses')
+    students_ref = db.reference('Students')
+    users_ref = db.reference('Users')
+
+    all_assignments = assignments_ref.get() or {}
+    course_students = []
+
+    # Find all courses for this teacher
+    for assign in all_assignments.values():
+        if assign.get('teacherId') == teacher_id:
+            course_id = assign.get('courseId')
+            course_data = courses_ref.child(course_id).get()
+            if not course_data:
+                continue
+            grade = course_data.get('grade')
+            section = course_data.get('section')
+
+            # Fetch all students in this grade + section
+            all_students = students_ref.get() or {}
+            students_list = []
+            for student in all_students.values():
+                if student.get('grade') == grade and student.get('section') == section:
+                    user_data = users_ref.child(student.get('userId')).get()
+                    if user_data:
+                        students_list.append({
+                            'name': user_data.get('name'),
+                            'username': user_data.get('username')
+                        })
+
+            # Avoid duplicate grade-section
+            exists = next((c for c in course_students if c['grade'] == grade and c['section'] == section), None)
+            if not exists:
+                course_students.append({
+                    'grade': grade,
+                    'section': section,
+                    'students': students_list
+                })
+
+    return jsonify({'courses': course_students})
+
+
+
+
+
+
+
 
 
 # ===================== RUN APP =====================

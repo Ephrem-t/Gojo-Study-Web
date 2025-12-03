@@ -1,8 +1,17 @@
+/* ===================== GENERAL STYLES ===================== */
+
 /* General body style */
 body {
     font-family: Arial, sans-serif;
     background-color: #f9f9f9;
     padding: 20px;
+    margin: 0;
+}
+
+/* Headings */
+h2 {
+    text-align: center;
+    color: #333;
 }
 
 /* Form container */
@@ -13,12 +22,6 @@ form {
     width: 400px;
     border-radius: 10px;
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
-}
-
-/* Form heading */
-h2 {
-    text-align: center;
-    color: #333;
 }
 
 /* Labels */
@@ -41,7 +44,7 @@ select {
     box-sizing: border-box;
 }
 
-/* Button */
+/* Buttons */
 button {
     width: 100%;
     padding: 12px;
@@ -62,5 +65,138 @@ button:hover {
 @media screen and (max-width: 500px) {
     form {
         width: 90%;
+    }
+}
+
+/* ===================== TEACHER REGISTER SPECIFIC ===================== */
+
+/* Course row in teacher registration */
+.course-row {
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.course-row select {
+    flex: 1;
+}
+
+.remove-btn {
+    color: red;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+/* ===================== LOGIN PAGE ===================== */
+
+/* Center login container */
+.login-container {
+    max-width: 400px;
+    margin: 50px auto;
+    background-color: #fff;
+    padding: 25px;
+    border-radius: 10px;
+    box-shadow: 0 0 15px rgba(0,0,0,0.2);
+}
+
+/* Login heading */
+.login-container h2 {
+    margin-bottom: 20px;
+}
+
+/* Login button style override */
+.login-container button {
+    background-color: #007BFF;
+}
+
+.login-container button:hover {
+    background-color: #0069d9;
+}
+
+/* ===================== TEACHER DASHBOARD ===================== */
+
+/* Dashboard container */
+.dashboard-container {
+    max-width: 900px;
+    margin: 20px auto;
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 10px;
+    box-shadow: 0 0 15px rgba(0,0,0,0.1);
+}
+
+/* Dashboard heading */
+.dashboard-container h2 {
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+/* Courses table */
+.dashboard-container table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.dashboard-container th,
+.dashboard-container td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+.dashboard-container th {
+    background-color: #4CAF50;
+    color: white;
+}
+
+/* Table hover effect */
+.dashboard-container tr:hover {
+    background-color: #f1f1f1;
+}
+
+/* Dashboard buttons */
+.dashboard-container button {
+    padding: 8px 15px;
+    font-size: 14px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    background-color: #007BFF;
+    color: #fff;
+}
+
+.dashboard-container button:hover {
+    background-color: #0069d9;
+}
+
+/* Responsive for dashboard */
+@media screen and (max-width: 600px) {
+    .dashboard-container table,
+    .dashboard-container thead,
+    .dashboard-container tbody,
+    .dashboard-container th,
+    .dashboard-container td,
+    .dashboard-container tr {
+        display: block;
+    }
+
+    .dashboard-container th {
+        text-align: right;
+    }
+
+    .dashboard-container td {
+        text-align: right;
+        padding-left: 50%;
+        position: relative;
+    }
+
+    .dashboard-container td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 10px;
+        width: calc(50% - 20px);
+        font-weight: bold;
+        text-align: left;
     }
 }

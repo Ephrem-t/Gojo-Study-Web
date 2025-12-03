@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Teacher Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    
+</head>
+<body>
+    <h1>Teacher Dashboard</h1>
+    <button id="logoutBtn">Logout</button>
+
+    <h2>Your Courses</h2>
+    <table border="1" id="coursesTable">
+        <thead>
+            <tr>
+                <th>Subject</th>
+                <th>Grade</th>
+                <th>Section</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Courses will be populated here -->
+        </tbody>
+    </table>
+
+    <h2>Students</h2>
+    <div id="studentsContainer">
+        <!-- Students grouped by grade & section will appear here -->
+    </div>
+
+    <script src="{{ url_for('static', filename='js/teacher_dashboard.js') }}"></script>
+</body>
+</html>
