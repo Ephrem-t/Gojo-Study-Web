@@ -227,3 +227,196 @@ button:hover {
 .course-card p {
     color: #666;
 }
+/* ===================== TEACHER DASHBOARD - MARK INPUT STYLE ===================== */
+
+.students-table input[type="number"] {
+    width: 60px;
+    padding: 5px 8px;
+    font-size: 14px;
+    text-align: center;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    background-color: #fff;
+    transition: border 0.2s, box-shadow 0.2s;
+}
+
+/* Placeholder (empty value) */
+.students-table input[type="number"]::placeholder {
+    color: #bbb;
+    text-align: center;
+}
+
+/* On focus */
+.students-table input[type="number"]:focus {
+    border-color: #4CAF50;
+    box-shadow: 0 0 5px rgba(76, 175, 80, 0.5);
+    outline: none;
+}
+
+/* Save button */
+.students-table .save-student-btn {
+    padding: 5px 10px;
+    font-size: 13px;
+    background-color: #007BFF;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.students-table .save-student-btn:hover {
+    background-color: #0069d9;
+}
+
+/* Total column */
+.students-table .total {
+    font-weight: bold;
+    text-align: center;
+}
+
+/* Floating chat/help-center style */
+.floating-chat {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 300px;
+    max-height: 400px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 9999;
+    transition: all 0.3s ease;
+}
+
+.floating-chat.hidden {
+    display: none;
+}
+
+.floating-chat .chat-header {
+    background: #007bff;
+    color: #fff;
+    padding: 10px;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.floating-chat .chat-messages {
+    flex: 1;
+    padding: 10px;
+    overflow-y: auto;
+    background: #f9f9f9;
+}
+
+.floating-chat .chat-input {
+    display: flex;
+    border-top: 1px solid #ccc;
+}
+
+.floating-chat .chat-input input {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    outline: none;
+}
+
+.floating-chat .chat-input button {
+    padding: 8px 12px;
+    border: none;
+    background: #007bff;
+    color: #fff;
+    cursor: pointer;
+}
+
+.chat-message {
+    margin-bottom: 8px;
+}
+
+.chat-message strong {
+    color: #007bff;
+}
+
+
+.floating-chat {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 300px;
+    max-height: 400px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 9999;
+    transition: all 0.3s ease;
+    cursor: move; /* for draggable */
+}
+
+.floating-chat.minimized {
+    height: 40px;
+    width: 150px;
+    cursor: default;
+}
+
+.floating-chat.hidden {
+    display: none;
+}
+
+.floating-chat .chat-header {
+    background: #007bff;
+    color: #fff;
+    padding: 10px;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: grab; /* draggable cursor */
+}
+
+.floating-chat.minimized .chat-header {
+    cursor: pointer;
+}
+
+.floating-chat .chat-messages {
+    flex: 1;
+    padding: 10px;
+    overflow-y: auto;
+    background: #f9f9f9;
+}
+
+.floating-chat .chat-input {
+    display: flex;
+    border-top: 1px solid #ccc;
+}
+
+.floating-chat .chat-input input {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    outline: none;
+}
+
+.floating-chat .chat-input button {
+    padding: 8px 12px;
+    border: none;
+    background: #007bff;
+    color: #fff;
+    cursor: pointer;
+}
+
+.chat-message {
+    margin-bottom: 8px;
+}
+
+.chat-message strong {
+    color: #007bff;
+}

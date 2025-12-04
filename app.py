@@ -6,7 +6,7 @@ from firebase_admin import credentials, db
 app = Flask(__name__)
 
 # Initialize Firebase Admin
-cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-aca424fa71.json')
+cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json')
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://ethiostore-17d9f-default-rtdb.firebaseio.com/'
 })
@@ -271,49 +271,63 @@ def get_teacher_students(teacher_id):
     courses_ref = db.reference('Courses')
     students_ref = db.reference('Students')
     users_ref = db.reference('Users')
+    marks_ref = db.reference('ClassMarks')
 
     all_assignments = assignments_ref.get() or {}
     course_students = []
 
-    # Find all courses for this teacher
     for assign in all_assignments.values():
-        if assign.get('teacherId') == teacher_id:
-            course_id = assign.get('courseId')
-            course_data = courses_ref.child(course_id).get()
-            if not course_data:
-                continue
-            grade = course_data.get('grade')
-            section = course_data.get('section')
+        if assign.get('teacherId') != teacher_id:
+            continue
 
-            # Fetch all students in this grade + section
-            all_students = students_ref.get() or {}
-            students_list = []
-            for student in all_students.values():
-                if student.get('grade') == grade and student.get('section') == section:
-                    user_data = users_ref.child(student.get('userId')).get()
-                    if user_data:
-                        students_list.append({
-                            'name': user_data.get('name'),
-                            'username': user_data.get('username')
-                        })
+        course_id = assign.get('courseId')
+        course_data = courses_ref.child(course_id).get()
+        if not course_data:
+            continue
 
-            # Avoid duplicate grade-section
-            exists = next((c for c in course_students if c['grade'] == grade and c['section'] == section), None)
-            if not exists:
-                course_students.append({
-                    'grade': grade,
-                    'section': section,
-                    'students': students_list
+        grade = course_data.get('grade')
+        section = course_data.get('section')
+        subject = course_data.get('subject')
+
+        # Fetch all students in this grade + section
+        all_students = students_ref.get() or {}
+        students_list = []
+        for student_id, student in all_students.items():
+            if student.get('grade') == grade and student.get('section') == section:
+                user_data = users_ref.child(student.get('userId')).get()
+                if not user_data:
+                    continue
+
+                # Fetch marks from ClassMarks node
+                student_marks = marks_ref.child(student_id).child(course_id).get() or {}
+                
+                students_list.append({
+                    'name': user_data.get('name'),
+                    'username': user_data.get('username'),
+                    'marks': student_marks
                 })
+
+        # Avoid duplicate grade-section
+        exists = next((c for c in course_students if c['grade'] == grade and c['section'] == section and c['subject'] == subject), None)
+        if not exists:
+            course_students.append({
+                'subject': subject,
+                'grade': grade,
+                'section': section,
+                'students': students_list
+            })
 
     return jsonify({'courses': course_students})
 
 
 # ===================== GET STUDENTS OF A COURSE =====================
+# ===================== GET STUDENTS OF A COURSE =====================
 @app.route('/api/course/<course_id>/students', methods=['GET'])
 def get_course_students(course_id):
     courses_ref = db.reference('Courses')
     students_ref = db.reference('Students')
+    users_ref = db.reference('Users')
+    marks_ref = db.reference('ClassMarks')  # New marks node
 
     course = courses_ref.child(course_id).get()
     if not course:
@@ -325,13 +339,22 @@ def get_course_students(course_id):
     all_students = students_ref.get() or {}
     course_students = []
 
-    for student in all_students.values():
+    for student_id, student in all_students.items():
         if student.get('grade') == grade and student.get('section') == section:
-            user_ref = db.reference('Users').child(student.get('userId')).get()
-            if user_ref:
+            user_data = users_ref.child(student.get('userId')).get()
+            if user_data:
+                # Fetch marks from ClassMarks node
+                student_marks = marks_ref.child(course_id).child(student_id).get() or {}
                 course_students.append({
-                    'name': user_ref.get('name'),
-                    'username': user_ref.get('username')
+                    'studentId': student_id,  # include studentId
+                    'name': user_data.get('name'),
+                    'username': user_data.get('username'),
+                    'marks': {
+                        'mark20': student_marks.get('mark20', 0),
+                        'mark30': student_marks.get('mark30', 0),
+                        'mark50': student_marks.get('mark50', 0),
+                        'mark100': student_marks.get('mark100', 0)
+                    }
                 })
 
     return jsonify({
@@ -343,39 +366,28 @@ def get_course_students(course_id):
         }
     })
 
+
 # ===================== UPDATE STUDENT MARKS =====================
 @app.route('/api/course/<course_id>/update-marks', methods=['POST'])
 def update_course_marks(course_id):
     data = request.json
     updates = data.get('updates', [])
 
-    students_ref = db.reference('Students')
-    all_students = students_ref.get() or {}
+    marks_ref = db.reference('ClassMarks')  # Use the new node
 
     for update in updates:
-        username = update.get('username')
+        student_id = update.get('studentId')  # ✅ use studentId from JS
         marks = update.get('marks', {})
 
-        # Find the student by username
-        for student_id, student in all_students.items():
-            user_ref = db.reference(f"Users/{student['userId']}")
-            user_data = user_ref.get()
-            if user_data and user_data.get('username') == username:
-                # Save marks for this course
-                student_marks_ref = students_ref.child(student_id).child('marks')
-                student_marks_ref.child(course_id).set({
-                    'mark20': marks.get('mark20', 0),
-                    'mark30': marks.get('mark30', 0),
-                    'mark50': marks.get('mark50', 0),
-                    'mark100': marks.get('mark100', 0)
-                })
-                break
+        # Save marks for this student under the course
+        marks_ref.child(course_id).child(student_id).set({
+            'mark20': marks.get('mark20', 0),
+            'mark30': marks.get('mark30', 0),
+            'mark50': marks.get('mark50', 0)
+            
+        })
 
     return jsonify({'success': True, 'message': 'Marks updated successfully!'})
-
-
-
-
 
 
 

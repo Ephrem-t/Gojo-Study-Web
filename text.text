@@ -2,3 +2,17 @@ git status
 git add .
 git commit -m "Describe your changes"
 git push origin main
+
+
+
+git filter-branch --force --index-filter "git rm --cached --ignore-unmatch ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json" --prune-empty --tag-name-filter cat -- --all
+
+
+echo ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json >> .gitignore
+git add .gitignore
+git commit -m "Ignore Firebase JSON secret"
+
+
+git push origin main --force
+
+
