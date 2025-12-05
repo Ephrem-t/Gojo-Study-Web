@@ -275,90 +275,27 @@ button:hover {
     text-align: center;
 }
 
-/* Floating chat/help-center style */
+/* ===================== Floating chat/help-center style ===================== */
 .floating-chat {
     position: fixed;
     bottom: 20px;
     right: 20px;
-    width: 300px;
-    max-height: 400px;
+    width: 350px;             /* Wider for better view */
+    height: 500px;            /* Taller to see more messages */
     background: #fff;
     border: 1px solid #ccc;
     border-radius: 10px;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     z-index: 9999;
     transition: all 0.3s ease;
+    cursor: move;             /* draggable effect */
 }
 
 .floating-chat.hidden {
     display: none;
-}
-
-.floating-chat .chat-header {
-    background: #007bff;
-    color: #fff;
-    padding: 10px;
-    font-weight: bold;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.floating-chat .chat-messages {
-    flex: 1;
-    padding: 10px;
-    overflow-y: auto;
-    background: #f9f9f9;
-}
-
-.floating-chat .chat-input {
-    display: flex;
-    border-top: 1px solid #ccc;
-}
-
-.floating-chat .chat-input input {
-    flex: 1;
-    padding: 8px;
-    border: none;
-    outline: none;
-}
-
-.floating-chat .chat-input button {
-    padding: 8px 12px;
-    border: none;
-    background: #007bff;
-    color: #fff;
-    cursor: pointer;
-}
-
-.chat-message {
-    margin-bottom: 8px;
-}
-
-.chat-message strong {
-    color: #007bff;
-}
-
-
-.floating-chat {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    width: 300px;
-    max-height: 400px;
-    background: #fff;
-    border: 1px solid #ccc;
-    border-radius: 10px;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    z-index: 9999;
-    transition: all 0.3s ease;
-    cursor: move; /* for draggable */
 }
 
 .floating-chat.minimized {
@@ -367,10 +304,6 @@ button:hover {
     cursor: default;
 }
 
-.floating-chat.hidden {
-    display: none;
-}
-
 .floating-chat .chat-header {
     background: #007bff;
     color: #fff;
@@ -379,7 +312,7 @@ button:hover {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    cursor: grab; /* draggable cursor */
+    cursor: grab;             /* draggable cursor */
 }
 
 .floating-chat.minimized .chat-header {
@@ -396,21 +329,39 @@ button:hover {
 .floating-chat .chat-input {
     display: flex;
     border-top: 1px solid #ccc;
+    align-items: center;
 }
 
 .floating-chat .chat-input input {
     flex: 1;
-    padding: 8px;
+    padding: 12px 10px;
+    font-size: 14px;
     border: none;
     outline: none;
+    min-height: 50px;
+    max-height: 150px;
+    border-radius: 0 0 0 5px;
+    box-sizing: border-box;
+    resize: vertical;
+    overflow-y: auto;
 }
 
 .floating-chat .chat-input button {
-    padding: 8px 12px;
+    width: 50px;               /* Square button */
     border: none;
     background: #007bff;
     color: #fff;
     cursor: pointer;
+    border-radius: 0 0 5px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 18px;           /* Bigger icon size */
+    transition: background 0.2s;
+}
+
+.floating-chat .chat-input button:hover {
+    background: #0069d9;
 }
 
 .chat-message {
