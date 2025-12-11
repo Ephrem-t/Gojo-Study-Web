@@ -18,7 +18,7 @@ CORS(app, origins=["http://localhost:5173"], supports_credentials=True)  # ✅ F
 CORS(app)
 
 # ---------------- FIREBASE ---------------- #
-firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json"
+firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json"
 if not os.path.exists(firebase_json):
     print("Firebase JSON missing")
     sys.exit()
