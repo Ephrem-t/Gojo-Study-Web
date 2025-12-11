@@ -5,14 +5,13 @@ git push origin main
 
 
 
-git filter-branch --force --index-filter "git rm --cached --ignore-unmatch ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json" --prune-empty --tag-name-filter cat -- --all
+python -m venv venv
+.\venv\Scripts\Activate
+venv\Scripts\Activate.bat
+pip install flask
+python -m pip install flask-cors
+python -m pip install firebase-admin
 
 
-echo ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json >> .gitignore
-git add .gitignore
-git commit -m "Ignore Firebase JSON secret"
-
-
-git push origin main --force
 
 

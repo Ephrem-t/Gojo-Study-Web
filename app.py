@@ -23,7 +23,7 @@ firebase_admin.initialize_app(cred, {
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
-    return render_template('student_register.html')
+    return render_template('teacher_login.html')
 
 
 # ===================== STUDENT REGISTRATION =====================
