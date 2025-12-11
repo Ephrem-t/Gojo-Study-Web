@@ -145,9 +145,9 @@ function TeachersPage() {
                   key={t.teacherId}
                   onClick={() => setSelectedTeacher(t)}
                   style={{
-                    width: "600px",
-                    height: "70px",
-                    padding: "15px 20px",
+                    width: "500px",
+                    Height: "50px",
+                    border: "1px solid #ddd",
                     borderRadius: "12px",
                     background: selectedTeacher?.teacherId === t.teacherId ? "#e0e7ff" : "#fff",
                     border: selectedTeacher?.teacherId === t.teacherId ? "2px solid #4b6cb7" : "1px solid #ddd",

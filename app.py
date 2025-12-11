@@ -2,14 +2,23 @@ import json
 from flask import Flask, render_template, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, db
+from flask_cors import CORS
+from flask import Flask
+from flask_cors import CORS
 
+# Initialize Flask app
 app = Flask(__name__)
+CORS(app)
+
+# ✅ Fix CORS: allow all origins, methods, headers
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # Initialize Firebase Admin
-cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-8a0ddc11b3.json')
+cred = credentials.Certificate('ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json')
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://ethiostore-17d9f-default-rtdb.firebaseio.com/'
 })
+
 
 # ===================== HOME PAGE =====================
 @app.route('/')
@@ -189,6 +198,15 @@ def register_parent():
 def teacher_dashboard():
     return render_template('teacher_dashboard.html')
 
+
+
+
+
+
+
+
+
+
 # ===================== FETCH TAKEN SUBJECTS =====================
 @app.route('/teachers/subjects/<grade>/<section>', methods=['GET'])
 def get_taken_subjects(grade, section):
@@ -209,35 +227,57 @@ def get_taken_subjects(grade, section):
 
 # ===================== TEACHER LOGIN =====================
 
-@app.route('/login/teacher', methods=['POST'])
-def login_teacher():
-    data = request.json
-    users_ref = db.reference('Users')
-    teachers_ref = db.reference('Teachers')
 
-    all_users = users_ref.get() or {}
-    all_teachers = teachers_ref.get() or {}
+@app.route("/api/teacher_login", methods=["POST", "OPTIONS"])
+def teacher_login():
+    if request.method == "OPTIONS":
+        # Preflight request for CORS
+        return '', 200
 
-    for uid, user in all_users.items():
-        if user.get('username') == data['username'] and user.get('role') == 'teacher':
-            if user.get('password') == data['password']:
-                # Find the corresponding teacher key
-                teacher_key = None
-                for tkey, tdata in all_teachers.items():
-                    if tdata.get('userId') == uid:
-                        teacher_key = tkey
-                        break
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
 
-                if teacher_key:
-                    return jsonify({'success': True, 'teacherId': teacher_key})
-                else:
-                    return jsonify({'success': False, 'message': 'Teacher record not found'})
-            else:
-                return jsonify({'success': False, 'message': 'Incorrect password'})
+    if not username or not password:
+        return jsonify({"success": False, "message": "Username and password required"}), 400
 
-    return jsonify({'success': False, 'message': 'Username not found'})
+    try:
+        users_ref = db.reference("Users")
+        all_users = users_ref.get() or {}
 
+        # Find user with role 'teacher' and matching username
+        teacher_user = None
+        for user_id, user in all_users.items():
+            if user.get("username") == username and user.get("role") == "teacher":
+                teacher_user = {"userId": user_id, **user}
+                break
 
+        if not teacher_user:
+            return jsonify({"success": False, "message": "Teacher not found"}), 404
+
+        # Check password
+        if teacher_user.get("password") != password:
+            return jsonify({"success": False, "message": "Invalid password"}), 401
+
+        # Optional: fetch teacher profile image from Teachers node
+        teachers_ref = db.reference("Teachers")
+        teacher_profile = teachers_ref.child(teacher_user["userId"]).get() or {}
+        profile_image = teacher_profile.get("profileImage", "/default-profile.png")
+
+        # Return teacher info
+        return jsonify({
+            "success": True,
+            "teacher": {
+                "teacherId": teacher_user["userId"],
+                "name": teacher_user.get("name"),
+                "username": teacher_user.get("username"),
+                "profileImage": profile_image
+            }
+        })
+
+    except Exception as e:
+        print("Login error:", e)
+        return jsonify({"success": False, "message": "Server error"}), 500
 
 
 @app.route('/api/teacher/<teacher_id>/courses', methods=['GET'])
@@ -388,6 +428,27 @@ def update_course_marks(course_id):
         })
 
     return jsonify({'success': True, 'message': 'Marks updated successfully!'})
+
+
+
+
+
+@app.route("/api/get_posts", methods=["GET"])
+def get_posts():
+    # Replace with actual logic to fetch posts
+    posts = [
+        {
+            "postId": "1",
+            "teacherId": "t001",
+            "adminName": "Admin",
+            "adminProfile": "/default-profile.png",
+            "message": "Hello world",
+            "timestamp": "2025-12-10T11:00:00",
+            "likeCount": 0,
+            "likes": {}
+        }
+    ]
+    return jsonify(posts)
 
 
 

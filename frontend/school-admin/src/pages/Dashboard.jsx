@@ -3,8 +3,10 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import "../styles/global.css";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaSearch  } from "react-icons/fa";
 import { Link } from "react-router-dom";
+
+
 
 
 function Dashboard() {
@@ -138,18 +140,25 @@ const handleLike = async (postId) => {
   return (
     <div className="dashboard-page">
 
-      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
+     {/* ---------------- TOP NAVIGATION BAR ---------------- */}
+<nav className="top-navbar">
+  <h2>Gojo Dashboard</h2>
 
-        <div className="nav-right">
-          <img
-            src={admin.profileImage || "/default-profile.png"}
-            alt="admin"
-          />
-          <span>{admin.name}</span>
-        </div>
-      </nav>
+  {/* Search Bar */}
+  <div className="nav-search">
+     <FaSearch className="search-icon" />
+    <input type="text" placeholder="Search Teacher and Student..." />
+  </div>
+
+  <div className="nav-right">
+    <img
+      src={admin.profileImage || "/default-profile.png"}
+      alt="admin"
+    />
+    <span>{admin.name}</span>
+  </div>
+</nav>
+
 
       <div className="google-dashboard">
         {/* LEFT SIDEBAR — 25% */}
@@ -169,8 +178,7 @@ const handleLike = async (postId) => {
        > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
         <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
         <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-          <Link className="sidebar-btn" to="/students" >
-                                  <FaChalkboardTeacher /> Students
+          <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students
                                 </Link>
          <Link className="sidebar-btn" to="/settings" >
                       <FaCog /> Settings
