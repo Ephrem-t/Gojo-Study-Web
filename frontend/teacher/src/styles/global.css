@@ -39,7 +39,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  margin-left: -700px; /* small spacing from the title */
+  margin-left: -600px; /* small spacing from the title */
 }
 
 .nav-search input {
@@ -54,7 +54,7 @@
 
 .search-icon {
   position: absolute;
-  left: 12px;              /* inside input */
+  left: 15px;              /* inside input */
   font-size: 16px;
   color: #606770;
 }
@@ -547,3 +547,37 @@ button.dark-mode:hover {
 .dark-mode button:hover {
   background-color: #5c5c80;
 }
+
+
+
+
+
+
+
+
+
+
+
+ /* ---------------- TOP NAVIGATION BAR ---------------- */
+
+
+.icon-circle {
+  width: 40px;
+  height: 40px;
+  background-color: #e0e0e4;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.icon-circle svg {
+  font-size: 22px;
+  color: #000000;
+}
+
+.icon-circle:hover {
+  background-color: #cfd5e5;
+}
+

@@ -170,7 +170,7 @@ const handleLike = async (postId) => {
       alt="admin"
       className="profile-img"
     />
-    <span>{admin.name}</span>
+    {/* <span>{admin.name}</span> */}
   </div>
 </nav>
 

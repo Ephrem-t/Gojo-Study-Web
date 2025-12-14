@@ -150,7 +150,7 @@ function MyPosts() {
         alt="admin"
         className="profile-img"
       />
-      <span>{admin.name}</span>
+      {/* <span>{admin.name}</span> */}
     </div>
   </nav>
   

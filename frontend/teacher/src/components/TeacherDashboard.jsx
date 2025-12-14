@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaSearch } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell,  FaSearch  } from "react-icons/fa";
+
 import axios from "axios";
 import "../styles/global.css";
 
@@ -78,18 +79,49 @@ const TeacherDashboard = () => {
 
   return (
     <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Teacher Dashboard</h2>
-        <div className="nav-search">
-          <FaSearch className="search-icon" />
-          <input type="text" placeholder="Search..." />
-        </div>
-        <div className="nav-right">
-          <img src={teacher.profileImage} alt="profile" className="nav-profile-img" />
-          <span>{teacher.name}</span>
-        </div>
-      </nav>
+
+
+
+
+
+     {/* ---------------- TOP NAVIGATION BAR ---------------- */}
+     <nav className="top-navbar">
+       <h2>Gojo Dashboard</h2>
+     
+       {/* Search Bar */}
+       <div className="nav-search">
+         <FaSearch className="search-icon" />
+         <input type="text" placeholder="Search Teacher and Student..." />
+       </div>
+     
+       <div className="nav-right">
+         {/* Notification */}
+         <div className="icon-circle">
+           <FaBell />
+         </div>
+     
+         {/* Settings */}
+         <div className="icon-circle">
+           <FaCog />
+         </div>
+     
+         {/* Profile */}
+         <img
+           src={teacher.profileImage || "/default-profile.png"}
+           alt="teacher"
+           className="profile-img"
+         />
+         {/* <span>{admin.name}</span> */}
+       </div>
+     </nav>
+
+
+
+
+
+
+
+
 
       <div className="google-dashboard">
         {/* Sidebar */}

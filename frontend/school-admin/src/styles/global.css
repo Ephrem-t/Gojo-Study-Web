@@ -39,7 +39,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  margin-left: -700px; /* small spacing from the title */
+  margin-left: -600px; /* small spacing from the title */
 }
 
 .nav-search input {

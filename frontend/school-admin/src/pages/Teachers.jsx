@@ -5,12 +5,16 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 
 
+
+
+
 function TeachersPage() {
   const [teachers, setTeachers] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedTeacher, setSelectedTeacher] = useState(null); // new state
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState("details");
 
 
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
@@ -94,7 +98,7 @@ function TeachersPage() {
           alt="admin"
           className="profile-img"
         />
-        <span>{admin.name}</span>
+       {/* <span>{admin.name}</span> */}
       </div>
     </nav>
     
@@ -277,41 +281,101 @@ function TeachersPage() {
     {selectedTeacher.name}
   </h2>
   <h2 style={{ margin: "0",
-                fontSize: "16px",
+                fontSize: "12px",
                 marginTop:"0",
+                
                 color: "#585656ff", }}>
     {selectedTeacher.email ? selectedTeacher.email : "default.teacher@example.com"}
   </h2>
 </div>
 
+   {/* Teacher Info Card with Tabs */}
+<div
+  style={{
+    background: "#fff",
+   
+    padding: "15px",
+    marginTop:"-18px",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
+   width: "110%",
+marginLeft: "-8%",
 
-      {/* Info Card */}
-      <div
+  }}
+>
+  {/* ---------- TAB NAVIGATION ---------- */}
+  <div
+    style={{
+      display: "flex",
+      borderBottom: "1px solid #eee",
+      marginBottom: "15px",
+    }}
+  >
+    {["details", "schedule", "plan"].map((tab) => (
+      <button
+        key={tab}
+        onClick={() => setActiveTab(tab)}
         style={{
-          background: "#fff",
-          borderRadius: "10px",
-          padding: "15px",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
-          textAlign: "left"
+          flex: 1,
+          padding: "10px",
+          border: "none",
+          cursor: "pointer",
+          background: "none",
+          fontWeight: "600",
+          color: activeTab === tab ? "#4b6cb7" : "#777",
+          borderBottom:
+            activeTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
         }}
       >
-        <h4 style={{ marginBottom: "10px", color: "#4b6cb7" }}>Teacher Info</h4>
+        {tab.toUpperCase()}
+      </button>
+    ))}
+  </div>
 
-        <p style={{ margin: "6px 0", color: "#555" }}>
-          <strong>ID:</strong> {selectedTeacher.teacherId}
-        </p>
+  {/* ---------- TAB CONTENT ---------- */}
+  {activeTab === "details" && (
+    <div>
+      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
+        Teacher Details
+      </h4>
 
-        {selectedTeacher.gradesSubjects?.length > 0 ? (
-          selectedTeacher.gradesSubjects.map((gs, index) => (
-            <p key={index} style={{ margin: "4px 0", color: "#555" }}>
-              Grade {gs.grade} – Section {gs.section} : {gs.subject}
-            </p>
-          ))
-        ) : (
-          <p style={{ color: "#555" }}>No assigned courses</p>
-        )}
-      </div>
+      <p style={{ margin: "6px 0", color: "#555" }}>
+        <strong>ID:</strong> {selectedTeacher.teacherId}
+      </p>
 
+      {selectedTeacher.gradesSubjects?.length > 0 ? (
+        selectedTeacher.gradesSubjects.map((gs, index) => (
+          <p key={index} style={{ margin: "4px 0", color: "#555" }}>
+            Grade {gs.grade} – Section {gs.section} : {gs.subject}
+          </p>
+        ))
+      ) : (
+        <p style={{ color: "#555" }}>No assigned courses</p>
+      )}
+    </div>
+  )}
+
+  {activeTab === "schedule" && (
+    <div>
+      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
+        Schedule
+      </h4>
+      <p style={{ color: "#555" }}>
+        Teacher schedule will be displayed here.
+      </p>
+    </div>
+  )}
+
+  {activeTab === "plan" && (
+    <div>
+      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
+        Teaching Plan
+      </h4>
+      <p style={{ color: "#555" }}>
+        Teacher lesson plans will be shown here.
+      </p>
+    </div>
+  )}
+</div>
       {/* Message Button */}
       <div
         style={{

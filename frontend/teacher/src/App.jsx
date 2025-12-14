@@ -1,22 +1,21 @@
 import React from "react";
-import ReactDOM from "react-dom/client";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-
-// Components
-import TeacherLogin from "./components/TeacherLogin";
-import TeacherRegister from "./components/TeacherRegister";
-import TeacherDashboard from "./components/TeacherDashboard";
+import AppRoutes from "./routes/AppRoutes";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { ThemeProvider } from "./context/ThemeContext";
 
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<TeacherLogin />} />
-        <Route path="/register" element={<TeacherRegister />} />
-        <Route path="/teacher/dashboard" element={<TeacherDashboard />} />
-        <Route path="*" element={<div>Page not found</div>} />
-      </Routes>
-    </BrowserRouter>
-  </React.StrictMode>
-);
+
+ export default function App() {
+      return <AppRoutes />;
+function App() {
+  return (
+    <ThemeProvider>
+    
+  
+
+      <AppRoutes />
+    </ThemeProvider>
+  );
+}
+ }
+
