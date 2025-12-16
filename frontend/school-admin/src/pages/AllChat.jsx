@@ -3,32 +3,39 @@ import { useLocation } from "react-router-dom";
 import axios from "axios";
 
 function AllChat() {
+  // ------------------- ROUTE & ADMIN DATA -------------------
   const location = useLocation();
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
+  const passedStudentId = location.state?.studentId;
+  const passedUserType = location.state?.userType; // "student" | "teacher"
+  const passedTeacher = location.state?.teacher; // teacher object from TeachersPage
 
-  const [chatType, setChatType] = useState("teacher"); // "teacher" | "student"
-  const [messageInput, setMessageInput] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [recentChats, setRecentChats] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(null);
+  // ------------------- STATE VARIABLES -------------------
+  const [chatType, setChatType] = useState("teacher"); // teacher | student
+  const [messageInput, setMessageInput] = useState(""); // input for sending message
+  const [messages, setMessages] = useState([]); // all messages
+  const [users, setUsers] = useState([]); // teachers or students list
+  const [recentChats, setRecentChats] = useState([]); // users with message history
+  const [selectedUser, setSelectedUser] = useState(null); // current chat user
+  const autoSelectedRef = useRef(false); // auto select user from popup
 
-  const autoSelectedRef = useRef(false); // For one-time auto-selection
+  // ------------------- SET CHAT TYPE BASED ON ROUTE STATE -------------------
+  useEffect(() => {
+    if (passedUserType === "student") setChatType("student");
+    if (passedUserType === "teacher") setChatType("teacher");
+  }, [passedUserType]);
 
-  /* ================= FETCH USERS ================= */
+  // ================= FETCH USERS =================
   useEffect(() => {
     const fetchUsers = async () => {
       try {
-        const usersRes = await axios.get(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-        );
+        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
         const userData = usersRes.data || {};
         let list = [];
 
+        // ---------- TEACHERS ----------
         if (chatType === "teacher") {
-          const tRes = await axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
-          );
+          const tRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json");
           const teachersData = tRes.data || {};
           list = Object.keys(teachersData).map((id) => {
             const t = teachersData[id];
@@ -39,10 +46,11 @@ function AllChat() {
               profileImage: u.profileImage || "/default-profile.png",
             };
           });
-        } else if (chatType === "student") {
-          const sRes = await axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
-          );
+        }
+
+        // ---------- STUDENTS ----------
+        if (chatType === "student") {
+          const sRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
           const studentsData = sRes.data || {};
           list = Object.keys(studentsData).map((id) => {
             const s = studentsData[id];
@@ -57,11 +65,8 @@ function AllChat() {
 
         setUsers(list);
 
-        // One-time auto-select from mini-popup
+        // ---------- AUTO SELECT USER FROM MINI POPUP (ONLY ONCE) ----------
         if (!autoSelectedRef.current) {
-          const passedTeacher = location.state?.teacher;
-          const passedStudentId = location.state?.studentId;
-
           if (chatType === "teacher" && passedTeacher) {
             const found = list.find((u) => u.id === passedTeacher.teacherId);
             if (found) {
@@ -69,7 +74,6 @@ function AllChat() {
               autoSelectedRef.current = true;
             }
           }
-
           if (chatType === "student" && passedStudentId) {
             const found = list.find((u) => u.id === passedStudentId);
             if (found) {
@@ -78,15 +82,16 @@ function AllChat() {
             }
           }
         }
+
       } catch (err) {
-        console.error(err);
+        console.error("Error fetching users:", err);
       }
     };
 
     fetchUsers();
   }, [chatType, location.state]);
 
-  /* ================= FETCH MESSAGES ================= */
+  // ================= FETCH MESSAGES =================
   useEffect(() => {
     if (!users.length) return;
 
@@ -102,7 +107,7 @@ function AllChat() {
           (m) => m.adminId === admin.adminId
         );
 
-        // Sort latest first
+        // Sort messages by latest first
         allMessages.sort(
           (a, b) => new Date(b.time || b.timestamp) - new Date(a.time || a.timestamp)
         );
@@ -122,24 +127,20 @@ function AllChat() {
             }
           }
         });
-
         setRecentChats(uniqueUsers);
 
-        // If no selectedUser yet, select the first recent chat
-        if (!selectedUser && uniqueUsers.length > 0) {
-          setSelectedUser(uniqueUsers[0]);
-        }
       } catch (err) {
-        console.error(err);
+        console.error("Error fetching messages:", err);
       }
     };
 
+    // Initial fetch + polling every 3 seconds
     fetchMessages();
     const interval = setInterval(fetchMessages, 3000);
     return () => clearInterval(interval);
-  }, [users, chatType, admin.adminId, selectedUser]);
+  }, [users, chatType, admin.adminId]);
 
-  /* ================= SEND MESSAGE ================= */
+  // ================= SEND MESSAGE =================
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selectedUser) return;
 
@@ -169,23 +170,24 @@ function AllChat() {
         );
       }
 
+      // Update UI immediately
       setMessages((prev) => [msg, ...prev]);
       setRecentChats((prev) => {
-        const exists = prev.find((u) => u.id === selectedUser.id);
-        if (exists) return prev;
+        if (prev.find((u) => u.id === selectedUser.id)) return prev;
         return [selectedUser, ...prev];
       });
       setMessageInput("");
     } catch (err) {
-      console.error(err);
+      console.error("Error sending message:", err);
     }
   };
 
-  /* ================= UI ================= */
+  // ================= UI =================
   return (
     <div style={{ display: "flex", height: "100vh" }}>
-      {/* LEFT: Recent Chats */}
+      {/* -------- LEFT: Recent Chats -------- */}
       <div style={{ width: 280, borderRight: "1px solid #ddd", background: "#fff" }}>
+        {/* Chat Type Toggle */}
         <div style={{ padding: 15, borderBottom: "1px solid #ddd" }}>
           <button onClick={() => setChatType("teacher")} style={{ marginRight: 10 }}>
             Teacher
@@ -193,6 +195,7 @@ function AllChat() {
           <button onClick={() => setChatType("student")}>Student</button>
         </div>
 
+        {/* Recent Chats List */}
         {recentChats.map((u) => {
           const isActive = selectedUser?.id === u.id;
           return (
@@ -226,12 +229,14 @@ function AllChat() {
         })}
       </div>
 
-      {/* RIGHT: Chat Window */}
+      {/* -------- RIGHT: Chat Window -------- */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {/* Chat Header */}
         <div style={{ padding: 15, borderBottom: "1px solid #ddd" }}>
           <strong>{selectedUser ? selectedUser.name : "Select a chat"}</strong>
         </div>
 
+        {/* Chat Messages */}
         <div
           style={{
             flex: 1,
@@ -246,10 +251,7 @@ function AllChat() {
             .map((m, i) => (
               <div
                 key={i}
-                style={{
-                  marginBottom: 10,
-                  textAlign: m.adminId === admin.adminId ? "right" : "left",
-                }}
+                style={{ marginBottom: 10, textAlign: m.adminId === admin.adminId ? "right" : "left" }}
               >
                 <span
                   style={{
@@ -268,6 +270,7 @@ function AllChat() {
             ))}
         </div>
 
+        {/* Message Input */}
         {selectedUser && (
           <div style={{ display: "flex", padding: 15, borderTop: "1px solid #ddd" }}>
             <input
