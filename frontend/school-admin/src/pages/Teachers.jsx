@@ -1,31 +1,40 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger ,  FaSearch  } from "react-icons/fa";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  FaHome,
+  FaFileAlt,
+  FaChalkboardTeacher,
+  FaCog,
+  FaSignOutAlt,
+  FaBell,
+  FaFacebookMessenger,
+  FaSearch
+} from "react-icons/fa";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
-
-
-
-
 
 function TeachersPage() {
   const [teachers, setTeachers] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All");
-  const [selectedTeacher, setSelectedTeacher] = useState(null); // new state
+  const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
-  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("details");
 
+  const [popupMessages, setPopupMessages] = useState([]);
+  const [popupInput, setPopupInput] = useState("");
 
+  const navigate = useNavigate();
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
 
+  // Fetch teachers
   useEffect(() => {
     const fetchTeachers = async () => {
       try {
-        const teachersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json");
-        const assignmentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json");
-        const coursesRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json");
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
+        const [teachersRes, assignmentsRes, coursesRes, usersRes] = await Promise.all([
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json")
+        ]);
 
         const teachersData = teachersRes.data || {};
         const assignmentsData = assignmentsRes.data || {};
@@ -51,6 +60,7 @@ function TeachersPage() {
             name: user.name || "No Name",
             profileImage: user.profileImage || "/default-profile.png",
             gradesSubjects,
+            email: user.email || null
           };
         });
 
@@ -63,53 +73,70 @@ function TeachersPage() {
     fetchTeachers();
   }, []);
 
+  // Filter teachers by grade
   const filteredTeachers =
     selectedGrade === "All"
       ? teachers
       : teachers.filter(t => t.gradesSubjects.some(gs => gs.grade === selectedGrade));
 
+  // Fetch mini popup messages
+  useEffect(() => {
+    if (!teacherChatOpen || !selectedTeacher) return;
+
+    const fetchMessages = async () => {
+      try {
+        const res = await axios.get(
+          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherMessages.json"
+        );
+        const all = res.data || {};
+        const msgs = Object.values(all).filter(
+          m => m.teacherId === selectedTeacher.teacherId
+        );
+        setPopupMessages(msgs.slice(-20));
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    fetchMessages();
+  }, [teacherChatOpen, selectedTeacher]);
+
+  // Send mini popup message
+  const sendPopupMessage = async () => {
+    if (!popupInput.trim() || !selectedTeacher) return;
+
+    const msg = {
+      teacherId: selectedTeacher.teacherId,
+      adminId: admin.adminId,
+      text: popupInput,
+      time: new Date().toISOString()
+    };
+
+    await axios.post(
+      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherMessages.json",
+      msg
+    );
+
+    setPopupMessages(prev => [...prev, msg]);
+    setPopupInput("");
+  };
+
   return (
     <div className="dashboard-page">
-    
-    {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-    <nav className="top-navbar">
-      <h2>Gojo Dashboard</h2>
-    
-      {/* Search Bar */}
-      <div className="nav-search">
-        <FaSearch className="search-icon" />
-        <input type="text" placeholder="Search Teacher and Student..." />
-      </div>
-    
-      <div className="nav-right">
-        {/* Notification */}
-        <div className="icon-circle">
-          <FaBell />
+      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
+      <nav className="top-navbar">
+        <h2>Gojo Dashboard</h2>
+        <div className="nav-search">
+          <FaSearch className="search-icon" />
+          <input type="text" placeholder="Search Teacher and Student..." />
         </div>
-
-          {/* Messenger */}
-    <div className="icon-circle">
-      <FaFacebookMessenger />
-    </div>
-    
-        {/* Settings */}
-        <div className="icon-circle">
-          <FaCog />
+        <div className="nav-right">
+          <div className="icon-circle"><FaBell /></div>
+          <div className="icon-circle"><FaFacebookMessenger /></div>
+          <div className="icon-circle"><FaCog /></div>
+          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
         </div>
-    
-        {/* Profile */}
-        <img
-          src={admin.profileImage || "/default-profile.png"}
-          alt="admin"
-          className="profile-img"
-        />
-       {/* <span>{admin.name}</span> */}
-      </div>
-    </nav>
-    
-    
-    
-    
+      </nav>
 
       <div className="google-dashboard" style={{ display: "flex" }}>
         {/* SIDEBAR */}
@@ -127,12 +154,8 @@ function TeachersPage() {
             <Link className="sidebar-btn" to="/teachers" style={{ background: "#4b6cb7", color: "#fff" }}>
               <FaChalkboardTeacher /> Teachers
             </Link>
-            <Link className="sidebar-btn" to="/students">
-              <FaChalkboardTeacher /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/settings">
-              <FaCog /> Settings
-            </Link>
+            <Link className="sidebar-btn" to="/students"><FaChalkboardTeacher /> Students</Link>
+            <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
             <button
               className="sidebar-btn logout-btn"
               onClick={() => {
@@ -162,7 +185,7 @@ function TeachersPage() {
                     background: selectedGrade === g ? "#4b6cb7" : "#ddd",
                     color: selectedGrade === g ? "#fff" : "#000",
                     cursor: "pointer",
-                    border: "none",
+                    border: "none"
                   }}
                 >
                   {g === "All" ? "All Teachers" : `Grade ${g}`}
@@ -176,13 +199,13 @@ function TeachersPage() {
             <p style={{ textAlign: "center", color: "#555" }}>No teachers found for this grade.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-              {filteredTeachers.map((t) => (
+              {filteredTeachers.map(t => (
                 <div
                   key={t.teacherId}
                   onClick={() => setSelectedTeacher(t)}
                   style={{
                     width: "500px",
-                    Height: "70px",
+                    height: "70px",
                     border: "1px solid #ddd",
                     borderRadius: "12px",
                     padding: "15px",
@@ -210,7 +233,7 @@ function TeachersPage() {
                     <h3 style={{ marginTop: "-30px" }}>{t.name}</h3>
                   </div>
                   <div style={{ marginLeft: "70px", marginTop: "-25px", color: "#555" }}>
-                    {t.gradesSubjects && t.gradesSubjects.length > 0
+                    {t.gradesSubjects.length > 0
                       ? t.gradesSubjects.map(gs => gs.subject).join(", ")
                       : "No assigned courses"}
                   </div>
@@ -220,326 +243,183 @@ function TeachersPage() {
           )}
         </div>
 
-       {/* RIGHT SIDEBAR FOR SELECTED TEACHER */}
-<div
-  className="teacher-info-sidebar"
-  style={{
-    width: "30%",
-    padding: "25px",
-    
-    background: "#ffffffff",
-    display: selectedTeacher ? "block" : "none",
-    boxShadow: "0 0 15px rgba(0,0,0,0.05)",
- 
+        {/* RIGHT SIDEBAR */}
+        {selectedTeacher && (
+          <div
+            className="teacher-info-sidebar"
+            style={{
+              width: "30%",
+              padding: "25px",
+              background: "#fff",
+              boxShadow: "0 0 15px rgba(0,0,0,0.05)",
+              position: "fixed",
+              right: 0,
+              top: "60px",
+              height: "calc(100vh - 60px)",
+              overflow: "hidden",
+              zIndex: 10
+            }}
+          >
+            {/* Teacher Info */}
+            <div style={{ textAlign: "center" }}>
+              <div style={{ background: "#becff7ff", padding: "25px 10px", height: "200px", width: "calc(100% + 50px)", margin: "-25px -25px 20px", textAlign: "center", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
+                <div style={{ width: "100px", height: "100px", margin: "-20px auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
+                  <img src={selectedTeacher.profileImage} alt={selectedTeacher.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: "22px", marginTop: "-10px", color: "#000" }}>{selectedTeacher.name}</h2>
+                <h2 style={{ margin: 0, fontSize: "12px", color: "#585656" }}>{selectedTeacher.email || "default.teacher@example.com"}</h2>
+              </div>
 
-    // FIXED SIDEBAR – DOES NOT SCROLL
-    position: "fixed",
-    right: 0,
-    top: "60px",
-    height: "calc(100vh - 60px)",
-    overflow: "hidden",
-    zIndex: 10
-  }}
->
-  {selectedTeacher && (
-    <div style={{ textAlign: "center" }}>
-      
+              {/* Tabs */}
+              <div style={{ background: "#fff", padding: "15px", marginTop: "-18px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", width: "110%", marginLeft: "-8%" }}>
+                <div style={{ display: "flex", borderBottom: "1px solid #eee", marginBottom: "15px" }}>
+                  {["details", "schedule", "plan"].map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab)}
+                      style={{
+                        flex: 1,
+                        padding: "10px",
+                        border: "none",
+                        cursor: "pointer",
+                        background: "none",
+                        fontWeight: "600",
+                        color: activeTab === tab ? "#4b6cb7" : "#777",
+                        borderBottom: activeTab === tab ? "3px solid #4b6cb7" : "3px solid transparent"
+                      }}
+                    >
+                      {tab.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
 
-    {/* Red Box */}
-<div
-  style={{
-    background: "#becff7ff",
-    padding: "25px 10px",
-    height: "200px",  
-    width: "calc(100% + 50px)",   // 🔥 cancel sidebar padding
-     margin: "-25px -25px 20px",  // 🔥 negative margin to touch edges
-    textAlign: "center",
-    boxShadow: "0 4px 15px rgba(0,0,0,0.1)"
-  }}
->
-  {/* Avatar */}
-  <div
-    style={{
-      width: "100px",
-      height: "100px",
-      margin: "-20px auto 15px",
-      borderRadius: "50%",
-      overflow: "hidden",
-      border: "4px solid #4b6cb7",
-      boxShadow: "0 4px 15px rgba(0,0,0,0.1)"
-    }}
-  >
-    <img
-      src={selectedTeacher.profileImage}
-      alt={selectedTeacher.name}
-      style={{ width: "100%", 
-               height: "100%", 
-               objectFit: "cover" }}
-    />
-  </div>
+                {activeTab === "details" && (
+                  <div>
+                    <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>Teacher Details</h4>
+                    <p style={{ margin: "6px 0", color: "#555" }}><strong>ID:</strong> {selectedTeacher.teacherId}</p>
+                    {selectedTeacher.gradesSubjects?.length > 0 ? (
+                      selectedTeacher.gradesSubjects.map((gs, index) => (
+                        <p key={index} style={{ margin: "4px 0", color: "#555" }}>
+                          Grade {gs.grade} – Section {gs.section} : {gs.subject}
+                        </p>
+                      ))
+                    ) : (
+                      <p style={{ color: "#555" }}>No assigned courses</p>
+                    )}
+                  </div>
+                )}
 
-  {/* Name */}
-  <h2 style={{ margin: "0",
-                fontSize: "22px",
-                marginTop:"-10px",
-                color: "#000000ff", }}>
-    {selectedTeacher.name}
-  </h2>
-  <h2 style={{ margin: "0",
-                fontSize: "12px",
-                marginTop:"0",
-                
-                color: "#585656ff", }}>
-    {selectedTeacher.email ? selectedTeacher.email : "default.teacher@example.com"}
-  </h2>
-</div>
+                {activeTab === "schedule" && (
+                  <div>
+                    <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>Schedule</h4>
+                    <p style={{ color: "#555" }}>Teacher schedule will be displayed here.</p>
+                  </div>
+                )}
 
-   {/* Teacher Info Card with Tabs */}
-<div
-  style={{
-    background: "#fff",
-   
-    padding: "15px",
-    marginTop:"-18px",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
-   width: "110%",
-marginLeft: "-8%",
+                {activeTab === "plan" && (
+                  <div>
+                    <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>Teaching Plan</h4>
+                    <p style={{ color: "#555" }}>Teacher lesson plans will be shown here.</p>
+                  </div>
+                )}
 
-  }}
->
-  {/* ---------- TAB NAVIGATION ---------- */}
-  <div
-    style={{
-      display: "flex",
-      borderBottom: "1px solid #eee",
-      marginBottom: "15px",
-    }}
-  >
-    {["details", "schedule", "plan"].map((tab) => (
-      <button
-        key={tab}
-        onClick={() => setActiveTab(tab)}
-        style={{
-          flex: 1,
-          padding: "10px",
-          border: "none",
-          cursor: "pointer",
-          background: "none",
-          fontWeight: "600",
-          color: activeTab === tab ? "#4b6cb7" : "#777",
-          borderBottom:
-            activeTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
-        }}
-      >
-        {tab.toUpperCase()}
-      </button>
-    ))}
-  </div>
+                {/* Message Button */}
+                <div style={{ marginTop: "20px", display: "flex", flexDirection: "column", gap: "10px", alignItems: "flex-end" }}>
+                  <button
+                    style={{
+                      padding: "10px",
+                      width: "120px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: "#4b6cb7",
+                      color: "#fff",
+                      cursor: "pointer",
+                      fontWeight: "bold",
+                      transition: "0.3s",
+                      marginTop: "185px"
+                    }}
+                    onClick={() => setTeacherChatOpen(true)}
+                  >
+                    Message
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
-  {/* ---------- TAB CONTENT ---------- */}
-  {activeTab === "details" && (
-    <div>
-      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
-        Teacher Details
-      </h4>
+      {/* MINI POPUP CHAT */}
+      {teacherChatOpen && selectedTeacher && (
+        <div style={{
+          position: "fixed",
+          bottom: "6px",
+          right: "22px",
+          width: "320px",
+          background: "#fff",
+          borderRadius: "12px",
+          boxShadow: "0 8px 25px rgba(0,0,0,0.15)",
+          padding: "15px",
+          zIndex: 999,
+          animation: "fadeIn 0.3s ease"
+        }}>
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #ddd", paddingBottom: "10px" }}>
+            <strong>{selectedTeacher.name}</strong>
+            <div style={{ display: "flex", gap: "10px" }}>
+              {/* EXPAND BUTTON: Redirect to AllChat with selected teacher */}
+              <button
+                onClick={() => {
+                  setTeacherChatOpen(false);
+                  navigate("/all-chat", { state: { teacher: selectedTeacher } });
+                }}
+                style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer" }}
+              >
+                <img width="30" height="30" src="https://img.icons8.com/ios-glyphs/30/expand--v1.png" alt="expand" />
+              </button>
 
-      <p style={{ margin: "6px 0", color: "#555" }}>
-        <strong>ID:</strong> {selectedTeacher.teacherId}
-      </p>
+              <button
+                onClick={() => setTeacherChatOpen(false)}
+                style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}
+              >
+                ×
+              </button>
+            </div>
+          </div>
 
-      {selectedTeacher.gradesSubjects?.length > 0 ? (
-        selectedTeacher.gradesSubjects.map((gs, index) => (
-          <p key={index} style={{ margin: "4px 0", color: "#555" }}>
-            Grade {gs.grade} – Section {gs.section} : {gs.subject}
-          </p>
-        ))
-      ) : (
-        <p style={{ color: "#555" }}>No assigned courses</p>
+          {/* Chat Body */}
+          <div style={{ height: "260px", overflowY: "auto", padding: "10px" }}>
+            {popupMessages.length === 0 ? (
+              <p style={{ color: "#aaa", textAlign: "center" }}>Start a conversation with {selectedTeacher.name}...</p>
+            ) : (
+              popupMessages.map((m, i) => (
+                <div key={i} style={{ marginBottom: "8px", textAlign: m.adminId === admin.adminId ? "right" : "left" }}>
+                  <span style={{
+                    padding: "8px 12px",
+                    borderRadius: "10px",
+                    background: m.adminId === admin.adminId ? "#4b6cb7" : "#eee",
+                    color: m.adminId === admin.adminId ? "#fff" : "#000",
+                    display: "inline-block",
+                    maxWidth: "80%"
+                  }}>{m.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Chat Input */}
+          <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
+            <input
+              value={popupInput}
+              onChange={e => setPopupInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendPopupMessage()}
+              placeholder="Type a message..."
+              style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
+            />
+            <button onClick={sendPopupMessage} style={{ background: "#4b6cb7", padding: "10px 15px", color: "#fff", borderRadius: "8px", border: "none", cursor: "pointer" }}>Send</button>
+          </div>
+        </div>
       )}
-    </div>
-  )}
-
-  {activeTab === "schedule" && (
-    <div>
-      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
-        Schedule
-      </h4>
-      <p style={{ color: "#555" }}>
-        Teacher schedule will be displayed here.
-      </p>
-    </div>
-  )}
-
-  {activeTab === "plan" && (
-    <div>
-      <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
-        Teaching Plan
-      </h4>
-      <p style={{ color: "#555" }}>
-        Teacher lesson plans will be shown here.
-      </p>
-    </div>
-  )}
-</div>
-      {/* Message Button */}
-      <div
-        style={{
-          marginTop: "20px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "10px",
-          alignItems: "flex-end"
-        }}
-      >
-        <button
-  style={{
-    padding: "10px",
-    width: "120px", 
-    borderRadius: "8px",
-    border: "none",
-    background: "#4b6cb7",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: "bold",
-    transition: "0.3s",
-    marginTop: "185px"
-  }}
-  onClick={() => setTeacherChatOpen(true)}
->
-  Message
-</button>
-
-      </div>
-
-    </div>
-  )}
-</div>
-
-
-
-
-
-
-
-
-
-
-
-
-
-{/* TEACHER CHAT POPUP */}
-{/* TEACHER CHAT POPUP */}
-{teacherChatOpen && selectedTeacher && (
-  <div
-    style={{
-      position: "fixed",
-      bottom: "90px",
-      width: "320px",
-      background: "#fff",
-      borderRadius: "12px",
-      boxShadow: "0 8px 25px rgba(0,0,0,0.15)",
-      padding: "15px",
-      zIndex: 999,
-      right: "22px",
-      bottom: "6px",
-      animation: "fadeIn 0.3s ease"
-    }}
-  >
-    {/* Header */}
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        borderBottom: "1px solid #ddd",
-        paddingBottom: "10px"
-      }}
-    >
-      <strong>{selectedTeacher.name}</strong>
-
-      <div style={{ display: "flex", gap: "10px" }}>
-        {/* EXPAND BUTTON */}
-        <button
-          onClick={() => {
-            setTeacherChatOpen(false); // close popup
-            navigate("/teacher-chat", {
-              state: { teacherId: selectedTeacher.teacherId } // send teacherId to chat page
-            });
-          }}
-          style={{
-            background: "none",
-            border: "none",
-            fontSize: "18px",
-            cursor: "pointer"
-          }}
-        >
-          <img
-            width="30"
-            height="30"
-            src="https://img.icons8.com/ios-glyphs/30/expand--v1.png"
-            alt="expand"
-          />
-        </button>
-
-        {/* CLOSE BUTTON */}
-        <button
-          onClick={() => setTeacherChatOpen(false)}
-          style={{
-            background: "none",
-            border: "none",
-            fontSize: "20px",
-            cursor: "pointer"
-          }}
-        >
-          
-        </button>
-      </div>
-    </div>
-
-    {/* Chat Body */}
-    <div
-      style={{
-        height: "260px",
-        overflowY: "auto",
-        padding: "10px"
-      }}
-    >
-      <p style={{ color: "#aaa", textAlign: "center" }}>
-        Start a conversation with {selectedTeacher.name}...
-      </p>
-    </div>
-
-    {/* Chat Input */}
-    <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
-      <input
-        type="text"
-        placeholder="Type a message..."
-        style={{
-          flex: 1,
-          padding: "10px",
-          borderRadius: "8px",
-          border: "1px solid #ccc"
-        }}
-      />
-      <button
-        style={{
-          background: "#4b6cb7",
-          padding: "10px 15px",
-          color: "#fff",
-          borderRadius: "8px",
-          border: "none",
-          cursor: "pointer"
-        }}
-      >
-        Send
-      </button>
-    </div>
-  </div>
-)}
-
-
-
-      </div>
     </div>
   );
 }

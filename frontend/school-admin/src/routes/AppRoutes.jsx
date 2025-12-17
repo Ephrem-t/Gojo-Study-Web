@@ -8,7 +8,7 @@ import Teachers from "../pages/Teachers";
 import Students from "../pages/Students";
 import Parents from "../pages/Parents";
 import SettingsPage from "../pages/SettingsPage";
-import TeacherChatPage from "../pages/TeacherChatPage";
+import AllChat from "../pages/AllChat";
 import StudentChatPage from "../pages/StudentChatPage";
 
 
@@ -25,7 +25,7 @@ export default function AppRoutes() {
         <Route path="/students" element={<Students />} />
         <Route path="/parents" element={<Parents />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/teacher-chat" element={<TeacherChatPage />} />
+        <Route path="/all-chat" element={<AllChat />} />
         <Route path="/student-chat" element={<StudentChatPage />} />
 
       </Routes>
