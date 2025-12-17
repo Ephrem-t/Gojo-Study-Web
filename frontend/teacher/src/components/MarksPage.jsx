@@ -1,10 +1,8 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FaHome, FaCog, FaSignOutAlt, FaSave, FaBell, FaSearch, FaClipboardCheck, FaUsers } from "react-icons/fa";
 import "../styles/global.css";
-
-
 
 // ---------------- GRADE CALCULATION ----------------
 const calculateGrade = (total) => {
@@ -16,71 +14,87 @@ const calculateGrade = (total) => {
 };
 
 function MarksPage() {
-  const teacherId = "-Og0ocvOvNZCR_m2-DCX";
-  const teacherUserId = "-Og0ocoJTv29t9XHH8_2";
-
-  const [teacherProfile, setTeacherProfile] = useState(null);
+  const [teacherInfo, setTeacherInfo] = useState(null);
   const [students, setStudents] = useState([]);
   const [courses, setCourses] = useState([]);
-  const [selectedCourseId, setSelectedCourseId] = useState("");
   const [marks, setMarks] = useState({});
+  const [selectedCourseId, setSelectedCourseId] = useState("");
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const navigate = useNavigate();
 
-  // ---------------- FETCH TEACHER PROFILE ----------------
+  const teacherUserId = teacherInfo?.userId;
+
+  // ---------------- LOAD LOGGED-IN TEACHER ----------------
   useEffect(() => {
-    async function fetchTeacher() {
+    const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
+    if (!storedTeacher) {
+      navigate("/login");
+      return;
+    }
+    setTeacherInfo(storedTeacher);
+  }, [navigate]);
+
+  // ---------------- FETCH STUDENTS AND COURSES ----------------
+  useEffect(() => {
+    if (!teacherInfo) return; // wait until teacher info is loaded
+
+    async function fetchData() {
       try {
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
-        const teacher = Object.values(usersRes.data || {}).find(u => u.userId === teacherUserId);
-        if (teacher) {
-          setTeacherProfile({
-            name: teacher.name,
-            username: teacher.username,
-            profileImage: teacher.profileImage || "/default-profile.png"
-          });
-        }
+        const [
+          studentsData,
+          usersData,
+          coursesData,
+          teacherAssignmentsData,
+          teachersData,
+        ] = await Promise.all([
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
+          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+        ]);
+
+        // Find teacher key
+        const teacherEntry = Object.entries(teachersData.data || {}).find(
+          ([_, t]) => t.userId === teacherUserId
+        );
+        if (!teacherEntry) return;
+        const teacherKey = teacherEntry[0];
+
+        // Get courses assigned to this teacher
+        const assignedCourseIds = Object.values(teacherAssignmentsData.data || {})
+          .filter((a) => a.teacherId === teacherKey)
+          .map((a) => a.courseId);
+
+        const teacherCourses = assignedCourseIds.map((id) => ({
+          id,
+          ...coursesData.data[id],
+        }));
+        setCourses(teacherCourses);
+
+        // Filter students by teacher's grade & section from courses
+        const filteredStudents = Object.values(studentsData.data || {}).filter((s) =>
+          teacherCourses.some(
+            (c) => c.grade === s.grade && c.section === s.section
+          )
+        ).map((s) => {
+          const user = Object.values(usersData.data || {}).find((u) => u.userId === s.userId);
+          return {
+            ...s,
+            name: user?.name || "Unknown",
+            username: user?.username || "Unknown",
+            profileImage: user?.profileImage || "/default-profile.png",
+          };
+        });
+
+        setStudents(filteredStudents);
       } catch (err) {
-        console.error("Failed to fetch teacher profile", err);
+        console.error("Error fetching data:", err);
       }
     }
-    fetchTeacher();
-  }, []);
 
-  // ---------------- FETCH STUDENTS ----------------
-  useEffect(() => {
-    async function fetchStudents() {
-      const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-      const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
-
-      const studentList = Object.entries(studentsRes.data || {}).map(([id, s]) => {
-        const user = Object.values(usersRes.data || {}).find((u) => u.userId === s.userId);
-        return {
-          id,
-          ...s,
-          name: user?.name || "Unknown",
-          username: user?.username || "Unknown",
-        };
-      });
-
-      setStudents(studentList);
-    }
-
-    fetchStudents();
-  }, []);
-
-  // ---------------- FETCH TEACHER COURSES ----------------
-  useEffect(() => {
-    async function fetchCourses() {
-      const assignmentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json");
-      const assigned = Object.values(assignmentsRes.data || {}).filter(a => a.teacherId === teacherId);
-
-      const coursesRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json");
-      const teacherCourses = assigned.map(a => ({ id: a.courseId, ...coursesRes.data[a.courseId] }));
-      setCourses(teacherCourses);
-    }
-
-    fetchCourses();
-  }, []);
+    fetchData();
+  }, [teacherInfo, teacherUserId]);
 
   // ---------------- FETCH EXISTING MARKS ----------------
   useEffect(() => {
@@ -92,21 +106,14 @@ function MarksPage() {
           `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}.json`
         );
         setMarks(res.data || {});
-      } catch (error) {
-        console.error("Failed to fetch marks:", error);
+      } catch (err) {
+        console.error(err);
         setMarks({});
       }
     }
 
     fetchMarks();
   }, [selectedCourseId]);
-
-  // ---------------- FILTER STUDENTS BY COURSE ----------------
-  const filteredStudents = students.filter((s) => {
-    if (!selectedCourseId) return false;
-    const course = courses.find((c) => c.id === selectedCourseId);
-    return s.grade === course?.grade && s.section === course?.section;
-  });
 
   // ---------------- HANDLE MARK CHANGE ----------------
   const handleMarkChange = (studentId, field, value) => {
@@ -118,18 +125,17 @@ function MarksPage() {
     });
   };
 
-  // ---------------- SUBMIT PER STUDENT ----------------
+  // ---------------- SUBMIT MARKS ----------------
   const submitMarks = async (student) => {
-    const data = marks[student.id];
+    const data = marks[student.userId];
     if (!data) {
       alert("Please enter marks first");
       return;
     }
-
     try {
       await axios.put(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${student.id}.json`,
-        { ...data, teacherId, updatedAt: new Date().toISOString() }
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${student.userId}.json`,
+        { ...data, teacherId: teacherUserId, updatedAt: new Date().toISOString() }
       );
       alert(`Marks saved for ${student.name}`);
     } catch (err) {
@@ -138,45 +144,50 @@ function MarksPage() {
     }
   };
 
-  if (!teacherProfile) return null;
+  const filteredStudentsByCourse = students.filter((s) => {
+    const course = courses.find((c) => c.id === selectedCourseId);
+    if (!course) return false;
+    return s.grade === course.grade && s.section === course.section;
+  });
+
+  if (!teacherInfo) return null;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-       {/* ---------------- TOP NAVBAR ---------------- */}
-      <div style={{ position: "fixed", top: 0, left: "0", right: 0, height: "60px", background: "#fff", display: "flex", alignItems: "center", padding: "0 30px", borderBottom: "1px solid #eee", zIndex: 1000 }}>
+      {/* TOP NAVBAR */}
+      <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: "60px", background: "#fff", display: "flex", alignItems: "center", padding: "0 30px", borderBottom: "1px solid #eee", zIndex: 1000 }}>
         <h2>Student Marks</h2>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "15px" }}>
           <FaSearch style={{ cursor: "pointer" }} />
           <div style={{ width: "40px", height: "40px", borderRadius: "50%", overflow: "hidden" }}>
-            <img src={teacherProfile.profileImage} alt="teacher" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%", borderColor: "blue" }} />
+            <img src={teacherInfo.profileImage} alt="teacher" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
           </div>
         </div>
       </div>
-      {/* ---------------- LEFT SIDEBAR ---------------- */}
-      <div style={{ width: "300px", marginTop: "50px", position: "fixed", top: 0, left: 0, height: "100vh", background: "#fff", padding: "20px", borderRight: "1px solid #eee" }}>
-        <div style={{ textAlign: "center", marginBottom: "30px" }}>
-          <div style={{ width: "80px", height: "80px", borderRadius: "50%", overflow: "hidden", margin: "0 auto 10px" }}>
-            <img src={teacherProfile.profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          </div>
-          <h3>{teacherProfile.name}</h3>
-          <p>@{teacherProfile.username}</p>
-        </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          <Link className="sidebar-btn" to="/dashboard" ><FaHome /> Home</Link>
-          <Link className="sidebar-btn" to="/students"><FaUsers />Students</Link>
-          <Link className="sidebar-btn" to="/marks" style={{ background: "#4b6cb7", color: "#fff" }}><FaClipboardCheck />Marks</Link>
-          <Link to="/attendance" className="sidebar-btn">
-                                      <FaUsers /> Attendance
-                                    </Link>
+      {/* LEFT SIDEBAR */}
+      <div style={{ width: "300px", marginTop: "60px", position: "fixed", top: 0, left: 0, height: "100vh", background: "#fff", padding: "20px", borderRight: "1px solid #eee" }}>
+        {teacherInfo && (
+          <div style={{ textAlign: "center", padding: "20px", borderBottom: "1px solid #ddd" }}>
+            <div style={{ width: "80px", height: "80px", margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid #4b6cb7" }}>
+              <img src={teacherInfo.profileImage || "/default-profile.png"} alt={teacherInfo.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+            <h3 style={{ margin: "5px 0", fontSize: "18px" }}>{teacherInfo.name}</h3>
+            <p style={{ fontSize: "14px", color: "#555" }}>{teacherInfo.username || teacherInfo.email}</p>
+          </div>
+        )}
+        <div className="sidebar-menu">
+          <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
+          <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
+          <Link className="sidebar-btn" to="/marks" style={{ background: "#4b6cb7", color: "#fff" }}><FaClipboardCheck /> Marks</Link>
+          <Link className="sidebar-btn" to="/attendance"><FaUsers /> Attendance</Link>
           <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
           <Link className="sidebar-btn" to="/logout"><FaSignOutAlt /> Logout</Link>
         </div>
       </div>
 
-      
-      {/* ---------------- MAIN CONTENT ---------------- */}
-      <div style={{ marginLeft: "600px", marginRight: "250px", paddingTop: "80px", display: "flex", justifyContent: "center" }}>
+      {/* MAIN CONTENT */}
+      <div style={{ marginLeft: "300px", marginRight: "250px", paddingTop: "80px", display: "flex", justifyContent: "center", width: "100%" }}>
         <div style={{ width: "700px" }}>
           {/* COURSE SELECT */}
           <select value={selectedCourseId} onChange={(e) => setSelectedCourseId(e.target.value)} style={{ padding: "10px", borderRadius: "10px", marginBottom: "20px", border: "1px solid #ddd", width: "100%" }}>
@@ -200,18 +211,16 @@ function MarksPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredStudents.map(s => {
-                  const grade = marks[s.id]?.grade;
+                {filteredStudentsByCourse.map(s => {
+                  const grade = marks[s.userId]?.grade;
                   const gradeColor = grade === "A" || grade === "B" ? "#22c55e" : grade === "C" ? "#facc15" : grade ? "#ef4444" : "#999";
-                  const isSelected = selectedStudent?.id === s.id;
-
                   return (
-                    <tr key={s.id} style={{ borderBottom: "1px solid #eee", cursor: "pointer", background: isSelected ? "#e0e7ff" : "#fff" }} onClick={() => setSelectedStudent(s)}>
+                    <tr key={s.userId} style={{ borderBottom: "1px solid #eee", cursor: "pointer" }} onClick={() => setSelectedStudent(s)}>
                       <td style={tdStyle}>{s.name}</td>
-                      <td style={tdStyle}><input type="number" min="0" max="20" value={marks[s.id]?.mark20 || ""} onChange={e => handleMarkChange(s.id, "mark20", e.target.value)} style={inputStyle} /></td>
-                      <td style={tdStyle}><input type="number" min="0" max="30" value={marks[s.id]?.mark30 || ""} onChange={e => handleMarkChange(s.id, "mark30", e.target.value)} style={inputStyle} /></td>
-                      <td style={tdStyle}><input type="number" min="0" max="50" value={marks[s.id]?.mark50 || ""} onChange={e => handleMarkChange(s.id, "mark50", e.target.value)} style={inputStyle} /></td>
-                      <td style={{ ...tdStyle, fontWeight: "bold" }}>{marks[s.id]?.total || 0}</td>
+                      <td style={tdStyle}><input type="number" min="0" max="20" value={marks[s.userId]?.mark20 || ""} onChange={e => handleMarkChange(s.userId, "mark20", e.target.value)} style={inputStyle} /></td>
+                      <td style={tdStyle}><input type="number" min="0" max="30" value={marks[s.userId]?.mark30 || ""} onChange={e => handleMarkChange(s.userId, "mark30", e.target.value)} style={inputStyle} /></td>
+                      <td style={tdStyle}><input type="number" min="0" max="50" value={marks[s.userId]?.mark50 || ""} onChange={e => handleMarkChange(s.userId, "mark50", e.target.value)} style={inputStyle} /></td>
+                      <td style={{ ...tdStyle, fontWeight: "bold" }}>{marks[s.userId]?.total || 0}</td>
                       <td style={{ ...tdStyle, fontWeight: "bold", color: gradeColor }}>{grade || "-"}</td>
                       <td style={tdStyle}><button onClick={() => submitMarks(s)} style={submitBtnStyle}><FaSave /> Submit</button></td>
                     </tr>
@@ -223,8 +232,8 @@ function MarksPage() {
         </div>
       </div>
 
-      {/* ---------------- RIGHT SIDEBAR ---------------- */}
-      <div style={{ width: "350px", position: "fixed", right: 0, top: 60, bottom: 0, background: "#f9fafb", borderLeft: "1px solid #eee", padding: "20px" }}>
+      {/* RIGHT SIDEBAR */}
+      <div style={{ width: "250px", position: "fixed", right: 0, top: 60, bottom: 0, background: "#f9fafb", borderLeft: "1px solid #eee", padding: "20px" }}>
         <h3>Student Info</h3>
         {selectedStudent ? (
           <div>
@@ -232,7 +241,6 @@ function MarksPage() {
             <p><strong>Username:</strong> {selectedStudent.username}</p>
             <p><strong>Grade:</strong> {selectedStudent.grade}</p>
             <p><strong>Section:</strong> {selectedStudent.section}</p>
-            <p><strong>Status:</strong> {selectedStudent.status}</p>
           </div>
         ) : <p>Select a student to see info</p>}
       </div>

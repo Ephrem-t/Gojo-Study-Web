@@ -69,57 +69,114 @@ function StudentsPage() {
   }, [navigate]);
 
   // ---------------- FETCH STUDENTS ----------------
-  useEffect(() => {
+ useEffect(() => {
     async function fetchStudents() {
       try {
         setLoading(true);
-        const res = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
+        const [
+          studentsData,
+          usersData,
+          coursesData,
+          teacherAssignmentsData,
+          teachersData,
+        ] = await Promise.all([
+          axios.get(
+            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+          ),
+          axios.get(
+            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+          ),
+          axios.get(
+            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"
+          ),
+          axios.get(
+            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"
+          ),
+          axios.get(
+            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+          ),
+        ]);
 
-        const studentsData = Object.values(res.data || {});
-        const usersData = usersRes.data || {};
+        const teacherEntry = Object.entries(
+          teachersData.data || teachersData
+        ).find(([_, value]) => value.userId === teacherUserId);
 
-        const mappedStudents = studentsData.map(s => {
-          const user = Object.values(usersData).find(u => u.userId === s.userId);
-          return {
-            ...s,
-            name: user?.name || "Unknown",
-            profileImage: user?.profileImage || "/default-profile.png",
-            email: user?.email || "default.student@example.com",
-          };
-        });
+        if (!teacherEntry) throw new Error("Teacher key not found");
 
-        setStudents(mappedStudents);
+        const teacherKey = teacherEntry[0];
+
+        const assignedCourses = Object.values(
+          teacherAssignmentsData.data || teacherAssignmentsData
+        )
+          .filter((a) => a.teacherId === teacherKey)
+          .map((a) => a.courseId);
+
+        const filteredStudents = Object.values(
+          studentsData.data || studentsData
+        )
+          .filter((s) =>
+            assignedCourses.some((courseId) => {
+              const course = (coursesData.data || coursesData)[courseId];
+              return (
+                course &&
+                course.grade === s.grade &&
+                course.section === s.section
+              );
+            })
+          )
+          .map((s) => {
+            const user = Object.values(usersData.data || usersData).find(
+              (u) => u.userId === s.userId
+            );
+            return {
+              ...s,
+              name: user?.name || "Unknown",
+              username: user?.username || "Unknown",
+              profileImage: user?.profileImage || "/default-profile.png",
+            };
+          });
+
+        setStudents(filteredStudents);
         setError("");
       } catch (err) {
-        console.error(err);
-        setError("Failed to fetch students");
+        console.error("Error fetching students:", err);
+        setError("Failed to fetch students. Please try again.");
+        setStudents([]);
       } finally {
         setLoading(false);
       }
     }
-    fetchStudents();
-  }, []);
 
-  // ---------------- GRADE → SECTION ----------------
+    fetchStudents();
+  }, [teacherUserId]);
+
   useEffect(() => {
     if (selectedGrade === "All") {
       setSections([]);
       setSelectedSection("All");
     } else {
-      const secs = [...new Set(students.filter(s => s.grade === selectedGrade).map(s => s.section))];
-      setSections(secs);
+      const gradeSections = [
+        ...new Set(
+          students
+            .filter((s) => s.grade === selectedGrade)
+            .map((s) => s.section)
+        ),
+      ];
+      setSections(gradeSections);
       setSelectedSection("All");
     }
   }, [selectedGrade, students]);
 
-  const filteredStudents = students.filter(s => {
+  const filteredStudents = students.filter((s) => {
     if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
     if (selectedSection !== "All" && s.section !== selectedSection) return false;
     return true;
   });
 
-  const grades = [...new Set(students.map(s => s.grade))].sort();
+  const grades = [...new Set(students.map((s) => s.grade))].sort();
+
+
+  
 
   // ---------------- FETCH MESSAGES ----------------
   useEffect(() => {
