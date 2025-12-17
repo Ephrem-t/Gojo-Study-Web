@@ -3,7 +3,7 @@ import axios from "axios";
 import { Link } from "react-router-dom";
 import { FaHome, FaCog, FaSignOutAlt, FaSave, FaBell, FaSearch, FaClipboardCheck, FaUsers } from "react-icons/fa";
 import "../styles/global.css";
-import RightSidebarChat from "../components/RightSidebarChat";
+
 
 
 // ---------------- GRADE CALCULATION ----------------

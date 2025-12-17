@@ -1,81 +1,114 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import {
-  FaHome,
-  FaFileAlt,
-  FaChalkboardTeacher,
-  FaCog,
-  FaSignOutAlt,
-  FaBell,
-  FaFacebookMessenger,
-  FaSearch,
-  FaUsers,
-  FaClipboardCheck
-} from "react-icons/fa";
 import axios from "axios";
+import { Link, useNavigate } from "react-router-dom";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaSearch, FaBell } from "react-icons/fa";
 import "../styles/global.css";
 
+const StudentItem = ({ student, selected, onClick }) => (
+  <div
+    onClick={() => onClick(student)}
+    style={{
+      width: "100%",
+      borderRadius: "12px",
+      padding: "15px",
+      display: "flex",
+      alignItems: "center",
+      gap: "20px",
+      cursor: "pointer",
+      background: selected ? "#e0e7ff" : "#fff",
+      border: selected ? "2px solid #4b6cb7" : "1px solid #ddd",
+      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
+      transition: "all 0.3s ease",
+    }}
+  >
+    <img
+      src={student.profileImage || "/default-profile.png"}
+      alt={student.name}
+      style={{
+        width: "50px",
+        height: "50px",
+        borderRadius: "50%",
+        objectFit: "cover",
+        border: selected ? "3px solid #4b6cb7" : "3px solid red",
+      }}
+    />
+    <div>
+      <h3 style={{ margin: 0 }}>{student.name}</h3>
+      <p style={{ margin: "4px 0", color: "#555" }}>
+        Grade {student.grade} - Section {student.section}
+      </p>
+    </div>
+  </div>
+);
 
 function StudentsPage() {
   const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedSection, setSelectedSection] = useState("All");
   const [sections, setSections] = useState([]);
-  const [selectedStudent, setSelectedStudent] = useState(null); // new state
-  const [studentChatOpen, setStudentChatOpen] = useState(false);
-  const navigate = useNavigate();
+  const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentTab, setStudentTab] = useState("details");
+  const [studentChatOpen, setStudentChatOpen] = useState(false);
+  const [popupMessages, setPopupMessages] = useState([]);
+  const [popupInput, setPopupInput] = useState("");
+  const [teacherInfo, setTeacherInfo] = useState(null);
+  const navigate = useNavigate();
 
-  
+  const teacherUserId = teacherInfo?.userId; // ✅ teacher ID from logged-in teacher
 
-
-  const admin = JSON.parse(localStorage.getItem("admin")) || {};
-
-const handleLogout = () => {
-  localStorage.removeItem("admin");
-  navigate("/login");
-};
-
-
-
+  // ---------------- LOAD TEACHER INFO ----------------
   useEffect(() => {
-    const fetchStudents = async () => {
+    const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
+    if (!storedTeacher) {
+      navigate("/login");
+      return;
+    }
+    setTeacherInfo(storedTeacher);
+  }, [navigate]);
+
+  // ---------------- FETCH STUDENTS ----------------
+  useEffect(() => {
+    async function fetchStudents() {
       try {
-        const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
+        setLoading(true);
+        const res = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
         const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
 
-        const studentsData = studentsRes.data || {};
+        const studentsData = Object.values(res.data || {});
         const usersData = usersRes.data || {};
 
-        const studentList = Object.keys(studentsData).map((id) => {
-          const student = studentsData[id];
-          const user = usersData[student.userId] || {};
+        const mappedStudents = studentsData.map(s => {
+          const user = Object.values(usersData).find(u => u.userId === s.userId);
           return {
-            studentId: id,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
-            grade: student.grade,
-            section: student.section,
+            ...s,
+            name: user?.name || "Unknown",
+            profileImage: user?.profileImage || "/default-profile.png",
+            email: user?.email || "default.student@example.com",
           };
         });
 
-        setStudents(studentList);
+        setStudents(mappedStudents);
+        setError("");
       } catch (err) {
-        console.error("Error fetching students:", err);
+        console.error(err);
+        setError("Failed to fetch students");
+      } finally {
+        setLoading(false);
       }
-    };
-
+    }
     fetchStudents();
   }, []);
 
+  // ---------------- GRADE → SECTION ----------------
   useEffect(() => {
     if (selectedGrade === "All") {
       setSections([]);
+      setSelectedSection("All");
     } else {
-      const gradeSections = [
-        ...new Set(students.filter(s => s.grade === selectedGrade).map(s => s.section))
-      ];
-      setSections(gradeSections);
+      const secs = [...new Set(students.filter(s => s.grade === selectedGrade).map(s => s.section))];
+      setSections(secs);
       setSelectedSection("All");
     }
   }, [selectedGrade, students]);
@@ -86,478 +119,177 @@ const handleLogout = () => {
     return true;
   });
 
+  const grades = [...new Set(students.map(s => s.grade))].sort();
+
+  // ---------------- FETCH MESSAGES ----------------
+  useEffect(() => {
+    if (!selectedStudent || !teacherUserId) return;
+
+    async function fetchMessages() {
+      try {
+        const key = `${selectedStudent.userId}_${teacherUserId}`;
+        const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key}/messages.json`);
+        const msgs = Object.values(res.data || {})
+          .map(m => ({ ...m, sender: m.senderId === teacherUserId ? "teacher" : "student" }))
+          .sort((a, b) => a.timeStamp - b.timeStamp);
+        setPopupMessages(msgs);
+      } catch (err) {
+        console.error(err);
+        setPopupMessages([]);
+      }
+    }
+
+    fetchMessages();
+  }, [selectedStudent, teacherUserId]);
+
+  // ---------------- SEND MESSAGE ----------------
+  const handleSendMessage = async () => {
+    if (!popupInput.trim() || !teacherUserId) return;
+
+    const newMessage = {
+      senderId: teacherUserId,
+      receiverId: selectedStudent.userId,
+      text: popupInput,
+      timeStamp: Date.now(),
+    };
+
+    try {
+      const key = `${selectedStudent.userId}_${teacherUserId}`;
+      await axios.post(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key}/messages.json`, newMessage);
+      setPopupMessages([...popupMessages, { ...newMessage, sender: "teacher" }]);
+      setPopupInput("");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="dashboard-page">
-      {/* NAVBAR */}
-     
-     {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-     <nav className="top-navbar">
-       <h2>Gojo Dashboard</h2>
-     
-       {/* Search Bar */}
-       <div className="nav-search">
-         <FaSearch className="search-icon" />
-         <input type="text" placeholder="Search Teacher and Student..." />
-       </div>
-     
-       <div className="nav-right">
-         {/* Notification */}
-         <div className="icon-circle">
-           <FaBell />
-         </div>
+      {/* TOP NAVBAR */}
+      <nav className="top-navbar">
+        <h2>Teacher Dashboard</h2>
+        <div className="nav-right" style={{ display: "flex", gap: "15px" }}>
+          <FaSearch />
+          <FaBell />
+          <FaCog />
+        </div>
+      </nav>
 
-           {/* Messenger */}
-    <div className="icon-circle">
-      <FaFacebookMessenger />
-    </div>
-     
-         {/* Settings */}
-         <div className="icon-circle">
-           <FaCog />
-         </div>
-     
-         {/* Profile */}
-         <img
-           src={admin.profileImage || "/default-profile.png"}
-           alt="admin"
-           className="profile-img"
-         />
-         {/* <span>{admin.name}</span> */}
-       </div>
-     </nav>
-     
-     
-     
-     
       <div className="google-dashboard" style={{ display: "flex" }}>
         {/* SIDEBAR */}
         <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+          {teacherInfo && (
+            <div style={{ textAlign: "center", padding: "20px", borderBottom: "1px solid #ddd" }}>
+              <div style={{ width: "80px", height: "80px", margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid #4b6cb7" }}>
+                <img src={teacherInfo.profileImage || "/default-profile.png"} alt={teacherInfo.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              </div>
+              <h3 style={{ margin: "5px 0", fontSize: "18px" }}>{teacherInfo.name}</h3>
+              <p style={{ fontSize: "14px", color: "#555" }}>{teacherInfo.username || teacherInfo.email}</p>
             </div>
-            <h3>{admin.name}</h3>
-            <p>{admin.username}</p>
-          </div>
+          )}
+
           <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard" ><FaHome /> Home</Link>
-                       
-                        
-                        <Link className="sidebar-btn" to="/students" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaUsers /> Students</Link>
-                        <Link
-                                 className="sidebar-btn"
-                                 to="/marks"
-                                 
-                               ><FaClipboardCheck />
-                                 Marks
-                               </Link>
-                               <Link to="/attendance" className="sidebar-btn">
-                                                                    <FaUsers /> Attendance
-                                                                  </Link>
-                        <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
-                        <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt /> Logout</button>
+            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
+            <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
+            <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
+            <Link className="sidebar-btn" to="/students" style={{ background: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Students</Link>
+            <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
+            <Link className="sidebar-btn" to="/logout"><FaSignOutAlt /> Logout</Link>
           </div>
         </div>
 
         {/* MAIN CONTENT */}
-        <div className="main-content" style={{ padding: "30px", width: "65%", marginLeft: "180px" }}>
-          <h2 style={{ marginBottom: "20px", textAlign: "center" }}>Students</h2>
+        <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
+          <div style={{ width: "40%", position: "relative" }}>
+            <h2 style={{ textAlign: "center", marginBottom: "20px" }}>My Students</h2>
 
-          {/* Grade Filter */}
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", gap: "12px" }}>
-            {["All", "9", "10", "11", "12"].map(g => (
-              <button
-                key={g}
-                onClick={() => setSelectedGrade(g)}
-                style={{
-                  padding: "10px 20px",
-                  borderRadius: "8px",
-                  background: selectedGrade === g ? "#4b6cb7" : "#ddd",
-                  color: selectedGrade === g ? "#fff" : "#000",
-                  cursor: "pointer",
-                  border: "none",
-                }}
-              >
-                {g === "All" ? "All Grades" : `Grade ${g}`}
-              </button>
-            ))}
-          </div>
-
-          {/* Section Filter */}
-          {selectedGrade !== "All" && sections.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", gap: "12px" }}>
-              {["All", ...sections].map(section => (
-                <button
-                  key={section}
-                  onClick={() => setSelectedSection(section)}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: "8px",
-                    background: selectedSection === section ? "#4b6cb7" : "#ddd",
-                    color: selectedSection === section ? "#fff" : "#000",
-                    cursor: "pointer",
-                    border: "none",
-                  }}
-                >
-                  {section === "All" ? "All Sections" : `Section ${section}`}
-                </button>
+            {/* Grades */}
+            <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
+              <button onClick={() => setSelectedGrade("All")} style={{ padding: "8px 15px", borderRadius: "8px", background: selectedGrade === "All" ? "#4b6cb7" : "#ddd", color: selectedGrade === "All" ? "#fff" : "#000", border: "none" }}>All Grades</button>
+              {grades.map(g => (
+                <button key={g} onClick={() => setSelectedGrade(g)} style={{ padding: "8px 15px", borderRadius: "8px", background: selectedGrade === g ? "#4b6cb7" : "#ddd", color: selectedGrade === g ? "#fff" : "#000", border: "none" }}>Grade {g}</button>
               ))}
             </div>
-          )}
 
-          {/* Students List */}
-          {filteredStudents.length === 0 ? (
-            <p style={{ textAlign: "center", color: "#555" }}>No students found for this selection.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-             {filteredStudents.map(s => (
-  <div
-    key={s.studentId}
-    onClick={() => setSelectedStudent(s)}
-    style={{
-      width: "500px",
-      height: "70px",
-      borderRadius: "12px",
-      padding: "15px",
-      background: selectedStudent?.studentId === s.studentId ? "#e0e7ff" : "#fff",
-      border: selectedStudent?.studentId === s.studentId ? "2px solid #4b6cb7" : "1px solid #ddd",
-      display: "flex",
-      alignItems: "center",
-      gap: "20px",
-      boxShadow: selectedStudent?.studentId === s.studentId ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
-      cursor: "pointer",
-      transition: "all 0.3s ease"
-    }}
-  >
-    <img
-      src={s.profileImage}
-      alt={s.name}
-      style={{
-        width: "50px",
-        height: "50px",
-        borderRadius: "50%",
-        objectFit: "cover",
-        border: selectedStudent?.studentId === s.studentId ? "3px solid #4b6cb7" : "3px solid red",
-        transition: "all 0.3s ease"
-      }}
-    />
-    <div>
-      <h3 style={{ margin: 0 }}>{s.name}</h3>
-      <p style={{ margin: "4px 0", color: "#555" }}>
-        Grade {s.grade} - Section {s.section}
-      </p>
-    </div>
-  </div>
-))}
+            {/* Sections */}
+            {selectedGrade !== "All" && (
+              <div style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap" }}>
+                <button onClick={() => setSelectedSection("All")} style={{ padding: "6px 12px", borderRadius: "8px", background: selectedSection === "All" ? "#4b6cb7" : "#ddd", color: selectedSection === "All" ? "#fff" : "#000", border: "none" }}>All Sections</button>
+                {sections.map(sec => (
+                  <button key={sec} onClick={() => setSelectedSection(sec)} style={{ padding: "6px 12px", borderRadius: "8px", background: selectedSection === sec ? "#4b6cb7" : "#ddd", color: selectedSection === sec ? "#fff" : "#000", border: "none" }}>Section {sec}</button>
+                ))}
+              </div>
+            )}
 
+            {/* Student list */}
+            {loading && <p>Loading students...</p>}
+            {error && <p style={{ color: "red" }}>{error}</p>}
+            {!loading && !error && filteredStudents.length === 0 && <p>No students found.</p>}
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {filteredStudents.map(s => (
+                <StudentItem key={s.userId} student={s} selected={selectedStudent?.userId === s.userId} onClick={setSelectedStudent} />
+              ))}
+            </div>
+          </div>
+
+          {/* RIGHT SIDEBAR */}
+          {selectedStudent && (
+            <div style={{ width: "30%", padding: "25px", background: "#fff", boxShadow: "0 0 15px rgba(0,0,0,0.05)", position: "fixed", right: 0, top: "60px", height: "calc(100vh - 60px)", overflowY: "auto", zIndex: 10 }}>
+              <div style={{ textAlign: "center", marginBottom: "20px" }}>
+                <div style={{ width: "120px", height: "120px", margin: "0 auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
+                  <img src={selectedStudent.profileImage} alt={selectedStudent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
+                <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.email}</p>
+                <p style={{ color: "#555", margin: "5px 0" }}><strong>Grade:</strong> {selectedStudent.grade}</p>
+                <p style={{ color: "#555", margin: "5px 0" }}><strong>Section:</strong> {selectedStudent.section}</p>
+              </div>
+
+              {/* Tabs */}
+              <div style={{ display: "flex", marginBottom: "15px" }}>
+                {["details", "attendance", "performance"].map(tab => (
+                  <button key={tab} onClick={() => setStudentTab(tab)} style={{ flex: 1, padding: "10px", border: "none", background: "none", cursor: "pointer", fontWeight: "600", color: studentTab === tab ? "#4b6cb7" : "#777", borderBottom: studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>{tab.toUpperCase()}</button>
+                ))}
+              </div>
+
+              <div>
+                {studentTab === "details" && <div><p><strong>ID:</strong> {selectedStudent.userId}</p></div>}
+                {studentTab === "attendance" && <div><p>Attendance data here.</p></div>}
+                {studentTab === "performance" && <div><p>Performance data here.</p></div>}
+              </div>
+
+              <div style={{ marginTop: "20px", textAlign: "center" }}>
+                <button onClick={() => setStudentChatOpen(true)} style={{ padding: "10px 20px", borderRadius: "8px", background: "#4b6cb7", color: "#fff", border: "none", cursor: "pointer" }}>Message</button>
+              </div>
             </div>
           )}
+
+          {/* CHAT POPUP */}
+          {studentChatOpen && selectedStudent && (
+            <div style={{ position: "fixed", bottom: "6px", width: "320px", background: "#fff", borderRadius: "12px", boxShadow: "0 8px 25px rgba(0,0,0,0.15)", padding: "15px", zIndex: 999, right: "22px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #ddd", paddingBottom: "10px" }}>
+                <strong>{selectedStudent.name}</strong>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button onClick={() => navigate("/teacher-chat", { state: { studentId: selectedStudent.userId, userType: "student" } })} style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer" }}>↗</button>
+                  <button onClick={() => setStudentChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>×</button>
+                </div>
+              </div>
+              <div style={{ height: "260px", overflowY: "auto", padding: "10px" }}>
+                {popupMessages.length === 0 ? <p style={{ color: "#aaa", textAlign: "center" }}>No messages yet</p> :
+                  popupMessages.map((msg, i) => (
+                    <div key={i} style={{ marginBottom: "10px", textAlign: msg.sender === "teacher" ? "right" : "left" }}>
+                      <span style={{ background: msg.sender === "teacher" ? "#4b6cb7" : "#eee", color: msg.sender === "teacher" ? "#fff" : "#000", padding: "6px 12px", borderRadius: "12px", display: "inline-block" }}>{msg.text}</span>
+                    </div>
+                  ))}
+              </div>
+              <div style={{ display: "flex", marginTop: "8px", gap: "5px" }}>
+                <input type="text" value={popupInput} onChange={e => setPopupInput(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "8px 12px", borderRadius: "8px", border: "1px solid #ddd" }} />
+                <button onClick={handleSendMessage} style={{ padding: "8px 12px", background: "#4b6cb7", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer" }}>Send</button>
+              </div>
+            </div>
+          )}
+
         </div>
-
-        {/* RIGHT SIDEBAR FOR SELECTED STUDENT */}
-      {/* RIGHT SIDEBAR FOR SELECTED STUDENT */}
-{/* RIGHT SIDEBAR FOR SELECTED STUDENT */}
-<div
-  className="student-info-sidebar"
-  style={{
-    width: "30%",
-    padding: "25px",
-    
-    background: "#ffffffff",
-    display: selectedStudent ? "block" : "none",
-    boxShadow: "0 0 15px rgba(0,0,0,0.05)",
-    
-
-    // FIXED SIDEBAR — WILL NOT SCROLL
-    position: "fixed",
-    right: 0,
-    top: "60px",
-    height: "calc(100vh - 60px)",
-    overflow: "hidden",
-    zIndex: 10
-  }}
->
-  {selectedStudent && (
-    <div style={{ textAlign: "center" }}>
-     <div
-  style={{
-    background: "#becff7ff",
-    padding: "25px 10px",
-    height: "200px",  
-    width: "calc(100% + 50px)",   // 🔥 cancel sidebar padding
-     margin: "-25px -25px 20px",  // 🔥 negative margin to touch edges
-    textAlign: "center",
-    boxShadow: "0 4px 15px rgba(0,0,0,0.1)"
-  }}
->
-      {/* Avatar */}
-      <div
-        style={{
-          width: "100px",
-          height: "100px",
-          margin: "-20px auto 15px",
-          borderRadius: "50%",
-          overflow: "hidden",
-          border: "4px solid #4b6cb7",
-          boxShadow: "0 4px 15px rgba(0,0,0,0.1)"
-        }}
-      >
-        <img
-          src={selectedStudent.profileImage}
-          alt={selectedStudent.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
-
-      {/* Name */}
-      <h2 style={{ margin: "0", fontSize: "22px",marginTop:"-10px", color: "#333" }}>
-        {selectedStudent.name}
-      </h2>
-      
-
-        <h2 style={{ margin: "0",
-                fontSize: "16px",
-                marginTop:"0",
-                color: "#585656ff", }}>
-    {selectedStudent.email ? selectedStudent.email : "default.student@example.com"}
-  </h2>
-
-     
-      </div>
-
-       {/* Grade & Section */}
-      <p style={{ color: "#555", fontSize: "16px", margin: "5px 0" }}>
-        <strong>Grade:</strong> {selectedStudent.grade}
-      </p>
-      <p style={{ color: "#555", fontSize: "16px", margin: "5px 0 20px 0" }}>
-        <strong>Section:</strong> {selectedStudent.section}
-      </p>
-
-   {/* Student Info Card with Navigation Tabs */}
-<div
-  style={{
-    background: "#fff",
-    borderRadius: "10px",
-    padding: "15px",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
-    width: "100%",
-    textAlign: "left",
-  }}
->
-  {/* ---------- NAVIGATION BAR ---------- */}
-  <div
-    style={{
-      display: "flex",
-      borderBottom: "1px solid #eee",
-      marginBottom: "15px",
-    }}
-  >
-    {["details", "attendance", "performance"].map((tab) => (
-      <button
-        key={tab}
-        onClick={() => setStudentTab(tab)}
-        style={{
-          flex: 1,
-          padding: "10px",
-          border: "none",
-          background: "none",
-          cursor: "pointer",
-          fontWeight: "600",
-          color: studentTab === tab ? "#4b6cb7" : "#777",
-          borderBottom:
-            studentTab === tab
-              ? "3px solid #4b6cb7"
-              : "3px solid transparent",
-        }}
-      >
-        {tab.toUpperCase()}
-      </button>
-    ))}
-  </div>
-
-  {/* ---------- TAB CONTENT ---------- */}
-  {studentTab === "details" && (
-    <div>
-      <h4 style={{ marginBottom: "10px", color: "#4b6cb7" }}>
-        Student Details
-      </h4>
-
-      <p style={{ margin: "6px 0", color: "#555" }}>
-        <strong>ID:</strong> {selectedStudent.studentId}
-      </p>
-
-      <p style={{ margin: "6px 0", color: "#555" }}>
-        Additional details can go here.
-      </p>
-    </div>
-  )}
-
-  {studentTab === "attendance" && (
-    <div>
-      <h4 style={{ marginBottom: "10px", color: "#4b6cb7" }}>
-        Attendance
-      </h4>
-      <p style={{ color: "#555" }}>
-        Student attendance data will be shown here.
-      </p>
-    </div>
-  )}
-
-  {studentTab === "performance" && (
-    <div>
-      <h4 style={{ marginBottom: "10px", color: "#4b6cb7" }}>
-        Performance
-      </h4>
-      <p style={{ color: "#555" }}>
-        Student performance reports will be displayed here.
-      </p>
-    </div>
-  )}
-</div>
-
-
-      {/* Action Button */}
-      <div
-        style={{
-          marginTop: "20px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "10px",
-           alignItems: "flex-end"
-        }}
-      >
-       <button
-  style={{
-    padding: "10px",
-     width: "120px", 
-    borderRadius: "8px",
-    border: "none",
-    background: "#4b6cb7",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: "bold",
-    transition: "0.3s",
-    marginTop: "140px"
-  }}
-  onClick={() => setStudentChatOpen(true)}
->
-  Message
-</button>
-
-      </div>
-    </div>
-  )}
-</div>
-
-
-{/* CHAT POPUP (Instagram Style) */}
-{/* STUDENT CHAT POPUP */}
-{studentChatOpen && selectedStudent && (
-  <div
-    style={{
-      position: "fixed",
-      width: "320px",
-      background: "#fff",
-      borderRadius: "12px",
-      boxShadow: "0 8px 25px rgba(0,0,0,0.15)",
-      padding: "15px",
-      zIndex: 999,
-      right: "22px",
-      bottom: "6px",
-      animation: "fadeIn 0.3s ease"
-    }}
-  >
-    {/* Header */}
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        borderBottom: "1px solid #ddd",
-        paddingBottom: "10px"
-      }}
-    >
-      <strong>{selectedStudent.name}</strong>
-
-      <div style={{ display: "flex", gap: "10px" }}>
-        {/* EXPAND BUTTON */}
-        <button
-          onClick={() => {
-            setStudentChatOpen(false);
-            navigate("/student-chat", { state: { studentId: selectedStudent.studentId } });
-          }}
-          style={{
-            background: "none",
-            border: "none",
-            fontSize: "18px",
-            cursor: "pointer"
-          }}
-        >
-          <img
-            width="30"
-            height="30"
-            src="https://img.icons8.com/ios-glyphs/30/expand--v1.png"
-            alt="expand"
-          />
-        </button>
-
-        {/* CLOSE BUTTON */}
-        <button
-          onClick={() => setStudentChatOpen(false)}
-          style={{
-            background: "none",
-            border: "none",
-            fontSize: "20px",
-            cursor: "pointer"
-          }}
-        >
-          ×
-        </button>
-      </div>
-    </div>
-
-    {/* Chat Body */}
-    <div
-      style={{
-        height: "260px",
-        overflowY: "auto",
-        padding: "10px"
-      }}
-    >
-      <p style={{ color: "#aaa", textAlign: "center" }}>
-        Start a conversation with {selectedStudent.name}...
-      </p>
-    </div>
-
-    {/* Chat Input */}
-    <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
-      <input
-        type="text"
-        placeholder="Type a message..."
-        style={{
-          flex: 1,
-          padding: "10px",
-          borderRadius: "8px",
-          border: "1px solid #ccc"
-        }}
-      />
-      <button
-        style={{
-          background: "#4b6cb7",
-          padding: "10px 15px",
-          color: "#fff",
-          borderRadius: "8px",
-          border: "none",
-          cursor: "pointer"
-        }}
-      >
-        Send
-      </button>
-    </div>
-  </div>
-)}
-
-
       </div>
     </div>
   );
