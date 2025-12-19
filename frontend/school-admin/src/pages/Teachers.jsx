@@ -156,6 +156,7 @@ useEffect(() => {
 
   fetchMessages();
 }, [teacherChatOpen, selectedTeacher, adminUserId]);
+// ---------------- SEND POPUP MESSAGE ----------------
 
 
 const sendPopupMessage = async () => {
@@ -423,13 +424,13 @@ useEffect(() => {
                         transition: "all 0.3s ease"
                       }}
                     />
-                    <h3>{t.name}</h3>
+                    <h3 style={{marginTop: "-35px" }}>{t.name}</h3>
 
 
                       {/* ---------- UNREAD BADGE ---------- */}
   {unreadTeachers[t.userId] > 0 && (
   <span style={{
-    marginLeft: "250px",
+    margin: "10px 10px 10px 200px",
     background: "red",
     color: "#fff",
     borderRadius: "50%",

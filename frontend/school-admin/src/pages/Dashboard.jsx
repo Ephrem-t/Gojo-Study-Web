@@ -12,12 +12,13 @@ import { Link } from "react-router-dom";
 
 function Dashboard() {
   // ---------------- STATE ----------------
-  const [admin, setAdmin] = useState({
-    adminId: "",
-    name: "",
-    username: "",
-    profileImage: "/default-profile.png",
-  });
+const [admin, setAdmin] = useState({
+  userId: "",
+  name: "",
+  username: "",
+  profileImage: "/default-profile.png",
+});
+
   const [posts, setPosts] = useState([]);
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
@@ -31,17 +32,103 @@ function Dashboard() {
   };
 
   // ---------------- FETCH POSTS ----------------
-  const fetchPosts = async () => {
+const fetchPosts = async () => {
+  try {
+    const res = await axios.get("http://127.0.0.1:5000/api/get_posts");
+    console.log(res.data); // check here
+    const sortedPosts = res.data.sort(
+      (a, b) => new Date(b.time) - new Date(a.time)
+    );
+    setPosts(sortedPosts);
+  } catch (err) {
+    console.error("Error fetching posts:", err);
+  }
+};
+
+
+
+
+
+/// ---------------- FETCH POST NOTIFICATIONS ----------------
+
+
+const [showPostDropdown, setShowPostDropdown] = useState(false);
+const [unreadPostList, setUnreadPostList] = useState([]);
+
+
+
+  useEffect(() => {
+  if (!admin.userId) return;
+
+  const fetchUnreadPosts = async () => {
     try {
       const res = await axios.get("http://127.0.0.1:5000/api/get_posts");
-      const sortedPosts = res.data.sort(
-        (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+
+      const unread = res.data.filter(
+        p => !p.seenBy || !p.seenBy[admin.userId]
       );
-      setPosts(sortedPosts);
+
+
+
+
+
+      setUnreadPostList(unread);
     } catch (err) {
-      console.error("Error fetching posts:", err);
+      console.error(err);
     }
   };
+
+  fetchUnreadPosts();
+}, [admin.userId]);
+
+
+
+
+// ---------------- OPEN POST FROM NOTIFICATION ----------------
+const openPostFromNotif = async (post) => {
+  setShowPostDropdown(false);
+
+  try {
+    // Mark post as seen in the backend
+    await axios.post("http://127.0.0.1:5000/api/mark_post_seen", {
+      postId: post.postId,
+      userId: admin.userId
+    });
+
+    // Remove this post from the unreadPostList immediately
+    setUnreadPostList(prev => prev.filter(p => p.postId !== post.postId));
+
+    // Scroll to the post in the main feed
+    const el = document.getElementById(`post-${post.postId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+      el.style.backgroundColor = "#ffffcc";
+      setTimeout(() => (el.style.backgroundColor = ""), 2000);
+    }
+  } catch (err) {
+    console.error("Error opening post notification:", err);
+  }
+};
+
+
+
+
+// ---------------- CLOSE DROPDOWN ON OUTSIDE CLICK ----------------
+useEffect(() => {
+  const close = (e) => {
+    if (
+      !e.target.closest(".icon-circle") &&
+      !e.target.closest(".notification-dropdown")
+    ) {
+      setShowPostDropdown(false);
+    }
+  };
+
+  document.addEventListener("click", close);
+  return () => document.removeEventListener("click", close);
+}, []);
+
+
 
   // ---------------- EFFECT ON MOUNT ----------------
   useEffect(() => {
@@ -49,43 +136,40 @@ function Dashboard() {
     fetchPosts();
   }, []);
 
-  // ---------------- HANDLE POST ----------------
-  const handlePost = async () => {
-    if (!postText && !postMedia) return alert("Enter message or select media");
-    const formData = new FormData();
-    formData.append("text", postText);
-    formData.append("adminId", admin.adminId);
-    if (postMedia) formData.append("post_media", postMedia);
+ //
+const handlePost = async () => {
+  if (!postText && !postMedia) return alert("Enter message or select media");
 
-    try {
-      await axios.post("http://127.0.0.1:5000/api/create_post", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setPostText("");
-      setPostMedia(null);
-      fetchPosts();
-    } catch (err) {
-      console.error("Error creating post:", err);
-    }
-  };
-// ---------------- LIKE POST ----------------
-async function toggleLike(postId) {
-    const adminId = localStorage.getItem("adminId");
-    await fetch("/api/like_post", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ postId, adminId })
-    });
-    loadPosts();
-}
+  const formData = new FormData();
+  formData.append("message", postText);
+
+  formData.append("adminId", admin.userId);
+
+  formData.append("adminName", admin.name);
+  formData.append("adminProfile", admin.profileImage);
+
+  if (postMedia) formData.append("post_media", postMedia);
+
+  try {
+    await axios.post("http://127.0.0.1:5000/api/create_post", formData);
+    setPostText("");
+    setPostMedia(null);
+    fetchPosts();
+  } catch (err) {
+    console.error(err);
+  }
+};
+
+
   // ---------------- HANDLE LIKE ----------------
 
 const handleLike = async (postId) => {
   try {
-    const res = await axios.post("http://127.0.0.1:5000/api/like_post", {
-      adminId: admin.adminId,
-      postId,
-    });
+   const res = await axios.post("http://127.0.0.1:5000/api/like_post", {
+  adminId: admin.userId,
+  postId,
+});
+
 
     if (res.data.success) {
       // Update posts state
@@ -95,10 +179,11 @@ const handleLike = async (postId) => {
             ? {
                 ...post,
                 likeCount: res.data.likeCount,
-                likes: {
-                  ...post.likes,
-                  [admin.adminId]: res.data.liked ? true : undefined
-                },
+               likes: {
+  ...post.likes,
+  [admin.userId]: res.data.liked ? true : undefined
+},
+
               }
             : post
         )
@@ -115,7 +200,8 @@ const handleLike = async (postId) => {
   const handleDelete = async (postId) => {
     try {
       await axios.delete(`http://127.0.0.1:5000/api/delete_post/${postId}`, {
-        data: { adminId: admin.adminId },
+       data: { adminId: admin.userId },
+
       });
       fetchPosts();
     } catch (err) {
@@ -129,7 +215,8 @@ const handleLike = async (postId) => {
     if (!newText) return;
     try {
       await axios.post(`http://127.0.0.1:5000/api/edit_post/${postId}`, {
-        adminId: admin.adminId,
+       adminId: admin.userId,
+
         postText: newText,
       });
       fetchPosts();
@@ -155,9 +242,111 @@ const handleLike = async (postId) => {
 
   <div className="nav-right">
     {/* Notification */}
-    <div className="icon-circle">
-      <FaBell />
-    </div>
+<div
+  className="icon-circle"
+  style={{ position: "relative", cursor: "pointer" }}
+  onClick={() => setShowPostDropdown(p => !p)}
+>
+  <FaBell />
+
+  {unreadPostList.length > 0 && (
+    <span style={{
+      position: "absolute",
+      top: "-5px",
+      right: "-5px",
+      background: "red",
+      color: "#fff",
+      borderRadius: "50%",
+      padding: "2px 6px",
+      fontSize: "10px",
+      fontWeight: "bold"
+    }}>
+      {unreadPostList.length}
+    </span>
+  )}
+
+</div>
+
+
+
+
+
+
+{/* ---------------- POST NOTIFICATION DROPDOWN ---------------- */}
+
+
+
+{/* ---------------- POST NOTIFICATION DROPDOWN ---------------- */}
+
+{showPostDropdown && (
+  <div
+    className="notification-dropdown"
+    style={{
+      position: "absolute",
+      top: "45px",
+      right: "0",
+      width: "320px",
+      maxHeight: "400px",
+      overflowY: "auto",
+      background: "#fff",
+      borderRadius: "8px",
+      boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
+      zIndex: 1000
+    }}
+  >
+    {unreadPostList.length === 0 ? (
+      <p style={{ padding: "10px", textAlign: "center", color: "#777" }}>
+        No new posts
+      </p>
+    ) : (
+      unreadPostList.map(post => (
+        <div
+          key={post.postId}
+          onClick={() => openPostFromNotif(post)}
+          style={{
+            padding: "10px",
+            borderBottom: "1px solid #eee",
+            display: "flex",
+            alignItems: "center",
+            cursor: "pointer"
+          }}
+        >
+          <img
+            src={post.adminProfile || "/default-profile.png"}
+            alt=""
+            style={{
+              width: "40px",
+              height: "40px",
+              borderRadius: "50%",
+              marginRight: "10px"
+            }}
+          />
+
+          <div style={{ flex: 1 }}>
+            <strong>{post.adminName}</strong>
+            <p style={{ margin: 0, fontSize: "12px", color: "#555" }}>
+              {post.message?.slice(0, 40) || "New post"}
+            </p>
+          </div>
+
+          <span style={{ fontSize: "10px", color: "#888" }}>
+           {new Date(post.time).toLocaleTimeString([], {
+  hour: "2-digit",
+  minute: "2-digit"
+})}
+
+          </span>
+        </div>
+      ))
+    )}
+  </div>
+)}
+
+
+
+
+
+
 
 
 
@@ -287,7 +476,9 @@ const handleLike = async (postId) => {
           {/* Posts container */}
           <div className="posts-container">
             {posts.map((post) => (
-              <div className="post-card" key={post.postId}>
+           <div className="post-card" id={`post-${post.postId}`} key={post.postId}>
+
+
                 <div className="post-header">
                   <div className="img-circle">
                     <img
@@ -310,7 +501,8 @@ const handleLike = async (postId) => {
   <button
     onClick={() => handleLike(post.postId)}
     style={{
-      color: post.likes && post.likes[admin.adminId] ? "red" : "black",
+     color: post.likes && post.likes[admin.userId] ? "red" : "black",
+
       cursor: "pointer",
       background: "transparent",
       border: "none",
@@ -322,7 +514,8 @@ const handleLike = async (postId) => {
 </div>
 
 
-                  {post.adminId === admin.adminId && (
+                 {post.adminId === admin.userId && (
+
                     <>
                       <button
                         onClick={() => handleEdit(post.postId, post.message)}
