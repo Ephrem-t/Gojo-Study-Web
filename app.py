@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
+from flask import Flask, request, jsonify
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -443,6 +444,42 @@ def register_parent():
     })
 
     return jsonify({'success': True, 'message': 'Parent registered successfully!'})
+
+
+
+# like teacher
+
+@app.route("/api/like_post", methods=["POST"])
+def like_post():
+    data = request.json
+    postId = data.get("postId")
+    teacherId = data.get("teacherId")
+
+    posts_ref = db.reference("Posts")
+    post = posts_ref.child(postId).get()
+
+    if not post:
+        return jsonify({"error": "Post not found"}), 404
+
+    likes = post.get("likes", {})
+
+    if teacherId in likes:
+        # Teacher already liked → unlike
+        likes.pop(teacherId)
+    else:
+        # Add like
+        likes[teacherId] = True
+
+    posts_ref.child(postId).update({
+        "likes": likes,
+        "likeCount": len(likes)
+    })
+
+    return jsonify({"success": True, "likeCount": len(likes), "liked": teacherId in likes})
+
+
+
+
 
 
 # ===================== RUN APP =====================

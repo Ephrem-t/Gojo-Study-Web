@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaSearch,  FaClipboardCheck, FaUsers } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaSearch, FaClipboardCheck, FaUsers } from "react-icons/fa";
 import axios from "axios";
 import "../styles/global.css";
 
@@ -32,11 +32,44 @@ export default function Dashboard() {
         postUrl: post.postUrl,
         timestamp: post.timestamp || "",
         likeCount: post.likeCount || 0,
+        likes: post.likes ? Object.values(post.likes) : [] // get likes array from database
       }));
       mappedPosts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       setPosts(mappedPosts);
     } catch (err) {
       console.error("Error fetching posts:", err);
+    }
+  };
+
+  const handleLikePost = async (postId) => {
+    if (!teacher) return;
+    try {
+      const res = await axios.post(`${API_BASE}/like_post`, {
+        postId,
+        teacherId: teacher.userId
+      });
+
+      if (res.data.success) {
+        const updatedPosts = posts.map((post) => {
+          if (post.postId === postId) {
+            const likesSet = new Set(post.likes);
+            if (res.data.liked) {
+              likesSet.add(teacher.userId);
+            } else {
+              likesSet.delete(teacher.userId);
+            }
+            return {
+              ...post,
+              likeCount: res.data.likeCount,
+              likes: Array.from(likesSet)
+            };
+          }
+          return post;
+        });
+        setPosts(updatedPosts);
+      }
+    } catch (err) {
+      console.error("Error toggling like:", err);
     }
   };
 
@@ -74,20 +107,10 @@ export default function Dashboard() {
 
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/dashboard" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaHome /> Home</Link>
-           
-            
             <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
-              <Link className="sidebar-btn" to="/admins" ><FaUsers /> Admins</Link>
-            <Link
-                     className="sidebar-btn"
-                     to="/marks"
-                     
-                   ><FaClipboardCheck />
-                     Marks
-                   </Link>
-                   <Link to="/attendance" className="sidebar-btn">
-                                                        <FaUsers /> Attendance
-                                                      </Link>
+            <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
+            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>
+            <Link to="/attendance" className="sidebar-btn"><FaUsers /> Attendance</Link>
             <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
             <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt /> Logout</button>
           </div>
@@ -98,6 +121,7 @@ export default function Dashboard() {
             {posts.length === 0 && <p>No posts available</p>}
             {posts.map((post) => (
               <div className="post-card" key={post.postId}>
+                {/* Post Header */}
                 <div className="post-header">
                   <div className="img-circle">
                     <img src={post.adminProfile} alt={post.adminName} />
@@ -107,10 +131,38 @@ export default function Dashboard() {
                     <span>{new Date(post.timestamp).toLocaleString()}</span>
                   </div>
                 </div>
+
+                {/* Post Content */}
                 <p>{post.message}</p>
                 {post.postUrl && <img src={post.postUrl} alt="post media" className="post-media" />}
+
+                {/* Like Button */}
                 <div className="post-actions">
-                  <button className="like-button">👍 {post.likeCount}</button>
+                  <button
+                    className="like-button"
+                    onClick={() => handleLikePost(post.postId)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "8px",
+                      padding: "10px 18px",
+                      borderRadius: "50px",
+                      border: "none",
+                      fontWeight: "600",
+                      fontSize: "14px",
+                      cursor: "pointer",
+                      color: "#fff",
+                      background: post.likes.includes(teacher.userId)
+                        ? "#2563eb"
+                        : "linear-gradient(135deg, #4b6cb7, #182848)",
+                      boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
+                      transition: "all 0.3s ease"
+                    }}
+                  >
+                    <span style={{ fontSize: "16px" }}>👍</span>
+                    {post.likeCount}
+                  </button>
                 </div>
               </div>
             ))}
