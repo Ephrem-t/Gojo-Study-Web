@@ -116,7 +116,7 @@ function AdminPage() {
       try {
         const key =
           teacherInfo.userId < selectedAdmin.adminId
-            ? `${teacherInfo.userId}_${selectedAdmin.adminId}`
+            ? `${selectedAdmin.adminId}_${teacherInfo.userId}`
             : `${selectedAdmin.adminId}_${teacherInfo.userId}`;
 
         const res = await axios.get(
@@ -148,13 +148,14 @@ function AdminPage() {
       senderId: teacherInfo.userId,
       receiverId: selectedAdmin.adminId,
       text: popupInput,
-      timeStamp: Date.now()
+      timeStamp: Date.now(),
+      seen: false,
     };
 
     try {
       const key =
         teacherInfo.userId < selectedAdmin.adminId
-          ? `${teacherInfo.userId}_${selectedAdmin.adminId}`
+          ? `${selectedAdmin.adminId}_${teacherInfo.userId}`
           : `${selectedAdmin.adminId}_${teacherInfo.userId}`;
 
       await axios.post(
