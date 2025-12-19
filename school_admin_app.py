@@ -131,12 +131,12 @@ def login_admin():
 
 
 # ---------------- CREATE POST ---------------- #
-# ---------------- CREATE POST ---------------- #
 @app.route("/api/create_post", methods=["POST"])
 def create_post():
     try:
         data = request.form
-        text = data.get("text", "")
+        text = data.get("message", "")
+
         adminId = data.get("adminId")
         media_file = request.files.get("post_media")
 
@@ -149,16 +149,18 @@ def create_post():
 
         post_ref = posts_ref.push()
         time_now = datetime.now().strftime("%I:%M %p, %b %d %Y")
+        user_data = users_ref.child(adminId).get() or {}
         post_ref.set({
-            "postId": post_ref.key,
-            "message": text,
-            "postUrl": post_url,
-            "adminId": adminId,
-            "time": time_now,
-            "likeCount": 0,
-            "likes": {}
-        })
-
+    "postId": post_ref.key,
+    "message": text,
+    "postUrl": post_url,
+    "adminId": adminId,
+    "adminName": user_data.get("name", "Admin"),
+    "adminProfile": user_data.get("profileImage", "/default-profile.png"),
+    "time": time_now,
+    "likeCount": 0,
+    "likes": {}
+})
         return jsonify({"success": True, "message": "Post created successfully"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -170,23 +172,24 @@ def get_posts():
     post_list = []
 
     for key, post in all_posts.items():
-        admin_data = school_admin_ref.child(post.get("adminId")).get()
-        user_data = users_ref.child(admin_data["userId"]).get() if admin_data else {}
+        # fetch user info
+        user_data = users_ref.child(post.get("adminId")).get() or {}
 
         post_list.append({
             "postId": key,
             "message": post.get("message"),
             "postUrl": post.get("postUrl"),
             "adminId": post.get("adminId"),
-            "adminName": user_data.get("name") if user_data else "Admin",
-            "adminProfile": user_data.get("profileImage") if user_data else "/default-profile.png",
-            "time": post.get("time")
+            "adminName": post.get("adminName") or user_data.get("name", "Admin"),
+            "adminProfile": post.get("adminProfile") or user_data.get("profileImage", "/default-profile.png"),
+            "time": post.get("time"),
+            "likes": post.get("likes", {}),
+            "likeCount": post.get("likeCount", 0)
         })
 
-    # Sort posts by newest first
-    post_list.reverse()  # latest post first
-
+    post_list.reverse()
     return jsonify(post_list)
+
 
 
 # ---------------- GET ADMIN PROFILE ---------------- #
@@ -292,7 +295,24 @@ def like_post():
         return jsonify({"success": False, "message": str(e)})
     
 
-
+# ---------------- MARK POST SEEN ---------------- #
+@app.route("/api/mark_post_seen", methods=["POST"])
+def mark_post_seen():
+    try:
+        data = request.get_json(force=True)
+        postId = data.get("postId")
+        userId = data.get("userId")
+        if not postId or not userId:
+            return jsonify({"success": False, "message": "Invalid data"}), 400
+        
+        post_ref = posts_ref.child(postId)
+        seen_by = post_ref.child("seenBy").get() or {}
+        seen_by[userId] = True
+        post_ref.update({"seenBy": seen_by})
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
     
 
