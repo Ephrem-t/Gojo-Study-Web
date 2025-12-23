@@ -407,43 +407,83 @@ def get_posts():
 # ===================== PARENT REGISTRATION =====================
 @app.route('/register/parent', methods=['POST'])
 def register_parent():
-    data = request.get_json()
-    if not data:
-        return jsonify({'success': False, 'message': 'No data provided'}), 400
+    name = request.form.get('name')
+    username = request.form.get('username')
+    phone = request.form.get('phone')
+    password = request.form.get('password')
+    profile_file = request.files.get('profile')
 
-    username = data.get('username')
-    name = data.get('name')
-    password = data.get('password')
-    children = data.get('children', [])
+    # 🔴 Get multiple children
+    student_ids = request.form.getlist('studentId')
+    relationships = request.form.getlist('relationship')
+
+    # 🔴 Validation
+    if not all([name, username, phone, password]) or not student_ids or not relationships:
+        return jsonify({
+            "success": False,
+            "message": "All fields except profile photo are required"
+        }), 400
+
+    if len(student_ids) != len(relationships):
+        return jsonify({
+            "success": False,
+            "message": "Each student must have a relationship defined"
+        }), 400
 
     users_ref = db.reference('Users')
     parents_ref = db.reference('Parents')
+    students_ref = db.reference('Students')
 
-    # Check if username exists
+    # 🔴 Check username uniqueness
     all_users = users_ref.get() or {}
     for user in all_users.values():
-        if user.get('username') == username:
-            return jsonify({'success': False, 'message': 'Username already exists!'})
+        if user.get("username") == username:
+            return jsonify({
+                "success": False,
+                "message": "Username already exists"
+            })
 
-    # Create user
+    # 🖼 Upload profile image (optional)
+    profile_url = "/default-profile.png"
+    if profile_file:
+        filename = f"parents/{username}_{profile_file.filename}"
+        blob = bucket.blob(filename)
+        blob.upload_from_file(profile_file, content_type=profile_file.content_type)
+        blob.make_public()
+        profile_url = blob.public_url
+
+    # 👤 Create Parent User
     new_user_ref = users_ref.push()
+    parent_user_id = new_user_ref.key
     new_user_ref.set({
-        'userId': new_user_ref.key,
-        'username': username,
-        'name': name,
-        'password': password,
-        'role': 'parent',
-        'isActive': True
+        "userId": parent_user_id,
+        "username": username,
+        "phone": phone,
+        "name": name,
+        "password": password,  # ⚠ hash later
+        "role": "parent",
+        "profileImage": profile_url,
+        "isActive": True
     })
 
-    # Create parent entry
-    new_parent_ref = parents_ref.push()
-    new_parent_ref.set({
-        'userId': new_user_ref.key,
-        'children': children
-    })
+    # 👨‍👩‍👧 Create Parent node for each child
+    for sid, rel in zip(student_ids, relationships):
+        student_data = students_ref.child(sid).get()
+        if not student_data:
+            continue  # skip invalid studentId
 
-    return jsonify({'success': True, 'message': 'Parent registered successfully!'})
+        student_user_id = student_data.get('userId')
+        parents_ref.child(parent_user_id).push({
+            "userId": student_user_id,  # Student's Users.userId
+            "studentId": sid,           # Student's Students key
+            "relationship": rel
+        })
+
+    return jsonify({
+        "success": True,
+        "message": "Parent registered successfully",
+        "parentUserId": parent_user_id
+    })
 
 
 
