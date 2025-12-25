@@ -62,6 +62,9 @@ function StudentsPage() {
   const [teachersData, setTeachersData] = useState({});
   const [usersData, setUsersData] = useState({});
   const [studentMarks, setStudentMarks] = useState({});
+  const [teacherNotes, setTeacherNotes] = useState([]);
+  const [newTeacherNote, setNewTeacherNote] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
   const teacherUserId = teacherInfo?.userId; // ✅ teacher ID from logged-in teacher
 
   // ---------------- LOAD TEACHER INFO ----------------
@@ -339,6 +342,70 @@ useEffect(() => {
   fetchMarks();
 }, [selectedStudent]);
 
+ // ---------------- teacher note ----------------
+useEffect(() => {
+  if (!selectedStudent?.userId) return;
+
+  async function fetchTeacherNotes() {
+    try {
+      const res = await axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent.userId}.json`
+      );
+
+      if (!res.data) {
+        setTeacherNotes([]);
+        return;
+      }
+
+      const notesArr = Object.entries(res.data).map(([id, note]) => ({
+        id,
+        ...note,
+      }));
+
+      // newest first
+      notesArr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      setTeacherNotes(notesArr);
+    } catch (err) {
+      console.error("Failed to fetch teacher notes", err);
+      setTeacherNotes([]);
+    }
+  }
+
+  fetchTeacherNotes();
+}, [selectedStudent]);
+
+ // ---------------- teacher note visible----------------
+
+const saveTeacherNote = async () => {
+  if (!newTeacherNote.trim() || !teacherInfo || !selectedStudent) return;
+
+  setSavingNote(true);
+
+  const noteData = {
+    teacherId: teacherInfo.userId,
+    teacherName: teacherInfo.name,
+    note: newTeacherNote.trim(),
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    await axios.post(
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent.userId}.json`,
+      noteData
+    );
+
+    setTeacherNotes((prev) => [noteData, ...prev]);
+    setNewTeacherNote("");
+  } catch (err) {
+    console.error("Error saving note", err);
+  } finally {
+    setSavingNote(false);
+  }
+};
+
+
+
 
   // ---------------- FETCH MESSAGES ----------------
   useEffect(() => {
@@ -383,6 +450,46 @@ useEffect(() => {
     }
   };
 
+
+const InfoRow = ({ label, value }) => (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      background: "#ffffff",
+      padding: "12px 14px",
+      borderRadius: "14px",
+      boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
+      transition: "all 0.25s ease",
+    }}
+  >
+    <span
+      style={{
+        fontSize: "11px",
+        color: "#64748b",
+        fontWeight: "600",
+        marginBottom: "4px",
+        textTransform: "uppercase",
+        letterSpacing: "0.6px",
+      }}
+    >
+      {label}
+    </span>
+
+    <span
+      style={{
+        fontSize: "15px",
+        color: "#0f172a",
+        fontWeight: "700",
+        wordBreak: "break-word",
+      }}
+    >
+      {value}
+    </span>
+  </div>
+);
+
+
   return (
     <div className="dashboard-page">
       {/* TOP NAVBAR */}
@@ -410,7 +517,7 @@ useEffect(() => {
 
           <div className="sidebar-menu">
              <Link className="sidebar-btn" to="/dashboard" ><FaHome /> Home</Link>
-           
+            <Link className="sidebar-btn" to="/notes" ><FaClipboardCheck /> Notes</Link>
             
             <Link className="sidebar-btn" to="/students" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaUsers /> Students</Link>
               <Link className="sidebar-btn" to="/admins" ><FaUsers /> Admins</Link>
@@ -539,64 +646,264 @@ useEffect(() => {
   <div style={{ padding: "20px", background: "#f8fafc", minHeight: "calc(100vh - 180px)", position: "relative" }}>
     
     {/* Personal Information */}
-    <div style={{
-      background: "#fff",
-      borderRadius: "15px",
-      padding: "20px",
+    <div
+  style={{
+    background: "linear-gradient(180deg, #ffffff, #f8fafc)",
+    borderRadius: "22px",
+    padding: "22px",
+    marginBottom: "24px",
+    boxShadow: "0 20px 50px rgba(15, 23, 42, 0.08)",
+    border: "1px solid #e5e7eb",
+  }}
+>
+  {/* Header */}
+  <div
+    style={{
+      textAlign: "center",
       marginBottom: "20px",
-      boxShadow: "0 8px 25px rgba(0,0,0,0.1)",
-      transition: "all 0.3s ease"
-    }}>
-      <h2 style={{ fontSize: "20px", color: "#2563eb", fontWeight: "700", marginBottom: "15px", textAlign: "center" }}>
-        Personal Information
-      </h2>
+    }}
+  >
+    <h2
+      style={{
+        fontSize: "20px",
+        fontWeight: "100",
+        color: "#212424ff",
+        marginBottom: "4px",
+        letterSpacing: "0.3px",
+      }}
+    >
+       Personal & Parent Information
+    </h2>
+    
+  </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Full Name:</span>
-          <span>{selectedStudent.name}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Email:</span>
-          <span>{selectedStudent.email}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Grade:</span>
-          <span>{selectedStudent.grade}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Section:</span>
-          <span>{selectedStudent.section}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Student ID:</span>
-          <span>{selectedStudent.userId}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "15px", color: "#334155", fontWeight: "600" }}>
-          <span>Enrollment Date:</span>
-          <span>{selectedStudent.enrollmentDate || "N/A"}</span>
-        </div>
-      </div>
-    </div>
+  {/* Info Grid */}
+  <div
+    style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "14px 20px",
+    }}
+  >
+    <InfoRow label="Full Name" value={selectedStudent.name} />
+    <InfoRow label="Email" value={selectedStudent.email || "N/A"} />
 
+    <InfoRow label="Grade" value={selectedStudent.grade} />
+    <InfoRow label="Section" value={selectedStudent.section} />
+
+    <InfoRow label="Age" value={selectedStudent.age || "N/A"} />
+    <InfoRow label="Student ID" value={selectedStudent.userId} />
+
+    <InfoRow
+      label="Enrollment Date"
+      value={selectedStudent.enrollmentDate || "N/A"}
+    />
+
+    <InfoRow
+      label="Parent Name"
+      value={selectedStudent.parentName || "N/A"}
+    />
+
+    <InfoRow
+      label="Parent Phone"
+      value={selectedStudent.parentPhone || "N/A"}
+    />
+  </div>
+</div>
 
 
     {/* Teacher Notes */}
-    <div style={{
-      background: "#fff",
-      borderRadius: "15px",
-      padding: "20px",
-      marginBottom: "20px",
-      boxShadow: "0 8px 25px rgba(0,0,0,0.1)",
-      transition: "all 0.3s ease"
-    }}>
-      <h2 style={{ fontSize: "20px", color: "#f59e0b", fontWeight: "700", marginBottom: "10px", textAlign: "center" }}>
-        Teacher Notes
-      </h2>
-      <p style={{ color: "#475569", fontSize: "15px", lineHeight: "1.6", textAlign: "justify" }}>
-        {selectedStudent.teacherNotes || "No notes available."}
-      </p>
+<div
+  style={{
+    background: "linear-gradient(180deg, #f1f5f9, #ffffff)",
+    borderRadius: "20px",
+    padding: "20px",
+    marginBottom: "24px",
+    boxShadow: "0 15px 40px rgba(15, 23, 42, 0.08)",
+  }}
+>
+  {/* Header */}
+  <div
+    style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: "8px",
+      fontSize: "18px",
+      fontWeight: "800",
+      color: "#0f172a",
+      marginBottom: "18px",
+      letterSpacing: "0.4px",
+    }}
+  >
+    📝 Teacher Notes
+  </div>
+
+  {/* Input Area */}
+  <div
+    style={{
+      background: "#ffffff",
+      borderRadius: "16px",
+      padding: "14px",
+      boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+      marginBottom: "18px",
+      transition: "all 0.3s ease",
+    }}
+  >
+    <textarea
+      value={newTeacherNote}
+      onChange={(e) => setNewTeacherNote(e.target.value)}
+      placeholder="Write a note about this student… 😊"
+      style={{
+        width: "100%",
+        minHeight: "75px",
+        border: "none",
+        outline: "none",
+        resize: "none",
+        fontSize: "14px",
+        color: "#0f172a",
+        lineHeight: "1.6",
+        background: "transparent",
+      }}
+    />
+
+    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
+      <button
+        onClick={saveTeacherNote}
+        disabled={savingNote}
+        style={{
+          padding: "9px 18px",
+          borderRadius: "999px",
+          border: "none",
+          background: "linear-gradient(135deg, #38bdf8, #2563eb)",
+          color: "#fff",
+          fontWeight: "700",
+          fontSize: "13px",
+          cursor: "pointer",
+          opacity: savingNote ? 0.6 : 1,
+          boxShadow: "0 6px 18px rgba(37, 99, 235, 0.4)",
+          transition: "all 0.25s ease",
+        }}
+      >
+        {savingNote ? "Saving…" : "Send"}
+      </button>
     </div>
+  </div>
+
+  {/* Notes List */}
+  {teacherNotes.length === 0 ? (
+    <div
+      style={{
+        textAlign: "center",
+        color: "#94a3b8",
+        fontSize: "14px",
+        padding: "12px",
+      }}
+    >
+      No notes yet
+    </div>
+  ) : (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      {teacherNotes.map((n) => {
+        const initials = n.teacherName
+          ?.split(" ")
+          .map((w) => w[0])
+          .join("")
+          .slice(0, 2)
+          .toUpperCase();
+
+        return (
+          <div
+            key={n.id}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "10px",
+              animation: "fadeIn 0.3s ease",
+            }}
+          >
+            {/* Avatar */}
+            <div
+              style={{
+                width: "36px",
+                height: "36px",
+                borderRadius: "50%",
+                background: "linear-gradient(135deg, #60a5fa, #2563eb)",
+                color: "#fff",
+                fontWeight: "800",
+                fontSize: "13px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                boxShadow: "0 4px 12px rgba(37,99,235,0.4)",
+              }}
+            >
+              {initials}
+            </div>
+
+            {/* Message Bubble */}
+            <div
+              style={{
+                maxWidth: "80%",
+                background: "#e0f2fe",
+                borderRadius: "16px 16px 16px 6px",
+                padding: "12px 14px",
+                boxShadow: "0 6px 16px rgba(0,0,0,0.06)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  color: "#0369a1",
+                  marginBottom: "4px",
+                }}
+              >
+                {n.teacherName}
+              </div>
+
+              <div
+                style={{
+                  fontSize: "14px",
+                  color: "#0f172a",
+                  lineHeight: "1.6",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {n.note}
+              </div>
+
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  marginTop: "6px",
+                  textAlign: "right",
+                }}
+              >
+                {new Date(n.createdAt).toLocaleString()}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  )}
+
+  {/* Animation */}
+  <style>
+    {`
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    `}
+  </style>
+</div>
+
+
+
 
     {/* Achievements */}
     {selectedStudent.achievements && selectedStudent.achievements.length > 0 && (

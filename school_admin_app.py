@@ -7,15 +7,9 @@ from werkzeug.utils import secure_filename
 import uuid
 from datetime import datetime
 import sys
-from flask import Flask, request, jsonify
-from firebase_admin import db
-
-
 
 app = Flask(__name__)
-CORS(app, origins=["http://localhost:5173"], supports_credentials=True)  # ✅ Fix CORS
-
-CORS(app)
+CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # ---------------- FIREBASE ---------------- #
 firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json"
@@ -34,6 +28,7 @@ bucket = storage.bucket()
 school_admin_ref = db.reference("School_Admins")
 users_ref = db.reference("Users")
 posts_ref = db.reference("Posts")
+chats_ref = db.reference("Chats")  # Chats node for messages
 
 # ---------------- FILE UPLOAD ---------------- #
 def upload_file_to_firebase(file, folder=""):
@@ -113,12 +108,11 @@ def login_admin():
         admins = school_admin_ref.get() or {}
         for admin in admins.values():
             if admin.get("userId") == matched_user.get("userId"):
-                # ✅ FIXED: return userId from Users node
                 return jsonify({
                     "success": True,
                     "message": "Login success",
                     "adminId": admin.get("adminId"),
-                    "userId": matched_user.get("userId"),   # 🔥 ADD THIS
+                    "userId": matched_user.get("userId"),
                     "name": matched_user.get("name"),
                     "username": matched_user.get("username"),
                     "profileImage": matched_user.get("profileImage", "")
@@ -126,9 +120,7 @@ def login_admin():
 
         return jsonify({"success": False, "message": "Not registered as admin"})
     except Exception as e:
-        print("Login Error:", e)
         return jsonify({"success": False, "message": str(e)}), 500
-
 
 # ---------------- CREATE POST ---------------- #
 @app.route("/api/create_post", methods=["POST"])
@@ -136,7 +128,6 @@ def create_post():
     try:
         data = request.form
         text = data.get("message", "")
-
         adminId = data.get("adminId")
         media_file = request.files.get("post_media")
 
@@ -149,18 +140,15 @@ def create_post():
 
         post_ref = posts_ref.push()
         time_now = datetime.now().strftime("%I:%M %p, %b %d %Y")
-        user_data = users_ref.child(adminId).get() or {}
         post_ref.set({
-    "postId": post_ref.key,
-    "message": text,
-    "postUrl": post_url,
-    "adminId": adminId,
-    "adminName": user_data.get("name", "Admin"),
-    "adminProfile": user_data.get("profileImage", "/default-profile.png"),
-    "time": time_now,
-    "likeCount": 0,
-    "likes": {}
-})
+            "postId": post_ref.key,
+            "message": text,
+            "postUrl": post_url,
+            "adminId": adminId,
+            "time": time_now,
+            "likeCount": 0,
+            "likes": {}
+        })
         return jsonify({"success": True, "message": "Post created successfully"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -172,9 +160,7 @@ def get_posts():
     post_list = []
 
     for key, post in all_posts.items():
-        # fetch user info
         user_data = users_ref.child(post.get("adminId")).get() or {}
-
         post_list.append({
             "postId": key,
             "message": post.get("message"),
@@ -190,11 +176,9 @@ def get_posts():
     post_list.reverse()
     return jsonify(post_list)
 
-
-
-# ---------------- GET ADMIN PROFILE ---------------- #
+# ---------------- ADMIN PROFILE ---------------- #
 @app.route("/api/admin/<adminId>", methods=["GET"])
-def fetch_admin_profile(adminId):  # renamed function
+def fetch_admin_profile(adminId):
     admin_data = school_admin_ref.child(adminId).get()
     if not admin_data:
         return jsonify({"success": False, "message": "Admin not found"}), 404
@@ -214,18 +198,18 @@ def get_my_posts(adminId):
     my_posts = []
 
     for key, post in all_posts.items():
-        if post.get("adminId") == adminId:
+        post_admin_id = post.get("adminId") or post.get("userId")
+        if post_admin_id == adminId:
             my_posts.append({
                 "postId": key,
                 "message": post.get("message"),
                 "postUrl": post.get("postUrl"),
-                "time": post.get("time"),
+                "time": post.get("time") or post.get("updatedAt"),
                 "edited": post.get("edited", False)
             })
 
-    my_posts.reverse()  # latest first
+    my_posts.reverse()
     return jsonify(my_posts)
-
 
 # ---------------- EDIT POST ---------------- #
 @app.route("/api/edit_post/<postId>", methods=["POST"])
@@ -259,13 +243,8 @@ def delete_post(postId):
         return jsonify({"success": False, "message": "Post not found"}), 404
     if post_data["adminId"] != adminId:
         return jsonify({"success": False, "message": "Unauthorized"}), 403
-
     post_ref.delete()
     return jsonify({"success": True, "message": "Post deleted"})
-
-# Like or unlike a post
-# ---------------- LIKE POST ---------------- #
-
 
 # ---------------- LIKE POST ---------------- #
 @app.route("/api/like_post", methods=["POST"])
@@ -274,7 +253,6 @@ def like_post():
         data = request.get_json(force=True)
         postId = data.get("postId")
         adminId = data.get("adminId")
-
         if not postId or not adminId:
             return jsonify({"success": False, "message": "Invalid data"})
 
@@ -293,28 +271,65 @@ def like_post():
         return jsonify({"success": True, "likeCount": len(likes), "liked": not current_like})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
-    
 
-# ---------------- MARK POST SEEN ---------------- #
-@app.route("/api/mark_post_seen", methods=["POST"])
-def mark_post_seen():
+# ---------------- CHAT ENDPOINTS ---------------- #
+
+# Send a message
+@app.route("/api/send_message", methods=["POST"])
+def send_message():
     try:
         data = request.get_json(force=True)
-        postId = data.get("postId")
-        userId = data.get("userId")
-        if not postId or not userId:
-            return jsonify({"success": False, "message": "Invalid data"}), 400
-        
-        post_ref = posts_ref.child(postId)
-        seen_by = post_ref.child("seenBy").get() or {}
-        seen_by[userId] = True
-        post_ref.update({"seenBy": seen_by})
-        
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        senderId = data.get("senderId")
+        receiverId = data.get("receiverId")
+        message = data.get("message")
 
-    
+        if not senderId or not receiverId or not message:
+            return jsonify({"success": False, "message": "Invalid data"}), 400
+
+        msg_ref = chats_ref.push()
+        msg_ref.set({
+            "messageId": msg_ref.key,
+            "senderId": senderId,
+            "receiverId": receiverId,
+            "message": message,
+            "time": datetime.now().isoformat(),
+            "read": False
+        })
+        return jsonify({"success": True, "message": "Message sent"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+# Get chat between two users
+@app.route("/api/chat/<adminId>/<userId>", methods=["GET"])
+def get_chat(adminId, userId):
+    all_msgs = chats_ref.get() or {}
+    chat = [msg for key, msg in all_msgs.items()
+            if (msg.get("senderId") in [adminId, userId]) and
+               (msg.get("receiverId") in [adminId, userId])]
+    chat_sorted = sorted(chat, key=lambda x: x['time'])
+    return jsonify(chat_sorted)
+
+# Mark messages as read
+@app.route("/api/mark_messages_read", methods=["POST"])
+def mark_messages_read():
+    data = request.get_json(force=True)
+    adminId = data.get("adminId")
+    senderId = data.get("senderId")
+    all_msgs = chats_ref.get() or {}
+
+    for key, msg in all_msgs.items():
+        if msg.get("receiverId") == adminId and msg.get("senderId") == senderId:
+            chats_ref.child(key).update({"read": True})
+
+    return jsonify({"success": True})
+
+# Get unread messages for admin
+@app.route("/api/unread_messages/<adminId>", methods=["GET"])
+def get_unread_messages(adminId):
+    all_msgs = chats_ref.get() or {}
+    unread_msgs = [msg for key, msg in all_msgs.items()
+                   if msg.get("receiverId") == adminId and not msg.get("read", False)]
+    return jsonify({"count": len(unread_msgs), "messages": unread_msgs})
 
 # ---------------- RUN ---------------- #
 if __name__ == "__main__":

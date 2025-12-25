@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { Link } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger ,  FaSearch  } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger ,  FaSearch, FaCalendarAlt  } from "react-icons/fa";
 import { AiFillPicture } from "react-icons/ai";
 import "../styles/global.css";
 
@@ -13,19 +13,34 @@ function MyPosts() {
   // New post states
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [teachers, setTeachers] = useState([]);
+const [unreadTeachers, setUnreadTeachers] = useState({});
+const [popupMessages, setPopupMessages] = useState([]);
+const [showMessageDropdown, setShowMessageDropdown] = useState(false);
+const [selectedTeacher, setSelectedTeacher] = useState(null);
+const [teacherChatOpen, setTeacherChatOpen] = useState(false);
+
+
+
+
 
   // Logged-in admin
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
+const adminUserId = admin.userId;
+  // SAFELY GET ADMIN ID
+  const adminId = admin.adminId || admin.userId || admin.id;
 
-  useEffect(() => {
+ useEffect(() => {
+    if (!adminId) {
+      console.error("Admin ID missing in localStorage", admin);
+      return;
+    }
     fetchMyPosts();
-  }, []);
+  }, [adminId]);
 
-  const fetchMyPosts = async () => {
+   const fetchMyPosts = async () => {
     try {
-      const res = await axios.get(
-        `http://127.0.0.1:5000/api/get_my_posts/${admin.adminId}`
-      );
+      const res = await axios.get(`http://127.0.0.1:5000/api/get_my_posts/${adminId}`);
       setPosts(res.data || []);
     } catch (err) {
       console.error("Error fetching posts:", err);
@@ -97,6 +112,61 @@ function MyPosts() {
     }
   };
 
+
+useEffect(() => {
+  const fetchTeachersAndUnread = async () => {
+    try {
+      const [teachersRes, usersRes] = await Promise.all([
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json")
+      ]);
+
+      const teachersData = teachersRes.data || {};
+      const usersData = usersRes.data || {};
+
+      const teacherList = Object.keys(teachersData).map(tid => {
+        const teacher = teachersData[tid];
+        const user = usersData[teacher.userId] || {};
+        return {
+          teacherId: tid,
+          userId: teacher.userId,
+          name: user.name || "No Name",
+          profileImage: user.profileImage || "/default-profile.png"
+        };
+      });
+
+      setTeachers(teacherList);
+
+      // fetch unread messages
+      const unread = {};
+      const allMessages = [];
+
+      for (const t of teacherList) {
+        const chatKey = `${adminUserId}_${t.userId}`;
+        const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
+        const msgs = Object.values(res.data || {}).map(m => ({
+          ...m,
+          sender: m.senderId === adminUserId ? "admin" : "teacher"
+        }));
+        allMessages.push(...msgs);
+
+        const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
+        if (unreadCount > 0) unread[t.userId] = unreadCount;
+      }
+
+      setPopupMessages(allMessages);
+      setUnreadTeachers(unread);
+
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  fetchTeachersAndUnread();
+}, [adminUserId]);
+
+
+
   // ---------------- NEW POST ----------------
   const handlePost = async () => {
     if (!postText && !postMedia) return; // don't allow empty posts
@@ -140,9 +210,92 @@ function MyPosts() {
       </div>
 
         {/* Messenger */}
-    <div className="icon-circle">
-      <FaFacebookMessenger />
+    <div 
+  className="icon-circle" 
+  style={{ position: "relative", cursor: "pointer" }}
+  onClick={() => setShowMessageDropdown(prev => !prev)}
+>
+  <FaFacebookMessenger />
+  {Object.values(unreadTeachers).reduce((a,b)=>a+b,0) > 0 && (
+    <span style={{
+      position: "absolute",
+      top: "-5px",
+      right: "-5px",
+      background: "red",
+      color: "#fff",
+      borderRadius: "50%",
+      padding: "2px 6px",
+      fontSize: "10px",
+      fontWeight: "bold"
+    }}>
+      {Object.values(unreadTeachers).reduce((a,b)=>a+b,0)}
+    </span>
+  )}
+
+  {showMessageDropdown && (
+    <div style={{
+      position: "absolute",
+      top: "35px",
+      right: "0",
+      width: "300px",
+      maxHeight: "400px",
+      overflowY: "auto",
+      background: "#fff",
+      border: "1px solid #ddd",
+      borderRadius: "8px",
+      boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
+      zIndex: 1000
+    }}>
+      {teachers.map(t => {
+        const msgs = popupMessages
+          .filter(m => m.senderId === t.userId || m.receiverId === t.userId)
+          .sort((a,b) => a.timeStamp - b.timeStamp);
+        const latestMsg = msgs[msgs.length - 1];
+
+        return (
+          <div
+            key={t.userId}
+            onClick={() => {
+              setSelectedTeacher(t);
+              setTeacherChatOpen(true);
+              setShowMessageDropdown(false);
+            }}
+            style={{
+              padding: "10px",
+              borderBottom: "1px solid #eee",
+              display: "flex",
+              alignItems: "center",
+              cursor: "pointer",
+              background: unreadTeachers[t.userId] > 0 ? "#f0f4ff" : "#fff"
+            }}
+          >
+            <img src={t.profileImage} alt={t.name} style={{ width: "40px", height: "40px", borderRadius: "50%", marginRight: "10px" }} />
+            <div style={{ flex: 1 }}>
+              <strong>{t.name}</strong>
+              <p style={{ margin:0, fontSize:"12px", color:"#555" }}>{latestMsg?.text || "No messages yet"}</p>
+            </div>
+            {unreadTeachers[t.userId] > 0 && (
+              <span style={{
+                background: "red",
+                color: "#fff",
+                borderRadius: "50%",
+                padding: "2px 6px",
+                fontSize: "10px",
+                marginLeft: "5px"
+              }}>
+                {unreadTeachers[t.userId]}
+              </span>
+            )}
+          </div>
+        )
+      })}
+      {teachers.every(t => !unreadTeachers[t.userId]) && (
+        <p style={{ textAlign: "center", padding: "10px", color:"#777" }}>No new messages</p>
+      )}
     </div>
+  )}
+</div>
+
   
       {/* Settings */}
       <div className="icon-circle">
@@ -175,29 +328,35 @@ function MyPosts() {
       </div>
 
       <div className="sidebar-menu">
-      <Link className="sidebar-btn" to="/dashboard"
-       
-       > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
-        <Link className="sidebar-btn" to="/my-posts"
-        style={{ backgroundColor: "#4b6cb7", color: "#fff" }}
-        ><FaFileAlt /> My Posts</Link>
-           <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-          <Link className="sidebar-btn" to="/students" >
-                                  <FaChalkboardTeacher /> Students
-                                </Link>
-      <Link className="sidebar-btn" to="/settings" >
-                   <FaCog /> Settings
-                 </Link>
-        <button
-          className="sidebar-btn logout-btn"
-          onClick={() => {
-            localStorage.removeItem("admin");
-            window.location.href = "/login";
-          }}
-        >
-          <FaSignOutAlt /> Logout
-        </button>
-      </div>
+           <Link className="sidebar-btn" to="/dashboard"
+            
+            > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
+             <Link className="sidebar-btn" to="/my-posts" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaFileAlt /> My Posts</Link>
+             <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
+               <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students</Link>
+                <Link
+                             className="sidebar-btn"
+                             to="/schedule"
+                            
+                       >
+                             <FaCalendarAlt /> Schedule
+                           </Link>
+                <Link className="sidebar-btn" to="/parents" ><FaChalkboardTeacher /> Parents
+                           </Link>
+                                     
+              <Link className="sidebar-btn" to="/settings" >
+                           <FaCog /> Settings
+                         </Link>
+             <button
+               className="sidebar-btn logout-btn"
+               onClick={() => {
+                 localStorage.removeItem("admin");
+                 window.location.href = "/login";
+               }}
+             >
+               <FaSignOutAlt /> Logout
+             </button>
+           </div>
     </div>
 
   {/* MAIN CONTENT — 75% */}
