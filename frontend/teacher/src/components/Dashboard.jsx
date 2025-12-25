@@ -107,6 +107,7 @@ export default function Dashboard() {
 
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/dashboard" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaHome /> Home</Link>
+             <Link className="sidebar-btn" to="/notes" ><FaClipboardCheck /> Notes</Link>
             <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
             <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
             <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>

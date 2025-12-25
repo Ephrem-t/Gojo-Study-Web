@@ -1,301 +1,395 @@
 import React, { useEffect, useState, useRef } from "react";
-import { useLocation } from "react-router-dom";
-import axios from "axios";
+import { useLocation, useNavigate } from "react-router-dom";
+import { FaArrowLeft, FaPaperPlane, FaTrash, FaEdit, FaSearch } from "react-icons/fa";
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, onValue, push, update, set } from "firebase/database";
+import "../styles/global.css"; // we will add CSS animations here
+
+// ------------------- Firebase Config -------------------
+const firebaseConfig = {
+  apiKey: "AIzaSyCMkZr4Xz204NjvETje-Rhznf6ECDYiEnE",
+  authDomain: "ethiostore-17d9f.firebaseapp.com",
+  databaseURL: "https://ethiostore-17d9f-default-rtdb.firebaseio.com",
+  projectId: "ethiostore-17d9f",
+  storageBucket: "ethiostore-17d9f.appspot.com",
+  messagingSenderId: "964518277159",
+  appId: "1:964518277159:web:9404cace890edf88961e02"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
 
 function AllChat() {
-  // ------------------- ROUTE & ADMIN DATA -------------------
   const location = useLocation();
+  const navigate = useNavigate();
+  const selectedUser = location.state?.user || null;
+
+  const [popupMessages, setPopupMessages] = useState([]);
+  const [popupInput, setPopupInput] = useState("");
+  const [teachers, setTeachers] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [parents, setParents] = useState([]);
+  const [selectedTab, setSelectedTab] = useState("teacher");
+  const [selectedChatUser, setSelectedChatUser] = useState(selectedUser);
+  const [editingMsgId, setEditingMsgId] = useState(null);
+  const [activeMessageId, setActiveMessageId] = useState(null);
+  const [typing, setTyping] = useState(false);
+  const [lastSeen, setLastSeen] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
-  const passedStudentId = location.state?.studentId;
-  const passedUserType = location.state?.userType; // "student" | "teacher"
-  const passedTeacher = location.state?.teacher; // teacher object from TeachersPage
+  const adminUserId = admin.userId;
 
-  // ------------------- STATE VARIABLES -------------------
-  const [chatType, setChatType] = useState("teacher"); // teacher | student
-  const [messageInput, setMessageInput] = useState(""); // input for sending message
-  const [messages, setMessages] = useState([]); // all messages
-  const [users, setUsers] = useState([]); // teachers or students list
-  const [recentChats, setRecentChats] = useState([]); // users with message history
-  const [selectedUser, setSelectedUser] = useState(null); // current chat user
-  const autoSelectedRef = useRef(false); // auto select user from popup
+  const chatEndRef = useRef(null);
+  const typingRef = useRef(null);
+  const messageRefs = useRef({});
 
-  // ------------------- SET CHAT TYPE BASED ON ROUTE STATE -------------------
-  useEffect(() => {
-    if (passedUserType === "student") setChatType("student");
-    if (passedUserType === "teacher") setChatType("teacher");
-  }, [passedUserType]);
 
-  // ================= FETCH USERS =================
+  // ------------------- Fetch users -------------------
   useEffect(() => {
     const fetchUsers = async () => {
       try {
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
-        const userData = usersRes.data || {};
-        let list = [];
+        const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
+          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json").then(res => res.json()),
+          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json").then(res => res.json()),
+          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json").then(res => res.json()),
+          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json").then(res => res.json()),
+          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats.json").then(res => res.json())
+        ]);
 
-        // ---------- TEACHERS ----------
-        if (chatType === "teacher") {
-          const tRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json");
-          const teachersData = tRes.data || {};
-          list = Object.keys(teachersData).map((id) => {
-            const t = teachersData[id];
-            const u = userData[t.userId] || {};
+        const usersData = usersRes || {};
+        const chatsData = chatsRes || {};
+
+        const formatUsers = (listData) => Object.keys(listData || {})
+          .map((id) => {
+            const userId = listData[id].userId;
+            const user = usersData[userId] || {};
+            const chatKey = `${userId}_${adminUserId}`;
+            const messages = chatsData[chatKey] ? Object.values(chatsData[chatKey].messages || {}) : [];
+            const lastMsg = messages.length > 0 ? messages.sort((a, b) => b.timeStamp - a.timeStamp)[0] : null;
             return {
               id,
-              name: u.name || "No Name",
-              profileImage: u.profileImage || "/default-profile.png",
+              userId,
+              name: user.name || "No Name",
+              profileImage: user.profileImage || "/default-profile.png",
+              lastMsgTime: lastMsg ? lastMsg.timeStamp : 0,
+              lastMsgText: lastMsg ? lastMsg.text : "",
+              lastSeen: user.lastSeen || null
             };
-          });
-        }
+          })
+          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
 
-        // ---------- STUDENTS ----------
-        if (chatType === "student") {
-          const sRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-          const studentsData = sRes.data || {};
-          list = Object.keys(studentsData).map((id) => {
-            const s = studentsData[id];
-            const u = userData[s.userId] || {};
-            return {
-              id,
-              name: u.name || u.username || "No Name",
-              profileImage: u.profileImage || "/default-profile.png",
-            };
-          });
-        }
-
-        setUsers(list);
-
-        // ---------- AUTO SELECT USER FROM MINI POPUP (ONLY ONCE) ----------
-        if (!autoSelectedRef.current) {
-          if (chatType === "teacher" && passedTeacher) {
-            const found = list.find((u) => u.id === passedTeacher.teacherId);
-            if (found) {
-              setSelectedUser(found);
-              autoSelectedRef.current = true;
-            }
-          }
-          if (chatType === "student" && passedStudentId) {
-            const found = list.find((u) => u.id === passedStudentId);
-            if (found) {
-              setSelectedUser(found);
-              autoSelectedRef.current = true;
-            }
-          }
-        }
-
+        setTeachers(formatUsers(teachersRes));
+        setStudents(formatUsers(studentsRes));
+        setParents(formatUsers(parentsRes));
       } catch (err) {
         console.error("Error fetching users:", err);
       }
     };
-
     fetchUsers();
-  }, [chatType, location.state]);
+  }, [adminUserId]);
 
-  // ================= FETCH MESSAGES =================
+  // ------------------- Real-time messages -------------------
   useEffect(() => {
-    if (!users.length) return;
+    if (!selectedChatUser) return;
+    const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
+    const chatRef = ref(db, `Chats/${chatKey}/messages`);
 
-    const fetchMessages = async () => {
-      try {
-        const url =
-          chatType === "teacher"
-            ? "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherMessages.json"
-            : "https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json";
+    const unsubscribe = onValue(chatRef, (snapshot) => {
+      const data = snapshot.val();
+      const msgs = data
+  ? Object.entries(data).map(([id, m]) => ({
+      ...m,
+      id,
+      timeStamp: Number(m.timeStamp) || null,
+      sender: m.senderId === adminUserId ? "admin" : "user",
+    }))
+  : [];
 
-        const res = await axios.get(url);
-        const allMessages = Object.values(res.data || {}).filter(
-          (m) => m.adminId === admin.adminId
-        );
+      setPopupMessages(msgs.sort((a, b) => a.timeStamp - b.timeStamp));
+    });
 
-        // Sort messages by latest first
-        allMessages.sort(
-          (a, b) => new Date(b.time || b.timestamp) - new Date(a.time || a.timestamp)
-        );
+    const typingStatusRef = ref(db, `Chats/${chatKey}/typing`);
+    const unsubscribeTyping = onValue(typingStatusRef, (snapshot) => {
+      const val = snapshot.val();
+      setTyping(val && val.userId === selectedChatUser.userId);
+    });
 
-        setMessages(allMessages);
+    const lastSeenRef = ref(db, `Users/${selectedChatUser.userId}/lastSeen`);
+    const unsubscribeLastSeen = onValue(lastSeenRef, (snapshot) => {
+      setLastSeen(snapshot.val());
+    });
 
-        // Build recent chats list
-        const uniqueUsers = [];
-        const seen = new Set();
-        allMessages.forEach((m) => {
-          const userId = m.teacherId || m.studentId;
-          if (!seen.has(userId)) {
-            const user = users.find((u) => u.id === userId);
-            if (user) {
-              uniqueUsers.push(user);
-              seen.add(userId);
-            }
-          }
-        });
-        setRecentChats(uniqueUsers);
-
-      } catch (err) {
-        console.error("Error fetching messages:", err);
-      }
+    return () => {
+      unsubscribe();
+      unsubscribeTyping();
+      unsubscribeLastSeen();
     };
+  }, [selectedChatUser, adminUserId]);
 
-    // Initial fetch + polling every 3 seconds
-    fetchMessages();
-    const interval = setInterval(fetchMessages, 3000);
-    return () => clearInterval(interval);
-  }, [users, chatType, admin.adminId]);
+  // ------------------- Send/Edit message -------------------
+ const sendPopupMessage = async () => {
+  if (!popupInput.trim()) return;
+  const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
 
-  // ================= SEND MESSAGE =================
-  const handleSendMessage = async () => {
-    if (!messageInput.trim() || !selectedUser) return;
+  if (editingMsgId) {
+    // Edit existing message
+    await update(ref(db, `Chats/${chatKey}/messages/${editingMsgId}`), {
+      text: popupInput,
+      edited: true
+    });
+    setEditingMsgId(null); // reset editing state
+  } else {
+    // New message
+    await push(ref(db, `Chats/${chatKey}/messages`), {
+      senderId: adminUserId,
+      receiverId: selectedChatUser.userId,
+      text: popupInput,
+      timeStamp: Date.now(),
+      seen: false,
+      edited: false,
+      deleted: false
+    });
+  }
 
-    try {
-      let msg;
-      if (chatType === "teacher") {
-        msg = {
-          teacherId: selectedUser.id,
-          adminId: admin.adminId,
-          text: messageInput,
-          time: new Date().toISOString(),
-        };
-        await axios.post(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherMessages.json",
-          msg
-        );
-      } else {
-        msg = {
-          studentId: selectedUser.id,
-          adminId: admin.adminId,
-          content: messageInput,
-          timestamp: new Date().toISOString(),
-        };
-        await axios.post(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json",
-          msg
-        );
-      }
+  setPopupInput("");
+};
 
-      // Update UI immediately
-      setMessages((prev) => [msg, ...prev]);
-      setRecentChats((prev) => {
-        if (prev.find((u) => u.id === selectedUser.id)) return prev;
-        return [selectedUser, ...prev];
-      });
-      setMessageInput("");
-    } catch (err) {
-      console.error("Error sending message:", err);
-    }
+
+  // ------------------- Delete message -------------------
+  const deleteMessage = async (msgId) => {
+    if (!selectedChatUser) return;
+    const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
+    const delRef = ref(db, `Chats/${chatKey}/messages/${msgId}`);
+    await update(delRef, { deleted: true });
   };
 
-  // ================= UI =================
+  // ------------------- Typing -------------------
+  const handleTyping = async (e) => {
+    setPopupInput(e.target.value);
+    if (!selectedChatUser) return;
+    const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
+    const typingStatusRef = ref(db, `Chats/${chatKey}/typing`);
+    await set(typingStatusRef, { userId: adminUserId });
+    if (typingRef.current) clearTimeout(typingRef.current);
+    typingRef.current = setTimeout(async () => {
+      await set(typingStatusRef, { userId: null });
+    }, 2000);
+  };
+
+  // ------------------- Scroll to bottom -------------------
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [popupMessages, typing]);
+
+const formatTime = (timestamp) => {
+  if (!timestamp || isNaN(timestamp)) return "";
+  const date = new Date(Number(timestamp));
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+  const chatBubbleStyle = (isAdmin) => ({
+    maxWidth: "70%",
+    padding: "12px 16px",
+    borderRadius: "20px",
+    background: isAdmin ? "linear-gradient(135deg, #0084ff, #006bbf)" : "#e4e6eb",
+    color: isAdmin ? "#fff" : "#050505",
+    wordBreak: "break-word",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+    marginBottom: "12px",
+    opacity: 0,
+    transform: "translateY(20px)",
+    animation: "slideIn 0.3s forwards"
+  });
+
+  const chatContainerStyle = {
+    flex: 1,
+    overflowY: "auto",
+    padding: "15px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    background: "#e5ddd5",
+    borderRadius: "10px"
+  };
+
+  const renderUserList = (users) =>
+    users
+      .filter(u => u.name.toLowerCase().includes(searchQuery.toLowerCase()))
+      .map((u) => (
+        <div key={u.userId} onClick={() => setSelectedChatUser(u)} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px", borderRadius: "8px", background: selectedChatUser?.userId === u.userId ? "#d0e6ff" : "#fff", cursor: "pointer", marginBottom: "8px", transition: "0.2s all" }}>
+          <img src={u.profileImage} alt={u.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: "500" }}>{u.name}</div>
+            <div style={{ fontSize: "12px", color: "#888" }}>{u.lastMsgText?.slice(0, 30)}...</div>
+          </div>
+          <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: u.lastSeen && Date.now() - u.lastSeen < 60000 ? "green" : "gray" }} />
+        </div>
+      ));
+
   return (
-    <div style={{ display: "flex", height: "100vh" }}>
-      {/* -------- LEFT: Recent Chats -------- */}
-      <div style={{ width: 280, borderRight: "1px solid #ddd", background: "#fff" }}>
-        {/* Chat Type Toggle */}
-        <div style={{ padding: 15, borderBottom: "1px solid #ddd" }}>
-          <button onClick={() => setChatType("teacher")} style={{ marginRight: 10 }}>
-            Teacher
-          </button>
-          <button onClick={() => setChatType("student")}>Student</button>
+    <div style={{ display: "flex", height: "100vh", background: "#e5ddd5" }}>
+      {/* Sidebar */}
+      <div style={{ width: "300px", background: "#fff", borderRight: "1px solid #ddd", overflowY: "auto", padding: "15px" }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "15px" }}>
+          <button onClick={() => navigate(-1)} style={{ background: "#0084ff", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", cursor: "pointer", marginRight: "10px" }}><FaArrowLeft /></button>
+          <input type="text" placeholder="Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ flex: 1, padding: "8px", borderRadius: "20px", border: "1px solid #ccc", outline: "none" }} />
         </div>
 
-        {/* Recent Chats List */}
-        {recentChats.map((u) => {
-          const isActive = selectedUser?.id === u.id;
-          return (
-            <div
-              key={u.id}
-              onClick={() => setSelectedUser(u)}
-              style={{
-                padding: 8,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                marginBottom: 5,
-                borderRadius: 6,
-                background: isActive ? "#e0e7ff" : "transparent",
-              }}
-            >
-              <img
-                src={u.profileImage}
-                alt=""
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: "50%",
-                  marginRight: 10,
-                  border: isActive ? "2px solid #4b6cb7" : "2px solid transparent",
-                }}
-              />
-              <span>{u.name}</span>
-            </div>
-          );
-        })}
+        <div style={{ display: "flex", marginBottom: "15px", gap: "5px" }}>
+          {["teacher", "student", "parent"].map(tab => (
+            <button key={tab} onClick={() => setSelectedTab(tab)} style={{ flex: 1, padding: "8px", borderRadius: "20px", border: "none", cursor: "pointer", background: selectedTab === tab ? "#0084ff" : "#f0f0f0", color: selectedTab === tab ? "#fff" : "#000" }}>{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
+          ))}
+        </div>
+
+        {selectedTab === "teacher" && renderUserList(teachers)}
+        {selectedTab === "student" && renderUserList(students)}
+        {selectedTab === "parent" && renderUserList(parents)}
       </div>
 
-      {/* -------- RIGHT: Chat Window -------- */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* Chat Header */}
-        <div style={{ padding: 15, borderBottom: "1px solid #ddd" }}>
-          <strong>{selectedUser ? selectedUser.name : "Select a chat"}</strong>
-        </div>
+      {/* Chat Box */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "15px" }}>
+        {selectedChatUser ? (
+          <>
+            <div style={{ padding: "10px", borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", gap: "10px", background: "#f0f2f5", borderRadius: "10px", marginBottom: "10px" }}>
+              <img src={selectedChatUser.profileImage} alt={selectedChatUser.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+              <div>
+                <strong>{selectedChatUser.name}</strong>
+                <div style={{ fontSize: "12px", color: "#666" }}>{typing ? "Typing..." : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+              </div>
+            </div>
 
-        {/* Chat Messages */}
+            <div style={chatContainerStyle}>
+              {popupMessages.length === 0 ? (
+                <p style={{ color: "#888", textAlign: "center", marginTop: "20px" }}>Start chatting with {selectedChatUser.name}...</p>
+              ) : popupMessages.map(m => {
+                  const isAdmin = m.sender === "admin";
+  const isSelected = activeMessageId === m.id;
+
+  return (
+    <div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start" }}>
+  {/* Only show message if not deleted */}
+  {!m.deleted && (
+    <>
+      {/* Message Bubble */}
+      <div
+        data-id={m.id}
+        ref={el => (messageRefs.current[m.id] = el)}
+        onClick={() => setActiveMessageId(m.id)} // select message
+        style={{
+          background: isAdmin ? "#0084ff" : "#e4e6eb",
+          color: isAdmin ? "#fff" : "#000",
+          padding: "8px 12px",
+          borderRadius: 16,
+          borderTopRightRadius: isAdmin ? 0 : 16, // tail effect
+          borderTopLeftRadius: isAdmin ? 16 : 0,  // tail effect
+          maxWidth: "45%",
+          cursor: "pointer",
+          marginBottom: 4,
+          boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+          display: "flex",
+          flexDirection: "column",
+          wordBreak: "break-word",
+          transition: "all 0.2s"
+        }}
+      >
+        {/* Message Text */}
+        <div>{m.text}</div>
+
+        {/* Edited Label */}
+        {m.edited && (
+          <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>edited</div>
+        )}
+
+        {/* Time + Seen */}
         <div
           style={{
-            flex: 1,
-            padding: 15,
-            overflowY: "auto",
+            fontSize: 10,
+            opacity: 0.7,
             display: "flex",
-            flexDirection: "column-reverse",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 6,
+            marginTop: 4
           }}
         >
-          {messages
-            .filter((m) => (chatType === "teacher" ? m.teacherId : m.studentId) === selectedUser?.id)
-            .map((m, i) => (
-              <div
-                key={i}
-                style={{ marginBottom: 10, textAlign: m.adminId === admin.adminId ? "right" : "left" }}
-              >
-                <span
-                  style={{
-                    padding: "8px 12px",
-                    background: m.adminId === admin.adminId ? "#4b6cb7" : "#ddd",
-                    color: m.adminId === admin.adminId ? "#fff" : "#000",
-                    borderRadius: 10,
-                    display: "inline-block",
-                    maxWidth: "80%",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {m.text || m.content}
-                </span>
-              </div>
-            ))}
+          <span>{formatTime(m.timeStamp)}</span>
+          {isAdmin && <span>{m.seen ? "✔✔" : "✔"}</span>}
         </div>
+      </div>
 
-        {/* Message Input */}
-        {selectedUser && (
-          <div style={{ display: "flex", padding: 15, borderTop: "1px solid #ddd" }}>
-            <input
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              style={{ flex: 1, padding: 8, borderRadius: 8, border: "1px solid #ccc" }}
-              placeholder="Type message..."
-              onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-            />
-            <button
-              onClick={handleSendMessage}
-              style={{
-                marginLeft: 10,
-                padding: "8px 16px",
-                borderRadius: 8,
-                background: "#4b6cb7",
-                color: "#fff",
-                border: "none",
-                cursor: "pointer",
-              }}
-            >
-              Send
-            </button>
-          </div>
-        )}
+      {/* Edit/Delete Buttons (Only for Admin and Selected) */}
+      {isSelected && isAdmin && (
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <button
+            style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: "#fff",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              cursor: "pointer",
+              color: "#0084ff",
+              transition: "all 0.2s"
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setPopupInput(m.text); // edit message in input
+              setEditingMsgId(m.id);
+            }}
+          >
+            Edit
+          </button>
+          <button
+            style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: "#fff",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              cursor: "pointer",
+              color: "#ff3b30",
+              transition: "all 0.2s"
+            }}
+            onClick={async (e) => {
+              e.stopPropagation();
+              const confirmDelete = window.confirm("Delete this message?");
+              if (confirmDelete) {
+                await update(
+                  ref(db, `Chats/${selectedChatUser.userId}_${adminUserId}/messages/${m.id}`),
+                  { deleted: true }
+                );
+              }
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </>
+  )}
+</div>
+
+
+  );
+              })}
+              <div ref={chatEndRef}></div>
+            </div>
+
+            {/* Input Bar */}
+            <div style={{ display: "flex", gap: "8px", paddingTop: "10px", borderTop: "1px solid #ddd" }}>
+              <input value={popupInput} onChange={handleTyping} onKeyDown={e => e.key === "Enter" && sendPopupMessage()} placeholder="Type a message..." style={{ flex: 1, padding: "12px 16px", borderRadius: "30px", border: "1px solid #ccc", outline: "none", background: "#fff" }} />
+              <button onClick={sendPopupMessage} style={{ background: "#0084ff", border: "none", color: "#fff", borderRadius: "50%", width: "45px", height: "45px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", boxShadow: "0 2px 5px rgba(0,0,0,0.2)" }}>
+                <FaPaperPlane />
+              </button>
+            </div>
+          </>
+        ) : <p style={{ color: "#555", textAlign: "center", marginTop: "50%" }}>Select a user to start chatting...</p>}
       </div>
     </div>
   );

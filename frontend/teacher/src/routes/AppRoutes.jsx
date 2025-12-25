@@ -7,8 +7,9 @@ import Dashboard from "../components/Dashboard";
 import Students from "../components/Students";
 import Marks from "../components/MarksPage";
 import Attendance from "../components/AttendancePage";
-import TeacherChatPage from "../components/TeacherChatPage"; // ✅ NEW
-import AdminPage from "../components/AdminPage"; // ✅ NEW
+import TeacherChatPage from "../components/TeacherChatPage"; // ✅ Chat
+import AdminPage from "../components/AdminPage"; // ✅ Admin
+import TeacherNotesPage from "../components/TeacherNotesPage"; // ✅ NEW Notes Page
 
 export default function AppRoutes() {
   return (
@@ -22,9 +23,10 @@ export default function AppRoutes() {
         {/* Dashboard & Pages */}
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/students" element={<Students />} />
-        <Route path="/admins" element={<AdminPage />} /> {/* ✅ Admin Page */}
+        <Route path="/admins" element={<AdminPage />} />
         <Route path="/marks" element={<Marks />} />
         <Route path="/attendance" element={<Attendance />} />
+        <Route path="/notes" element={<TeacherNotesPage />} /> {/* ✅ Teacher Notes */}
 
         {/* Chat */}
         <Route path="/teacher-chat" element={<TeacherChatPage />} />

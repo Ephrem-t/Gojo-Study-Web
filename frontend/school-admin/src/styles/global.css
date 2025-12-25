@@ -572,5 +572,122 @@ button.dark-mode:hover {
 }
 
 
+/* Add this in your global CSS for gradient animation */
+@keyframes gradientAnimation {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
 
 
+@keyframes slideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-bubble {
+  animation: slideIn 0.3s forwards;
+  transition: all 0.2s ease-in-out;
+}
+
+
+.chat-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0f172a;
+  color: white;
+}
+
+.chat-header {
+  padding: 10px;
+  background: #020617;
+  display: flex;
+  justify-content: space-between;
+}
+
+.unread-badge {
+  background: red;
+  border-radius: 50%;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.chat-body {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.bubble {
+  max-width: 70%;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.mine {
+  background: #2563eb;
+  margin-left: auto;
+}
+
+.theirs {
+  background: #1e293b;
+}
+
+.meta {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.seen.blue {
+  color: #38bdf8;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.actions button {
+  background: transparent;
+  color: #94a3b8;
+  border: none;
+  cursor: pointer;
+}
+
+.chat-input {
+  display: flex;
+  padding: 10px;
+  background: #020617;
+}
+
+.chat-input input {
+  flex: 1;
+  background: #020617;
+  border: none;
+  color: white;
+}
+
+.chat-input button {
+  background: #2563eb;
+  border: none;
+  color: white;
+  padding: 8px 12px;
+}

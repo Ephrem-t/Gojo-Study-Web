@@ -8,7 +8,8 @@ import {
   FaSignOutAlt,
   FaBell,
   FaFacebookMessenger,
-  FaSearch
+  FaSearch , FaCalendarAlt, FaCommentDots
+
 } from "react-icons/fa";
 import axios from "axios";
 
@@ -20,7 +21,7 @@ function TeachersPage() {
   const [activeTab, setActiveTab] = useState("details");
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
-
+  const [teacherSchedule, setTeacherSchedule] = useState({}); // store schedule
 
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 
@@ -31,7 +32,7 @@ function TeachersPage() {
  const admin = JSON.parse(localStorage.getItem("admin")) || {};
 const adminUserId = admin.userId;   // ✅ now it exists
 
-
+const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 
 
@@ -93,7 +94,51 @@ const adminUserId = admin.userId;   // ✅ now it exists
 
 
 
+// ---------------- FETCH TEACHER SCHEDULE ----------------
+// ---------------- FETCH TEACHER SCHEDULE (FIXED & WORKING) ----------------
+useEffect(() => {
+  if (!selectedTeacher || activeTab !== "schedule") return;
 
+  const fetchSchedule = async () => {
+    try {
+      const res = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Schedules.json"
+      );
+
+
+      const allSchedules = res.data || {};
+      const result = {};
+
+      Object.entries(allSchedules).forEach(([day, dayData]) => {
+        Object.entries(dayData || {}).forEach(([classKey, periods]) => {
+          Object.entries(periods || {}).forEach(([periodKey, entry]) => {
+            if (
+              entry &&
+              entry.teacherId === selectedTeacher.teacherId && // ✅ FIX
+              !entry.break
+            ) {
+              if (!result[day]) result[day] = {};
+              if (!result[day][periodKey]) result[day][periodKey] = [];
+
+              result[day][periodKey].push({
+                subject: entry.subject,
+                class: classKey
+              });
+            }
+          });
+        });
+      });
+
+      console.log("✅ FINAL TEACHER SCHEDULE:", result);
+      setTeacherSchedule(result);
+    } catch (err) {
+      console.error("❌ Schedule fetch failed:", err);
+      setTeacherSchedule({});
+    }
+  };
+
+  fetchSchedule();
+}, [selectedTeacher, activeTab]);
 
 
 
@@ -138,7 +183,7 @@ useEffect(() => {
   const fetchMessages = async () => {
     try {
       // Always use teacherUserId_adminUserId
-      const chatKey = `${adminUserId}_${selectedTeacher.userId}`;
+      const chatKey = `${selectedTeacher.userId}_${adminUserId}`;
 
       const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
 
@@ -171,7 +216,7 @@ const sendPopupMessage = async () => {
 
   try {
     // Always use teacherUserId_adminUserId
-    const chatKey =  `${adminUserId}_${selectedTeacher.userId}`;
+    const chatKey =  `${selectedTeacher.userId}_${adminUserId}`;
     const url = `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`;
 
     await axios.post(url, newMessage);
@@ -344,23 +389,35 @@ useEffect(() => {
             <p>{admin.username}</p>
           </div>
           <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
-            <Link className="sidebar-btn" to="/teachers" style={{ background: "#4b6cb7", color: "#fff" }}>
-              <FaChalkboardTeacher /> Teachers
-            </Link>
-            <Link className="sidebar-btn" to="/students"><FaChalkboardTeacher /> Students</Link>
-            <Link className="sidebar-btn" to="/settings"><FaCog /> Settings</Link>
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-            >
-              <FaSignOutAlt /> Logout
-            </button>
-          </div>
+                              <Link className="sidebar-btn" to="/dashboard"
+                               
+                               > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
+                                <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
+                                <Link className="sidebar-btn" to="/teachers" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Teachers</Link>
+                                  <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students</Link>
+                                   <Link
+                                                className="sidebar-btn"
+                                                to="/schedule"
+                                                
+                                              >
+                                                <FaCalendarAlt /> Schedule
+                                              </Link>
+                                   <Link className="sidebar-btn" to="/parents" ><FaChalkboardTeacher /> Parents
+                                              </Link>
+                                                        
+                                 <Link className="sidebar-btn" to="/settings" >
+                                              <FaCog /> Settings
+                                            </Link>
+                                <button
+                                  className="sidebar-btn logout-btn"
+                                  onClick={() => {
+                                    localStorage.removeItem("admin");
+                                    window.location.href = "/login";
+                                  }}
+                                >
+                                  <FaSignOutAlt /> Logout
+                                </button>
+                              </div>
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
@@ -453,91 +510,356 @@ useEffect(() => {
 
         {/* ---------------- RIGHT SIDEBAR ---------------- */}
         {selectedTeacher && (
-          <div
-            className="teacher-info-sidebar"
+  <div
+    className="teacher-info-sidebar"
+    style={{
+      width: "30%",
+      position: "fixed",
+      right: 0,
+      top: "70px",
+      height: "calc(100vh - 70px)",
+      background: "#ffffff",
+      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
+      borderLeft: "1px solid #e5e7eb",
+      zIndex: 20,
+      display: "flex",
+      flexDirection: "column"
+    }}
+  >
+    {/* ================= SCROLLABLE CONTENT ================= */}
+    <div
+      style={{
+        flex: 1,
+        overflowY: "auto",
+        padding: "25px"
+      }}
+    >
+      {/* ================= HEADER ================= */}
+      <div
+        style={{
+          background: "#e0e7ff",
+          margin: "-25px -25px 20px",
+          padding: "30px 20px",
+          textAlign: "center"
+        }}
+      >
+        <div
+          style={{
+            width: "110px",
+            height: "110px",
+            margin: "0 auto 15px",
+            borderRadius: "50%",
+            overflow: "hidden",
+            border: "4px solid #4b6cb7"
+          }}
+        >
+          <img
+            src={selectedTeacher.profileImage}
+            alt={selectedTeacher.name}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        </div>
+
+        <h2 style={{ margin: 0, color: "#111827" }}>
+          {selectedTeacher.name}
+        </h2>
+
+        <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "14px" }}>
+          {selectedTeacher.email || "teacher@example.com"}
+        </p>
+      </div>
+
+      {/* ================= TABS ================= */}
+      <div
+        style={{
+          display: "flex",
+          borderBottom: "1px solid #e5e7eb",
+          marginBottom: "15px"
+        }}
+      >
+        {["details", "schedule", "plan"].map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
             style={{
-              width: "30%",
-              padding: "25px",
-              background: "#fff",
-              boxShadow: "0 0 15px rgba(0,0,0,0.05)",
-              position: "fixed",
-              right: 0,
-              top: "60px",
-              height: "calc(100vh - 60px)",
-              overflow: "hidden",
-              zIndex: 10
+              flex: 1,
+              padding: "12px",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+              color: activeTab === tab ? "#4b6cb7" : "#6b7280",
+              borderBottom:
+                activeTab === tab
+                  ? "3px solid #4b6cb7"
+                  : "3px solid transparent"
             }}
           >
-            {/* Teacher Info */}
-            <div style={{ textAlign: "center" }}>
-              <div style={{ background: "#becff7ff", padding: "25px 10px", height: "200px", width: "calc(100% + 50px)", margin: "-25px -25px 20px", textAlign: "center", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
-                <div style={{ width: "100px", height: "100px", margin: "-20px auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
-                  <img src={selectedTeacher.profileImage} alt={selectedTeacher.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                </div>
-                <h2 style={{ margin: 0, fontSize: "22px", marginTop: "-10px", color: "#000" }}>{selectedTeacher.name}</h2>
-                <h2 style={{ margin: 0, fontSize: "12px", color: "#585656" }}>{selectedTeacher.email || "default.teacher@example.com"}</h2>
-              </div>
+            {tab.toUpperCase()}
+          </button>
+        ))}
+      </div>
 
-              {/* Tabs */}
-              <div style={{ background: "#fff", padding: "15px", marginTop: "-18px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", width: "110%", marginLeft: "-8%" }}>
-                <div style={{ display: "flex", borderBottom: "1px solid #eee", marginBottom: "15px" }}>
-                  {["details", "schedule", "plan"].map(tab => (
-                    <button
-                      key={tab}
-                      onClick={() => setActiveTab(tab)}
+      {/* ================= DETAILS TAB ================= */}
+      {activeTab === "details" && (
+        <div>
+          <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>
+            Teacher Details
+          </h4>
+
+          <p><strong>ID:</strong> {selectedTeacher.teacherId}</p>
+
+          {selectedTeacher.gradesSubjects?.length > 0 ? (
+            selectedTeacher.gradesSubjects.map((gs, i) => (
+              <p key={i} style={{ color: "#374151" }}>
+                Grade {gs.grade} – Section {gs.section} • {gs.subject}
+              </p>
+            ))
+          ) : (
+            <p style={{ color: "#6b7280" }}>No assigned courses</p>
+          )}
+        </div>
+      )}
+
+      
+{/* ================= SCHEDULE TAB ================= */}
+{/* ================= SCHEDULE TAB ================= */}
+{activeTab === "schedule" && (
+  <div style={{ padding: "20px" }}>
+    {/* Title */}
+    <h4
+      style={{
+        fontSize: "22px",
+        fontWeight: "700",
+        textAlign: "center",
+        marginBottom: "25px",
+        color: "#1e3a8a",
+        letterSpacing: "0.5px"
+      }}
+    >
+      Weekly Teaching Schedule
+    </h4>
+
+    {/* Empty State */}
+    {Object.keys(teacherSchedule).length === 0 ? (
+      <div
+        style={{
+          textAlign: "center",
+          padding: "40px",
+          borderRadius: "16px",
+          background: "#f3f4f6",
+          color: "#6b7280",
+          fontSize: "15px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
+        }}
+      >
+        📭 No schedule assigned yet
+      </div>
+    ) : (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, 1fr)", // TWO COLUMNS
+          gap: "24px"
+        }}
+      >
+        {weekOrder
+          .filter(day => teacherSchedule[day])
+          .map(day => {
+            const periods = teacherSchedule[day];
+
+            return (
+              <div
+                key={day}
+                style={{
+                  borderRadius: "16px",
+                  padding: "18px",
+                  background: "#ffffff",
+                  boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
+                  border: "1px solid #e5e7eb",
+                  transition: "transform 0.2s ease, box-shadow 0.2s ease"
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.transform = "translateY(-3px)";
+                  e.currentTarget.style.boxShadow =
+                    "0 12px 30px rgba(0,0,0,0.12)";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.transform = "translateY(0)";
+                  e.currentTarget.style.boxShadow =
+                    "0 6px 20px rgba(0,0,0,0.08)";
+                }}
+              >
+                {/* Day Header */}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "16px"
+                  }}
+                >
+                  <h5
+                    style={{
+                      fontSize: "18px",
+                      fontWeight: "600",
+                      color: "#1e3a8a"
+                    }}
+                  >
+                    📆 {day}
+                  </h5>
+
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      padding: "5px 12px",
+                      borderRadius: "999px",
+                      background: "#eef2ff",
+                      color: "#1e40af",
+                      fontWeight: "500"
+                    }}
+                  >
+                    {Object.keys(periods).length} periods
+                  </span>
+                </div>
+
+                {/* Periods */}
+                {Object.entries(periods).map(([period, entries]) => (
+                  <div
+                    key={period}
+                    style={{
+                      marginBottom: "14px",
+                      borderRadius: "12px",
+                      padding: "12px",
+                      background: "#f9fafb",
+                      border: "1px solid #e5e7eb",
+                      transition: "transform 0.2s ease",
+                      cursor: "pointer"
+                    }}
+                    onMouseEnter={e =>
+                      (e.currentTarget.style.transform = "translateY(-2px)")
+                    }
+                    onMouseLeave={e =>
+                      (e.currentTarget.style.transform = "translateY(0)")
+                    }
+                  >
+                    {/* Period Header */}
+                    <div
                       style={{
-                        flex: 1,
-                        padding: "10px",
-                        border: "none",
-                        cursor: "pointer",
-                        background: "none",
+                        fontSize: "14px",
                         fontWeight: "600",
-                        color: activeTab === tab ? "#4b6cb7" : "#777",
-                        borderBottom: activeTab === tab ? "3px solid #4b6cb7" : "3px solid transparent"
+                        color: "#374151",
+                        marginBottom: "10px"
                       }}
                     >
-                      {tab.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
+                      ⏰ {period}
+                    </div>
 
-                {activeTab === "details" && (
-                  <div>
-                    <h4 style={{ color: "#4b6cb7", marginBottom: "10px" }}>Teacher Details</h4>
-                    <p style={{ margin: "6px 0", color: "#555" }}><strong>ID:</strong> {selectedTeacher.teacherId}</p>
-                    {selectedTeacher.gradesSubjects?.length > 0 ? (
-                      selectedTeacher.gradesSubjects.map((gs, index) => (
-                        <p key={index} style={{ margin: "4px 0", color: "#555" }}>
-                          Grade {gs.grade} – Section {gs.section} : {gs.subject}
-                        </p>
-                      ))
-                    ) : (
-                      <p style={{ color: "#555" }}>No assigned courses</p>
-                    )}
+                    {/* Subjects */}
+                    {entries.map((e, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "8px 10px",
+                          borderRadius: "10px",
+                          background: "#ffffff",
+                          marginBottom: "6px",
+                          boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
+                          fontSize: "13px"
+                        }}
+                      >
+                        <span style={{ fontWeight: "500", color: "#111827" }}>
+                          📘 {e.subject}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: "500",
+                            padding: "3px 8px",
+                            borderRadius: "999px",
+                            background: "#e0e7ff",
+                            color: "#3730a3"
+                          }}
+                        >
+                          {e.class}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                )}
-
-                {activeTab === "schedule" && <div><p style={{ color: "#555" }}>Teacher schedule will be displayed here.</p></div>}
-                {activeTab === "plan" && <div><p style={{ color: "#555" }}>Teacher lesson plans will be shown here.</p></div>}
-
-                {/* Message Button */}
-                <div style={{ marginTop: "20px", display: "flex", justifyContent: "flex-end" }}>
-                  <button
-                    style={{ padding: "10px", width: "120px", borderRadius: "8px", border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer", fontWeight: "bold" }}
-                    onClick={() => setTeacherChatOpen(true)}
-                  >
-                    Message
-                  </button>
-                </div>
+                ))}
               </div>
-            </div>
-          </div>
-        )}
+            );
+          })}
+      </div>
+    )}
+  </div>
+)}
+
+
+
+
+      {/* ================= PLAN TAB ================= */}
+      {activeTab === "plan" && (
+        <p style={{ color: "#6b7280" }}>
+          Teacher lesson plans will be shown here.
+        </p>
+      )}
+
+      {/* ================= MESSAGE BUTTON ================= */}
+     
+
+{/* ================= FIXED MESSAGE BUTTON ================= */}
+<div
+  onClick={() => setTeacherChatOpen(true)}
+  style={{
+    position: "fixed",        // 🔒 RIGID
+    bottom: "20px",
+    right: "20px",
+    width: "48px",
+    height: "48px",
+    background:
+      "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#fff",
+    cursor: "pointer",
+    zIndex: 9999,
+    boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
+    transition: "transform 0.2s ease, box-shadow 0.2s ease",
+  }}
+  onMouseEnter={(e) => {
+    e.currentTarget.style.transform = "scale(1.08)";
+    e.currentTarget.style.boxShadow =
+      "0 12px 26px rgba(0,0,0,0.35)";
+  }}
+  onMouseLeave={(e) => {
+    e.currentTarget.style.transform = "scale(1)";
+    e.currentTarget.style.boxShadow =
+      "0 8px 18px rgba(0,0,0,0.25)";
+  }}
+>
+  <FaCommentDots size={22} />
+</div>
+
+
+</div>
+  
+
+    </div>
+ 
+)}
+
       </div>
 
       {/* ---------------- MINI POPUP CHAT ---------------- */}
       {teacherChatOpen && selectedTeacher && (
         <div style={{
+          
           position: "fixed",
           bottom: "6px",
           right: "22px",
@@ -553,14 +875,20 @@ useEffect(() => {
             <strong>{selectedTeacher.name}</strong>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
-                onClick={() => {
-                  setTeacherChatOpen(false);
-                  navigate("/all-chat", { state: { teacher: selectedTeacher } });
-                }}
-                style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer" }}
-              >
-                ↗
-              </button>
+  onClick={() => {
+    setTeacherChatOpen(false); // close mini popup
+    navigate("/all-chat", { state: { user: selectedTeacher } }); // pass teacher as selected user
+  }}
+  style={{
+    background: "none",
+    border: "none",
+    fontSize: "18px",
+    cursor: "pointer"
+  }}
+>
+  ↗
+</button>
+
               <button
                 onClick={() => setTeacherChatOpen(false)}
                 style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}
@@ -600,11 +928,17 @@ useEffect(() => {
               style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
             />
             <button
-              onClick={sendPopupMessage}
-              style={{ background: "#4b6cb7", padding: "10px 15px", color: "#fff", borderRadius: "8px", border: "none", cursor: "pointer" }}
-            >
-              Send
-            </button>
+        onClick={() => sendMessage(newMessageText)}
+        style={{
+          background: "none",
+          border: "none",
+          color: "#3654dada",
+          cursor: "pointer",
+          fontSize: "30px",
+        }}
+      >
+        ➤
+      </button>
           </div>
         </div>
       )}
