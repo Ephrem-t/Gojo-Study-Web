@@ -66,6 +66,10 @@ function StudentsPage() {
   const [newTeacherNote, setNewTeacherNote] = useState("");
   const [savingNote, setSavingNote] = useState(false);
   const teacherUserId = teacherInfo?.userId; // ✅ teacher ID from logged-in teacher
+  const [marksData, setMarksData] = useState({});
+
+
+
 
   // ---------------- LOAD TEACHER INFO ----------------
   useEffect(() => {
@@ -78,86 +82,79 @@ function StudentsPage() {
   }, [navigate]);
 
   // ---------------- FETCH STUDENTS ----------------
- useEffect(() => {
-    async function fetchStudents() {
-      try {
-        setLoading(true);
-        const [
-          studentsData,
-          usersData,
-          coursesData,
-          teacherAssignmentsData,
-          teachersData,
-        ] = await Promise.all([
-          axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
-          ),
-          axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-          ),
-          axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"
-          ),
-          axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"
-          ),
-          axios.get(
-            "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
-          ),
-        ]);
+useEffect(() => {
+  if (!teacherInfo?.userId) return;
 
-        const teacherEntry = Object.entries(
-          teachersData.data || teachersData
-        ).find(([_, value]) => value.userId === teacherUserId);
+  async function fetchStudents() {
+    try {
+      setLoading(true);
 
-        if (!teacherEntry) throw new Error("Teacher key not found");
+      const [
+        studentsRes,
+        usersRes,
+        coursesRes,
+        assignmentsRes,
+        teachersRes,
+      ] = await Promise.all([
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+      ]);
 
-        const teacherKey = teacherEntry[0];
+      const teachers = teachersRes.data || {};
+      const teacherEntry = Object.entries(teachers)
+        .find(([_, t]) => t.userId === teacherInfo.userId);
 
-        const assignedCourses = Object.values(
-          teacherAssignmentsData.data || teacherAssignmentsData
-        )
-          .filter((a) => a.teacherId === teacherKey)
-          .map((a) => a.courseId);
-
-        const filteredStudents = Object.values(
-          studentsData.data || studentsData
-        )
-          .filter((s) =>
-            assignedCourses.some((courseId) => {
-              const course = (coursesData.data || coursesData)[courseId];
-              return (
-                course &&
-                course.grade === s.grade &&
-                course.section === s.section
-              );
-            })
-          )
-          .map((s) => {
-            const user = Object.values(usersData.data || usersData).find(
-              (u) => u.userId === s.userId
-            );
-            return {
-              ...s,
-              name: user?.name || "Unknown",
-              username: user?.username || "Unknown",
-              profileImage: user?.profileImage || "/default-profile.png",
-            };
-          });
-
-        setStudents(filteredStudents);
-        setError("");
-      } catch (err) {
-        console.error("Error fetching students:", err);
-        setError("Failed to fetch students. Please try again.");
+      if (!teacherEntry) {
+        console.warn("Teacher not found in Teachers node");
         setStudents([]);
-      } finally {
-        setLoading(false);
+        return;
       }
-    }
 
-    fetchStudents();
-  }, [teacherUserId]);
+      const teacherKey = teacherEntry[0];
+
+      const assignedCourses = Object.values(assignmentsRes.data || {})
+        .filter(a => a.teacherId === teacherKey)
+        .map(a => a.courseId);
+
+    const students = Object.entries(studentsRes.data || {}).map(
+  ([studentId, s]) => {
+    const user = Object.values(usersRes.data || {})
+      .find(u => u.userId === s.userId);
+
+    return {
+      ...s,
+      studentId, // ✅ THIS IS THE KEY FIX
+      name: user?.name || "Unknown",
+      email: user?.email || "",
+      profileImage: user?.profileImage || "/default-profile.png",
+    };
+  }
+).filter(s =>
+        assignedCourses.some(cid => {
+          const c = coursesRes.data?.[cid];
+          return c && c.grade === s.grade && c.section === s.section;
+        })
+      );
+
+      setStudents(students);
+      setError("");
+
+    } catch (e) {
+      console.error(e);
+      setError("Failed to load students");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  fetchStudents();
+}, [teacherInfo]);
+
+
+
 
   useEffect(() => {
     if (selectedGrade === "All") {
@@ -187,70 +184,37 @@ function StudentsPage() {
 
 
   // ---------------- FETCH attendance ----------------
-// ---------------- FETCH attendance ----------------
-useEffect(() => {
-  if (!selectedStudent) return;
+// Fetch attendance
+  // ---------------- FETCH ATTENDANCE ----------------
+  useEffect(() => {
+  if (!selectedStudent?.studentId) return;
 
   async function fetchAttendance() {
+    setAttendanceLoading(true);
+
     try {
-      setAttendanceLoading(true);
-
-      const [
-        attendanceRes,
-        assignmentsRes,
-        teachersRes,
-        usersRes,
-        coursesRes,
-      ] = await Promise.all([
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
-      ]);
-
-      const attendanceDB = attendanceRes.data || {};
-      const assignments = assignmentsRes.data || {};
-      const teachers = teachersRes.data || {};
-      const users = usersRes.data || {};
-      const courses = coursesRes.data || {};
-
-      // helper → resolve teacher name by course
-      const getTeacherNameByCourse = (courseId) => {
-        const assignment = Object.values(assignments).find(
-          (a) => a.courseId === courseId
-        );
-        if (!assignment) return "Unknown Teacher";
-
-        const teacher = teachers[assignment.teacherId];
-        if (!teacher) return "Unknown Teacher";
-
-        const user = users[teacher.userId];
-        return user?.name || "Unknown Teacher";
-      };
+      const res = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json"
+      );
 
       const attendance = [];
 
-      Object.entries(attendanceDB).forEach(([courseId, dates]) => {
-        Object.entries(dates).forEach(([date, students]) => {
-          const status = students[selectedStudent.userId];
+      Object.entries(res.data || {}).forEach(([courseId, dates]) => {
+        Object.entries(dates || {}).forEach(([date, students]) => {
+          const status = students[selectedStudent.studentId]; // ✅ FIXED
           if (!status) return;
 
           attendance.push({
-            subject:
-              courses[courseId]?.subject ||
-              courseId.replace("course_", "").replace(/_/g, " "),
+            courseId,
             date,
-            studentName: selectedStudent.name,
-            status, // ✅ present / absent
-            teacherName: getTeacherNameByCourse(courseId), // ✅ FIXED
+            status,
           });
         });
       });
 
       setAttendanceData(attendance);
     } catch (err) {
-      console.error("Attendance error:", err);
+      console.error("Attendance fetch error:", err);
       setAttendanceData([]);
     } finally {
       setAttendanceLoading(false);
@@ -261,86 +225,57 @@ useEffect(() => {
 }, [selectedStudent]);
 
 
+// ---------------- FILTERED ATTENDANCE ----------------
+  const filteredAttendance = attendanceData.filter(a => {
+    const today = new Date();
+    const attDate = new Date(a.date);
 
-// Filter attendance based on selected tab
-const filteredAttendance = attendanceData.filter((a) => {
-  const today = new Date();
-  const attDate = new Date(a.date);
-
-  if (attendanceFilter === "daily") {
-    return (
-      attDate.getFullYear() === today.getFullYear() &&
-      attDate.getMonth() === today.getMonth() &&
-      attDate.getDate() === today.getDate()
-    );
-  } else if (attendanceFilter === "weekly") {
-    const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - today.getDay()); // Sunday
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6); // Saturday
-    return attDate >= weekStart && attDate <= weekEnd;
-  } else if (attendanceFilter === "monthly") {
-    return attDate.getFullYear() === today.getFullYear() && attDate.getMonth() === today.getMonth();
-  }
-  return true;
-});
-
+    if (attendanceFilter === "daily") {
+      return attDate.toDateString() === today.toDateString();
+    }
+    if (attendanceFilter === "weekly") {
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - today.getDay());
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
+      return attDate >= weekStart && attDate <= weekEnd;
+    }
+    if (attendanceFilter === "monthly") {
+      return attDate.getMonth() === today.getMonth() && attDate.getFullYear() === today.getFullYear();
+    }
+    return true;
+  });
   
-  // ---------------- FETCH performance ----------------
-// ---------------- FETCH STUDENT MARKS ----------------
-// ---------------- FETCH STUDENT MARKS ----------------
+  // ---------------- FETCH PERFORMANCE ----------------
 useEffect(() => {
-  if (!selectedStudent) return;
+  if (!selectedStudent?.studentId) return;
 
   async function fetchMarks() {
     try {
-      const [resMarks, resAssignments, resTeachers, resUsers] = await Promise.all([
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
-        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
-      ]);
-
-      const marksData = resMarks.data || {};
-      const assignments = resAssignments.data || {};
-      const teachers = resTeachers.data || {};
-      const users = resUsers.data || {};
+      const res = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json"
+      );
 
       const marks = {};
 
-      Object.entries(marksData).forEach(([courseId, studentMarks]) => {
-        Object.entries(studentMarks).forEach(([studentKey, mark]) => {
-          if (studentKey !== selectedStudent.userId) return;
-
-          // Find teacher for this course
-          const assignment = Object.values(assignments).find(a => a.courseId === courseId);
-          let teacherName = "Unknown";
-          if (assignment) {
-            const teacher = teachers[assignment.teacherId];
-            if (teacher) {
-              const teacherUser = users[teacher.userId];
-              teacherName = teacherUser?.name || "Unknown";
-            }
-          }
-
-          marks[courseId] = {
-            mark20: mark.mark20 || 0,
-            mark30: mark.mark30 || 0,
-            mark50: mark.mark50 || 0,
-            teacherName,
-          };
-        });
+      Object.entries(res.data || {}).forEach(([courseId, students]) => {
+        if (students[selectedStudent.studentId]) { // ✅ FIXED
+          marks[courseId] = students[selectedStudent.studentId];
+        }
       });
 
       setStudentMarks(marks);
     } catch (err) {
-      console.error("Error fetching marks:", err);
+      console.error("Marks fetch error:", err);
       setStudentMarks({});
     }
   }
 
   fetchMarks();
 }, [selectedStudent]);
+
+
+const statusColor = status => status === "present" ? "#34a853" : status === "absent" ? "#ea4335" : "#fbbc05";
 
  // ---------------- teacher note ----------------
 useEffect(() => {

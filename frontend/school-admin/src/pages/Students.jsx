@@ -43,100 +43,61 @@ const adminUserId = admin.userId;
 
 const handleSelectStudent = async (s) => {
   setLoading(true);
-
   try {
-    // 1️⃣ Fetch student info
-    const usersRes = await axios.get(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${s.userId}.json`
-    );
-    const user = usersRes.data || {};
+    // 1️⃣ Fetch user info
+    const userRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${s.userId}.json`);
+    const user = userRes.data || {};
 
     // 2️⃣ Fetch ClassMarks
-    const marksRes = await axios.get(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json`
-    );
+    const marksRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json`);
     const classMarks = marksRes.data || {};
 
-    // 3️⃣ Collect teacher IDs
-    const teacherIds = new Set();
-    Object.values(classMarks).forEach(course => {
-      if (course[s.userId]?.teacherId) {
-        teacherIds.add(course[s.userId].teacherId);
-      }
-    });
-
-    // 4️⃣ Fetch teacher names
-    const teacherMap = {};
-    await Promise.all([...teacherIds].map(async (tid) => {
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${tid}.json`
-      );
-      teacherMap[tid] = res.data?.name || "Teacher";
-    }));
-
-    // 5️⃣ Build course → teacher map ✅
+    const studentMarks = {};
     const courseTeacherMap = {};
-    Object.keys(classMarks).forEach(courseId => {
-      const studentMark = classMarks[courseId][s.userId];
-      if (studentMark?.teacherId) {
-        courseTeacherMap[courseId] =
-          teacherMap[studentMark.teacherId];
+
+    Object.entries(classMarks).forEach(([courseId, studentsObj]) => {
+      const studentMark = studentsObj?.[s.studentId]; // <-- FIX HERE
+      if (studentMark) {
+        studentMarks[courseId] = {
+          mark20: Number(studentMark.mark20 || 0),
+          mark30: Number(studentMark.mark30 || 0),
+          mark50: Number(studentMark.mark50 || 0),
+          teacherName: studentMark.teacherName || "Teacher"
+        };
+        courseTeacherMap[courseId] = studentMark.teacherName || "Teacher";
       }
     });
 
-    // 6️⃣ Fetch Attendance (NOW teacher map exists ✅)
-    const attendanceRes = await axios.get(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json`
-    );
+    // 3️⃣ Fetch Attendance (works the same)
+    const attendanceRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json`);
     const attendanceRaw = attendanceRes.data || {};
-    const attendanceData = [];
 
-    Object.entries(attendanceRaw).forEach(([courseId, dates]) => {
-      Object.entries(dates || {}).forEach(([date, students]) => {
-        if (students[s.userId]) {
+    const attendanceData = [];
+    Object.entries(attendanceRaw).forEach(([courseId, datesObj]) => {
+      Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+        const status = studentsObj?.[s.studentId]; // <-- FIX HERE
+        if (status) {
           attendanceData.push({
-            date,
             courseId,
-            status: students[s.userId],
+            date,
+            status,
             teacherName: courseTeacherMap[courseId] || "Teacher"
           });
         }
       });
     });
 
-
-
-
-
-
-
-
-    // 7️⃣ Build marks
-    const studentMarks = {};
-    Object.keys(classMarks).forEach(courseId => {
-      const m = classMarks[courseId][s.userId];
-      if (m) {
-        studentMarks[courseId] = {
-          mark20: m.mark20 || 0,
-          mark30: m.mark30 || 0,
-          mark50: m.mark50 || 0,
-          teacherName: teacherMap[m.teacherId]
-        };
-      }
-    });
-
-    // 8️⃣ Final set
+    // 4️⃣ Set selected student
     setSelectedStudent({
       ...s,
       ...user,
-      attendance: attendanceData,
-      marks: studentMarks
+      marks: studentMarks,
+      attendance: attendanceData
     });
 
   } catch (err) {
     console.error("Error fetching student data:", err);
   }
-
   setLoading(false);
 };
 
@@ -825,42 +786,43 @@ const attendanceStats = useMemo(() => {
 
             
 
-{/* ATTENDANCE TAB */}
+{/* ================= ATTENDANCE TAB ================= */}
 {studentTab === "attendance" && selectedStudent && (
-  <div style={{ padding: "26px", maxHeight: "70vh", overflowY: "auto", background: "#f1f5f9" }}>
+  <div style={{
+    padding: "20px",
+    maxHeight: "70vh",
+    overflowY: "auto",
+    background: "#f7f8fa",
+    fontFamily: "'Inter', sans-serif"
+  }}>
 
     {/* ================= STICKY CONTROLS ================= */}
     <div style={{
       position: "sticky",
       top: 0,
-      background: "#f8fafc",
-      paddingBottom: "16px",
-      zIndex: 10,
-      boxShadow: "0 5px 15px rgba(0,0,0,0.05)",
-      borderBottomLeftRadius: "16px",
-      borderBottomRightRadius: "16px"
+      zIndex: 30,
+      background: "#ffffff",
+      padding: "12px 0 20px",
+      boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
+      borderBottomLeftRadius: "12px",
+      borderBottomRightRadius: "12px"
     }}>
       {/* View Switch */}
-      <div style={{ display: "flex", gap: "12px", marginBottom: "14px" }}>
+      <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginBottom: "12px" }}>
         {["daily", "weekly", "monthly"].map(v => (
           <button
             key={v}
             onClick={() => setAttendanceView(v)}
             style={{
-              padding: "10px 18px",
-              borderRadius: "12px",
-              border: "none",
-              fontWeight: "800",
+              padding: "8px 20px",
+              borderRadius: "10px",
+              border: "1px solid #d1d5db",
+              fontWeight: 600,
               cursor: "pointer",
-              background: attendanceView === v 
-                ? "linear-gradient(90deg,#2563eb,#22c55e)" 
-                : "#e5e7eb",
-              color: attendanceView === v ? "#fff" : "#111",
-              boxShadow: attendanceView === v 
-                ? "0 4px 15px rgba(34,197,94,0.4)" 
-                : "none",
-              transition: "0.3s",
-              letterSpacing: "0.5px"
+              fontSize: "13px",
+              background: attendanceView === v ? "#2563eb" : "#f3f4f6",
+              color: attendanceView === v ? "#ffffff" : "#374151",
+              transition: "all 0.3s"
             }}
           >
             {v.toUpperCase()}
@@ -869,34 +831,37 @@ const attendanceStats = useMemo(() => {
       </div>
 
       {/* Course Filter */}
-      <select
-        value={attendanceCourseFilter}
-        onChange={e => setAttendanceCourseFilter(e.target.value)}
-        style={{
-          padding: "10px",
-          borderRadius: "12px",
-          border: "1px solid #cbd5f5",
-          fontWeight: "600",
-          background: "#fff",
-          boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-          transition: "0.3s"
-        }}
-      >
-        <option value="All">All Subjects</option>
-        {[...new Set(selectedStudent.attendance.map(a => a.courseId))].map(c => (
-          <option key={c} value={c}>
-            {c.replace("course_", "").replace(/_/g, " ")}
-          </option>
-        ))}
-      </select>
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <select
+          value={attendanceCourseFilter}
+          onChange={e => setAttendanceCourseFilter(e.target.value)}
+          style={{
+            padding: "8px 14px",
+            borderRadius: "10px",
+            border: "1px solid #d1d5db",
+            fontWeight: 500,
+            background: "#ffffff",
+            fontSize: "13px",
+            transition: "all 0.3s",
+            cursor: "pointer"
+          }}
+        >
+          <option value="All">All Subjects</option>
+          {[...new Set(selectedStudent.attendance.map(a => a.courseId))].map(c => (
+            <option key={c} value={c}>
+              {c.replace("course_", "").replace(/_/g, " ")}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
 
-    {/* ================= SUMMARY ================= */}
+    {/* ================= SUMMARY CARD ================= */}
     {(() => {
       const data = selectedStudent.attendance;
       const total = data.length;
       const present = data.filter(a => a.status === "present").length;
-      const percent = Math.round((present / total) * 100);
+      const percent = total ? Math.round((present / total) * 100) : 0;
 
       const health =
         percent >= 90 ? { label: "Excellent", color: "#16a34a" } :
@@ -905,76 +870,85 @@ const attendanceStats = useMemo(() => {
 
       return (
         <div style={{
-          background: "linear-gradient(135deg,#ffffff,#f0f9ff)",
-          borderRadius: "22px",
-          padding: "22px",
-          margin: "22px 0",
-          boxShadow: "0 18px 45px rgba(0,0,0,0.08)",
-          transition: "0.3s",
-          border: `1px solid ${health.color}`
+          background: "#ffffff",
+          borderRadius: "16px",
+          padding: "16px 20px",
+          margin: "16px 0",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.05)",
+          borderLeft: `4px solid ${health.color}`
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: "14px", color: "#64748b", letterSpacing: "0.5px" }}>
-                Attendance Health
-              </div>
-              <div style={{ fontSize: "28px", fontWeight: "900", color: health.color, letterSpacing: "0.5px" }}>
-                {health.label}
-              </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "#6b7280", letterSpacing: "0.5px" }}>
+              Attendance Health
             </div>
-            <div style={{
-              fontSize: "32px",
-              fontWeight: "900",
-              color: `rgba(${health.color === "#16a34a" ? "22,163,52" : health.color === "#2563eb" ? "37,99,235" : "220,38,38"},0.9)`,
-              background: "rgba(0,0,0,0.03)",
-              borderRadius: "12px",
-              padding: "8px 16px",
-              boxShadow: `0 0 12px ${health.color}40`
-            }}>
-              {percent}%
+            <div style={{ fontSize: "22px", fontWeight: 700, color: health.color, marginTop: "2px" }}>
+              {health.label}
             </div>
           </div>
 
-          {/* Progress Bar */}
+          {/* Minimal Progress Circle */}
           <div style={{
-            height: "12px",
-            background: "#e5e7eb",
-            borderRadius: "999px",
-            marginTop: "16px",
-            overflow: "hidden",
-            boxShadow: "inset 0 2px 5px rgba(0,0,0,0.05)"
+            width: "60px",
+            height: "60px",
+            borderRadius: "50%",
+            border: `5px solid #e5e7eb`,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            position: "relative"
           }}>
             <div style={{
-              width: `${percent}%`,
-              height: "100%",
-              background: health.color,
-              transition: "width 0.6s",
-              borderRadius: "999px"
-            }} />
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "60px",
+              height: "60px",
+              borderRadius: "50%",
+              clip: "rect(0, 60px, 60px, 30px)",
+              background: "transparent"
+            }}>
+              <div style={{
+                width: "60px",
+                height: "60px",
+                borderRadius: "50%",
+                border: `5px solid ${health.color}`,
+                clip: "rect(0, 30px, 60px, 0)",
+                transform: `rotate(${(percent / 100) * 360}deg)`,
+                transformOrigin: "center",
+                transition: "transform 0.5s ease-in-out"
+              }} />
+            </div>
+            <div style={{
+              fontSize: "16px",
+              fontWeight: 600,
+              color: "#374151"
+            }}>{percent}%</div>
           </div>
         </div>
       );
     })()}
 
-    {/* ================= RECORDS ================= */}
+    {/* ================= ATTENDANCE RECORDS ================= */}
     {Object.entries(groupedAttendance).map(([group, records]) => {
       const filtered = attendanceCourseFilter === "All"
         ? records
-        : records.filter(r => r.courseId === attendanceCourseFilter);
+        : records.filter(r => r.courseId === attendanceCourseFilter || r.courseId.replace("course_", "").replace(/_/g," ").toLowerCase() === attendanceCourseFilter.toLowerCase());
 
       if (!filtered.length) return null;
 
       return (
         <div key={group} style={{
-          background: "#fff",
-          borderRadius: "22px",
-          padding: "22px",
-          marginBottom: "22px",
-          boxShadow: "0 15px 40px rgba(0,0,0,0.08)",
-          transition: "0.3s",
-          borderLeft: "6px solid #2563eb"
+          background: "#ffffff",
+          borderRadius: "14px",
+          padding: "16px 18px",
+          marginBottom: "16px",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
+          borderLeft: "4px solid #2563eb"
         }}>
-          <h3 style={{ color: "#2563eb", marginBottom: "14px", letterSpacing: "0.5px" }}>
+          <h3 style={{ color: "#1e40af", marginBottom: "12px", fontSize: "14px" }}>
             📅 {group}
           </h3>
 
@@ -982,15 +956,16 @@ const attendanceStats = useMemo(() => {
             <div key={i} style={{
               display: "grid",
               gridTemplateColumns: "1fr auto",
-              padding: "14px 0",
-              borderBottom: i !== filtered.length - 1 ? "1px solid #e5e7eb" : "none",
-              transition: "0.3s"
+              padding: "10px 0",
+              borderBottom: i !== filtered.length - 1 ? "1px solid #f3f4f6" : "none",
+              alignItems: "center",
+              gap: "10px"
             }}>
               <div>
-                <div style={{ fontWeight: "800", fontSize: "15px" }}>
+                <div style={{ fontWeight: 700, fontSize: "15px", color: "#111827" }}>
                   {r.courseId.replace("course_", "").replace(/_/g, " ")}
                 </div>
-                <div style={{ fontSize: "12px", color: "#64748b" }}>
+                <div style={{ fontSize: "12px", color: "#6b7280" }}>
                   👨‍🏫 {r.teacherName}
                 </div>
               </div>
@@ -999,17 +974,14 @@ const attendanceStats = useMemo(() => {
                 display: "flex",
                 alignItems: "center",
                 gap: "6px",
-                padding: "6px 16px",
+                padding: "5px 12px",
                 borderRadius: "999px",
-                fontWeight: "900",
-                background: r.status === "present" 
-                  ? "linear-gradient(90deg,#dcfce7,#bbf7d0)" 
-                  : "linear-gradient(90deg,#fee2e2,#fecaca)",
+                fontWeight: 600,
+                fontSize: "13px",
+                background: r.status === "present" ? "#d1fae5" : "#fee2e2",
                 color: r.status === "present" ? "#166534" : "#991b1b",
-                boxShadow: r.status === "present" 
-                  ? "0 0 12px #22c55e30" 
-                  : "0 0 12px #dc262630",
-                transition: "0.3s"
+                boxShadow: "inset 0 1px 3px rgba(0,0,0,0.05)",
+                transition: "all 0.2s"
               }}>
                 {r.status === "present" ? "✔" : "✖"} {r.status.toUpperCase()}
               </span>
@@ -1028,7 +1000,6 @@ const attendanceStats = useMemo(() => {
 
 
 
-
             {/* PERFORMANCE TAB */}
             {studentTab === "performance" && (
               <div>
@@ -1037,8 +1008,10 @@ const attendanceStats = useMemo(() => {
                 ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
                     {Object.entries(selectedStudent.marks).map(([courseId, m], idx) => {
-                      const total = (m.mark20 || 0) + (m.mark30 || 0) + (m.mark50 || 0);
-                      const percentage = Math.min(total, 100);
+                     const total = (Number(m.mark20) || 0) + (Number(m.mark30) || 0) + (Number(m.mark50) || 0);
+
+                    const percentage = Math.min(total, 100);
+
                       const statusColor = percentage >= 75 ? "#16a34a" : percentage >= 50 ? "#f59e0b" : "#dc2626";
 
                       return (
@@ -1148,8 +1121,7 @@ const attendanceStats = useMemo(() => {
    
   </div>
 )}
-
-      // ---------------- STUDENT CHAT POPUP ----------------
+{/* ================= STUDENT CHAT POPUP ================= */}
 {studentChatOpen && selectedStudent && (
   <div style={{
     position: "fixed",

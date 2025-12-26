@@ -13,6 +13,10 @@ function Parent() {
   const [newMessageText, setNewMessageText] = useState("");
   const [parentInfo, setParentInfo] = useState(null);
   const [children, setChildren] = useState([]);
+  const [expandedChildren, setExpandedChildren] = useState({});
+  // At the top of your Parent component
+  const [expanded, setExpanded] = useState(false);
+
 
   const navigate = useNavigate();
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
@@ -298,28 +302,150 @@ function Parent() {
                 )}
 
                 {/* CHILDREN TAB */}
-                {parentTab === "children" && (
-                  <div style={{ padding: "15px" }}>
-                    <h4 style={{ marginBottom: "10px", color: "#4b6cb7" }}>Children</h4>
-                    {children.length === 0 ? (
-                      <p>No children found</p>
-                    ) : (
-                      children.map(child => (
-                        <div key={child.studentId} style={{ display: "flex", alignItems: "center", padding: "12px", marginBottom: "10px", background: "#f8f9ff", borderRadius: "10px", boxShadow: "0 4px 10px rgba(0,0,0,0.05)", gap: "12px" }}>
-                          <img src={child.profileImage} alt={child.name} style={{ width: "50px", height: "50px", borderRadius: "50%", objectFit: "cover" }} />
-                          <div>
-                            <h3 style={{ margin: "0 0 5px 0" }}>{child.name}</h3>
-                            <p style={{ margin: "2px 0" }}>Email: {child.email}</p>
-                            <p style={{ margin: "2px 0" }}>Grade: {child.grade}</p>
-                            <p style={{ margin: "2px 0" }}>Section: {child.section}</p>
-                            <p style={{ margin: "2px 0" }}>Parent Phone: {child.parentPhone}</p>
-                            <p style={{ margin: "2px 0" }}>Relationship: {child.relationship}</p>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
+       {/* CHILDREN TAB */}
+{parentTab === "children" && (
+  <div style={{ padding: "30px" }}>
+    <h4 style={{ 
+      marginBottom: "30px", 
+      color: "#4b6cb7", 
+      fontSize: "26px", 
+      fontWeight: "700", 
+      borderBottom: "3px solid #4b6cb7", 
+      paddingBottom: "10px" 
+    }}>
+      Children
+    </h4>
+
+    {children.length === 0 ? (
+      <p style={{ color: "#777", fontStyle: "italic", textAlign: "center", fontSize: "16px" }}>
+        No children found
+      </p>
+    ) : (
+      <div 
+        style={{ 
+          display: "grid", 
+          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", 
+          gap: "25px" 
+        }}
+      >
+        {children.map(child => {
+          const isExpanded = expandedChildren[child.studentId] || false;
+
+          return (
+            <div 
+              key={child.studentId}
+              style={{
+                background: "#ffffff",
+                borderRadius: "18px",
+                padding: "25px",
+                boxShadow: "0 15px 30px rgba(0,0,0,0.08)",
+                transition: "all 0.3s ease",
+                cursor: "pointer",
+                position: "relative",
+                overflow: "hidden",
+                borderTop: "6px solid #4b6cb7",
+              }}
+            >
+              {/* Profile Image */}
+              <img 
+                src={child.profileImage || "/default-profile.png"} 
+                alt={child.name} 
+                style={{ 
+                  width: "90px", 
+                  height: "90px", 
+                  borderRadius: "50%", 
+                  objectFit: "cover", 
+                  border: "3px solid #4b6cb7", 
+                  marginBottom: "15px",
+                  display: "block",
+                  marginLeft: "auto",
+                  marginRight: "auto"
+                }} 
+              />
+
+              {/* Name */}
+              <h3 style={{ 
+                margin: "12px 0", 
+                fontSize: "20px", 
+                fontWeight: "600", 
+                textAlign: "center" 
+              }}>
+                {child.name}
+              </h3>
+
+              {/* Badges */}
+              <div style={{ display: "flex", justifyContent: "center", gap: "10px", flexWrap: "wrap", marginBottom: "15px" }}>
+                <span style={{ background: "#4b6cb7", color: "#fff", padding: "5px 10px", borderRadius: "10px", fontSize: "12px", fontWeight: "500" }}>
+                  Grade {child.grade}
+                </span>
+                <span style={{ background: "#ff7e5f", color: "#fff", padding: "5px 10px", borderRadius: "10px", fontSize: "12px", fontWeight: "500" }}>
+                  Section {child.section}
+                </span>
+              </div>
+
+              {/* Toggle Details Button */}
+              <div style={{ textAlign: "center", marginBottom: "12px" }}>
+                <button
+                  onClick={() => setExpandedChildren(prev => ({
+                    ...prev,
+                    [child.studentId]: !prev[child.studentId]
+                  }))}
+                  style={{
+                    padding: "7px 15px",
+                    borderRadius: "12px",
+                    border: "none",
+                    background: isExpanded ? "#182848" : "#4b6cb7",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontSize: "14px",
+                    fontWeight: "600",
+                    transition: "all 0.2s",
+                  }}
+                >
+                  {isExpanded ? "Hide Details" : "Show Details"}
+                </button>
+              </div>
+
+              {/* Expanded Info */}
+              {isExpanded && (
+                <div style={{ fontSize: "14px", color: "#555", lineHeight: "1.6", textAlign: "center", marginTop: "10px" }}>
+                  <p>Email: <a href={`mailto:${child.email}`} style={{ color: "#4b6cb7", textDecoration: "none" }}>{child.email}</a></p>
+                  <p>Parent Phone: <a href={`tel:${child.parentPhone}`} style={{ color: "#34a853", textDecoration: "none" }}>{child.parentPhone}</a></p>
+                  <p>Relationship: {child.relationship}</p>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              {isExpanded && (
+                <div style={{ display: "flex", justifyContent: "center", gap: "12px", marginTop: "15px" }}>
+                  <a 
+                    href={`mailto:${child.email}`} 
+                    style={{ padding: "8px 18px", background: "#4b6cb7", color: "#fff", borderRadius: "12px", textDecoration: "none", fontSize: "14px", fontWeight: "600", transition: "all 0.2s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#182848"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#4b6cb7"}
+                  >
+                    Email
+                  </a>
+                  <a 
+                    href={`tel:${child.parentPhone}`} 
+                    style={{ padding: "8px 18px", background: "#34a853", color: "#fff", borderRadius: "12px", textDecoration: "none", fontSize: "14px", fontWeight: "600", transition: "all 0.2s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#0f592a"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#34a853"}
+                  >
+                    Call
+                  </a>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+)}
+
+
+
 
                 {/* STATUS TAB */}
                 {parentTab === "status" && (
