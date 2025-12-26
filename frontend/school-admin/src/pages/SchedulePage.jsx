@@ -63,6 +63,7 @@ const [teacherChatOpen, setTeacherChatOpen] = useState(false);
 
 const adminUserId = admin.userId;
 
+const MAX_TEACHER_PERIODS_PER_DAY = 4;
 
 
   /* ================= FETCH DATABASE ================= */
@@ -187,57 +188,128 @@ const getTeachersForCourse = (courseId) => {
 
 
 
-
-/* ================= AUTO GENERATE RANDOMLY ================= */
-/* ================= AUTO GENERATE RANDOMLY ================= */
+/* ================= AUTO GENERATE RANDOMLY (FIXED) ================= */
+/* ================= AUTO GENERATE RANDOMLY (DEADLOCK SAFE) ================= */
 const autoGenerate = () => {
-  if (!selectedClassKey) return alert("Select grade & section first");
+  if (!selectedClassKey) {
+    alert("Select grade & section first");
+    return;
+  }
 
-  const data = structuredClone(schedule || {});
-  const classCourses = filteredCourses;
+  const MAX_ATTEMPTS = 50;
 
-  if (!classCourses.length) return alert("No courses available for this class");
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const freqMapOriginal = { ...weeklyFrequency[selectedClassKey] };
+      const classCourses = filteredCourses;
 
-  DAYS.forEach(day => {
-    if (!data[day]) data[day] = {};
-    data[day][selectedClassKey] = {};
+      // Clone schedule
+      const data = structuredClone(schedule || {});
 
-    let previousTeacherId = null; // track teacher of previous period
+      // ================= TRACKERS =================
+      // Tracks teacher occupation across all classes and periods
+      const teacherTimeSlot = {}; // { day: { period: { teacherId: true } } }
 
-    PERIODS.forEach(p => {
-      if (p === "LUNCH") {
-        data[day][selectedClassKey][p] = { break: true };
-        previousTeacherId = null; // reset after lunch
-        return;
-      }
+      // Tracks last period of teacher in THIS class to avoid consecutive periods
+      const lastTeacherPeriod = {}; // { classKey: { teacherId: periodIndex } }
 
-      // Filter courses so we don't assign same teacher as previous period
-      const availableCourses = classCourses.filter(c => {
-        const tid = courseTeacherMap[c.id] || null;
-        return tid !== previousTeacherId;
+      DAYS.forEach(day => {
+        if (!data[day]) data[day] = {};
+        teacherTimeSlot[day] ??= {};
+        Object.keys(classes).forEach(grade => {
+          [...classes[grade]].forEach(section => {
+            const key = `Grade ${grade}${section}`;
+            if (!data[day][key]) data[day][key] = {};
+          });
+        });
       });
 
-      // If no course avoids repetition, allow all (to avoid deadlock)
-      const possibleCourses = availableCourses.length ? availableCourses : classCourses;
+      // Initialize teacherTimeSlot from already scheduled classes
+      DAYS.forEach(day => {
+        PERIODS.forEach(period => {
+          if (period === "LUNCH") return;
+          Object.keys(classes).forEach(grade => {
+            [...classes[grade]].forEach(section => {
+              const key = `Grade ${grade}${section}`;
+              const cell = data[day][key]?.[period];
+              if (cell?.teacherId) {
+                teacherTimeSlot[day][period] ??= {};
+                teacherTimeSlot[day][period][cell.teacherId] = true;
+              }
+            });
+          });
+        });
+      });
 
-      // Pick a random course
-      const randomCourse = possibleCourses[Math.floor(Math.random() * possibleCourses.length)];
-      const tid = courseTeacherMap[randomCourse.id] || null;
-      const tname = teacherMap[tid] || "Unassigned";
+      // Shuffle courses to randomize placement
+      const shuffledCourses = [...classCourses].sort(() => Math.random() - 0.5);
 
-      // Assign course to schedule
-      data[day][selectedClassKey][p] = {
-        subject: randomCourse.subject,
-        teacherId: tid,
-        teacherName: tname
-      };
+      const freqMap = { ...freqMapOriginal };
 
-      previousTeacherId = tid; // update previous teacher
-    });
-  });
+      for (let day of DAYS) {
+        const activePeriods = PERIODS.filter(p => p !== "LUNCH");
+        let lastSubject = null;
 
-  setSchedule(data);
-  calculateTeacherWorkload(data);
+        for (let period of activePeriods) {
+          let placed = false;
+          const candidates = [...shuffledCourses].sort(() => Math.random() - 0.5);
+
+          for (let course of candidates) {
+            const teacherId = courseTeacherMap[course.id];
+            if (freqMap[course.id] <= 0) continue;
+            if (course.subject === lastSubject) continue;
+
+            // ===== CROSS-CLASS TEACHER CONFLICT =====
+            if (teacherId && teacherTimeSlot[day][period]?.[teacherId]) continue;
+
+            // Avoid consecutive periods in the same class
+            const lastPeriodIndex = lastTeacherPeriod[selectedClassKey]?.[teacherId];
+            if (lastPeriodIndex === activePeriods.indexOf(period) - 1) continue;
+
+            // Max periods/day for the subject
+            const maxPerDay = (freqMapOriginal[course.id] > 5) ? 2 : 1;
+            const dayCount = Object.values(data[day][selectedClassKey] || {}).filter(
+              c => c?.subject === course.subject
+            ).length;
+            if (dayCount >= maxPerDay) continue;
+
+            // ===== ASSIGN =====
+            data[day][selectedClassKey][period] = {
+              subject: course.subject,
+              teacherId,
+              teacherName: teacherMap[teacherId] || "Unassigned"
+            };
+
+            // Update trackers
+            teacherTimeSlot[day][period] ??= {};
+            if (teacherId) {
+              teacherTimeSlot[day][period][teacherId] = true;
+              lastTeacherPeriod[selectedClassKey] ??= {};
+              lastTeacherPeriod[selectedClassKey][teacherId] = activePeriods.indexOf(period);
+            }
+
+            freqMap[course.id]--;
+            lastSubject = course.subject;
+            placed = true;
+            break;
+          }
+
+          if (!placed) throw new Error("Deadlock: unable to place subjects without violating constraints");
+        }
+      }
+
+      setSchedule(data);
+      calculateTeacherWorkload(data);
+      console.log(`✅ Timetable for ${selectedClassKey} generated successfully`);
+      return;
+
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) {
+        alert("Unable to generate timetable after multiple attempts. Try adjusting weekly subject counts or teacher assignments.");
+        console.error(err);
+      }
+    }
+  }
 };
 
 

@@ -7,12 +7,51 @@ export default function Register() {
 
   const gradeOptions = ["9", "10", "11", "12"];
   const sectionOptions = ["A", "B", "C"];
-  const subjectOptions = {
-    "9": ["Math", "English", "Biology", "History"],
-    "10": ["Math", "English", "Chemistry", "Geography"],
-    "11": ["Math", "Physics", "Biology", "Economics"],
-    "12": ["Math", "Physics", "Chemistry", "Literature"],
-  };
+ const subjectOptions = {
+  "9": [
+    "Mathematics",
+    "English",
+    "Biology",
+    "Physics",
+    "Chemistry",
+    "Geography",
+    "History",
+    "Civics",
+    "ICT"
+  ],
+  "10": [
+    "Mathematics",
+    "English",
+    "Biology",
+    "Physics",
+    "Chemistry",
+    "Geography",
+    "History",
+    "Civics",
+    "ICT"
+  ],
+  "11": [
+    "Mathematics",
+    "English",
+    "Physics",
+    "Chemistry",
+    "Biology",
+    "Economics",
+    "Geography",
+    "History"
+  ],
+  "12": [
+    "Mathematics",
+    "English",
+    "Physics",
+    "Chemistry",
+    "Biology",
+    "Economics",
+    "Geography",
+    "History"
+  ],
+};
+
 
   const [formData, setFormData] = useState({
     name: "",
@@ -47,42 +86,70 @@ export default function Register() {
     setFormData({ ...formData, courses: updatedCourses });
   };
 
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    setMessage("");
 
-    try {
-      const dataToSend = new FormData();
-      dataToSend.append("name", formData.name);
-      dataToSend.append("username", formData.username);
-      dataToSend.append("password", formData.password);
-      dataToSend.append("courses", JSON.stringify(formData.courses));
-      if (profile) dataToSend.append("profile", profile);
+const hasDuplicateCourse = () => {
+  const seen = new Set();
 
-      const res = await fetch("http://127.0.0.1:5000/register/teacher", {
-        method: "POST",
-        body: dataToSend,
-      });
+  for (let c of formData.courses) {
+    if (!c.grade || !c.section || !c.subject) continue;
 
-      const data = await res.json();
+    const key = `${c.grade}${c.section}-${c.subject}`;
 
-      if (data.success) {
-        setFormData({
-          name: "",
-          username: "",
-          password: "",
-          courses: [{ grade: "", section: "", subject: "" }],
-        });
-        setProfile(null);
-        navigate("/login");
-      } else {
-        setMessage(data.message || "Registration failed.");
-      }
-    } catch (err) {
-      console.error("Registration error:", err);
-      setMessage("Server error. Check console.");
+    if (seen.has(key)) {
+      return true;
     }
-  };
+    seen.add(key);
+  }
+  return false;
+};
+
+
+
+  const handleRegister = async (e) => {
+  e.preventDefault();
+  setMessage("");
+
+  // 🔴 FRONTEND VALIDATION
+  if (hasDuplicateCourse()) {
+    setMessage(
+      "Duplicate subject detected! A subject can only be taught once per grade and section."
+    );
+    return;
+  }
+
+  try {
+    const dataToSend = new FormData();
+    dataToSend.append("name", formData.name);
+    dataToSend.append("username", formData.username);
+    dataToSend.append("password", formData.password);
+    dataToSend.append("courses", JSON.stringify(formData.courses));
+    if (profile) dataToSend.append("profile", profile);
+
+    const res = await fetch("http://127.0.0.1:5000/register/teacher", {
+      method: "POST",
+      body: dataToSend,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      setFormData({
+        name: "",
+        username: "",
+        password: "",
+        courses: [{ grade: "", section: "", subject: "" }],
+      });
+      setProfile(null);
+      navigate("/login");
+    } else {
+      setMessage(data.message || "Registration failed.");
+    }
+  } catch (err) {
+    console.error("Registration error:", err);
+    setMessage("Server error. Check console.");
+  }
+};
+
 
   return (
     <div className="auth-container">

@@ -50,11 +50,19 @@ def register_student():
     users_ref = db.reference('Users')
     students_ref = db.reference('Students')
 
+   
+   
+
     # Check if username exists
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == username:
             return jsonify({'success': False, 'message': 'Username already exists!'})
+
+
+
+
+
 
     # Upload profile image
     profile_url = "/default-profile.png"
@@ -87,6 +95,9 @@ def register_student():
         'status': 'active'
     })
 
+
+   
+
     return jsonify({'success': True, 'message': 'Student registered successfully!'})
 
 # ===================== TEACHER REGISTRATION =====================
@@ -103,13 +114,33 @@ def register_teacher():
     courses_ref = db.reference('Courses')
     assignments_ref = db.reference('TeacherAssignments')
 
-    # Check if username exists
+    # ===================== USERNAME CHECK =====================
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == username:
-            return jsonify({'success': False, 'message': 'Username already exists!'})
+            return jsonify({
+                'success': False,
+                'message': 'Username already exists!'
+            })
 
-    # Upload profile image
+    # ===================== SUBJECT CONFLICT CHECK =====================
+    existing_assignments = assignments_ref.get() or {}
+
+    for course in courses:
+        grade = course['grade']
+        section = course['section']
+        subject = course['subject']
+
+        course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
+
+        for assignment in existing_assignments.values():
+            if assignment.get('courseId') == course_id:
+                return jsonify({
+                    'success': False,
+                    'message': f'{subject} already assigned in Grade {grade}{section}'
+                })
+
+    # ===================== PROFILE UPLOAD =====================
     profile_url = "/default-profile.png"
     if profile_file:
         filename = f"teachers/{username}_{profile_file.filename}"
@@ -118,7 +149,7 @@ def register_teacher():
         blob.make_public()
         profile_url = blob.public_url
 
-    # Create user
+    # ===================== CREATE USER =====================
     new_user_ref = users_ref.push()
     user_data = {
         'userId': new_user_ref.key,
@@ -131,7 +162,7 @@ def register_teacher():
     }
     new_user_ref.set(user_data)
 
-    # Create teacher entry
+    # ===================== CREATE TEACHER =====================
     new_teacher_ref = teachers_ref.push()
     new_teacher_ref.set({
         'userId': new_user_ref.key,
@@ -139,11 +170,12 @@ def register_teacher():
         'profileImage': profile_url
     })
 
-    # Assign courses
+    # ===================== ASSIGN COURSES =====================
     for course in courses:
         grade = course['grade']
         section = course['section']
         subject = course['subject']
+
         course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
 
         if not courses_ref.child(course_id).get():
@@ -154,8 +186,7 @@ def register_teacher():
                 'section': section
             })
 
-        assignment_ref = assignments_ref.push()
-        assignment_ref.set({
+        assignments_ref.push().set({
             'teacherId': new_teacher_ref.key,
             'courseId': course_id
         })
@@ -166,6 +197,7 @@ def register_teacher():
         'teacherKey': new_teacher_ref.key,
         'profileImage': profile_url
     })
+
 
 
 # ===================== TEACHER LOGIN =====================
