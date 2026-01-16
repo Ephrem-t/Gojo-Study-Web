@@ -294,7 +294,7 @@ const markAsSeen = async (chatId) => {
 
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/notes"><FaClipboardCheck /> Notes</Link>
+      
             <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
             <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
             <Link className="sidebar-btn" to="/parents" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Parents</Link>

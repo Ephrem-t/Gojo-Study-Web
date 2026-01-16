@@ -1,6 +1,7 @@
 // src/firebase.js
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps } from "firebase/app";
 import { getDatabase } from "firebase/database";
+import { getFirestore } from "firebase/firestore";
 
 // ---------------- Replace these values with your Firebase project credentials ----------------
 const firebaseConfig = {
@@ -14,10 +15,11 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase App
-const app = initializeApp(firebaseConfig);
+const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 
 
 export const db = getDatabase(app);
+export const firestore = getFirestore(app);
 
 
 

@@ -1,8 +1,10 @@
-// src/firebase.js
-import { initializeApp } from "firebase/app";
-import { getDatabase } from "firebase/database";
 
-// ---------------- Replace these values with your Firebase project credentials ----------------
+// firebase.js
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getDatabase } from "firebase/database";
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage"; // <-- ADD THIS
+
 const firebaseConfig = {
   apiKey: "AIzaSyCMkZr4Xz204NjvETje-Rhznf6ECDYiEnE",                      // e.g., "AIzaSyA..."
   authDomain: "ethiostore-17d9f.firebaseapp.com",   // your project auth domain
@@ -13,11 +15,15 @@ const firebaseConfig = {
   appId: "1:964518277159:web:9404cace890edf88961e02"
 };
 
-// Initialize Firebase App
-const app = initializeApp(firebaseConfig);
+// Only initialize if no apps exist
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialize Realtime Database
-const db = getDatabase(app);
+// Realtime Database
+export const db = getDatabase(app);
 
-// Export the database reference
-export { db };
+// Firestore
+export const firestore = getFirestore(app);
+
+export const storage = getStorage(app);
+export default app;
+

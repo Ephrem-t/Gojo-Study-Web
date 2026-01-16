@@ -2,14 +2,32 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaSearch, FaCalendarAlt, FaCommentDots } from "react-icons/fa";
 import axios from "axios";
+import { getDatabase, ref, onValue } from "firebase/database"; // make sure firebase initialized
 import { useNavigate } from "react-router-dom";
+import {
+  collection,
+  doc,
+  addDoc,
+  setDoc,
+  updateDoc,
+  getDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+} from "firebase/firestore";
+
+
+const DB = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+
+const getChatId = (a, b) => [a, b].sort().join("_");
 
 function Parent() {
   const [parents, setParents] = useState([]);
-  const [selectedParent, setSelectedParent] = useState(null);
+
   const [parentTab, setParentTab] = useState("details");
   const [parentChatOpen, setParentChatOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  
   const [newMessageText, setNewMessageText] = useState("");
   const [parentInfo, setParentInfo] = useState(null);
   const [children, setChildren] = useState([]);
@@ -20,6 +38,7 @@ const [unreadSenders, setUnreadSenders] = useState([]);
 const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 const [postNotifications, setPostNotifications] = useState([]);
 const [showPostDropdown, setShowPostDropdown] = useState(false);
+const [selectedParent, setSelectedParent] = useState(null);
 
  const [messageDropdownVisible, setMessageDropdownVisible] = useState(false);
   const navigate = useNavigate();
@@ -27,24 +46,84 @@ const [showPostDropdown, setShowPostDropdown] = useState(false);
 
 
 const adminId = admin.userId;
+ const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+
+  if (!admin?.userId) return null;
+
+
+ const chatId =
+  admin?.userId && selectedParent?.userId
+    ? getChatId(admin.userId, selectedParent.userId)
+    : null;
+
 
 
 const fetchPostNotifications = async () => {
+  if (!adminId) return;
+
   try {
+    // 1️⃣ Get post notifications
     const res = await axios.get(
       `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
     );
 
-    const notifications = (res.data || []).map(n => ({
-      ...n,
-      notificationId: n.notificationId || n.id
-    }));
+    let notifications = Array.isArray(res.data)
+      ? res.data
+      : Object.values(res.data || {});
 
-    setPostNotifications(notifications);
+    if (notifications.length === 0) {
+      setPostNotifications([]);
+      return;
+    }
+
+    // 2️⃣ Fetch Users & School_Admins
+    const [usersRes, adminsRes] = await Promise.all([
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      ),
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
+      ),
+    ]);
+
+    const users = usersRes.data || {};
+    const admins = adminsRes.data || {};
+
+    // 3️⃣ Helpers
+    const findAdminUser = (adminId) => {
+      const admin = admins[adminId];
+      if (!admin) return null;
+
+      return Object.values(users).find(
+        (u) => u.userId === admin.userId
+      );
+    };
+
+    // 4️⃣ Enrich notifications
+    const enriched = notifications.map((n) => {
+      const posterUser = findAdminUser(n.adminId);
+
+      return {
+        ...n,
+        notificationId:
+          n.notificationId ||
+          n.id ||
+          `${n.postId}_${n.adminId}`,
+
+        adminName: posterUser?.name || "Unknown Admin",
+        adminProfile:
+          posterUser?.profileImage || "/default-profile.png",
+      };
+    });
+
+    setPostNotifications(enriched);
   } catch (err) {
     console.error("Post notification fetch failed", err);
+    setPostNotifications([]);
   }
 };
+
 
 useEffect(() => {
   if (!adminId) return;
@@ -56,24 +135,38 @@ useEffect(() => {
 }, [adminId]);
 
 const handleNotificationClick = async (notification) => {
-  // Mark as read in backend
-  await axios.post(
-    "http://127.0.0.1:5000/api/mark_post_notification_read",
-    { notificationId: notification.notificationId }
-  );
+  try {
+    await axios.post(
+      "http://127.0.0.1:5000/api/mark_post_notification_read",
+      {
+        notificationId: notification.notificationId,
+        adminId: admin.userId,
+      }
+    );
+  } catch (err) {
+    console.warn("Failed to delete notification:", err);
+  }
 
-  // Remove from UI
-  setPostNotifications(prev =>
-    prev.filter(n => n.notificationId !== notification.notificationId)
+  // 🔥 REMOVE FROM UI IMMEDIATELY
+  setPostNotifications((prev) =>
+    prev.filter((n) => n.notificationId !== notification.notificationId)
   );
 
   setShowPostDropdown(false);
 
-  // Navigate to dashboard with postId
+  // ➜ Navigate to post
   navigate("/dashboard", {
-    state: { postId: notification.postId }
+    state: { postId: notification.postId },
   });
 };
+useEffect(() => {
+  if (location.state?.postId) {
+    setPostNotifications([]);
+  }
+}, []);
+
+
+
 
 useEffect(() => {
   const closeDropdown = (e) => {
@@ -360,77 +453,97 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  // Fetch chat messages
-  useEffect(() => {
-    if (!selectedParent) return;
-
-    const chatId = `${selectedParent.userId}_${admin.userId}`; 
-    const fetchMessages = async () => {
-      try {
-        const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatId}/messages.json`);
-        const msgs = res.data ? Object.values(res.data).sort((a,b) => a.timeStamp - b.timeStamp) : [];
-        setMessages(msgs);
-      } catch (err) {
-        console.error("Error fetching messages:", err);
-      }
-    };
-    fetchMessages();
-  }, [selectedParent]);
-
-  // Send message
-  const sendMessage = async (text) => {
-    if (!text.trim() || !selectedParent) return;
-    const chatId = `${selectedParent.userId}_${admin.userId}`; 
-
-    const newMessage = {
-      senderId: admin.userId,
-      receiverId: selectedParent.userId,
-      text,
-      timeStamp: Date.now(),
-      edited: false,
-      deleted: false,
-      messageId: `msg_${Date.now()}`
-    };
-
-    try {
-      await axios.post(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatId}/messages.json`, newMessage);
-      setMessages(prev => [...prev, newMessage]);
-      setNewMessageText("");
-    } catch (err) {
-      console.error("Error sending message:", err);
-    }
-  };
 
 
-const markMessagesAsSeen = async (userId) => {
-  const key1 = `${admin.userId}_${userId}`;
-  const key2 = `${userId}_${admin.userId}`;
 
-  const [r1, r2] = await Promise.all([
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-  ]);
 
-  const updates = {};
+  /* ================= FETCH MESSAGES ================= */
+useEffect(() => {
+  if (!chatId) return;
 
-  const collectUpdates = (data, basePath) => {
-    Object.entries(data || {}).forEach(([msgId, msg]) => {
-      if (msg.receiverId === admin.userId && !msg.seen) {
-        updates[`${basePath}/${msgId}/seen`] = true;
+  const db = getDatabase();
+  const messagesRef = ref(db, `Chats/${chatId}/messages`);
+
+  const unsubscribe = onValue(messagesRef, (snapshot) => {
+    const data = snapshot.val() || {};
+    const list = Object.entries(data)
+      .map(([id, msg]) => ({ messageId: id, ...msg }))
+      .sort((a, b) => a.timeStamp - b.timeStamp);
+    setMessages(list);
+  });
+
+  return () => unsubscribe(); // cleanup listener on unmount
+}, [chatId]);
+
+
+  /* ================= INIT CHAT ================= */
+  const initChatIfMissing = async () => {
+    await axios.patch(`${DB}/Chats/${chatId}.json`, {
+      participants: {
+        [admin.userId]: true,
+        [selectedParent.userId]: true
+      },
+      unread: {
+        [admin.userId]: 0,
+        [selectedParent.userId]: 0
       }
     });
   };
 
-  collectUpdates(r1.data, `Chats/${key1}/messages`);
-  collectUpdates(r2.data, `Chats/${key2}/messages`);
+  /* ================= SEND MESSAGE ================= */
+const sendMessage = async (text) => {
+  if (!text.trim() || !selectedParent) return;
+if (!admin?.userId || !selectedParent?.userId) return;
 
-  if (Object.keys(updates).length > 0) {
-    await axios.patch(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
-      updates
-    );
-  }
+ 
+  const chatId = getChatId(admin.userId, selectedParent.userId);
+  const messageId = Date.now();
+
+  await axios.put(`${DB}/Chats/${chatId}/messages/${messageId}.json`, {
+    senderId: admin.userId,
+    receiverId: selectedParent.userId,
+    type: "text",
+    text,
+    imageUrl: null,
+    replyTo: null,
+    seen: false,
+    edited: false,
+    deleted: false,
+    timeStamp: Date.now(),
+  });
+
+  await axios.patch(`${DB}/Chats/${chatId}.json`, {
+    lastMessage: {
+      text,
+      senderId: admin.userId,
+      seen: false,
+      timeStamp: Date.now(),
+    },
+    unread: {
+      [selectedParent.userId]: 1
+    }
+  });
+
+  setNewMessageText("");
 };
+
+
+  /* ================= MARK AS SEEN ================= */
+ useEffect(() => {
+  if (!selectedParent || !admin?.userId) return;
+
+  const chatId = getChatId(admin.userId, selectedParent.userId);
+
+  axios.patch(`${DB}/Chats/${chatId}.json`, {
+    unread: {
+      [admin.userId]: 0
+    },
+    lastMessage: {
+      seen: true
+    }
+  });
+}, [selectedParent]);
+
 
 
   return (
@@ -730,36 +843,158 @@ const markMessagesAsSeen = async (userId) => {
                 </div>
 
                 {/* DETAILS TAB */}
-                {parentTab === "details" && parentInfo && (
-                  <div style={{ padding: "15px", background: "#f8f9ff", borderRadius: "12px", boxShadow: "0 4px 15px rgba(0,0,0,0.08)" }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "12px", color: "#555" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>User ID:</strong></span>
-                        <span>{parentInfo.userId}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>Email:</strong></span>
-                        <span>{parentInfo.email}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>Phone:</strong></span>
-                        <span>{parentInfo.phone}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>Status:</strong></span>
-                        <span>{parentInfo.status}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>Additional Info:</strong></span>
-                        <span>{parentInfo.additionalInfo}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "#fff", borderRadius: "8px", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                        <span><strong>Created At:</strong></span>
-                        <span>{parentInfo.createdAt}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
+      {parentTab === "details" && parentInfo && (
+  <div
+    style={{
+    
+      padding: 20,
+      width: "480px",
+      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
+      borderRadius: 24,
+      boxShadow: "0 10px 16px rgba(0,0,0,0.15)",
+      fontFamily: "Inter, system-ui",
+    }}
+  >
+    {/* HEADER */}
+    <div style={{ marginBottom: 26 }}>
+      <h3
+        style={{
+        
+          margin: 0,
+          fontSize: 22,
+          fontWeight: 900,
+          color: "#1e40af",
+          letterSpacing: ".2px",
+        }}
+      >
+        👤 Parent Profile
+      </h3>
+      <p
+        style={{
+          margin: "6px 0 0",
+          fontSize: 13,
+          color: "#64748b",
+        }}
+      >
+        Account & personal information overview
+      </p>
+    </div>
+
+    {/* INFO GRID */}
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+        gap: 18,
+      }}
+    >
+      {[
+        { label: "User ID", value: parentInfo.userId, icon: "🆔" },
+        { label: "Email", value: parentInfo.email, icon: "📧" },
+        { label: "Phone", value: parentInfo.phone, icon: "📞" },
+        { label: "Status", value: parentInfo.status, icon: "✅" },
+        { label: "Additional Info", value: parentInfo.additionalInfo, icon: "📝" },
+        { label: "Created At", value: parentInfo.createdAt, icon: "📅" },
+      ].map((item, i) => (
+        <div
+          key={i}
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "8px",
+            background:
+              "linear-gradient(180deg,rgba(255,255,255,.97),rgba(255,255,255,.92))",
+            borderRadius: 18,
+            boxShadow: "0 10px 25px rgba(0,0,0,.1)",
+            transition: "all .25s ease",
+            overflow: "hidden",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = "translateY(-4px)";
+            e.currentTarget.style.boxShadow =
+              "0 20px 40px rgba(0,0,0,.18)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = "translateY(0)";
+            e.currentTarget.style.boxShadow =
+              "0 10px 25px rgba(0,0,0,.1)";
+          }}
+        >
+          {/* LEFT */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: "14px",
+                background:
+                  "linear-gradient(135deg,#6366f1,#2563eb)",
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 18,
+                boxShadow: "0 10px 20px rgba(99,102,241,.45)",
+              }}
+            >
+              {item.icon}
+            </div>
+
+            <div>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: ".6px",
+                  color: "#64748b",
+                }}
+              >
+                {item.label}
+              </div>
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: "#1f2937",
+                  wordBreak: "break-word",
+                }}
+              >
+                {item.value || "-"}
+              </div>
+            </div>
+          </div>
+
+          {/* STATUS PILL */}
+          {item.label === "Status" && (
+            <span
+              style={{
+                padding: "6px 14px",
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 800,
+                background:
+                  parentInfo.status === "active"
+                    ? "#dcfce7"
+                    : "#fee2e2",
+                color:
+                  parentInfo.status === "active"
+                    ? "#166534"
+                    : "#991b1b",
+              }}
+            >
+              {parentInfo.status?.toUpperCase()}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  </div>
+)}
+
 
                 {/* CHILDREN TAB */}
        {/* CHILDREN TAB */}
@@ -1105,4 +1340,3 @@ const markMessagesAsSeen = async (userId) => {
 }
 
 export default Parent;
-

@@ -8,39 +8,38 @@ function Login() {
   const [password, setPassword] = useState("");
   const navigate = useNavigate();
 
-  const handleLogin = async () => {
-    try {
-      const res = await axios.post("http://127.0.0.1:5000/api/login", {
-        username,
-        password,
-      });
+  const handleLogin = async (e) => {
+  e.preventDefault(); // ✅ REQUIRED
 
-      if (res.data.success) {
-      console.log("Backend response:", res.data);
-      console.log("Backend userId:", res.data.userId);
-      console.log("Backend adminId:", res.data.adminId);
-      
-       localStorage.setItem(
-  "admin",
-  JSON.stringify({
-    userId: res.data.userId,   // ✅ REQUIRED
-    adminId: res.data.adminId, // ✅ REQUIRED - From School_Admin node
-    name: res.data.name,
-    username: res.data.username,
-    profileImage: res.data.profileImage || "/default-profile.png",
-    role: "admin"
-  })
-);
+  console.log("LOGIN CLICKED");
 
-        navigate("/dashboard");
-      } else {
-        alert(res.data.message);
-      }
-    } catch (err) {
-      console.error("Login error:", err);
-      alert("Login failed! Check console for details.");
+  try {
+    const res = await axios.post("http://127.0.0.1:5000/api/login", {
+      username,
+      password,
+    });
+
+    console.log("Backend response:", res.data);
+
+    if (res.data.success) {
+      const adminData = {
+        adminId: res.data.adminId,
+        userId: res.data.userId,
+        name: res.data.name,
+        profileImage: res.data.profileImage,
+      };
+
+      localStorage.setItem("admin", JSON.stringify(adminData));
+
+      console.log("Saved admin, navigating now...");
+
+      navigate("/dashboard"); // 👈 MUST TRIGGER
     }
-  };
+  } catch (err) {
+    console.error("Login failed:", err);
+  }
+};
+
 
   return (
     <div className="auth-container">
@@ -60,7 +59,10 @@ function Login() {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <button onClick={handleLogin}>Login</button>
+       <form onSubmit={handleLogin}>
+  <button type="submit">Login</button>
+</form>
+
 
         <p>
           I don’t have an account? <a href="/register">Register</a>

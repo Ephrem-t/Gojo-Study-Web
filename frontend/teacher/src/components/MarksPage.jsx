@@ -26,6 +26,8 @@ export default function MarksPage() {
   const [assessmentList, setAssessmentList] = useState([]);
   const [studentMarks, setStudentMarks] = useState({});
   const [structureSubmitted, setStructureSubmitted] = useState(false);
+  const [activeSemester, setActiveSemester] = useState("semester2"); // default
+
   const navigate = useNavigate();
 
   // ---------------- LOAD TEACHER ----------------
@@ -41,12 +43,11 @@ export default function MarksPage() {
   const teacherUserId = teacher?.userId;
 
 
-  useEffect(() => {
+useEffect(() => {
   if (!selectedCourseId) return;
 
   const loadCourseData = async () => {
     try {
-      // Get all student marks for this course
       const marksRes = await axios.get(
         `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}.json`
       );
@@ -54,40 +55,32 @@ export default function MarksPage() {
       const course = courses.find((c) => c.id === selectedCourseId);
       if (!course) return;
 
-      // Filter students for this course
       const filteredStudents = students.filter(
         (s) => s.grade === course.grade && s.section === course.section
       );
 
-      if (marksRes.data) {
-        // Existing marks exist
-        const initMarks = {};
-        let assessmentListFromDB = [];
+      const initMarks = {};
+      let assessmentListFromDB = [];
 
-        filteredStudents.forEach((s) => {
-          if (marksRes.data[s.id]?.assessments) {
-            initMarks[s.id] = marksRes.data[s.id].assessments;
+      filteredStudents.forEach((s) => {
+        const semData = marksRes.data?.[s.id]?.[activeSemester];
 
-            // Get structure from first student (all should have same structure)
-            if (!assessmentListFromDB.length) {
-              assessmentListFromDB = Object.values(initMarks[s.id]);
-            }
-          } else {
-            // No marks for this student yet, initialize
-            initMarks[s.id] = {};
+        if (semData?.assessments) {
+          initMarks[s.id] = semData.assessments;
+
+          if (!assessmentListFromDB.length) {
+            assessmentListFromDB = Object.values(semData.assessments);
           }
-        });
+        } else {
+          initMarks[s.id] = {};
+        }
+      });
 
-        setStudentMarks(initMarks);
-        setAssessmentList(
-          assessmentListFromDB.map((a, idx) => ({ name: a.name, max: a.max }))
-        );
-        setStructureSubmitted(true);
-      } else {
-        // No marks exist, allow structure creation
-        setStructureSubmitted(false);
-        setStudentMarks({});
-      }
+      setStudentMarks(initMarks);
+      setAssessmentList(
+        assessmentListFromDB.map((a) => ({ name: a.name, max: a.max }))
+      );
+      setStructureSubmitted(assessmentListFromDB.length > 0);
     } catch (err) {
       console.error("Error loading marks:", err);
       setStructureSubmitted(false);
@@ -96,7 +89,7 @@ export default function MarksPage() {
   };
 
   loadCourseData();
-}, [selectedCourseId, courses, students]);
+}, [selectedCourseId, courses, students, activeSemester]);
 
 
 
@@ -203,44 +196,44 @@ export default function MarksPage() {
 
   const structureObj = {};
   assessmentList.forEach((a, idx) => {
-    structureObj[`a${idx + 1}`] = { name: a.name, max: Number(a.max) };
+    structureObj[`a${idx + 1}`] = {
+      name: a.name,
+      max: Number(a.max),
+      score: 0,
+    };
   });
 
   try {
-    // No more deleting assessmentStructure node
-
-    // Filter students for this course
     const course = courses.find((c) => c.id === selectedCourseId);
     if (!course) return;
+
     const filteredStudents = students.filter(
       (s) => s.grade === course.grade && s.section === course.section
     );
 
-    // Initialize marks for each student directly under their student node
-    const marksInit = {};
-    filteredStudents.forEach((s) => {
-      marksInit[s.id] = {};
-      Object.entries(structureObj).forEach(([k, a]) => {
-        marksInit[s.id][k] = { ...a, score: 0 };
-      });
-    });
-
-    // Save student marks to DB directly
     await Promise.all(
       filteredStudents.map((s) =>
         axios.put(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${s.id}.json`,
-          { teacherName: teacher.name, assessments: marksInit[s.id] }
+          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${s.id}/${activeSemester}.json`,
+          {
+            teacherName: teacher.name,
+            assessments: structureObj,
+          }
         )
       )
     );
 
-    setStudentMarks(marksInit);
+    const initMarks = {};
+    filteredStudents.forEach((s) => {
+      initMarks[s.id] = structureObj;
+    });
+
+    setStudentMarks(initMarks);
     setStructureSubmitted(true);
-    alert("Student marks initialized successfully!");
+    alert("Assessment structure saved!");
   } catch (err) {
     console.error("Error submitting structure:", err);
-    alert("Failed to submit structure.");
+    alert("Failed to submit structure");
   }
 };
 
@@ -252,13 +245,22 @@ export default function MarksPage() {
     }));
   };
 
-  const saveMarks = async (sid) => {
+ const saveMarks = async (sid) => {
+  try {
     await axios.put(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${sid}.json`,
-      { teacherName: teacher.name, assessments: studentMarks[sid] }
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}.json`,
+      {
+        teacherName: teacher.name,
+        assessments: studentMarks[sid],
+      }
     );
-    alert("Marks saved");
-  };
+    alert("Marks saved successfully");
+  } catch (err) {
+    console.error("Save failed:", err);
+    alert("Failed to save marks");
+  }
+};
+
 
   const handleLogout = () => {
     localStorage.removeItem("teacher");
@@ -306,9 +308,7 @@ export default function MarksPage() {
             <Link className="sidebar-btn" to="/dashboard">
               <FaHome /> Home
             </Link>
-            <Link className="sidebar-btn" to="/notes">
-              <FaClipboardCheck /> Notes
-            </Link>
+           
             <Link className="sidebar-btn" to="/students">
               <FaUsers /> Students
             </Link>
@@ -345,6 +345,7 @@ export default function MarksPage() {
   style={{
     flex: 1,
     display: "flex",
+    
     justifyContent: "center",
     padding: "40px",
     marginLeft: "150px",
@@ -411,6 +412,69 @@ export default function MarksPage() {
         ))}
       </select>
     </div>
+
+{/* Semester Tabs */}
+{selectedCourseId && (
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "center",
+      gap: "40px",
+      marginBottom: "35px",
+      borderBottom: "2px solid #c7d2fe",
+      paddingBottom: "10px",
+    }}
+  >
+    {["semester1", "semester2"].map((sem) => {
+      const isActive = activeSemester === sem;
+      return (
+        <button
+          key={sem}
+          onClick={() => {
+            setActiveSemester(sem);
+            setStructureSubmitted(false);
+            setAssessmentList([]);
+            setStudentMarks({});
+          }}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            fontSize: "18px",
+            fontWeight: "700",
+            letterSpacing: "1px",
+            color: isActive ? "#1e40af" : "#6b7280",
+            paddingBottom: "12px",
+            position: "relative",
+            transition: "0.3s all",
+          }}
+        >
+          {sem === "semester1" ? "Semester 1" : "Semester 2"}
+
+          {/* Active underline */}
+          {isActive && (
+            <span
+              style={{
+                position: "absolute",
+                left: 0,
+                bottom: "-2px",
+                width: "100%",
+                height: "4px",
+                borderRadius: "6px",
+                background: "linear-gradient(135deg, #4b6cb7, #1e40af)",
+              }}
+            />
+          )}
+        </button>
+      );
+    })}
+  </div>
+)}
+
+
+
+
+
 
     {/* Edit Structure */}
     {structureSubmitted && (
@@ -571,7 +635,7 @@ export default function MarksPage() {
       >
         <table
           style={{
-            width: "100%",
+            width: "100%s",
             borderCollapse: "separate",
             borderSpacing: "0 12px",
             fontSize: "15px",

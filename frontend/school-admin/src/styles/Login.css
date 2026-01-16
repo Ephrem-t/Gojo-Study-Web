@@ -28,6 +28,23 @@
   font-weight: bold;
 }
 
+.auth-box input,
+.auth-box select {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+  outline: none;
+}
+
+.auth-box select {
+  background-color: #fff;
+  cursor: pointer;
+}
+
+
 .auth-box input[type="text"],
 .auth-box input[type="password"],
 .auth-box input[type="file"] {

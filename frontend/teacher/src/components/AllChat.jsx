@@ -1,24 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck } from "react-icons/fa";
-import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
+import { db } from "../firebase";
 
 const getChatId = (id1, id2) => [String(id1), String(id2)].sort().join("_");
 
 /* ================= FIREBASE ================= */
-const firebaseConfig = {
-  apiKey: "AIzaSyCMkZr4Xz204NjvETje-Rhznf6ECDYiEnE",
-  authDomain: "ethiostore-17d9f.firebaseapp.com",
-  databaseURL: "https://ethiostore-17d9f-default-rtdb.firebaseio.com",
-  projectId: "ethiostore-17d9f",
-  storageBucket: "ethiostore-17d9f.appspot.com",
-  messagingSenderId: "964518277159",
-  appId: "1:964518277159:web:9404cace890edf88961e02",
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
 
 export default function TeacherAllChat() {
   const navigate = useNavigate();

@@ -1,102 +1,167 @@
 import React, { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger , FaSearch, FaCalendarAlt  } from "react-icons/fa";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  FaHome,
+  FaFileAlt,
+  FaChalkboardTeacher,
+  FaCog,
+  FaSignOutAlt,
+  FaBell,
+  FaFacebookMessenger,
+  FaSearch,
+  FaCalendarAlt,
+} from "react-icons/fa";
 import axios from "axios";
 import useDarkMode from "../hooks/useDarkMode";
-import { useNavigate } from "react-router-dom";
-
 
 function SettingsPage() {
-  const [admin, setAdmin] = useState(JSON.parse(localStorage.getItem("admin")) || {});
+  const [admin, setAdmin] = useState(
+    JSON.parse(localStorage.getItem("admin")) || {}
+  );
   const [selectedFile, setSelectedFile] = useState(null);
-  const [profileImage, setProfileImage] = useState(admin.profileImage || "/default-profile.png");
-    const [darkMode, toggleDarkMode] = useDarkMode();
+  const [profileImage, setProfileImage] = useState(
+    admin.profileImage || "/default-profile.png"
+  );
+  const [darkMode, toggleDarkMode] = useDarkMode();
 
   const [name, setName] = useState(admin.name || "");
   const [username, setUsername] = useState(admin.username || "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-    const navigate = useNavigate();
-  const [unreadSenders, setUnreadSenders] = useState([]); 
+  const navigate = useNavigate();
+  const [unreadSenders, setUnreadSenders] = useState([]);
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 
-const [postNotifications, setPostNotifications] = useState([]);
-const [showPostDropdown, setShowPostDropdown] = useState(false);
+  // POST NOTIFICATIONS
+  const [postNotifications, setPostNotifications] = useState([]);
+  const [showPostDropdown, setShowPostDropdown] = useState(false);
 
+  const adminId = admin.userId;
 
-const adminId = admin.userId;
+  // Fetch post notifications and enrich each with poster's name & profile image
+  const fetchPostNotifications = async () => {
+  if (!adminId) return;
 
-const fetchPostNotifications = async () => {
   try {
+    // 1️⃣ Get post notifications
     const res = await axios.get(
       `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
     );
 
-    const notifications = (res.data || []).map(n => ({
-      ...n,
-      notificationId: n.notificationId || n.id
-    }));
+    let notifications = Array.isArray(res.data)
+      ? res.data
+      : Object.values(res.data || {});
 
-    setPostNotifications(notifications);
+    if (notifications.length === 0) {
+      setPostNotifications([]);
+      return;
+    }
+
+    // 2️⃣ Fetch Users & School_Admins
+    const [usersRes, adminsRes] = await Promise.all([
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      ),
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
+      ),
+    ]);
+
+    const users = usersRes.data || {};
+    const admins = adminsRes.data || {};
+
+    // 3️⃣ Helpers
+    const findAdminUser = (adminId) => {
+      const admin = admins[adminId];
+      if (!admin) return null;
+
+      return Object.values(users).find(
+        (u) => u.userId === admin.userId
+      );
+    };
+
+    // 4️⃣ Enrich notifications
+    const enriched = notifications.map((n) => {
+      const posterUser = findAdminUser(n.adminId);
+
+      return {
+        ...n,
+        notificationId:
+          n.notificationId ||
+          n.id ||
+          `${n.postId}_${n.adminId}`,
+
+        adminName: posterUser?.name || "Unknown Admin",
+        adminProfile:
+          posterUser?.profileImage || "/default-profile.png",
+      };
+    });
+
+    setPostNotifications(enriched);
   } catch (err) {
     console.error("Post notification fetch failed", err);
+    setPostNotifications([]);
   }
 };
 
 
-useEffect(() => {
-  if (!adminId) return;
+  useEffect(() => {
+    if (!adminId) return;
 
-  fetchPostNotifications();
-  const interval = setInterval(fetchPostNotifications, 5000);
+    fetchPostNotifications();
+    const interval = setInterval(fetchPostNotifications, 5000);
 
-  return () => clearInterval(interval);
-}, [adminId]);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminId]);
 
+ const handleNotificationClick = async (notification) => {
+  try {
+    await axios.post(
+      "http://127.0.0.1:5000/api/mark_post_notification_read",
+      {
+        notificationId: notification.notificationId,
+        adminId: admin.userId,
+      }
+    );
+  } catch (err) {
+    console.warn("Failed to delete notification:", err);
+  }
 
-const handleNotificationClick = async (notification) => {
-  // Mark as read in backend
-  await axios.post(
-    "http://127.0.0.1:5000/api/mark_post_notification_read",
-    { notificationId: notification.notificationId }
-  );
-
-  // Remove from UI
-  setPostNotifications(prev =>
-    prev.filter(n => n.notificationId !== notification.notificationId)
+  // 🔥 REMOVE FROM UI IMMEDIATELY
+  setPostNotifications((prev) =>
+    prev.filter((n) => n.notificationId !== notification.notificationId)
   );
 
   setShowPostDropdown(false);
 
-  // Navigate to dashboard with postId
+  // ➜ Navigate to post
   navigate("/dashboard", {
-    state: { postId: notification.postId }
+    state: { postId: notification.postId },
   });
 };
-
-
 useEffect(() => {
-  const closeDropdown = (e) => {
-    if (
-      !e.target.closest(".icon-circle") &&
-      !e.target.closest(".notification-dropdown")
-    ) {
-      setShowPostDropdown(false);
-    }
-  };
-
-  document.addEventListener("click", closeDropdown);
-  return () => document.removeEventListener("click", closeDropdown);
+  if (location.state?.postId) {
+    setPostNotifications([]);
+  }
 }, []);
 
 
+  useEffect(() => {
+    const closeDropdown = (e) => {
+      if (
+        !e.target.closest(".icon-circle") &&
+        !e.target.closest(".notification-dropdown")
+      ) {
+        setShowPostDropdown(false);
+      }
+    };
 
+    document.addEventListener("click", closeDropdown);
+    return () => document.removeEventListener("click", closeDropdown);
+  }, []);
 
-
-
-
-
-
+  // ------------------ rest of the component (unchanged) ------------------
 
   const handleFileChange = (e) => setSelectedFile(e.target.files[0]);
 
@@ -154,14 +219,12 @@ useEffect(() => {
     }
   };
 
-    const toggleDropdown = () => {
-    setShowMessageDropdown(prev => !prev);
+  const toggleDropdown = () => {
+    setShowMessageDropdown((prev) => !prev);
   };
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const closeDropdown = (e) => {
-      // Optional: check if click is outside the dropdown element
       setShowMessageDropdown(false);
     };
 
@@ -169,423 +232,410 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-
   useEffect(() => {
-    // Replace with your actual API call
     const fetchUnreadSenders = async () => {
-      const response = await fetch("/api/unreadSenders");
-      const data = await response.json();
-      setUnreadSenders(data);
+      try {
+        const response = await fetch("/api/unreadSenders");
+        const data = await response.json();
+        setUnreadSenders(data);
+      } catch (err) {
+        // ignore
+      }
     };
     fetchUnreadSenders();
   }, []);
 
-const handleClick = () => {
-    navigate("/all-chat"); // replace with your target route
+  const handleClick = () => {
+    navigate("/all-chat");
   };
 
- // ---------------- FETCH UNREAD MESSAGES ----------------
-const fetchUnreadMessages = async () => {
-  if (!admin.userId) return;
+  // ---------------- FETCH UNREAD MESSAGES ----------------
+  const fetchUnreadMessages = async () => {
+    if (!admin.userId) return;
 
-  const senders = {};
+    const senders = {};
 
-  try {
-    // 1️⃣ USERS (names & images)
-    const usersRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-    );
-    const usersData = usersRes.data || {};
+    try {
+      // 1) USERS (names & images)
+      const usersRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      );
+      const usersData = usersRes.data || {};
 
- const findUserByUserId = (userId) => {
-  return Object.values(usersData).find(u => u.userId === userId);
-};
+      const findUserByUserId = (userId) => {
+        return Object.values(usersData).find((u) => u.userId === userId);
+      };
 
+      const getUnreadCount = async (userId) => {
+        const key1 = `${admin.userId}_${userId}`;
+        const key2 = `${userId}_${admin.userId}`;
 
+        const [r1, r2] = await Promise.all([
+          axios.get(
+            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+          ),
+          axios.get(
+            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+          ),
+        ]);
 
-    // helper to read messages from BOTH chat keys
-    const getUnreadCount = async (userId) => {
-      const key1 = `${admin.userId}_${userId}`;
-      const key2 = `${userId}_${admin.userId}`;
+        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
 
-      const [r1, r2] = await Promise.all([
-        axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-        axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-      ]);
+        return msgs.filter((m) => m.receiverId === admin.userId && !m.seen).length;
+      };
 
-      const msgs = [
-        ...Object.values(r1.data || {}),
-        ...Object.values(r2.data || {})
-      ];
+      // TEACHERS
+      const teachersRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+      );
 
-      return msgs.filter(
-        m => m.receiverId === admin.userId && !m.seen
-      ).length;
+      for (const k in teachersRes.data || {}) {
+        const t = teachersRes.data[k];
+        const unread = await getUnreadCount(t.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(t.userId);
+
+          senders[t.userId] = {
+            type: "teacher",
+            name: user?.name || "Teacher",
+            profileImage: user?.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      // STUDENTS
+      const studentsRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+      );
+
+      for (const k in studentsRes.data || {}) {
+        const s = studentsRes.data[k];
+        const unread = await getUnreadCount(s.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(s.userId);
+
+          senders[s.userId] = {
+            type: "student",
+            name: user?.name || s.name || "Student",
+            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      // PARENTS
+      const parentsRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
+      );
+
+      for (const k in parentsRes.data || {}) {
+        const p = parentsRes.data[k];
+        const unread = await getUnreadCount(p.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(p.userId);
+
+          senders[p.userId] = {
+            type: "parent",
+            name: user?.name || p.name || "Parent",
+            profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      setUnreadSenders(senders);
+    } catch (err) {
+      console.error("Unread fetch failed:", err);
+    }
+  };
+
+  // ---------------- CLOSE DROPDOWN WHEN CLICKING OUTSIDE ----------------
+  useEffect(() => {
+    const closeDropdown = (e) => {
+      if (!e.target.closest(".icon-circle") && !e.target.closest(".messenger-dropdown")) {
+        setShowMessageDropdown(false);
+      }
     };
 
-    // 2️⃣ TEACHERS
-    const teachersRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
-    );
+    document.addEventListener("click", closeDropdown);
+    return () => document.removeEventListener("click", closeDropdown);
+  }, []);
 
-    for (const k in teachersRes.data || {}) {
-      const t = teachersRes.data[k];
-      const unread = await getUnreadCount(t.userId);
+  useEffect(() => {
+    if (!admin.userId) return;
 
-      if (unread > 0) {
-       const user = findUserByUserId(t.userId);
+    fetchUnreadMessages();
+    const interval = setInterval(fetchUnreadMessages, 5000);
 
-senders[t.userId] = {
-  type: "teacher",
-  name: user?.name || "Teacher",
-  profileImage: user?.profileImage || "/default-profile.png",
-  count: unread
-};
-      }
-    }
+    return () => clearInterval(interval);
+  }, [admin.userId]);
 
-    // 3️⃣ STUDENTS
-    const studentsRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
-    );
+  const markMessagesAsSeen = async (userId) => {
+    const key1 = `${admin.userId}_${userId}`;
+    const key2 = `${userId}_${admin.userId}`;
 
-    for (const k in studentsRes.data || {}) {
-      const s = studentsRes.data[k];
-      const unread = await getUnreadCount(s.userId);
+    const [r1, r2] = await Promise.all([
+      axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+      ),
+      axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+      ),
+    ]);
 
-      if (unread > 0) {
-        const user = findUserByUserId(s.userId);
+    const updates = {};
 
-senders[s.userId] = {
-  type: "student",
-  name: user?.name || s.name || "Student",
-  profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
-  count: unread
-};
+    const collectUpdates = (data, basePath) => {
+      Object.entries(data || {}).forEach(([msgId, msg]) => {
+        if (msg.receiverId === admin.userId && !msg.seen) {
+          updates[`${basePath}/${msgId}/seen`] = true;
+        }
+      });
+    };
 
-      }
-    }
+    collectUpdates(r1.data, `Chats/${key1}/messages`);
+    collectUpdates(r2.data, `Chats/${key2}/messages`);
 
-    // 4️⃣ PARENTS
-    const parentsRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
-    );
-
-    for (const k in parentsRes.data || {}) {
-      const p = parentsRes.data[k];
-      const unread = await getUnreadCount(p.userId);
-
-      if (unread > 0) {
-       const user = findUserByUserId(p.userId);
-
-senders[p.userId] = {
-  type: "parent",
-  name: user?.name || p.name || "Parent",
-  profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
-  count: unread
-};
-
-      }
-    }
-
-    setUnreadSenders(senders);
-  } catch (err) {
-    console.error("Unread fetch failed:", err);
-  }
-};
-
-  // ---------------- CLOSE DROPDOWN ON OUTSIDE CLICK ----------------
-useEffect(() => {
-  const closeDropdown = (e) => {
-    if (
-      !e.target.closest(".icon-circle") &&
-      !e.target.closest(".messenger-dropdown")
-    ) {
-      setShowMessageDropdown(false);
+    if (Object.keys(updates).length > 0) {
+      await axios.patch(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
+        updates
+      );
     }
   };
-
-  document.addEventListener("click", closeDropdown);
-  return () => document.removeEventListener("click", closeDropdown);
-}, []);
-
-
-useEffect(() => {
-  if (!admin.userId) return;
-
-  fetchUnreadMessages();
-  const interval = setInterval(fetchUnreadMessages, 5000);
-
-  return () => clearInterval(interval);
-}, [admin.userId]);
-
-
-const markMessagesAsSeen = async (userId) => {
-  const key1 = `${admin.userId}_${userId}`;
-  const key2 = `${userId}_${admin.userId}`;
-
-  const [r1, r2] = await Promise.all([
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-  ]);
-
-  const updates = {};
-
-  const collectUpdates = (data, basePath) => {
-    Object.entries(data || {}).forEach(([msgId, msg]) => {
-      if (msg.receiverId === admin.userId && !msg.seen) {
-        updates[`${basePath}/${msgId}/seen`] = true;
-      }
-    });
-  };
-
-  collectUpdates(r1.data, `Chats/${key1}/messages`);
-  collectUpdates(r2.data, `Chats/${key2}/messages`);
-
-  if (Object.keys(updates).length > 0) {
-    await axios.patch(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
-      updates
-    );
-  }
-};
-
-
 
   return (
     <div className="dashboard-page">
-     
-     {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-     <nav className="top-navbar">
-       <h2>Gojo Dashboard</h2>
-     
-       {/* Search Bar */}
-       <div className="nav-search">
-         <FaSearch className="search-icon" />
-         <input type="text" placeholder="Search Teacher and Student..." />
-       </div>
-     
-       <div className="nav-right">
-         {/* Notification */}
-         <div
-  className="icon-circle"
-  style={{ position: "relative", cursor: "pointer" }}
-  onClick={(e) => {
-    e.stopPropagation();
-    setShowPostDropdown(prev => !prev);
-  }}
->
-  <FaBell />
+      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
+      <nav className="top-navbar">
+        <h2>Gojo Dashboard</h2>
 
-  {/* 🔴 Notification Count */}
-  {postNotifications.length > 0 && (
-    <span
-      style={{
-        position: "absolute",
-        top: "-5px",
-        right: "-5px",
-        background: "red",
-        color: "#fff",
-        borderRadius: "50%",
-        padding: "2px 6px",
-        fontSize: "10px",
-        fontWeight: "bold"
-      }}
-    >
-      {postNotifications.length}
-    </span>
-  )}
+        {/* Search Bar */}
+        <div className="nav-search">
+          <FaSearch className="search-icon" />
+          <input type="text" placeholder="Search Teacher and Student..." />
+        </div>
 
-  {/* 🔔 Notification Dropdown */}
-  {showPostDropdown && (
-    <div
-      className="notification-dropdown"
-      style={{
-        position: "absolute",
-        top: "40px",
-        right: "0",
-        width: "350px",
-        maxHeight: "400px",
-        overflowY: "auto",
-        background: "#fff",
-        borderRadius: "10px",
-        boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-        zIndex: 1000
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {postNotifications.length === 0 ? (
-        <p style={{ padding: "12px", textAlign: "center" }}>
-          No new notifications
-        </p>
-      ) : (
-        postNotifications.map(n => (
+        <div className="nav-right">
+          {/* Notification */}
           <div
-            key={n.notificationId}
-            style={{
-              display: "flex",
-              gap: "10px",
-              padding: "10px",
-              cursor: "pointer",
-              borderBottom: "1px solid #eee"
+            className="icon-circle"
+            style={{ position: "relative", cursor: "pointer" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowPostDropdown((prev) => !prev);
             }}
-            onClick={() => handleNotificationClick(n)}
           >
-            <img
-              src={n.adminProfile || "/default-profile.png"}
-              alt={n.adminName}
-              style={{
-                width: "40px",
-                height: "40px",
-                borderRadius: "50%"
-              }}
-            />
-            <div>
-              <strong>{n.adminName}</strong>
-              <p style={{ margin: 0 }}>{n.message}</p>
-            </div>
+            <FaBell />
+
+            {/* 🔴 Notification Count */}
+            {postNotifications.length > 0 && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: "-5px",
+                  right: "-5px",
+                  background: "red",
+                  color: "#fff",
+                  borderRadius: "50%",
+                  padding: "2px 6px",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                }}
+              >
+                {postNotifications.length}
+              </span>
+            )}
+
+            {/* 🔔 Notification Dropdown */}
+            {showPostDropdown && (
+              <div
+                className="notification-dropdown"
+                style={{
+                  position: "absolute",
+                  top: "40px",
+                  right: "0",
+                  width: "350px",
+                  maxHeight: "400px",
+                  overflowY: "auto",
+                  background: "#fff",
+                  borderRadius: "10px",
+                  boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
+                  zIndex: 1000,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {postNotifications.length === 0 ? (
+                  <p style={{ padding: "12px", textAlign: "center" }}>No new notifications</p>
+                ) : (
+                  postNotifications.map((n) => (
+                    <div
+                      key={n.notificationId}
+                      style={{
+                        display: "flex",
+                        gap: "10px",
+                        padding: "10px",
+                        cursor: "pointer",
+                        borderBottom: "1px solid #eee",
+                      }}
+                      onClick={() => handleNotificationClick(n)}
+                    >
+                      <img
+                        src={n.adminProfile || "/default-profile.png"}
+                        alt={n.adminName}
+                        style={{
+                          width: "40px",
+                          height: "40px",
+                          borderRadius: "50%",
+                        }}
+                      />
+                      <div>
+                        <strong>{n.adminName}</strong>
+                        <p style={{ margin: 0 }}>{n.message}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
-        ))
-      )}
-    </div>
-  )}
-</div>
 
+          {/* ================= MESSENGER ================= */}
+          <div
+            className="icon-circle"
+            style={{ position: "relative", cursor: "pointer" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowMessageDropdown((prev) => !prev);
+            }}
+          >
+            <FaFacebookMessenger />
 
-   {/* ================= MESSENGER ================= */}
-   <div
-     className="icon-circle"
-     style={{ position: "relative", cursor: "pointer" }}
-     onClick={(e) => {
-       e.stopPropagation();
-       setShowMessageDropdown((prev) => !prev);
-     }}
-   >
-     <FaFacebookMessenger />
-   
-     {/* 🔴 TOTAL UNREAD COUNT */}
-     {Object.keys(unreadSenders).length > 0 && (
-       <span
-         style={{
-           position: "absolute",
-           top: "-5px",
-           right: "-5px",
-           background: "red",
-           color: "#fff",
-           borderRadius: "50%",
-           padding: "2px 6px",
-           fontSize: "10px",
-           fontWeight: "bold"
-         }}
-       >
-         {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
-       </span>
-     )}
-   
-     {/* 📩 DROPDOWN */}
-     {showMessageDropdown && (
-       <div
-         style={{
-           position: "absolute",
-           top: "40px",
-           right: "0",
-           width: "300px",
-           background: "#fff",
-           borderRadius: "10px",
-           boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-           zIndex: 1000
-         }}
-       >
-         {Object.keys(unreadSenders).length === 0 ? (
-           <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-             No new messages
-           </p>
-         ) : (
-           Object.entries(unreadSenders).map(([userId, sender]) => (
-             <div
-               key={userId}
-               style={{
-                 padding: "12px",
-                 display: "flex",
-                 alignItems: "center",
-                 gap: "10px",
-                 cursor: "pointer",
-                 borderBottom: "1px solid #eee"
-               }}
-              onClick={async () => {
-  setShowMessageDropdown(false);
+            {/* 🔴 TOTAL UNREAD COUNT */}
+            {Object.keys(unreadSenders).length > 0 && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: "-5px",
+                  right: "-5px",
+                  background: "red",
+                  color: "#fff",
+                  borderRadius: "50%",
+                  padding: "2px 6px",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                }}
+              >
+                {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
+              </span>
+            )}
 
-  // 1️⃣ Mark messages as seen in DB
-  await markMessagesAsSeen(userId);
+            {/* 📩 DROPDOWN */}
+            {showMessageDropdown && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "40px",
+                  right: "0",
+                  width: "300px",
+                  background: "#fff",
+                  borderRadius: "10px",
+                  boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
+                  zIndex: 1000,
+                }}
+              >
+                {Object.keys(unreadSenders).length === 0 ? (
+                  <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
+                    No new messages
+                  </p>
+                ) : (
+                  Object.entries(unreadSenders).map(([userId, sender]) => (
+                    <div
+                      key={userId}
+                      style={{
+                        padding: "12px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        cursor: "pointer",
+                        borderBottom: "1px solid #eee",
+                      }}
+                      onClick={async () => {
+                        setShowMessageDropdown(false);
 
-  // 2️⃣ Remove sender immediately from UI
-  setUnreadSenders(prev => {
-    const copy = { ...prev };
-    delete copy[userId];
-    return copy;
-  });
+                        // 1️⃣ Mark messages as seen in DB
+                        await markMessagesAsSeen(userId);
 
-  // 3️⃣ Navigate to exact chat
-  navigate("/all-chat", {
-    state: {
-      user: {
-        userId,
-        name: sender.name,
-        profileImage: sender.profileImage,
-        type: sender.type
-      }
-    }
-  });
-}}
+                        // 2️⃣ Remove sender immediately from UI
+                        setUnreadSenders((prev) => {
+                          const copy = { ...prev };
+                          delete copy[userId];
+                          return copy;
+                        });
 
-   
-   
-             >
-               <img
-                 src={sender.profileImage}
-                 alt={sender.name}
-                 style={{
-                   width: "42px",
-                   height: "42px",
-                   borderRadius: "50%"
-                 }}
-               />
-               <div>
-                 <strong>{sender.name}</strong>
-                 <p style={{ fontSize: "12px", margin: 0 }}>
-                   {sender.count} new message{sender.count > 1 && "s"}
-                 </p>
-               </div>
-             </div>
-           ))
-         )}
-       </div>
-     )}
-   </div>
-   {/* ============== END MESSENGER ============== */}
-   
-         {/* Settings */}
-           <Link className="icon-circle" to="/settings">
-                 <FaCog />
-               </Link>
-     
-         {/* Profile */}
-         <img
-           src={admin.profileImage || "/default-profile.png"}
-           alt="admin"
-           className="profile-img"
-         />
-         {/* <span>{admin.name}</span> */}
-       </div>
-     </nav>
-     
-     
-     
-     
+                        // 3️⃣ Navigate to exact chat
+                        navigate("/all-chat", {
+                          state: {
+                            user: {
+                              userId,
+                              name: sender.name,
+                              profileImage: sender.profileImage,
+                              type: sender.type,
+                            },
+                          },
+                        });
+                      }}
+                    >
+                      <img
+                        src={sender.profileImage}
+                        alt={sender.name}
+                        style={{
+                          width: "42px",
+                          height: "42px",
+                          borderRadius: "50%",
+                        }}
+                      />
+                      <div>
+                        <strong>{sender.name}</strong>
+                        <p style={{ fontSize: "12px", margin: 0 }}>
+                          {sender.count} new message{sender.count > 1 && "s"}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          {/* ============== END MESSENGER ============== */}
 
-      <div className="google-dashboard" style={{ background: darkMode ? "#2c2c2c" : "#f1f1f1" }}>
+          {/* Settings */}
+          <Link className="icon-circle" to="/settings">
+            <FaCog />
+          </Link>
+
+          {/* Profile */}
+          <img
+            src={admin.profileImage || "/default-profile.png"}
+            alt="admin"
+            className="profile-img"
+          />
+        </div>
+      </nav>
+
+      <div
+        className="google-dashboard"
+        style={{ background: darkMode ? "#2c2c2c" : "#f1f1f1" }}
+      >
         {/* SIDEBAR */}
-        <div className="google-sidebar" style={{ background: darkMode ? "#1a1a1a" : "#fff" }}>
+        <div
+          className="google-sidebar"
+          style={{ background: darkMode ? "#1a1a1a" : "#fff" }}
+        >
           <div className="sidebar-profile">
             <div className="sidebar-img-circle">
               <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
@@ -594,31 +644,34 @@ const markMessagesAsSeen = async (userId) => {
             <p>{admin.username}</p>
           </div>
           <div className="sidebar-menu">
-           <Link className="sidebar-btn" to="/dashboard"
-                 
-                  > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
-                   <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
-                   <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-                     <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students</Link>
-                      <Link
-                                   className="sidebar-btn"
-                                   to="/schedule"
-                                   
-                                 >
-                                   <FaCalendarAlt /> Schedule
-                                 </Link>
-                      <Link className="sidebar-btn" to="/parents" ><FaChalkboardTeacher /> Parents
-                                 </Link>
-               
-                   <button
-                     className="sidebar-btn logout-btn"
-                     onClick={() => {
-                       localStorage.removeItem("admin");
-                       window.location.href = "/login";
-                     }}
-                   >
-                     <FaSignOutAlt /> Logout
-                   </button>
+            <Link className="sidebar-btn" to="/dashboard">
+              <FaHome style={{ width: "28px", height: "28px" }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts">
+              <FaFileAlt /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers">
+              <FaChalkboardTeacher /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students">
+              <FaChalkboardTeacher /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule">
+              <FaCalendarAlt /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents">
+              <FaChalkboardTeacher /> Parents
+            </Link>
+
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => {
+                localStorage.removeItem("admin");
+                window.location.href = "/login";
+              }}
+            >
+              <FaSignOutAlt /> Logout
+            </button>
           </div>
         </div>
 
@@ -638,66 +691,140 @@ const markMessagesAsSeen = async (userId) => {
           <h2>Settings</h2>
 
           {/* Profile Image */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              padding: "30px",
+              borderRadius: "12px",
+              background: darkMode ? "#3a3a3a" : "#fff",
+              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
+            }}
+          >
             <img
               src={profileImage}
               alt="profile"
-              style={{ width: "150px", height: "150px", borderRadius: "50%", objectFit: "cover", marginBottom: "15px", border: "3px solid #4b6cb7" }}
+              style={{
+                width: "150px",
+                height: "150px",
+                borderRadius: "50%",
+                objectFit: "cover",
+                marginBottom: "15px",
+                border: "3px solid #4b6cb7",
+              }}
             />
             <input type="file" onChange={handleFileChange} />
-            <button onClick={handleProfileSubmit} style={{ marginTop: "15px", padding: "10px 20px", borderRadius: "8px", border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer" }}>
+            <button
+              onClick={handleProfileSubmit}
+              style={{
+                marginTop: "15px",
+                padding: "10px 20px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#4b6cb7",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
               Update Profile Image
             </button>
           </div>
 
           {/* Name / Username */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <input type="text" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <button onClick={handleInfoUpdate} style={{ padding: "10px 20px", borderRadius: "8px", border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer" }}>Update Info</button>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+              padding: "30px",
+              borderRadius: "12px",
+              background: darkMode ? "#3a3a3a" : "#fff",
+              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
+            }}
+          >
+            <input
+              type="text"
+              placeholder="Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+            />
+            <input
+              type="text"
+              placeholder="Username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+            />
+            <button
+              onClick={handleInfoUpdate}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#4b6cb7",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Update Info
+            </button>
           </div>
 
           {/* Password */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <input type="password" placeholder="New Password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <button onClick={handlePasswordChange} style={{ padding: "10px 20px", borderRadius: "8px", border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer" }}>Change Password</button>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+              padding: "30px",
+              borderRadius: "12px",
+              background: darkMode ? "#3a3a3a" : "#fff",
+              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
+            }}
+          >
+            <input
+              type="password"
+              placeholder="New Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+            />
+            <input
+              type="password"
+              placeholder="Confirm Password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+            />
+            <button
+              onClick={handlePasswordChange}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#4b6cb7",
+                color: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              Change Password
+            </button>
           </div>
 
           {/* Dark Mode */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "15px",
-            padding: "20px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "15px",
+              padding: "20px",
+              borderRadius: "12px",
+              background: darkMode ? "#3a3a3a" : "#fff",
+              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
+            }}
+          >
             <label style={{ fontSize: "18px", fontWeight: "500" }}>Dark Mode</label>
             <input type="checkbox" checked={darkMode} onChange={toggleDarkMode} />
           </div>

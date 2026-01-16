@@ -42,21 +42,70 @@ const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 
 const fetchPostNotifications = async () => {
+  if (!adminId) return;
+
   try {
+    // 1️⃣ Get post notifications
     const res = await axios.get(
       `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
     );
 
-    const notifications = (res.data || []).map(n => ({
-      ...n,
-      notificationId: n.notificationId || n.id
-    }));
+    let notifications = Array.isArray(res.data)
+      ? res.data
+      : Object.values(res.data || {});
 
-    setPostNotifications(notifications);
+    if (notifications.length === 0) {
+      setPostNotifications([]);
+      return;
+    }
+
+    // 2️⃣ Fetch Users & School_Admins
+    const [usersRes, adminsRes] = await Promise.all([
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      ),
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
+      ),
+    ]);
+
+    const users = usersRes.data || {};
+    const admins = adminsRes.data || {};
+
+    // 3️⃣ Helpers
+    const findAdminUser = (adminId) => {
+      const admin = admins[adminId];
+      if (!admin) return null;
+
+      return Object.values(users).find(
+        (u) => u.userId === admin.userId
+      );
+    };
+
+    // 4️⃣ Enrich notifications
+    const enriched = notifications.map((n) => {
+      const posterUser = findAdminUser(n.adminId);
+
+      return {
+        ...n,
+        notificationId:
+          n.notificationId ||
+          n.id ||
+          `${n.postId}_${n.adminId}`,
+
+        adminName: posterUser?.name || "Unknown Admin",
+        adminProfile:
+          posterUser?.profileImage || "/default-profile.png",
+      };
+    });
+
+    setPostNotifications(enriched);
   } catch (err) {
     console.error("Post notification fetch failed", err);
+    setPostNotifications([]);
   }
 };
+
 
 useEffect(() => {
   if (!adminId) return;
@@ -68,24 +117,36 @@ useEffect(() => {
 }, [adminId]);
 
 const handleNotificationClick = async (notification) => {
-  // Mark as read in backend
-  await axios.post(
-    "http://127.0.0.1:5000/api/mark_post_notification_read",
-    { notificationId: notification.notificationId }
-  );
+  try {
+    await axios.post(
+      "http://127.0.0.1:5000/api/mark_post_notification_read",
+      {
+        notificationId: notification.notificationId,
+        adminId: admin.userId,
+      }
+    );
+  } catch (err) {
+    console.warn("Failed to delete notification:", err);
+  }
 
-  // Remove from UI
-  setPostNotifications(prev =>
-    prev.filter(n => n.notificationId !== notification.notificationId)
+  // 🔥 REMOVE FROM UI IMMEDIATELY
+  setPostNotifications((prev) =>
+    prev.filter((n) => n.notificationId !== notification.notificationId)
   );
 
   setShowPostDropdown(false);
 
-  // Navigate to dashboard with postId
+  // ➜ Navigate to post
   navigate("/dashboard", {
-    state: { postId: notification.postId }
+    state: { postId: notification.postId },
   });
 };
+useEffect(() => {
+  if (location.state?.postId) {
+    setPostNotifications([]);
+  }
+}, []);
+
 
 useEffect(() => {
   const closeDropdown = (e) => {
@@ -218,6 +279,50 @@ useEffect(() => {
     fetchUnreadSenders();
   }, []);
 
+
+// helper: canonical chat key (sorted so it's consistent)
+const getChatKey = (userA, userB) => {
+  // ensure stable ordering: "lower_higher"
+  return [userA, userB].sort().join("_");
+};
+
+// FETCH CHAT MESSAGES for popup (replace your existing effect)
+useEffect(() => {
+  if (!teacherChatOpen || !selectedTeacher) return;
+
+  const fetchMessages = async () => {
+    try {
+      const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+
+      // read messages node
+      const res = await axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`
+      );
+
+      const data = res.data || {};
+      // transform object -> array with messageId and sender role
+      const msgs = Object.entries(data || {})
+        .map(([id, msg]) => ({
+          messageId: id,
+          ...msg,
+          sender: msg.senderId === adminUserId ? "admin" : "teacher",
+        }))
+        .sort((a, b) => (a.timeStamp || 0) - (b.timeStamp || 0));
+
+      setPopupMessages(msgs);
+    } catch (err) {
+      console.error("Failed to fetch chat messages:", err);
+      setPopupMessages([]);
+    }
+  };
+
+  fetchMessages();
+
+  // optional: poll for new messages while popup is open
+  const interval = setInterval(fetchMessages, 3000);
+  return () => clearInterval(interval);
+}, [teacherChatOpen, selectedTeacher, adminUserId]);
+
 //----------------------Fetch unread messages for teachers--------------------
 
       useEffect(() => {
@@ -257,14 +362,16 @@ useEffect(() => {
 
   const fetchMessages = async () => {
     try {
-      // Always use teacherUserId_adminUserId
-      const chatKey = `${selectedTeacher.userId}_${adminUserId}`;
+      const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
 
-      const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
+      const res = await axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
+      );
 
-      const msgs = Object.values(res.data || {}).map(m => ({
-        ...m,
-        sender: m.senderId === adminUserId ? "admin" : "teacher"
+      const msgs = Object.entries(res.data || {}).map(([id, msg]) => ({
+        messageId: id,
+        ...msg,
+        sender: msg.senderId === adminUserId ? "admin" : "teacher"
       })).sort((a, b) => a.timeStamp - b.timeStamp);
 
       setPopupMessages(msgs);
@@ -276,29 +383,146 @@ useEffect(() => {
 
   fetchMessages();
 }, [teacherChatOpen, selectedTeacher, adminUserId]);
+
 // ---------------- SEND POPUP MESSAGE ----------------
-
-
 const sendPopupMessage = async () => {
   if (!popupInput.trim() || !selectedTeacher) return;
+
+  const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+  const timestamp = Date.now();
 
   const newMessage = {
     senderId: adminUserId,
     receiverId: selectedTeacher.userId,
+    type: "text",
     text: popupInput,
-    timeStamp: Date.now()
+    imageUrl: null,
+    replyTo: null,
+    seen: false,
+    edited: false,
+    deleted: false,
+    timeStamp: timestamp
   };
 
   try {
-    // Always use teacherUserId_adminUserId
-    const chatKey =  `${selectedTeacher.userId}_${adminUserId}`;
-    const url = `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`;
+    // 1) Push message to messages node (POST -> returns a name/key)
+    const pushRes = await axios.post(
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`,
+      newMessage
+    );
+    const generatedId = pushRes.data && pushRes.data.name;
 
-    await axios.post(url, newMessage);
-    setPopupMessages(prev => [...prev, { ...newMessage, sender: "admin" }]);
+    // 2) Update lastMessage (so UI can show previews)
+    const lastMessage = {
+      text: newMessage.text,
+      senderId: newMessage.senderId,
+      seen: false,
+      timeStamp: newMessage.timeStamp
+    };
+
+    await axios.patch(
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}.json`,
+      {
+        lastMessage,
+        // ensure participants entry exists
+        participants: {
+          ...(/* keep existing participants if any */ {}),
+          [adminUserId]: true,
+          [selectedTeacher.userId]: true
+        }
+      }
+    );
+
+    // 3) Increment unread count for receiver (non-atomic: read -> increment -> write)
+    try {
+      const unreadRes = await axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`
+      );
+      const unread = unreadRes.data || {};
+      const prev = Number(unread[selectedTeacher.userId] || 0);
+      const updated = { ...(unread || {}), [selectedTeacher.userId]: prev + 1 };
+      await axios.put(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`,
+        updated
+      );
+    } catch (uErr) {
+      // if unread node missing or failed, set it
+      await axios.put(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`,
+        { [selectedTeacher.userId]: 1, [adminUserId]: 0 }
+      );
+    }
+
+    // 4) Optimistically update UI
+    setPopupMessages(prev => [
+      ...prev,
+      { messageId: generatedId || `${timestamp}`, ...newMessage, sender: "admin" }
+    ]);
     setPopupInput("");
   } catch (err) {
+    console.error("Failed to send message:", err);
+  }
+};
+
+const markMessagesAsSeen = async (userId) => {
+  const chatKey = getChatKey(userId, adminUserId);
+
+  try {
+    // read messages
+    const res = await axios.get(
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`
+    );
+    const data = res.data || {};
+
+    // build updates to set seen=true for messages where receiverId === adminUserId and seen is false
+    const updates = {};
+    Object.entries(data).forEach(([msgId, msg]) => {
+      if (msg.receiverId === adminUserId && !msg.seen) {
+        updates[`messages/${msgId}/seen`] = true;
+      }
+    });
+
+    // apply updates (PATCH at chat root)
+    if (Object.keys(updates).length > 0) {
+      await axios.patch(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}.json`,
+        updates
+      );
+    }
+
+    // reset unread counter for adminUserId
+    try {
+      const unreadRes = await axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`
+      );
+      const unread = unreadRes.data || {};
+      // set admin unread to 0
+      const updated = { ...(unread || {}), [adminUserId]: 0 };
+      await axios.put(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`,
+        updated
+      );
+    } catch (uErr) {
+      // ignore
+    }
+  } catch (err) {
+    console.error("markMessagesAsSeen error:", err);
+  }
+};
+
+const getUnreadCount = async (userId) => {
+  const chatKey = getChatKey(userId, adminUserId);
+
+  try {
+    const res = await axios.get(
+      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
+    );
+
+    const msgs = Object.values(res.data || {});
+    return msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
+  } catch (err) {
     console.error(err);
+    return 0;
   }
 };
 
@@ -475,35 +699,6 @@ useEffect(() => {
 
 
 
-const markMessagesAsSeen = async (userId) => {
-  const key1 = `${admin.userId}_${userId}`;
-  const key2 = `${userId}_${admin.userId}`;
-
-  const [r1, r2] = await Promise.all([
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-  ]);
-
-  const updates = {};
-
-  const collectUpdates = (data, basePath) => {
-    Object.entries(data || {}).forEach(([msgId, msg]) => {
-      if (msg.receiverId === admin.userId && !msg.seen) {
-        updates[`${basePath}/${msgId}/seen`] = true;
-      }
-    });
-  };
-
-  collectUpdates(r1.data, `Chats/${key1}/messages`);
-  collectUpdates(r2.data, `Chats/${key2}/messages`);
-
-  if (Object.keys(updates).length > 0) {
-    await axios.patch(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
-      updates
-    );
-  }
-};
 
 
 
@@ -774,7 +969,7 @@ const markMessagesAsSeen = async (userId) => {
           <h2 style={{ marginBottom: "10px", textAlign: "center" }}>Teachers</h2>
 
           {/* Grade Filter */}
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", marginLeft: "280px" }}>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
             <div style={{ display: "flex", gap: "12px" }}>
               {["All", "9", "10", "11", "12"].map(g => (
                 <button

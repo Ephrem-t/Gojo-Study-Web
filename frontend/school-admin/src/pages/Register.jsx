@@ -1,12 +1,15 @@
-import React, { useState } from "react"; 
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import "../styles/login.css";
-
 
 function Register() {
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
+  const [gender, setGender] = useState("");
+  const [phone, setPhone] = useState("");
+  const [title, setTitle] = useState("");
   const [profile, setProfile] = useState(null);
   const [message, setMessage] = useState("");
   const navigate = useNavigate();
@@ -20,6 +23,10 @@ function Register() {
       formData.append("name", name);
       formData.append("username", username);
       formData.append("password", password);
+      formData.append("email", email);
+      formData.append("gender", gender);
+      formData.append("phone", phone);
+      formData.append("title", title);
       if (profile) formData.append("profile", profile);
 
       const res = await fetch("http://127.0.0.1:5000/api/register", {
@@ -52,6 +59,7 @@ function Register() {
             onChange={(e) => setName(e.target.value)}
             required
           />
+
           <input
             type="text"
             placeholder="Username"
@@ -59,6 +67,43 @@ function Register() {
             onChange={(e) => setUsername(e.target.value)}
             required
           />
+
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+
+          <select
+            value={gender}
+            onChange={(e) => setGender(e.target.value)}
+            required
+            style={{ marginBottom: "12px" }}
+          >
+            <option value="">Select gender</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Other">Other</option>
+            <option value="Prefer not to say">Prefer not to say</option>
+          </select>
+
+          <input
+            type="tel"
+            placeholder="Phone number"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            required
+          />
+
+          <input
+            type="text"
+            placeholder="Title (e.g., Principal, Vice Principal)"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+
           <input
             type="password"
             placeholder="Password"
@@ -69,7 +114,7 @@ function Register() {
 
           {/* Profile Preview */}
           <div style={{ marginBottom: "15px", textAlign: "center" }}>
-            {profile && <img src={URL.createObjectURL(profile)} alt="Profile Preview" />}
+            {profile && <img src={URL.createObjectURL(profile)} alt="Profile Preview" style={{ maxWidth: "120px", maxHeight: "120px", objectFit: "cover" }} />}
             <input
               type="file"
               accept="image/*"

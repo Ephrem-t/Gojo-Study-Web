@@ -1,88 +1,37 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { FaArrowLeft, FaPaperPlane, FaTrash, FaEdit, FaSearch } from "react-icons/fa";
-import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, push, update, set } from "firebase/database";
-import "../styles/global.css"; // we will add CSS animations here
-import axios from "axios";
-
-
-
-// ------------------- Firebase Config -------------------
-const firebaseConfig = {
-  apiKey: "AIzaSyCMkZr4Xz204NjvETje-Rhznf6ECDYiEnE",
-  authDomain: "ethiostore-17d9f.firebaseapp.com",
-  databaseURL: "https://ethiostore-17d9f-default-rtdb.firebaseio.com",
-  projectId: "ethiostore-17d9f",
-  storageBucket: "ethiostore-17d9f.appspot.com",
-  messagingSenderId: "964518277159",
-  appId: "1:964518277159:web:9404cace890edf88961e02"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+import { FaArrowLeft, FaPaperPlane, FaEdit, FaTrash } from "react-icons/fa";
+import { getDatabase, ref, onValue, push, set, update, get } from "firebase/database";
+import { db } from "../firebase";
+import "../styles/global.css";
 
 function AllChat() {
   const location = useLocation();
   const navigate = useNavigate();
-  
+  const admin = JSON.parse(localStorage.getItem("admin")) || {};
+  const adminUserId = admin.userId;
 
-  const [popupMessages, setPopupMessages] = useState([]);
-  const [popupInput, setPopupInput] = useState("");
+  const { userId, userType, name, profileImage } = location.state || {};
+  const passedUser = location.state?.user || null;
+
+  // State
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
   const [parents, setParents] = useState([]);
   const [selectedTab, setSelectedTab] = useState("teacher");
- 
+  const [selectedChatUser, setSelectedChatUser] = useState(passedUser);
+  const [popupMessages, setPopupMessages] = useState([]);
+  const [popupInput, setPopupInput] = useState("");
   const [editingMsgId, setEditingMsgId] = useState(null);
   const [activeMessageId, setActiveMessageId] = useState(null);
   const [typing, setTyping] = useState(false);
   const [lastSeen, setLastSeen] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const { userId, userType, name, profileImage } = location.state || {};
-  const admin = JSON.parse(localStorage.getItem("admin")) || {};
-  const adminUserId = admin.userId;
-
-// If a user is passed from Dashboard, open their chat. Otherwise, default to first teacher/student/parent
-const passedUser = location.state?.user || null;
-const [selectedChatUser, setSelectedChatUser] = useState(passedUser);
-
-
-
-
-
-
-useEffect(() => {
-  if (!selectedChatUser) {
-    const firstUser = (teachers[0] || students[0] || parents[0]) || null;
-    setSelectedChatUser(firstUser);
-  }
-}, [teachers, students, parents]);
-
-
-
   const chatEndRef = useRef(null);
   const typingRef = useRef(null);
   const messageRefs = useRef({});
 
-useEffect(() => {
-  if (!selectedChatUser || !adminUserId) return;
-
-  const fetchMessages = async () => {
-    try {
-      const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
-      const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
-      setPopupMessages(Object.values(res.data || {}));
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  fetchMessages();
-}, [selectedChatUser, adminUserId]);
-
-   
   // ------------------- Fetch users -------------------
   useEffect(() => {
     const fetchUsers = async () => {
@@ -98,24 +47,23 @@ useEffect(() => {
         const usersData = usersRes || {};
         const chatsData = chatsRes || {};
 
-        const formatUsers = (listData) => Object.keys(listData || {})
-          .map((id) => {
+        const formatUsers = (listData) =>
+          Object.keys(listData || {}).map(id => {
             const userId = listData[id].userId;
             const user = usersData[userId] || {};
             const chatKey = `${userId}_${adminUserId}`;
-            const messages = chatsData[chatKey] ? Object.values(chatsData[chatKey].messages || {}) : [];
-            const lastMsg = messages.length > 0 ? messages.sort((a, b) => b.timeStamp - a.timeStamp)[0] : null;
+            const lastMsg = chatsData[chatKey]?.lastMessage || null;
             return {
               id,
               userId,
               name: user.name || "No Name",
               profileImage: user.profileImage || "/default-profile.png",
-              lastMsgTime: lastMsg ? lastMsg.timeStamp : 0,
-              lastMsgText: lastMsg ? lastMsg.text : "",
-              lastSeen: user.lastSeen || null
+              lastMsgTime: lastMsg?.timeStamp || 0,
+              lastMsgText: lastMsg?.text || "",
+              lastSeen: user.lastSeen || null,
+              unread: chatsData[chatKey]?.unread?.[userId] || 0
             };
-          })
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+          }).sort((a, b) => b.lastMsgTime - a.lastMsgTime);
 
         setTeachers(formatUsers(teachersRes));
         setStudents(formatUsers(studentsRes));
@@ -124,173 +72,202 @@ useEffect(() => {
         console.error("Error fetching users:", err);
       }
     };
+
     fetchUsers();
   }, [adminUserId]);
 
-
+  // ------------------- Select default user -------------------
+  useEffect(() => {
+    if (!selectedChatUser) {
+      const firstUser = teachers[0] || students[0] || parents[0] || null;
+      setSelectedChatUser(firstUser);
+    }
+  }, [teachers, students, parents]);
 
   // ------------------- Real-time messages -------------------
   useEffect(() => {
-    if (!selectedChatUser) return;
+    if (!selectedChatUser || !adminUserId) return;
     const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
-    const chatRef = ref(db, `Chats/${chatKey}/messages`);
+    const messagesRef = ref(db, `Chats/${chatKey}/messages`);
+    const typingRefDB = ref(db, `Chats/${chatKey}/typing`);
+    const lastSeenRef = ref(db, `Users/${selectedChatUser.userId}/lastSeen`);
 
-    const unsubscribe = onValue(chatRef, (snapshot) => {
+    const unsubscribeMessages = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val();
       const msgs = data
-  ? Object.entries(data).map(([id, m]) => ({
-      ...m,
-      id,
-      timeStamp: Number(m.timeStamp) || null,
-      sender: m.senderId === adminUserId ? "admin" : "user",
-    }))
-  : [];
-
+        ? Object.entries(data).map(([id, m]) => ({ ...m, id, sender: m.senderId === adminUserId ? "admin" : "user" }))
+        : [];
       setPopupMessages(msgs.sort((a, b) => a.timeStamp - b.timeStamp));
     });
 
-    const typingStatusRef = ref(db, `Chats/${chatKey}/typing`);
-    const unsubscribeTyping = onValue(typingStatusRef, (snapshot) => {
+    const unsubscribeTyping = onValue(typingRefDB, (snapshot) => {
       const val = snapshot.val();
-      setTyping(val && val.userId === selectedChatUser.userId);
+      setTyping(val?.userId === selectedChatUser.userId);
     });
 
-    const lastSeenRef = ref(db, `Users/${selectedChatUser.userId}/lastSeen`);
     const unsubscribeLastSeen = onValue(lastSeenRef, (snapshot) => {
       setLastSeen(snapshot.val());
     });
 
     return () => {
-      unsubscribe();
+      unsubscribeMessages();
       unsubscribeTyping();
       unsubscribeLastSeen();
     };
   }, [selectedChatUser, adminUserId]);
 
   // ------------------- Send/Edit message -------------------
- const sendPopupMessage = async () => {
-  if (!popupInput.trim()) return;
-  const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
+  const sendPopupMessage = async () => {
+    if (!popupInput.trim() || !selectedChatUser) return;
 
-  if (editingMsgId) {
-    // Edit existing message
-    await update(ref(db, `Chats/${chatKey}/messages/${editingMsgId}`), {
-      text: popupInput,
-      edited: true
-    });
-    setEditingMsgId(null); // reset editing state
-  } else {
-    // New message
-    await push(ref(db, `Chats/${chatKey}/messages`), {
+    const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
+    const messagesRef = ref(db, `Chats/${chatKey}/messages`);
+    const chatRef = ref(db, `Chats/${chatKey}`);
+
+    const newMsg = {
       senderId: adminUserId,
       receiverId: selectedChatUser.userId,
+      type: "text",
       text: popupInput,
-      timeStamp: Date.now(),
+      imageUrl: null,
+      replyTo: null,
       seen: false,
       edited: false,
-      deleted: false
-    });
-  }
+      deleted: false,
+      timeStamp: Date.now()
+    };
 
-  setPopupInput("");
-};
+    if (editingMsgId) {
+      await update(ref(db, `Chats/${chatKey}/messages/${editingMsgId}`), { text: popupInput, edited: true });
+      setEditingMsgId(null);
+    } else {
+      const msgRef = push(messagesRef);
+      await set(msgRef, newMsg);
 
+      await update(chatRef, {
+        lastMessage: { ...newMsg, messageId: msgRef.key },
+        participants: { [adminUserId]: true, [selectedChatUser.userId]: true },
+        unread: { [adminUserId]: 0, [selectedChatUser.userId]: (selectedChatUser.unread || 0) + 1 }
+      });
+    }
+
+    setPopupInput("");
+  };
 
   // ------------------- Delete message -------------------
   const deleteMessage = async (msgId) => {
     if (!selectedChatUser) return;
     const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
-    const delRef = ref(db, `Chats/${chatKey}/messages/${msgId}`);
-    await update(delRef, { deleted: true });
+    const msgRef = ref(db, `Chats/${chatKey}/messages/${msgId}`);
+    await update(msgRef, { deleted: true });
+
+    // Update lastMessage if deleted
+    const lastMsgSnapshot = await get(ref(db, `Chats/${chatKey}/lastMessage`));
+    if (lastMsgSnapshot.exists() && lastMsgSnapshot.val().messageId === msgId) {
+      const messagesSnapshot = await get(ref(db, `Chats/${chatKey}/messages`));
+      const messages = messagesSnapshot.exists() ? Object.entries(messagesSnapshot.val()).map(([id, m]) => ({ ...m, id })) : [];
+      const lastMsg = messages.sort((a, b) => b.timeStamp - a.timeStamp)[0] || null;
+      await update(ref(db, `Chats/${chatKey}`), { lastMessage: lastMsg ? { ...lastMsg, messageId: lastMsg.id } : null });
+    }
   };
 
   // ------------------- Typing -------------------
   const handleTyping = async (e) => {
     setPopupInput(e.target.value);
     if (!selectedChatUser) return;
+
     const chatKey = `${selectedChatUser.userId}_${adminUserId}`;
-    const typingStatusRef = ref(db, `Chats/${chatKey}/typing`);
-    await set(typingStatusRef, { userId: adminUserId });
+    const typingRefDB = ref(db, `Chats/${chatKey}/typing`);
+    await set(typingRefDB, { userId: adminUserId });
+
     if (typingRef.current) clearTimeout(typingRef.current);
     typingRef.current = setTimeout(async () => {
-      await set(typingStatusRef, { userId: null });
+      await set(typingRefDB, { userId: null });
     }, 2000);
   };
-
-
-  useEffect(() => {
-  if (!userId || !adminUserId) return;
-
-  axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${adminUserId}_${userId}/messages.json`)
-    .then(res => setPopupMessages(Object.values(res.data || {})));
-}, [userId, adminUserId]);
-
 
   // ------------------- Scroll to bottom -------------------
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [popupMessages, typing]);
 
-const formatTime = (timestamp) => {
-  if (!timestamp || isNaN(timestamp)) return "";
-  const date = new Date(Number(timestamp));
-  return date.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-  const chatBubbleStyle = (isAdmin) => ({
-    maxWidth: "70%",
-    padding: "12px 16px",
-    borderRadius: "20px",
-    background: isAdmin ? "linear-gradient(135deg, #0084ff, #006bbf)" : "#e4e6eb",
-    color: isAdmin ? "#fff" : "#050505",
-    wordBreak: "break-word",
-    boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-    marginBottom: "12px",
-    opacity: 0,
-    transform: "translateY(20px)",
-    animation: "slideIn 0.3s forwards"
-  });
-
-  const chatContainerStyle = {
-    flex: 1,
-    overflowY: "auto",
-    padding: "15px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-    background: "#e5ddd5",
-    borderRadius: "10px"
+  const formatTime = (timestamp) => {
+    if (!timestamp) return "";
+    return new Date(Number(timestamp)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   const renderUserList = (users) =>
     users
       .filter(u => u.name.toLowerCase().includes(searchQuery.toLowerCase()))
-      .map((u) => (
-        <div key={u.userId} onClick={() => setSelectedChatUser(u)} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px", borderRadius: "8px", background: selectedChatUser?.userId === u.userId ? "#d0e6ff" : "#fff", cursor: "pointer", marginBottom: "8px", transition: "0.2s all" }}>
-          <img src={u.profileImage} alt={u.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+      .map(u => (
+        <div
+          key={u.userId}
+          onClick={() => setSelectedChatUser(u)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: 10,
+            borderRadius: 8,
+            background: selectedChatUser?.userId === u.userId ? "#d0e6ff" : "#fff",
+            cursor: "pointer",
+            marginBottom: 8,
+            transition: "0.2s all"
+          }}
+        >
+          <img src={u.profileImage} alt={u.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: "500" }}>{u.name}</div>
-            <div style={{ fontSize: "12px", color: "#888" }}>{u.lastMsgText?.slice(0, 30)}...</div>
+            <div style={{ fontWeight: 500 }}>{u.name}</div>
+            <div style={{ fontSize: 12, color: "#888" }}>{u.lastMsgText?.slice(0, 30)}...</div>
           </div>
-          <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: u.lastSeen && Date.now() - u.lastSeen < 60000 ? "green" : "gray" }} />
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: u.lastSeen && Date.now() - u.lastSeen < 60000 ? "green" : "gray"
+            }}
+          />
         </div>
       ));
 
   return (
     <div style={{ display: "flex", height: "100vh", background: "#e5ddd5" }}>
       {/* Sidebar */}
-      <div style={{ width: "300px", background: "#fff", borderRight: "1px solid #ddd", overflowY: "auto", padding: "15px" }}>
-        <div style={{ display: "flex", alignItems: "center", marginBottom: "15px" }}>
-          <button onClick={() => navigate(-1)} style={{ background: "#0084ff", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", cursor: "pointer", marginRight: "10px" }}><FaArrowLeft /></button>
-          <input type="text" placeholder="Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ flex: 1, padding: "8px", borderRadius: "20px", border: "1px solid #ccc", outline: "none" }} />
+      <div style={{ width: 300, background: "#fff", borderRight: "1px solid #ddd", overflowY: "auto", padding: 15 }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 15 }}>
+          <button
+            onClick={() => navigate(-1)}
+            style={{ background: "#0084ff", color: "#fff", border: "none", padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginRight: 10 }}
+          >
+            <FaArrowLeft />
+          </button>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            style={{ flex: 1, padding: 8, borderRadius: 20, border: "1px solid #ccc", outline: "none" }}
+          />
         </div>
 
-        <div style={{ display: "flex", marginBottom: "15px", gap: "5px" }}>
+        <div style={{ display: "flex", marginBottom: 15, gap: 5 }}>
           {["teacher", "student", "parent"].map(tab => (
-            <button key={tab} onClick={() => setSelectedTab(tab)} style={{ flex: 1, padding: "8px", borderRadius: "20px", border: "none", cursor: "pointer", background: selectedTab === tab ? "#0084ff" : "#f0f0f0", color: selectedTab === tab ? "#fff" : "#000" }}>{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
+            <button
+              key={tab}
+              onClick={() => setSelectedTab(tab)}
+              style={{
+                flex: 1,
+                padding: 8,
+                borderRadius: 20,
+                border: "none",
+                cursor: "pointer",
+                background: selectedTab === tab ? "#0084ff" : "#f0f0f0",
+                color: selectedTab === tab ? "#fff" : "#000"
+              }}
+            >
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </button>
           ))}
         </div>
 
@@ -300,145 +277,103 @@ const formatTime = (timestamp) => {
       </div>
 
       {/* Chat Box */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "15px" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 15 }}>
         {selectedChatUser ? (
           <>
-            <div style={{ padding: "10px", borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", gap: "10px", background: "#f0f2f5", borderRadius: "10px", marginBottom: "10px" }}>
-              <img src={selectedChatUser.profileImage} alt={selectedChatUser.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+            {/* Header */}
+            <div style={{ padding: 10, borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", gap: 10, background: "#f0f2f5", borderRadius: 10, marginBottom: 10 }}>
+              <img src={selectedChatUser.profileImage} alt={selectedChatUser.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
               <div>
                 <strong>{selectedChatUser.name}</strong>
-                <div style={{ fontSize: "12px", color: "#666" }}>{typing ? "Typing..." : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+                <div style={{ fontSize: 12, color: "#666" }}>
+                  {typing ? "Typing..." : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                </div>
               </div>
             </div>
 
-            <div style={chatContainerStyle}>
+            {/* Messages */}
+            <div style={{ flex: 1, overflowY: "auto", padding: 15, display: "flex", flexDirection: "column", gap: 10, background: "#e5ddd5", borderRadius: 10 }}>
               {popupMessages.length === 0 ? (
-                <p style={{ color: "#888", textAlign: "center", marginTop: "20px" }}>Start chatting with {selectedChatUser.name}...</p>
+                <p style={{ color: "#888", textAlign: "center", marginTop: 20 }}>Start chatting with {selectedChatUser.name}...</p>
               ) : popupMessages.map(m => {
                   const isAdmin = m.sender === "admin";
-  const isSelected = activeMessageId === m.id;
+                  const isSelected = activeMessageId === m.id;
+                  if (m.deleted) return null;
 
-  return (
-    <div key={m.id} style={{ marginBottom: 12, display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start" }}>
-  {/* Only show message if not deleted */}
-  {!m.deleted && (
-    <>
+               return (
+    <div
+      key={m.id}
+      onClick={() => setActiveMessageId(m.id)}
+      style={{
+        display: "flex",
+        flexDirection: "column", // column to stack bubble and buttons
+        alignItems: isAdmin ? "flex-end" : "flex-start",
+        marginBottom: 12,
+      }}
+    >
       {/* Message Bubble */}
       <div
-        data-id={m.id}
-        ref={el => (messageRefs.current[m.id] = el)}
-        onClick={() => setActiveMessageId(m.id)} // select message
         style={{
           background: isAdmin ? "#0084ff" : "#e4e6eb",
           color: isAdmin ? "#fff" : "#000",
           padding: "8px 12px",
           borderRadius: 16,
-          borderTopRightRadius: isAdmin ? 0 : 16, // tail effect
-          borderTopLeftRadius: isAdmin ? 16 : 0,  // tail effect
+          borderTopRightRadius: isAdmin ? 0 : 16,
+          borderTopLeftRadius: isAdmin ? 16 : 0,
           maxWidth: "45%",
-          cursor: "pointer",
-          marginBottom: 4,
-          boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+          wordBreak: "break-word",
           display: "flex",
           flexDirection: "column",
-          wordBreak: "break-word",
-          transition: "all 0.2s"
         }}
       >
-        {/* Message Text */}
         <div>{m.text}</div>
-
-        {/* Edited Label */}
-        {m.edited && (
-          <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>edited</div>
-        )}
-
-        {/* Time + Seen */}
-        <div
-          style={{
-            fontSize: 10,
-            opacity: 0.7,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 6,
-            marginTop: 4
-          }}
-        >
+        {m.edited && <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>edited</div>}
+        <div style={{ fontSize: 10, opacity: 0.7, display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
           <span>{formatTime(m.timeStamp)}</span>
           {isAdmin && <span>{m.seen ? "✔✔" : "✔"}</span>}
         </div>
       </div>
 
-      {/* Edit/Delete Buttons (Only for Admin and Selected) */}
+      {/* Edit/Delete Buttons (under the bubble) */}
       {isSelected && isAdmin && (
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
           <button
-            style={{
-              fontSize: 12,
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: "none",
-              background: "#fff",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-              cursor: "pointer",
-              color: "#0084ff",
-              transition: "all 0.2s"
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setPopupInput(m.text); // edit message in input
-              setEditingMsgId(m.id);
-            }}
+            onClick={() => { setPopupInput(m.text); setEditingMsgId(m.id); }}
+            style={{ fontSize: 12 }}
           >
             Edit
           </button>
           <button
-            style={{
-              fontSize: 12,
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: "none",
-              background: "#fff",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-              cursor: "pointer",
-              color: "#ff3b30",
-              transition: "all 0.2s"
-            }}
-            onClick={async (e) => {
-              e.stopPropagation();
-              const confirmDelete = window.confirm("Delete this message?");
-              if (confirmDelete) {
-                await update(
-                  ref(db, `Chats/${selectedChatUser.userId}_${adminUserId}/messages/${m.id}`),
-                  { deleted: true }
-                );
-              }
-            }}
+            onClick={() => deleteMessage(m.id)}
+            style={{ fontSize: 12, color: "red" }}
           >
             Delete
           </button>
         </div>
       )}
-    </>
-  )}
-</div>
-
-
+    </div>
   );
-              })}
+                })}
               <div ref={chatEndRef}></div>
             </div>
 
-            {/* Input Bar */}
-            <div style={{ display: "flex", gap: "8px", paddingTop: "10px", borderTop: "1px solid #ddd" }}>
-              <input value={popupInput} onChange={handleTyping} onKeyDown={e => e.key === "Enter" && sendPopupMessage()} placeholder="Type a message..." style={{ flex: 1, padding: "12px 16px", borderRadius: "30px", border: "1px solid #ccc", outline: "none", background: "#fff" }} />
-              <button onClick={sendPopupMessage} style={{ background: "#0084ff", border: "none", color: "#fff", borderRadius: "50%", width: "45px", height: "45px", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer", boxShadow: "0 2px 5px rgba(0,0,0,0.2)" }}>
+            {/* Input */}
+            <div style={{ display: "flex", gap: 8, paddingTop: 10, borderTop: "1px solid #ddd" }}>
+              <input
+                value={popupInput}
+                onChange={handleTyping}
+                onKeyDown={e => e.key === "Enter" && sendPopupMessage()}
+                placeholder="Type a message..."
+                style={{ flex: 1, padding: "12px 16px", borderRadius: 30, border: "1px solid #ccc", outline: "none", background: "#fff" }}
+              />
+              <button onClick={sendPopupMessage} style={{ background: "#0084ff", border: "none", color: "#fff", borderRadius: "50%", width: 45, height: 45, display: "flex", justifyContent: "center", alignItems: "center" }}>
                 <FaPaperPlane />
               </button>
             </div>
           </>
-        ) : <p style={{ color: "#555", textAlign: "center", marginTop: "50%" }}>Select a user to start chatting...</p>}
+        ) : (
+          <p style={{ color: "#555", textAlign: "center", marginTop: "50%" }}>Select a user to start chatting...</p>
+        )}
       </div>
     </div>
   );

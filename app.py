@@ -30,155 +30,382 @@ posts_ref = db.reference("/TeacherPosts")
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
-    return render_template('parent_register.html')
+    return render_template('student_register.html')
+
+# New endpoint: reserve & return the next studentId
+@app.route("/generate/student_id", methods=["GET"])
+def generate_student_id():
+    """
+    Atomically increment the students counter and return a studentId in format:
+      GES_<zero-padded-4+>_<YY>  e.g. GES_0001_26
+    This reserves that sequence number.
+    """
+    try:
+        counters_ref = db.reference("Users_counters/students")
+        students_ref = db.reference("Students")
+
+        # Defensive: bring counter up to existing max (one-time migration)
+        existing_students = students_ref.get() or {}
+        max_found = 0
+        for s in existing_students.values():
+            sid = (s.get("studentId") or "")
+            if sid and sid.startswith("GES_"):
+                parts = sid.split("_")
+                if len(parts) >= 3:
+                    try:
+                        num = int(parts[1].lstrip("0") or "0")
+                        if num > max_found:
+                            max_found = num
+                    except Exception:
+                        continue
+
+        try:
+            current_counter = counters_ref.get() or 0
+            if current_counter < max_found:
+                counters_ref.set(max_found)
+        except Exception:
+            pass
+
+        def tx_inc(curr):
+            return (curr or 0) + 1
+
+        new_seq = counters_ref.transaction(tx_inc)
+        if not isinstance(new_seq, int):
+            new_seq = int(new_seq)
+
+        year = datetime.utcnow().year
+        year_suffix = str(year)[-2:]
+        seq_padded = str(new_seq).zfill(4)
+        student_id = f"GES_{seq_padded}_{year_suffix}"
+
+        # Extremely unlikely collision check (increment until unique)
+        attempts = 0
+        while students_ref.child(student_id).get():
+            new_seq += 1
+            seq_padded = str(new_seq).zfill(4)
+            student_id = f"GES_{seq_padded}_{year_suffix}"
+            attempts += 1
+            if attempts > 1000:
+                # fallback to timestamp-based id
+                student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                break
+
+        return jsonify({"success": True, "studentId": student_id})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
-# ===================== STUDENT REGISTRATION =====================
+# Updated register_student: use provided studentId when present
 @app.route('/register/student', methods=['POST'])
 def register_student():
+    """
+    Register a student. If the frontend does not provide a username,
+    the server generates a unique studentId and uses it as the username.
+    studentId format: GES_<zero-padded-4+>_<YY>, e.g. GES_0001_26
+    Students record is written under Students/<studentId>.
+    """
+    from datetime import datetime
+
     data = request.form
     profile_file = request.files.get('profile')
 
-    username = data.get('username')
-    name = data.get('name')
-    password = data.get('password')
-    grade = data.get('grade')
-    section = data.get('section')
+    # Frontend no longer submits username; server will set username = studentId
+    provided_username = (data.get('username') or "").strip()  # if frontend ever sends it
+    name = (data.get('name') or "").strip()
+    password = data.get('password') or ""
+    grade = data.get('grade') or ""
+    section = data.get('section') or ""
 
-    if not all([username, name, password, grade, section]):
-        return jsonify({'success': False, 'message': 'All fields are required'}), 400
+    # Optional fields
+    email = (data.get('email') or "").strip()
+    phone = (data.get('phone') or "").strip()
+    dob = data.get('dob') or ""
+    gender = data.get('gender') or ""
+
+    if not all([name, password, grade, section]):
+        return jsonify({'success': False, 'message': 'Name, password, grade and section are required.'}), 400
 
     users_ref = db.reference('Users')
     students_ref = db.reference('Students')
+    counters_ref = db.reference('Users_counters/students')
 
-   
-   
-
-    # Check if username exists
-    all_users = users_ref.get() or {}
-    for user in all_users.values():
-        if user.get('username') == username:
-            return jsonify({'success': False, 'message': 'Username already exists!'})
-
-
-
-
-
-
-    # Upload profile image
+    # ---------- upload profile image (optional) ----------
     profile_url = "/default-profile.png"
     if profile_file:
-        filename = f"students/{username}_{profile_file.filename}"
+        filename = f"students/{(provided_username or 'student')}_{profile_file.filename}"
         blob = bucket.blob(filename)
         blob.upload_from_file(profile_file, content_type=profile_file.content_type)
         blob.make_public()
         profile_url = blob.public_url
 
-    # Create user
-    new_user_ref = users_ref.push()
-    new_user_ref.set({
-        'userId': new_user_ref.key,
-        'username': username,
-        'name': name,
-        'password': password,  # ⚠ hash later
-        'profileImage': profile_url,
-        'role': 'student',
-        'isActive': True
-    })
+    # ========== Generate studentId atomically ==========
+    try:
+        # Defensive: compute numeric max already present (if any)
+        existing_students = students_ref.get() or {}
+        max_found = 0
+        for s in existing_students.values():
+            sid = (s.get('studentId') or "")
+            if sid and sid.startswith("GES_"):
+                parts = sid.split('_')
+                if len(parts) >= 3:
+                    try:
+                        num = int(parts[1].lstrip('0') or '0')
+                        if num > max_found:
+                            max_found = num
+                    except Exception:
+                        continue
 
-    # Create student entry
-    new_student_ref = students_ref.push()
-    new_student_ref.set({
-        'userId': new_user_ref.key,
-        'academicYear': '2024_2025',
-        'grade': grade,
-        'section': section,
-        'status': 'active'
-    })
+        # ensure counter isn't behind
+        try:
+            current_counter = counters_ref.get() or 0
+            if current_counter < max_found:
+                counters_ref.set(max_found)
+        except Exception:
+            pass
 
+        # transaction to allocate next sequence number
+        def tx_increment(curr):
+            return (curr or 0) + 1
 
-   
+        new_seq = counters_ref.transaction(tx_increment)
+        if not isinstance(new_seq, int):
+            new_seq = int(new_seq)
 
-    return jsonify({'success': True, 'message': 'Student registered successfully!'})
+        year = datetime.utcnow().year
+        year_suffix = str(year)[-2:]
+        seq_padded = str(new_seq).zfill(4)
+        student_id = f"GES_{seq_padded}_{year_suffix}"
 
-# ===================== TEACHER REGISTRATION =====================
-@app.route('/register/teacher', methods=['POST'])
-def register_teacher():
-    name = request.form.get('name')
-    username = request.form.get('username')
-    password = request.form.get('password')
-    courses = json.loads(request.form.get('courses', '[]'))
-    profile_file = request.files.get('profile')
+        # ensure student_id and username will be unique; if conflict, bump counter
+        attempts = 0
+        while True:
+            # check student key existence and username collision
+            student_exists = bool(students_ref.child(student_id).get())
+            # check username collision (if provided_username present we handle below; here we plan to use student_id as username)
+            user_collision = False
+            all_users = users_ref.get() or {}
+            for u in all_users.values():
+                if u.get('username') == student_id:
+                    user_collision = True
+                    break
 
-    users_ref = db.reference('Users')
-    teachers_ref = db.reference('Teachers')
-    courses_ref = db.reference('Courses')
-    assignments_ref = db.reference('TeacherAssignments')
+            if not student_exists and not user_collision:
+                break
 
-    # ===================== USERNAME CHECK =====================
+            # collision -> increment counter and try next
+            new_seq += 1
+            seq_padded = str(new_seq).zfill(4)
+            student_id = f"GES_{seq_padded}_{year_suffix}"
+            attempts += 1
+            if attempts > 1000:
+                # fallback
+                student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                break
+    except Exception as e:
+        # fallback if transaction fails
+        year = datetime.utcnow().year
+        year_suffix = str(year)[-2:]
+        student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+
+    # If frontend supplied an explicit username, use it (but check uniqueness). Otherwise set username = student_id
+    username = provided_username or student_id
+
+    # Check username uniqueness (if frontend provided, reject; if we assigned, collision already checked above)
     all_users = users_ref.get() or {}
     for user in all_users.values():
         if user.get('username') == username:
-            return jsonify({
-                'success': False,
-                'message': 'Username already exists!'
-            })
+            # If username equals provided_username (user attempted to set), reject with error
+            if provided_username:
+                return jsonify({'success': False, 'message': 'Username already exists!'}), 400
+            else:
+                # If collision occurred when username=student_id (very unlikely), increment counter and regenerate student_id & username
+                # Simple fallback: append random suffix (to guarantee uniqueness)
+                import random, string
+                suffix = ''.join(random.choices(string.digits, k=3))
+                username = f"{student_id}_{suffix}"
+                break
 
-    # ===================== SUBJECT CONFLICT CHECK =====================
-    existing_assignments = assignments_ref.get() or {}
+    academic_year = f"{year-1}_{year}"
 
-    for course in courses:
-        grade = course['grade']
-        section = course['section']
-        subject = course['subject']
-
-        course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
-
-        for assignment in existing_assignments.values():
-            if assignment.get('courseId') == course_id:
-                return jsonify({
-                    'success': False,
-                    'message': f'{subject} already assigned in Grade {grade}{section}'
-                })
-
-    # ===================== PROFILE UPLOAD =====================
-    profile_url = "/default-profile.png"
-    if profile_file:
-        filename = f"teachers/{username}_{profile_file.filename}"
-        blob = bucket.blob(filename)
-        blob.upload_from_file(profile_file, content_type=profile_file.content_type)
-        blob.make_public()
-        profile_url = blob.public_url
-
-    # ===================== CREATE USER =====================
+    # ========== Create Users entry (push key) ==========
     new_user_ref = users_ref.push()
     user_data = {
         'userId': new_user_ref.key,
         'username': username,
         'name': name,
-        'password': password,
-        'role': 'teacher',
+        'password': password,     # TODO: hash in production
+        'profileImage': profile_url,
+        'role': 'student',
         'isActive': True,
-        'profileImage': profile_url
+        'email': email,
+        'phone': phone,
+        'dob': dob,
+        'gender': gender,
+        'studentId': student_id
     }
     new_user_ref.set(user_data)
 
-    # ===================== CREATE TEACHER =====================
-    new_teacher_ref = teachers_ref.push()
-    new_teacher_ref.set({
+    # ========== Create Students entry keyed by studentId ==========
+    student_data = {
         'userId': new_user_ref.key,
+        'studentId': student_id,
+        'academicYear': academic_year,
+        'dob': dob,
+        'grade': grade,
+        'section': section,
         'status': 'active',
+    }
+    students_ref.child(student_id).set(student_data)
+
+    return jsonify({
+        'success': True,
+        'message': 'Student registered successfully!',
+        'studentId': student_id,
+        'username': username,
         'profileImage': profile_url
     })
+# ===================== TEACHER REGISTRATION =====================
+@app.route('/register/teacher', methods=['POST'])
+def register_teacher():
+    """
+    Register a teacher. If frontend does not provide username, server will generate
+    a teacherId in format GET_<zero-padded-4+>_<YY> (e.g. GET_0001_26) and use it
+    as the username. Teacher record is written under Teachers/<teacherId>.
+    Response includes teacherKey (teacherId) so frontend can display it.
+    """
+    from datetime import datetime
+    import json
 
-    # ===================== ASSIGN COURSES =====================
+    name = request.form.get('name')
+    provided_username = (request.form.get('username') or "").strip()
+    password = request.form.get('password')
+    email = request.form.get('email')
+    phone = request.form.get('phone')
+    gender = request.form.get('gender')
+    courses = json.loads(request.form.get('courses', '[]'))
+    profile_file = request.files.get('profile')
+
+    if not all([name, password]):
+        return jsonify({'success': False, 'message': 'Name and password are required.'}), 400
+
+    users_ref = db.reference('Users')
+    teachers_ref = db.reference('Teachers')
+    courses_ref = db.reference('Courses')
+    assignments_ref = db.reference('TeacherAssignments')
+    counters_ref = db.reference('counters/teachers')
+
+    # check username uniqueness if provided (we won't rely on frontend providing it)
+    all_users = users_ref.get() or {}
+    if provided_username:
+        for u in all_users.values():
+            if u.get('username') == provided_username:
+                return jsonify({'success': False, 'message': 'Username already exists!'}), 400
+
+    # subject conflict check (existing assignments)
+    existing_assignments = assignments_ref.get() or {}
     for course in courses:
-        grade = course['grade']
-        section = course['section']
-        subject = course['subject']
-
+        grade = course.get('grade')
+        section = course.get('section')
+        subject = course.get('subject')
         course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
+        for a in existing_assignments.values():
+            if a.get('courseId') == course_id:
+                return jsonify({'success': False, 'message': f'{subject} already assigned in Grade {grade}{section}'}), 400
 
+    # profile upload
+    profile_url = "/default-profile.png"
+    if profile_file:
+        filename = f"teachers/{(provided_username or name).replace(' ','_')}_{profile_file.filename}"
+        blob = bucket.blob(filename)
+        blob.upload_from_file(profile_file, content_type=profile_file.content_type)
+        blob.make_public()
+        profile_url = blob.public_url
+
+    # generate teacherId if no username provided
+    try:
+        # compute max existing seq (defensive)
+        existing_teachers = teachers_ref.get() or {}
+        max_found = 0
+        for t in existing_teachers.values():
+            tid = (t.get('teacherId') or "")
+            if tid and tid.startswith("GET_"):
+                parts = tid.split('_')
+                if len(parts) >= 3:
+                    try:
+                        num = int(parts[1].lstrip('0') or '0')
+                        if num > max_found:
+                            max_found = num
+                    except Exception:
+                        continue
+        try:
+            current_counter = counters_ref.get() or 0
+            if current_counter < max_found:
+                counters_ref.set(max_found)
+        except Exception:
+            pass
+
+        def tx_inc(curr):
+            return (curr or 0) + 1
+
+        new_seq = counters_ref.transaction(tx_inc)
+        if not isinstance(new_seq, int):
+            new_seq = int(new_seq)
+
+        year = datetime.utcnow().year
+        year_suffix = str(year)[-2:]
+        seq_padded = str(new_seq).zfill(4)
+        teacher_id = f"GET_{seq_padded}_{year_suffix}"
+
+        # ensure uniqueness for teacherId and username
+        attempts = 0
+        while teachers_ref.child(teacher_id).get() or any(u.get('username') == teacher_id for u in (users_ref.get() or {}).values()):
+            new_seq += 1
+            seq_padded = str(new_seq).zfill(4)
+            teacher_id = f"GET_{seq_padded}_{year_suffix}"
+            attempts += 1
+            if attempts > 1000:
+                teacher_id = f"GET_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                break
+    except Exception:
+        year = datetime.utcnow().year
+        year_suffix = str(year)[-2:]
+        teacher_id = f"GET_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+
+    # final username: either provided_username or teacher_id
+    username = provided_username or teacher_id
+
+    # create Users entry (push key)
+    new_user_ref = users_ref.push()
+    user_data = {
+        'userId': new_user_ref.key,
+        'username': username,
+        'name': name,
+        'password': password,  # TODO: hash before production
+        'role': 'teacher',
+        'isActive': True,
+        'profileImage': profile_url,
+        'email': email,
+        'phone': phone,
+        'gender': gender,
+        'teacherId': teacher_id
+    }
+    new_user_ref.set(user_data)
+
+    # create Teachers entry keyed by teacherId
+    teacher_data = {
+        'userId': new_user_ref.key,
+        'teacherId': teacher_id,
+        'status': 'active',
+       
+    }
+    teachers_ref.child(teacher_id).set(teacher_data)
+
+    # assign courses (use teacher_id as identifier)
+    for course in courses:
+        grade = course.get('grade')
+        section = course.get('section')
+        subject = course.get('subject')
+        course_id = f"course_{subject.lower()}_{grade}{section.upper()}"
         if not courses_ref.child(course_id).get():
             courses_ref.child(course_id).set({
                 'name': subject,
@@ -186,20 +413,17 @@ def register_teacher():
                 'grade': grade,
                 'section': section
             })
-
         assignments_ref.push().set({
-            'teacherId': new_teacher_ref.key,
+            'teacherId': teacher_id,
             'courseId': course_id
         })
 
     return jsonify({
         'success': True,
         'message': 'Teacher registered successfully!',
-        'teacherKey': new_teacher_ref.key,
+        'teacherKey': teacher_id,
         'profileImage': profile_url
     })
-
-
 
 # ===================== TEACHER LOGIN =====================
 @app.route("/api/teacher_login", methods=["POST"])

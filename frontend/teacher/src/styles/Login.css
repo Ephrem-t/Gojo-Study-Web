@@ -21,6 +21,28 @@
   overflow: hidden;
 }
 
+.auth-box input,
+.auth-box select {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+  outline: none;
+}
+
+.auth-box select {
+  background-color: #fff;
+  cursor: pointer;
+}
+
+.auth-box input:focus,
+.auth-box select:focus {
+  border-color: #4b6cb7;
+}
+
+
 .auth-box h2 {
   margin-bottom: 25px;
   color: #333;
