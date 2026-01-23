@@ -110,93 +110,96 @@ function Schedule() {
   const teacherSchedule = getTeacherSchedule();
 
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+ 
+  // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
   useEffect(() => {
-    const fetchNotifications = async () => {
-      try {
-        // 1) fetch posts
-        const res = await axios.get(`${API_BASE}/get_posts`);
-        let postsData = res.data || [];
+  const fetchNotifications = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/get_posts`);
+      let postsData = res.data || [];
+      if (!Array.isArray(postsData) && typeof postsData === "object") {
+        postsData = Object.values(postsData);
+      }
 
-        // normalize to array
-        if (!Array.isArray(postsData) && typeof postsData === "object") {
-          postsData = Object.values(postsData);
+      const [adminsRes, usersRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/School_Admins.json`),
+        axios.get(`${RTDB_BASE}/Users.json`),
+      ]);
+      const schoolAdmins = adminsRes.data || {};
+      const users = usersRes.data || {};
+
+      // Get teacher from localStorage so we know who's seen what
+      const teacher = JSON.parse(localStorage.getItem("teacher"));
+      const seenPosts = getSeenPosts(teacher?.userId);
+
+      // ...resolveAdminInfo as before...
+
+      const resolveAdminInfo = (post) => {
+        const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+        // ...same as your code...
+        if (adminId && schoolAdmins[adminId]) {
+          const schoolAdminRec = schoolAdmins[adminId];
+          const userKey = schoolAdminRec.userId;
+          const userRec = users[userKey] || null;
+          const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+          const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
+          return { name, profile };
         }
+        return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
+      };
 
-        // 2) fetch School_Admins and Users from RTDB
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
-
-        // build helper maps
-        const usersByKey = { ...users };
-        const usersByUserId = {};
-        Object.values(users).forEach((u) => {
-          if (u && u.userId) usersByUserId[u.userId] = u;
+      const latest = postsData
+        .slice()
+        .sort((a, b) => {
+          const ta = a.time ? new Date(a.time).getTime() : 0;
+          const tb = b.time ? new Date(b.time).getTime() : 0;
+          return tb - ta;
+        })
+        // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
+        .filter((post) => post.postId && !seenPosts.includes(post.postId))
+        .slice(0, 5)
+        .map((post) => {
+          const info = resolveAdminInfo(post);
+          return {
+            id: post.postId,
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: info.name,
+            adminProfile: info.profile,
+          };
         });
 
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+      setNotifications(latest);
+    } catch (err) {
+      console.error("Error fetching notifications:", err);
+    }
+  };
 
-          if (adminId && schoolAdmins[adminId]) {
-            const schoolAdminRec = schoolAdmins[adminId];
-            const userKey = schoolAdminRec.userId;
-            const userRec = usersByKey[userKey] || usersByUserId[userKey] || null;
-            const name = (userRec && userRec.name) || schoolAdminRec.name || schoolAdminRec.username || post.adminName || "Admin";
-            const profile = (userRec && (userRec.profileImage || userRec.profile)) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
+  fetchNotifications();
+}, []);
 
-          if (adminId && usersByKey[adminId]) {
-            const userRec = usersByKey[adminId];
-            return {
-              name: userRec.name || userRec.username || post.adminName || "Admin",
-              profile: userRec.profileImage || post.adminProfile || "/default-profile.png",
-            };
-          }
 
-          if (adminId && usersByUserId[adminId]) {
-            const userRec = usersByUserId[adminId];
-            return {
-              name: userRec.name || userRec.username || post.adminName || "Admin",
-              profile: userRec.profileImage || post.adminProfile || "/default-profile.png",
-            };
-          }
+// --- 3. Handler to remove notification after clicked (and mark seen) ---
 
-          return {
-            name: post.adminName || post.name || post.username || "Admin",
-            profile: post.adminProfile || post.profileImage || "/default-profile.png",
-          };
-        };
+const handleNotificationClick = (postId) => {
+  if (!teacher || !postId) return;
+  // Save to localStorage
+  saveSeenPost(teacher.userId, postId);
+  // Remove from UI right away
+  setNotifications(prev => prev.filter((n) => n.id !== postId));
+  setShowNotifications(false); // Optionally close the notification panel
+};
 
-        const latest = postsData
-          .slice()
-          .sort((a, b) => {
-            const ta = a.time ? new Date(a.time).getTime() : a.timestamp ? new Date(a.timestamp).getTime() : 0;
-            const tb = b.time ? new Date(b.time).getTime() : b.timestamp ? new Date(b.timestamp).getTime() : 0;
-            return tb - ta;
-          })
-          .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              id: post.postId || post.id || null,
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile,
-            };
-          });
+function getSeenPosts(teacherId) {
+  return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+}
 
-        setNotifications(latest);
-      } catch (err) {
-        console.error("Error fetching notifications:", err);
-      }
-    };
-
-    fetchNotifications();
-  }, []);
+function saveSeenPost(teacherId, postId) {
+  const seen = getSeenPosts(teacherId);
+  if (!seen.includes(postId)) {
+    localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
+  }
+}
 
   // ---------------- MESSENGER: fetch conversations with unread messages (same as Dashboard) ----------------
   const fetchConversations = async (currentTeacher = teacher) => {

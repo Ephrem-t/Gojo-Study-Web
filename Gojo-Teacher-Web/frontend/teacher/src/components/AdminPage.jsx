@@ -119,29 +119,51 @@ function AdminPage() {
 
   // ---------------- FETCH ADMINS ----------------
   useEffect(() => {
-    async function fetchAdmins() {
-      try {
-        setLoading(true);
-        const res = await axios.get(`${RTDB_BASE}/Users.json`);
-        const users = res.data || {};
-        const adminsArray = Object.entries(users)
-          .filter(([_, u]) => {
-            const role = (u.role || u.userType || "").toLowerCase();
-            return role === "admin" || role === "school_admin" || role === "school_admins";
-          })
-          .map(([key, u]) => ({ adminId: key, ...u }));
-        setAdmins(adminsArray);
-        setError(adminsArray.length === 0 ? "No admins found" : "");
-      } catch (err) {
-        console.error(err);
-        setError("Failed to fetch admins");
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchAdmins();
-  }, []);
+  async function fetchAdmins() {
+    try {
+      setLoading(true);
+      const [usersRes, schoolAdminsRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/Users.json`),
+        axios.get(`${RTDB_BASE}/School_Admins.json`)
+      ]);
+      const users = usersRes.data || {};
+      const schoolAdmins = schoolAdminsRes.data || {};
 
+      // Build a map of userId => schoolAdmin entry
+      const adminByUserId = {};
+      Object.entries(schoolAdmins).forEach(([adminKey, sa]) => {
+        if (sa.userId) adminByUserId[sa.userId] = { ...sa, adminKey };
+      });
+
+      // Get all users with admin role (as before), but merge schoolAdmin fields if available
+      const adminsArray = Object.entries(users)
+        .filter(([_, u]) => {
+          const role = (u.role || u.userType || "").toLowerCase();
+          return role === "admin" || role === "school_admin" || role === "school_admins";
+        })
+        .map(([key, u]) => {
+          const schoolAdminInfo = adminByUserId[u.userId];
+          return {
+            adminId: key,
+            ...u,
+            ...(schoolAdminInfo ? {
+              title: schoolAdminInfo.title,
+              status: schoolAdminInfo.status,
+              schoolAdminKey: schoolAdminInfo.adminKey,
+            } : {}),
+          };
+        });
+      setAdmins(adminsArray);
+      setError(adminsArray.length === 0 ? "No admins found" : "");
+    } catch (err) {
+      console.error(err);
+      setError("Failed to fetch admins");
+    } finally {
+      setLoading(false);
+    }
+  }
+  fetchAdmins();
+}, []);
   // Auto-scroll messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -213,74 +235,96 @@ function AdminPage() {
   };
 
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+  
+  // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
   useEffect(() => {
-    const fetchNotifications = async () => {
-      try {
-        const res = await axios.get(`${API_BASE}/get_posts`);
-        let postsData = res.data || [];
-        if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
+  const fetchNotifications = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/get_posts`);
+      let postsData = res.data || [];
+      if (!Array.isArray(postsData) && typeof postsData === "object") {
+        postsData = Object.values(postsData);
+      }
 
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
+      const [adminsRes, usersRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/School_Admins.json`),
+        axios.get(`${RTDB_BASE}/Users.json`),
+      ]);
+      const schoolAdmins = adminsRes.data || {};
+      const users = usersRes.data || {};
 
-        const usersByKey = { ...users };
-        const usersByUserId = {};
-        Object.values(users).forEach((u) => {
-          if (u && u.userId) usersByUserId[u.userId] = u;
+      // Get teacher from localStorage so we know who's seen what
+      const teacher = JSON.parse(localStorage.getItem("teacher"));
+      const seenPosts = getSeenPosts(teacher?.userId);
+
+      // ...resolveAdminInfo as before...
+
+      const resolveAdminInfo = (post) => {
+        const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+        // ...same as your code...
+        if (adminId && schoolAdmins[adminId]) {
+          const schoolAdminRec = schoolAdmins[adminId];
+          const userKey = schoolAdminRec.userId;
+          const userRec = users[userKey] || null;
+          const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+          const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
+          return { name, profile };
+        }
+        return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
+      };
+
+      const latest = postsData
+        .slice()
+        .sort((a, b) => {
+          const ta = a.time ? new Date(a.time).getTime() : 0;
+          const tb = b.time ? new Date(b.time).getTime() : 0;
+          return tb - ta;
+        })
+        // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
+        .filter((post) => post.postId && !seenPosts.includes(post.postId))
+        .slice(0, 5)
+        .map((post) => {
+          const info = resolveAdminInfo(post);
+          return {
+            id: post.postId,
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: info.name,
+            adminProfile: info.profile,
+          };
         });
 
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const rec = schoolAdmins[adminId];
-            const userRec = usersByKey[rec.userId] || usersByUserId[rec.userId] || null;
-            return {
-              name: (userRec && userRec.name) || rec.name || rec.username || "Admin",
-              profile: (userRec && (userRec.profileImage || userRec.profile)) || rec.profileImage || post.adminProfile || "/default-profile.png",
-            };
-          }
-          if (adminId && usersByKey[adminId]) {
-            const u = usersByKey[adminId];
-            return { name: u.name || u.username || "Admin", profile: u.profileImage || "/default-profile.png" };
-          }
-          if (adminId && usersByUserId[adminId]) {
-            const u = usersByUserId[adminId];
-            return { name: u.name || u.username || "Admin", profile: u.profileImage || "/default-profile.png" };
-          }
-          return { name: post.adminName || post.name || "Admin", profile: post.adminProfile || post.profileImage || "/default-profile.png" };
-        };
+      setNotifications(latest);
+    } catch (err) {
+      console.error("Error fetching notifications:", err);
+    }
+  };
 
-        const latest = postsData
-          .slice()
-          .sort((a, b) => {
-            const ta = a.time ? new Date(a.time).getTime() : a.timestamp ? new Date(a.timestamp).getTime() : 0;
-            const tb = b.time ? new Date(b.time).getTime() : b.timestamp ? new Date(b.timestamp).getTime() : 0;
-            return tb - ta;
-          })
-          .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              id: post.postId || post.id || null,
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile,
-            };
-          });
+  fetchNotifications();
+}, []);
 
-        setNotifications(latest);
-      } catch (err) {
-        console.error("Error fetching notifications:", err);
-      }
-    };
 
-    fetchNotifications();
-  }, []);
+// --- 3. Handler to remove notification after clicked (and mark seen) ---
 
+const handleNotificationClick = (postId) => {
+  if (!teacher || !postId) return;
+  // Save to localStorage
+  saveSeenPost(teacher.userId, postId);
+  // Remove from UI right away
+  setNotifications(prev => prev.filter((n) => n.id !== postId));
+  setShowNotifications(false); // Optionally close the notification panel
+};
+
+function getSeenPosts(teacherId) {
+  return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+}
+
+function saveSeenPost(teacherId, postId) {
+  const seen = getSeenPosts(teacherId);
+  if (!seen.includes(postId)) {
+    localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
+  }
+}
   // ---------------- MESSENGER: fetch conversations with unread messages (same as Dashboard) ----------------
   const fetchConversations = async (currentTeacher = teacher) => {
     try {
@@ -379,15 +423,28 @@ function AdminPage() {
 
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
+const [isPortrait, setIsPortrait] = React.useState(
+  window.innerWidth < window.innerHeight
+);
+
+React.useEffect(() => {
+  const handleResize = () => {
+    setIsPortrait(window.innerWidth < window.innerHeight);
+  };
+
+  window.addEventListener("resize", handleResize);
+  return () => window.removeEventListener("resize", handleResize);
+}, []);
+
+
+
+
   return (
     <div className="dashboard-page">
       {/* Top Navbar */}
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
-        <div className="nav-search">
-          <FaSearch className="search-icon" />
-          <input type="text" placeholder="Search..." />
-        </div>
+      
 
         <div className="nav-right">
           <div className="icon-circle" style={{ position: "relative" }}>
@@ -487,7 +544,7 @@ function AdminPage() {
 
         {/* MAIN */}
         <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
-          <div style={{ width: "30%" }}>
+          <div style={{ width: "350px", marginLeft: "40px" }}>
             <h2 style={{ textAlign: "center", marginBottom: "20px" }}>All Admins</h2>
 
             {loading && <p>Loading admins...</p>}
@@ -509,15 +566,62 @@ function AdminPage() {
           </div>
 
           {/* RIGHT SIDEBAR (selected admin detail & chat toggle) */}
-          {selectedAdmin && (
-            <div style={{ width: "30%", padding: "25px", background: "#fff", boxShadow: "0 0 15px rgba(0,0,0,0.05)", position: "fixed", right: 0, top: "60px", height: "calc(100vh - 60px)" }}>
-              <div style={{ textAlign: "center", marginBottom: "20px" }}>
-                <div style={{ width: "120px", height: "120px", margin: "0 auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
-                  <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                </div>
-                <h2>{selectedAdmin.name}</h2>
-                <p>{selectedAdmin.email}</p>
-              </div>
+{selectedAdmin && (
+  <div
+    style={{
+      width: isPortrait ? "100%" : "30%",
+      height: isPortrait ? "100vh" : "calc(100vh - 60px)",
+      position: "fixed",
+      right: 0,
+      top: isPortrait ? 0 : "60px",
+      background: "#fff",
+      boxShadow: isPortrait
+        ? "0 0 0 rgba(0,0,0,0)"
+        : "0 0 15px rgba(0,0,0,0.05)",
+      zIndex: 1000,
+      display: "flex",
+      flexDirection: "column",
+      overflowY: "auto",
+      padding: isPortrait ? "18px" : "25px",
+      transition: "all 0.35s ease",
+    }}
+  >
+
+    {/* Close button (top-right) */}
+<button
+  onClick={() => setSelectedAdmin(null)}
+  aria-label="Close admin details"
+  title="Close"
+  style={{
+    position: "fixed",
+    top: 52,
+    right: 16,
+    width: 42,
+    height: 42,
+    borderRadius: "12px",
+    border: "none",
+    background: "#fff",
+    boxShadow: "0 8px 18px rgba(2,6,23,0.15)",
+    cursor: "pointer",
+    display: "grid",
+    placeItems: "center",
+    zIndex: 2000,
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#0f172a",
+  }}
+>
+  ×
+</button>
+
+
+    <div style={{ textAlign: "center", marginBottom: "20px" }}>
+      <div style={{ width: "120px", height: "120px", margin: "0 auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
+        <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      </div>
+      <h2>{selectedAdmin.name}</h2>
+      <p>{selectedAdmin.email}</p>
+    </div>
 
               <div style={{ display: "flex", marginBottom: "15px" }}>
                 {["details", "attendance", "performance"].map((tab) => (
@@ -525,12 +629,119 @@ function AdminPage() {
                 ))}
               </div>
 
-              {adminTab === "details" && (
-                <div>
-                  <p><strong>ID:</strong> {selectedAdmin.adminId}</p>
-                  <p><strong>Username:</strong> {selectedAdmin.username}</p>
-                </div>
-              )}
+              {adminTab === "details" && selectedAdmin && (
+  <div
+    style={{
+      background: "linear-gradient(120deg,#f8fafc 70%,#eef2ff 100%)",
+      borderRadius: 20,
+      boxShadow: "0 10px 32px rgba(84,115,255,0.07)",
+      padding: "28px 26px",
+     maxWidth: isPortrait ? "100%" : 520,
+      margin: "0 auto",
+    }}
+  >
+    <div style={{display: "flex", alignItems: "center", gap: 22, marginBottom: 24}}>
+      
+       
+     
+      <div style={{ minWidth: 0 }}>
+        
+        <div style={{ color: "#64748b", fontWeight: 600, fontSize: 15 }}>
+          <span style={{marginRight: 8, letterSpacing: 0.4}}>{selectedAdmin.title || "Administrator"}</span>
+          <span
+            style={{
+              padding: "2px 12px",
+              borderRadius: 999,
+              fontWeight: 700,
+              background: selectedAdmin.status?.toLowerCase() === "active" ? "#e0fbe6" : "#fee4e2",
+              color: selectedAdmin.status?.toLowerCase() === "active" ? "#16a34a" : "#b91c1c",
+              fontSize: "12px",
+              marginLeft: 6,
+            }}
+          >
+            {selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : "Status Unknown"}
+          </span>
+        </div>
+      </div>
+    </div>
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 18,
+      marginTop: 8,
+    }}>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.08)",
+        padding: "18px 14px",
+        minWidth: 0
+      }}>
+        <div style={{
+          fontWeight: 700,
+          fontSize: 11,
+          color: "#64748b",
+          textTransform: "uppercase",
+          marginBottom: 8,
+          letterSpacing: ".6px"
+        }}>Admin ID</div>
+        <div style={{
+          fontWeight: 800,
+          fontSize: 15,
+          color: "#18243c",
+          wordBreak: "break-word"
+        }}>{selectedAdmin.adminId || selectedAdmin.userId || "—"}</div>
+      </div>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
+        padding: "18px 14px"
+      }}>
+        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Email</div>
+        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c", wordBreak: "break-word"}}>{selectedAdmin.email || "—"}</div>
+      </div>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
+        padding: "18px 14px"
+      }}>
+        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Phone Number</div>
+        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.phone || "—"}</div>
+      </div>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
+        padding: "18px 14px"
+      }}>
+        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Gender</div>
+        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase()+selectedAdmin.gender.slice(1)) : "—"}</div>
+      </div>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
+        padding: "18px 14px"
+      }}>
+        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Title</div>
+        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.title || "—"}</div>
+      </div>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
+        padding: "18px 14px"
+      }}>
+        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Status</div>
+        <div style={{fontWeight: 800, fontSize: 15, color: selectedAdmin.status?.toLowerCase() === "active" ? "#16a34a" : "#b91c1c" }}>
+          {selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : "—"}
+        </div>
+      </div>
+    </div>
+  </div>
+)}
               {adminTab === "attendance" && <p>Attendance data here.</p>}
               {adminTab === "performance" && <p>Performance data here.</p>}
 

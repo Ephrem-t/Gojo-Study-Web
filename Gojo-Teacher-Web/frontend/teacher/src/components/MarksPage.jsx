@@ -272,75 +272,69 @@ export default function MarksPage() {
 
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
   useEffect(() => {
-    const fetchNotifications = async () => {
-      try {
-        const res = await axios.get(`${API_BASE}/get_posts`);
-        let postsData = res.data || [];
+  const fetchNotifications = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/get_posts`);
+      let postsData = res.data || [];
+      if (!Array.isArray(postsData) && typeof postsData === "object") {
+        postsData = Object.values(postsData);
+      }
 
-        if (!Array.isArray(postsData) && typeof postsData === "object") {
-          postsData = Object.values(postsData);
+      const [adminsRes, usersRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/School_Admins.json`),
+        axios.get(`${RTDB_BASE}/Users.json`),
+      ]);
+      const schoolAdmins = adminsRes.data || {};
+      const users = usersRes.data || {};
+
+      // Get teacher from localStorage so we know who's seen what
+      const teacher = JSON.parse(localStorage.getItem("teacher"));
+      const seenPosts = getSeenPosts(teacher?.userId);
+
+      // ...resolveAdminInfo as before...
+
+      const resolveAdminInfo = (post) => {
+        const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+        // ...same as your code...
+        if (adminId && schoolAdmins[adminId]) {
+          const schoolAdminRec = schoolAdmins[adminId];
+          const userKey = schoolAdminRec.userId;
+          const userRec = users[userKey] || null;
+          const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+          const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
+          return { name, profile };
         }
+        return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
+      };
 
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
-
-        const usersByKey = { ...users };
-        const usersByUserId = {};
-        Object.values(users).forEach((u) => {
-          if (u && u.userId) usersByUserId[u.userId] = u;
+      const latest = postsData
+        .slice()
+        .sort((a, b) => {
+          const ta = a.time ? new Date(a.time).getTime() : 0;
+          const tb = b.time ? new Date(b.time).getTime() : 0;
+          return tb - ta;
+        })
+        // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
+        .filter((post) => post.postId && !seenPosts.includes(post.postId))
+        .slice(0, 5)
+        .map((post) => {
+          const info = resolveAdminInfo(post);
+          return {
+            id: post.postId,
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: info.name,
+            adminProfile: info.profile,
+          };
         });
 
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const schoolAdminRec = schoolAdmins[adminId];
-            const userKey = schoolAdminRec.userId;
-            const userRec = usersByKey[userKey] || usersByUserId[userKey] || null;
-            const name = (userRec && userRec.name) || schoolAdminRec.name || schoolAdminRec.username || post.adminName || "Admin";
-            const profile = (userRec && (userRec.profileImage || userRec.profile)) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
-          if (adminId && usersByKey[adminId]) {
-            const userRec = usersByKey[adminId];
-            return { name: userRec.name || userRec.username || post.adminName || "Admin", profile: userRec.profileImage || post.adminProfile || "/default-profile.png" };
-          }
-          if (adminId && usersByUserId[adminId]) {
-            const userRec = usersByUserId[adminId];
-            return { name: userRec.name || userRec.username || post.adminName || "Admin", profile: userRec.profileImage || post.adminProfile || "/default-profile.png" };
-          }
-          return { name: post.adminName || post.name || post.username || "Admin", profile: post.adminProfile || post.profileImage || "/default-profile.png" };
-        };
+      setNotifications(latest);
+    } catch (err) {
+      console.error("Error fetching notifications:", err);
+    }
+  };
 
-        const latest = postsData
-          .slice()
-          .sort((a, b) => {
-            const ta = a.time ? new Date(a.time).getTime() : a.timestamp ? new Date(a.timestamp).getTime() : 0;
-            const tb = b.time ? new Date(b.time).getTime() : b.timestamp ? new Date(b.timestamp).getTime() : 0;
-            return tb - ta;
-          })
-          .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              id: post.postId || post.id || null,
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile,
-            };
-          });
-
-        setNotifications(latest);
-      } catch (err) {
-        console.error("Error fetching notifications:", err);
-      }
-    };
-
-    fetchNotifications();
-  }, []);
+  fetchNotifications();
+}, []);
 
   // ---------------- MESSENGER: same behavior as Dashboard ----------------
   const fetchConversations = async (currentTeacher = teacher) => {
@@ -441,47 +435,71 @@ export default function MarksPage() {
 
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
+
+
+
+// --- 3. Handler to remove notification after clicked (and mark seen) ---
+
+const handleNotificationClick = (postId) => {
+  if (!teacher || !postId) return;
+  // Save to localStorage
+  saveSeenPost(teacher.userId, postId);
+  // Remove from UI right away
+  setNotifications(prev => prev.filter((n) => n.id !== postId));
+  setShowNotifications(false); // Optionally close the notification panel
+};
+
+function getSeenPosts(teacherId) {
+  return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+}
+
+function saveSeenPost(teacherId, postId) {
+  const seen = getSeenPosts(teacherId);
+  if (!seen.includes(postId)) {
+    localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
+  }
+}
+
+
   // ---------------- UI ----------------
   return (
     <div className="dashboard-page">
       {/* Top Navbar */}
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
-        <div className="nav-search">
-          <FaSearch className="search-icon" />
-          <input type="text" placeholder="Search Teacher and Student..." />
-        </div>
+        
         <div className="nav-right">
           <div className="icon-circle" style={{ position: "relative" }}>
-            <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
-              <FaBell size={24} />
-              {notifications.length > 0 && (
-                <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {notifications.length}
-                </span>
-              )}
-            </div>
-
-            {showNotifications && (
-              <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                {notifications.length > 0 ? notifications.map((post, index) => (
-                  <div key={post.id || index} onClick={() => {
-                    navigate("/dashboard");
-                    setTimeout(() => {
-                      // optional highlight logic if your dashboard exposes post refs
-                      setHighlightedPostId(post.id);
-                      setTimeout(() => setHighlightedPostId(null), 3000);
-                    }, 150);
-                    setNotifications(prev => prev.filter((_, i) => i !== index));
-                    setShowNotifications(false);
-                  }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                    <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
-                  </div>
-                )) : <div style={{ padding: 15 }}>No notifications</div>}
-              </div>
-            )}
+  <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
+    <FaBell size={24} />
+    {notifications.length > 0 && (
+      <span style={{
+        position: "absolute", top: -5, right: -5, background: "red", color: "white",
+        borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center"
+      }}>
+        {notifications.length}
+      </span>
+    )}
+  </div>
+  {showNotifications && (
+    <div style={{
+      position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto",
+      background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100
+    }}>
+      {notifications.length > 0 ? notifications.map((post, index) => (
+        <div key={post.id || index}
+          onClick={() => handleNotificationClick(post.id)}
+          style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+          <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+          <div>
+            <strong>{post.adminName}</strong>
+            <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
           </div>
+        </div>
+      )) : <div style={{ padding: 15 }}>No notifications</div>}
+    </div>
+  )}
+</div>
 
           {/* Messenger (same as Dashboard) */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>

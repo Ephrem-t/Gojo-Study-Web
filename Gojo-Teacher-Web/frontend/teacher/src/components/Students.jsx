@@ -34,6 +34,37 @@ const getChatId = (id1, id2) => {
   return [id1, id2].sort().join("_");
 };
 
+
+// helper: ISO week number for a Date
+const getWeekNumber = (d) => {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  // Set to nearest Thursday: current date + 4 - current day number
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((date - yearStart) / 86400000 + 1) / 7);
+  return weekNo;
+};
+
+// place this inside StudentsPage (above the JSX that uses it)
+const formatSubjectName = (courseId = "") => {
+  if (!courseId) return "Unknown";
+  // remove common prefixes/suffixes and underscores, then title-case words
+  let clean = String(courseId)
+    .replace(/^course_/, "")
+    .replace(/_[0-9A-Za-z]+$/, "") // remove trailing class id like _9A if present
+    .replace(/_/g, " ")
+    .trim();
+
+  // Title-case each word
+  return clean
+    .split(/\s+/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
+    .join(" ");
+};
+
+
+
 const formatTime = (timeStamp) => {
   if (!timeStamp) return "";
   const date = new Date(timeStamp);
@@ -44,6 +75,26 @@ const formatTime = (timeStamp) => {
 
 const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+
+// compute age helper
+const computeAge = (rawDob) => {
+  if (!rawDob) return null;
+  let d;
+  if (typeof rawDob === "number") d = new Date(rawDob);
+  else d = new Date(String(rawDob));
+  if (isNaN(d.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - d.getFullYear();
+  const m = today.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+  return age;
+};
+
+// find user by userId in Users node object
+const findUserByUserId = (usersObj, userId) => {
+  if (!usersObj || !userId) return null;
+  return Object.values(usersObj).find((u) => String(u?.userId) === String(userId)) || null;
+};
 
 const StudentItem = ({ student, selected, onClick }) => (
   <div
@@ -94,14 +145,13 @@ function StudentsPage() {
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
   const [teacherInfo, setTeacherInfo] = useState(null);
-  const [attendanceData, setAttendanceData] = useState([]);
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [attendanceFilter, setAttendanceFilter] = useState("daily");
   const [assignmentsData, setAssignmentsData] = useState({});
   const [teachersData, setTeachersData] = useState({});
   const [usersData, setUsersData] = useState({});
-
+  const [selectedStudentDetails, setSelectedStudentDetails] = useState(null);
   const [teacherNotes, setTeacherNotes] = useState([]);
   const [newTeacherNote, setNewTeacherNote] = useState("");
   const [savingNote, setSavingNote] = useState(false);
@@ -117,7 +167,9 @@ function StudentsPage() {
   const teacherUserId = String(teacherData.userId || "");
   const [studentMarksFlattened, setStudentMarksFlattened] = useState({});
   const [performance, setPerformance] = useState([]);
-
+const [attendanceView, setAttendanceView] = useState("daily");
+  const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
+  const [expandedCards, setExpandedCards] = useState({});
   const [marks, setMarks] = useState({});
   const [loading, setLoading] = useState(true);
 
@@ -126,7 +178,8 @@ function StudentsPage() {
   const [activeSemester, setActiveSemester] = useState("semester2");
 
   const [studentMarks, setStudentMarks] = useState({});
-
+// state: attendance entries for the selected student (normalized)
+const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
@@ -159,32 +212,16 @@ function StudentsPage() {
     setTeacherInfo(storedTeacher);
   }, [navigate]);
 
-  // mark a post as seen in local storage (students page notifications)
-  const getSeenPosts = (teacherId) => {
-    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
-  };
-
-  const saveSeenPost = (teacherId, postId) => {
-    const seen = getSeenPosts(teacherId);
-    if (!seen.includes(postId)) {
-      localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
-    }
-  };
-
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
   useEffect(() => {
     const fetchNotifications = async () => {
       try {
-        // 1) fetch posts
         const res = await axios.get(`${API_BASE}/get_posts`);
         let postsData = res.data || [];
-
-        // normalize to array
         if (!Array.isArray(postsData) && typeof postsData === "object") {
           postsData = Object.values(postsData);
         }
 
-        // 2) fetch School_Admins and Users from RTDB
         const [adminsRes, usersRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/School_Admins.json`),
           axios.get(`${RTDB_BASE}/Users.json`),
@@ -192,65 +229,36 @@ function StudentsPage() {
         const schoolAdmins = adminsRes.data || {};
         const users = usersRes.data || {};
 
-        // build helper maps
-        const usersByKey = { ...users };
-        const usersByUserId = {};
-        Object.values(users).forEach((u) => {
-          if (u && u.userId) usersByUserId[u.userId] = u;
-        });
+        // Get teacher from localStorage so we know who's seen what
+        const teacher = JSON.parse(localStorage.getItem("teacher"));
+        const seenPosts = getSeenPosts(teacher?.userId);
 
-        // Resolve helper: adminKey -> { name, profile }
         const resolveAdminInfo = (post) => {
           const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-
-          // 1) adminId is School_Admins key
           if (adminId && schoolAdmins[adminId]) {
             const schoolAdminRec = schoolAdmins[adminId];
             const userKey = schoolAdminRec.userId;
-            const userRec = usersByKey[userKey] || usersByUserId[userKey] || null;
-            const name = (userRec && userRec.name) || schoolAdminRec.name || schoolAdminRec.username || post.adminName || "Admin";
-            const profile = (userRec && (userRec.profileImage || userRec.profile)) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
+            const userRec = users[userKey] || null;
+            const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+            const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
             return { name, profile };
           }
-
-          // 2) adminId might already be a Users key
-          if (adminId && usersByKey[adminId]) {
-            const userRec = usersByKey[adminId];
-            return {
-              name: userRec.name || userRec.username || post.adminName || "Admin",
-              profile: userRec.profileImage || post.adminProfile || "/default-profile.png",
-            };
-          }
-
-          // 3) adminId might be a user.userId field value
-          if (adminId && usersByUserId[adminId]) {
-            const userRec = usersByUserId[adminId];
-            return {
-              name: userRec.name || userRec.username || post.adminName || "Admin",
-              profile: userRec.profileImage || post.adminProfile || "/default-profile.png",
-            };
-          }
-
-          // 4) Fallback to any admin fields present on the post itself
-          return {
-            name: post.adminName || post.name || post.username || "Admin",
-            profile: post.adminProfile || post.profileImage || "/default-profile.png",
-          };
+          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
         };
 
-        // build notifications (enriched)
         const latest = postsData
           .slice()
           .sort((a, b) => {
-            const ta = a.time ? new Date(a.time).getTime() : a.timestamp ? new Date(a.timestamp).getTime() : 0;
-            const tb = b.time ? new Date(b.time).getTime() : b.timestamp ? new Date(b.timestamp).getTime() : 0;
+            const ta = a.time ? new Date(a.time).getTime() : 0;
+            const tb = b.time ? new Date(b.time).getTime() : 0;
             return tb - ta;
           })
+          .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
           .map((post) => {
             const info = resolveAdminInfo(post);
             return {
-              id: post.postId || post.id || null,
+              id: post.postId,
               title: post.message?.substring(0, 50) || "Untitled post",
               adminName: info.name,
               adminProfile: info.profile,
@@ -266,27 +274,26 @@ function StudentsPage() {
     fetchNotifications();
   }, []);
 
-  // Handle notification click
-  const handleNotificationClick = (postId, index) => {
-    setHighlightedPostId(postId);
-
-    // Scroll the post into view
-    const postElement = postRefs.current[postId];
-    if (postElement) {
-      postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-
-    // Remove clicked notification
-    const updatedNotifications = [...notifications];
-    updatedNotifications.splice(index, 1);
-    setNotifications(updatedNotifications);
-
-    // Close popup
-    setShowNotifications(false);
-
-    // Remove highlight after 3 seconds
-    setTimeout(() => setHighlightedPostId(null), 3000);
+  // --- 3. Handler to remove notification after clicked (and mark seen) ---
+  const handleNotificationClick = (postId) => {
+    if (!teacher || !postId) return;
+    // Save to localStorage
+    saveSeenPost(teacher.userId, postId);
+    // Remove from UI right away
+    setNotifications(prev => prev.filter((n) => n.id !== postId));
+    setShowNotifications(false); // Optionally close the notification panel
   };
+
+  function getSeenPosts(teacherId) {
+    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+  }
+
+  function saveSeenPost(teacherId, postId) {
+    const seen = getSeenPosts(teacherId);
+    if (!seen.includes(postId)) {
+      localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
+    }
+  }
 
   // ---------------- MESSENGER FUNCTIONS (same behavior as Dashboard) ----------------
   const fetchConversations = async (currentTeacher = teacher) => {
@@ -395,13 +402,14 @@ function StudentsPage() {
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
   // ---------------- FETCH STUDENTS ----------------
+  // FETCH STUDENTS + USERS + COURSES + ASSIGNMENTS + TEACHERS
   useEffect(() => {
     if (!teacherInfo?.userId) return;
+    let cancelled = false;
 
-    async function fetchStudents() {
+    const fetchStudents = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-
         const [
           studentsRes,
           usersRes,
@@ -409,11 +417,11 @@ function StudentsPage() {
           assignmentsRes,
           teachersRes,
         ] = await Promise.all([
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+          axios.get(`${RTDB_BASE}/Students.json`),
+          axios.get(`${RTDB_BASE}/Users.json`),
+          axios.get(`${RTDB_BASE}/Courses.json`),
+          axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+          axios.get(`${RTDB_BASE}/Teachers.json`),
         ]);
 
         const teachers = teachersRes.data || {};
@@ -421,25 +429,60 @@ function StudentsPage() {
 
         if (!teacherEntry) {
           console.warn("Teacher not found in Teachers node");
-          setStudents([]);
+          if (!cancelled) {
+            setStudents([]);
+            setLoading(false);
+            setError("No teacher assignment found");
+          }
           return;
         }
-
         const teacherKey = teacherEntry[0];
 
         const assignedCourses = Object.values(assignmentsRes.data || {})
           .filter((a) => a.teacherId === teacherKey)
           .map((a) => a.courseId);
 
-        const students = Object.entries(studentsRes.data || {}).map(([studentId, s]) => {
-          const user = Object.values(usersRes.data || {}).find((u) => u.userId === s.userId);
+        const usersObj = usersRes.data || {};
+        setUsersData(usersObj);
+
+        // helper to find user record
+        const findUser = (userId) => findUserByUserId(usersObj, userId);
+
+        const studentsArr = Object.entries(studentsRes.data || {}).map(([studentId, s]) => {
+          const user = findUser(s.userId);
+
+          // attempt to resolve parentName/parentPhone from student raw or user record
+          const parentName =
+            s.parentName ||
+            s.parent?.name ||
+            user?.parentName ||
+            s.rawParentName ||
+            null;
+
+          const parentPhone =
+            s.parentPhone ||
+            s.parent?.phone ||
+            user?.parentPhone ||
+            s.rawParentPhone ||
+            null;
+
+          // detect DOB/age
+          const rawDob = user?.dob || user?.birthDate || s.dob || s.birthDate || null;
+          const age = computeAge(rawDob);
 
           return {
             ...s,
-            studentId, // the RTDB key for the student record
-            name: user?.name || "Unknown",
-            email: user?.email || "",
-            profileImage: user?.profileImage || "/default-profile.png",
+            studentId,
+            name: user?.name || s.name || "Unknown",
+            email: user?.email || s.email || "",
+            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
+            phone: user?.phone || s.phone || "",
+            gender: user?.gender || s.gender || "",
+            dob: rawDob,
+            age: age,
+            parentName: parentName || null,
+            parentPhone: parentPhone || null,
+            raw: s,
           };
         }).filter((s) =>
           assignedCourses.some((cid) => {
@@ -448,18 +491,113 @@ function StudentsPage() {
           })
         );
 
-        setStudents(students);
-        setError("");
-      } catch (e) {
-        console.error(e);
-        setError("Failed to load students");
+        if (!cancelled) {
+          setStudents(studentsArr);
+          setError("");
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setError("Failed to load students");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    }
+    };
 
     fetchStudents();
+    return () => (cancelled = true);
   }, [teacherInfo]);
+
+  // When user picks a student, set immediate fallback details (so UI won't crash),
+  // then fetch Users node and resolve authoritative details (phone/gender/email/parent/dob->age).
+  useEffect(() => {
+    if (!selectedStudent) {
+      setSelectedStudentDetails(null);
+      return;
+    }
+
+    // immediate fallback derived from selectedStudent to avoid UI errors
+    const fallback = {
+      fullName: selectedStudent.name || "—",
+      phone: selectedStudent.phone || selectedStudent.raw?.phone || "—",
+      gender: selectedStudent.gender || selectedStudent.raw?.gender || "—",
+      email: selectedStudent.email || "—",
+      grade: selectedStudent.grade || "—",
+      section: selectedStudent.section || "—",
+      parentName: selectedStudent.parentName || selectedStudent.raw?.parentName || "—",
+      parentPhone: selectedStudent.parentPhone || selectedStudent.raw?.parentPhone || "—",
+      dob: selectedStudent.dob || selectedStudent.raw?.dob || "—",
+      age: selectedStudent.age ?? computeAge(selectedStudent.dob || selectedStudent.raw?.dob) ?? "—",
+      profileImage: selectedStudent.profileImage || "/default-profile.png",
+    };
+
+    setSelectedStudentDetails(fallback);
+
+    let cancelled = false;
+    const loadDetails = async () => {
+      try {
+        // use cached usersData if present, otherwise fetch Users node
+        let usersObj = usersData;
+        if (!usersObj || Object.keys(usersObj).length === 0) {
+          const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
+          usersObj = usersRes.data || {};
+          setUsersData(usersObj);
+        }
+
+        const userRec = findUserByUserId(usersObj, selectedStudent.userId) || {};
+        // Try multiple parent id fields on student or user record
+        const parentId =
+          selectedStudent.raw?.parentId ||
+          selectedStudent.raw?.parentUserId ||
+          userRec?.parentId ||
+          userRec?.parentUserId ||
+          null;
+
+        const parentRec = parentId ? findUserByUserId(usersObj, parentId) : null;
+
+        const parentName =
+          parentRec?.name ||
+          selectedStudent.raw?.parentName ||
+          selectedStudent.parentName ||
+          "—";
+
+        const parentPhone =
+          parentRec?.phone ||
+          selectedStudent.raw?.parentPhone ||
+          selectedStudent.parentPhone ||
+          "—";
+
+        const phone = userRec?.phone || selectedStudent.phone || selectedStudent.raw?.phone || "—";
+        const gender = userRec?.gender || selectedStudent.gender || selectedStudent.raw?.gender || "—";
+        const email = userRec?.email || selectedStudent.email || "—";
+        const dob = userRec?.dob || userRec?.birthDate || selectedStudent.dob || selectedStudent.raw?.dob || null;
+        const age = computeAge(dob) ?? selectedStudent.age ?? "—";
+
+        const details = {
+          fullName: userRec?.name || selectedStudent.name || "—",
+          phone,
+          gender,
+          email,
+          grade: selectedStudent.grade || "—",
+          section: selectedStudent.section || "—",
+          parentName,
+          parentPhone,
+          dob: dob || "—",
+          age,
+          profileImage: userRec?.profileImage || selectedStudent.profileImage || "/default-profile.png",
+          userRec,
+          parentRec,
+        };
+
+        if (!cancelled) setSelectedStudentDetails(details);
+      } catch (err) {
+        console.error("Failed to derive student details", err);
+        // keep fallback already set
+      }
+    };
+
+    loadDetails();
+    return () => { cancelled = true; };
+  }, [selectedStudent, usersData]);
 
   useEffect(() => {
     const chatContainer = document.querySelector(".chat-messages");
@@ -491,44 +629,136 @@ function StudentsPage() {
 
   const grades = [...new Set(students.map((s) => s.grade))].sort();
 
-  // ---------------- FETCH ATTENDANCE ----------------
-  useEffect(() => {
-    if (!selectedStudent?.studentId) return;
 
-    async function fetchAttendance() {
-      setAttendanceLoading(true);
 
-      try {
-        const res = await axios.get(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json"
-        );
+// Fetch and normalize attendance for selectedStudent
+useEffect(() => {
+  if (!selectedStudent?.studentId && !selectedStudent?.userId) {
+    setAttendanceRecords([]);
+    return;
+  }
 
-        const attendance = [];
+  let cancelled = false;
+  const fetchAttendance = async () => {
+    setAttendanceLoading(true);
+    try {
+      const res = await axios.get(`${RTDB_BASE}/Attendance.json`);
+      const raw = res.data || {};
 
-        Object.entries(res.data || {}).forEach(([courseId, dates]) => {
-          Object.entries(dates || {}).forEach(([date, students]) => {
-            const status = students[selectedStudent.studentId];
-            if (!status) return;
+      // Normalized list for this student
+      const normalized = [];
 
-            attendance.push({
-              courseId,
-              date,
-              status,
+      // Attendance structure (common patterns):
+      // Attendance: { courseId: { dateISO: { studentId: { status, teacherName, subject } } } }
+      // Also sometimes students stored as { studentId: "present" } or { status: "present" }
+      Object.entries(raw).forEach(([courseId, dates]) => {
+        if (!dates || typeof dates !== "object") return;
+        Object.entries(dates).forEach(([dateKey, studentsMap]) => {
+          if (!studentsMap || typeof studentsMap !== "object") return;
+
+          // studentsMap might be { studentId: "present", ... } or { studentId: { status: "...", teacherName: "..."} }
+          const studentEntry = studentsMap[selectedStudent.studentId] ?? studentsMap[selectedStudent.userId];
+
+          // If not found with those keys, there might be a nested structure: { students: { studentId: {...} } }
+          let record = studentEntry;
+          if (!record && studentsMap.students) {
+            record = studentsMap.students[selectedStudent.studentId] ?? studentsMap.students[selectedStudent.userId];
+          }
+
+          if (!record) {
+            // also check each student entry for keys like userId inside object
+            const found = Object.entries(studentsMap).find(([k, v]) => {
+              if (!v || typeof v !== "object") return false;
+              if (v.userId && (String(v.userId) === String(selectedStudent.userId) || String(v.userId) === String(selectedStudent.studentId))) return true;
+              return false;
             });
+            if (found) record = found[1];
+          }
+
+          if (!record) return;
+
+          // Normalize status / teacherName / subject
+          let status = "absent";
+          let teacherName = "";
+          let subject = courseId;
+
+          if (typeof record === "string") {
+            status = record;
+          } else if (typeof record === "object") {
+            status = record.status || record.attendance_status || Object.values(record)[0] || "present";
+            teacherName = record.teacherName || record.teacher || record.tutor || "";
+            subject = record.subject || courseId;
+          }
+
+          // store normalized record
+          normalized.push({
+            courseId,
+            date: dateKey,
+            status: String(status).toLowerCase(),
+            teacherName,
+            subject,
           });
         });
+      });
 
-        setAttendanceData(attendance);
-      } catch (err) {
-        console.error("Attendance fetch error:", err);
-        setAttendanceData([]);
-      } finally {
-        setAttendanceLoading(false);
+      if (!cancelled) {
+        // sort newest -> oldest
+        normalized.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setAttendanceRecords(normalized);
       }
+    } catch (err) {
+      console.error("Attendance fetch error:", err);
+      if (!cancelled) setAttendanceRecords([]);
+    } finally {
+      if (!cancelled) setAttendanceLoading(false);
     }
+  };
 
-    fetchAttendance();
-  }, [selectedStudent]);
+  fetchAttendance();
+  return () => {
+    cancelled = true;
+  };
+}, [selectedStudent]);
+
+// Derived data used by the UI (attendanceBySubject, getProgress, etc.)
+const attendanceData = React.useMemo(() => {
+  // attendanceRecords already only contains entries for selectedStudent
+  return attendanceRecords.map((r) => ({
+    date: r.date,
+    courseId: r.courseId,
+    teacherName: r.teacherName || r.subject || "",
+    status: r.status || "absent",
+  }));
+}, [attendanceRecords]);
+
+const attendanceBySubject = React.useMemo(() => {
+  if (!attendanceData || attendanceData.length === 0) return {};
+  return attendanceData.reduce((acc, rec) => {
+    const key = rec.courseId || rec.subject || "unknown";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(rec);
+    return acc;
+  }, {});
+}, [attendanceData]);
+
+const getProgress = (records) => {
+  if (!records || records.length === 0) return 0;
+  const presentCount = records.filter((r) => r.status === "present" || r.status === "late").length;
+  return Math.round((presentCount / records.length) * 100);
+};
+
+// Expose getWeekNumber for the UI usage (used when computing weekRecords)
+const _getWeekNumber = getWeekNumber
+
+
+// inside StudentsPage component (above the JSX that uses it)
+const toggleExpand = (key) => {
+  setExpandedCards((prev) => ({
+    ...prev,
+    [key]: !prev[key],
+  }));
+};
+
 
   const handleLogout = () => {
     localStorage.removeItem("teacher"); // or "user", depending on your auth
@@ -728,6 +958,22 @@ function StudentsPage() {
     setNewMessageText("");
   };
 
+const [isPortrait, setIsPortrait] = React.useState(
+  window.innerWidth < window.innerHeight
+);
+
+React.useEffect(() => {
+  const handleResize = () => {
+    setIsPortrait(window.innerWidth < window.innerHeight);
+  };
+
+  window.addEventListener("resize", handleResize);
+  return () => window.removeEventListener("resize", handleResize);
+}, []);
+
+
+
+
   useEffect(() => {
     const chatContainer = document.querySelector(".chat-messages");
     if (chatContainer) {
@@ -778,10 +1024,7 @@ function StudentsPage() {
       {/* Top Navbar */}
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
-        <div className="nav-search">
-          <FaSearch className="search-icon" />
-          <input type="text" placeholder="Search Teacher and Student..." />
-        </div>
+        
         <div className="nav-right">
           {/* Notification Bell & Popup */}
           <div className="icon-circle">
@@ -990,7 +1233,7 @@ function StudentsPage() {
         </div>
         {/* MAIN CONTENT */}
         <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
-          <div style={{ width: "40%", position: "relative" }}>
+          <div style={{ width: "300px", position: "relative", marginLeft: "50px", marginRight: isPortrait ? 0 : "50px" }}>
             <h2 style={{ textAlign: "center", marginBottom: "20px" }}>My Students</h2>
 
             {/* Grades */}
@@ -1027,517 +1270,582 @@ function StudentsPage() {
 
           {/* RIGHT SIDEBAR */}
           {/* RIGHT SIDEBAR */}
-          {selectedStudent && (
-            <div
-              style={{
-                width: "30%",
-                background: "#fff",
-                boxShadow: "0 0 15px rgba(0,0,0,0.05)",
-                position: "fixed",
-                right: 0,
-                top: "60px",
-                height: "calc(100vh - 60px)",
-                zIndex: 10,
-                display: "flex",
-                flexDirection: "column",
-                overflowY: "auto",
-              }}
-            >
-              {/* Student Info */}
-              <div style={{ textAlign: "center", marginBottom: "20px" }}>
-                <div
-                  style={{
-                    width: "120px",
-                    height: "120px",
-                    margin: "0 auto 15px",
-                    borderRadius: "50%",
-                    overflow: "hidden",
-                    border: "4px solid #4b6cb7",
-                  }}
-                >
-                  <img
-                    src={selectedStudent.profileImage}
-                    alt={selectedStudent.name}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                  />
-                </div>
-                <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
-                <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.email}</p>
-                <p style={{ color: "#555", margin: "5px 0" }}>
-                  <strong>Grade:</strong> {selectedStudent.grade}
-                </p>
-                <p style={{ color: "#555", margin: "5px 0" }}>
-                  <strong>Section:</strong> {selectedStudent.section}
-                </p>
-              </div>
+          {/* RIGHT SIDEBAR */}
+{/* RIGHT SIDEBAR */}
+{selectedStudent && (
+  <div
+    style={{
+      width: isPortrait ? "100%" : "30%",
+      height: isPortrait ? "100vh" : "calc(100vh - 60px)",
+      position: "fixed",
+      right: 0,
+      top: isPortrait ? 0 : "60px",
+      background: "#fff",
+      zIndex: 1000,
+      display: "flex",
+      flexDirection: "column",
+      overflowY: "auto",
+      boxShadow: isPortrait
+        ? "0 0 0 rgba(0,0,0,0)"
+        : "0 0 15px rgba(0,0,0,0.08)",
+      transition: "all 0.35s ease",
+    }}
+  >
 
-              {/* Tabs */}
-              <div style={{ display: "flex", marginBottom: "15px" }}>
-                {["details", "attendance", "performance"].map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setStudentTab(tab)}
-                    style={{
-                      flex: 1,
-                      padding: "10px",
-                      border: "none",
-                      background: "none",
-                      cursor: "pointer",
-                      fontWeight: "600",
-                      color: studentTab === tab ? "#4b6cb7" : "#777",
-                      borderBottom:
-                        studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
-                    }}
-                  >
-                    {tab.toUpperCase()}
-                  </button>
-                ))}
-              </div>
+    {/* Close button (top-right) */}
+   <button
+  onClick={() => setSelectedStudent(null)}
+  style={{
+    position: "fixed",
+    top: 56,
+    right: 16,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    border: "none",
+    background: "#ffffff",
+    boxShadow: "0 6px 18px rgba(2,6,23,0.15)",
+    cursor: "pointer",
+    fontSize: 22,
+    fontWeight: 900,
+    zIndex: 2000,
+  }}
+>
+  ×
+</button>
+
+
+    {/* Student Info */}
+    <div style={{ textAlign: "center", marginBottom: "20px", paddingTop: 20 }}>
+      <div
+        style={{
+          width: "120px",
+          height: "120px",
+          margin: "0 auto 15px",
+          borderRadius: "50%",
+          overflow: "hidden",
+          border: "4px solid #4b6cb7",
+        }}
+      >
+        <img
+          src={selectedStudent.profileImage}
+          alt={selectedStudent.name}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      </div>
+      <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
+      <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.email}</p>
+      <p style={{ color: "#555", margin: "5px 0" }}>
+        <strong>Grade:</strong> {selectedStudent.grade}
+      </p>
+      <p style={{ color: "#555", margin: "5px 0" }}>
+        <strong>Section:</strong> {selectedStudent.section}
+      </p>
+    </div>
+
+    {/* Tabs */}
+    <div style={{ display: "flex", marginBottom: "15px" }}>
+      {["details", "attendance", "performance"].map((tab) => (
+        <button
+          key={tab}
+          onClick={() => setStudentTab(tab)}
+          style={{
+            flex: 1,
+            padding: "10px",
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            fontWeight: "600",
+            color: studentTab === tab ? "#4b6cb7" : "#777",
+            borderBottom:
+              studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
+          }}
+        >
+          {tab.toUpperCase()}
+        </button>
+      ))}
+    </div>
 
               {/* Tab Content */}
               <div>
                 {/* DETAILS TAB */}
-                {studentTab === "details" && selectedStudent && (
-                  <div style={{ padding: "20px", background: "#f8fafc", minHeight: "calc(100vh - 180px)", position: "relative" }}>
+              {/* DETAILS TAB */}
+{studentTab === "details" && (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 28,
+      padding: isPortrait ? 50 : 50,
+marginLeft: 0,
+marginRight: 0,
 
-                    {/* Personal Information */}
-                    <div
-                      style={{
-                        background: "linear-gradient(180deg, #ffffff, #f8fafc)",
-                        borderRadius: "22px",
-                        padding: "22px",
-                        marginBottom: "24px",
-                        boxShadow: "0 20px 50px rgba(15, 23, 42, 0.08)",
-                        border: "1px solid #e5e7eb",
-                      }}
-                    >
-                      {/* Header */}
-                      <div
-                        style={{
-                          textAlign: "center",
-                          marginBottom: "20px",
-                        }}
-                      >
-                        <h2
-                          style={{
-                            fontSize: "20px",
-                            fontWeight: "100",
-                            color: "#212424ff",
-                            marginBottom: "4px",
-                            letterSpacing: "0.3px",
-                          }}
-                        >
-                          Personal & Parent Information
-                        </h2>
+      borderRadius: 28,
+      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
+      boxShadow: "0 30px 80px rgba(0,0,0,0.15)",
+      fontFamily: "Inter, system-ui",
+    }}
+  >
+    {/* ================= LEFT COLUMN ================= */}
+    <div>
+      {/* STUDENT DETAILS */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 900,
+          marginBottom: 18,
+          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+        }}
+      >
+        Student Details
+      </div>
 
-                      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 16,
+        }}
+      >
+        {[
+          ["Phone", selectedStudentDetails?.phone],
+          ["Gender", selectedStudentDetails?.gender],
+          ["Email", selectedStudentDetails?.email],
+          ["Grade", selectedStudentDetails?.grade],
+          ["Section", selectedStudentDetails?.section],
+          ["Age", selectedStudentDetails?.age],
+          ["Birth Date", selectedStudentDetails?.dob],
+          ["Parent Name", selectedStudentDetails?.parentName],
+          ["Parent Phone", selectedStudentDetails?.parentPhone],
+        ].map(([label, value]) => (
+          <div
+            key={label}
+            style={{
+              padding: 18,
+              borderRadius: 20,
+              background: "#ffffff",
+              boxShadow: "0 12px 28px rgba(0,0,0,0.08)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#64748b",
+                textTransform: "uppercase",
+              }}
+            >
+              {label}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 17,
+                fontWeight: 800,
+                color: "#0f172a",
+              }}
+            >
+              {value || "—"}
+            </div>
+          </div>
+        ))}
+      </div>
 
-                      {/* Info Grid */}
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "1fr 1fr",
-                          gap: "14px 20px",
-                        }}
-                      >
-                        <InfoRow label="Full Name" value={selectedStudent.name} />
-                        <InfoRow label="Email" value={selectedStudent.email || "N/A"} />
+      {/* ================= TEACHER NOTES (UNDER DETAILS) ================= */}
+      <div style={{ marginTop: 36 }}>
+        <div
+          style={{
+            fontSize: 22,
+            fontWeight: 900,
+            marginBottom: 14,
+            color: "#1e293b",
+          }}
+        >
+          Teacher Notes
+        </div>
 
-                        <InfoRow label="Grade" value={selectedStudent.grade} />
-                        <InfoRow label="Section" value={selectedStudent.section} />
+        {/* NOTE INPUT */}
+        <div
+          style={{
+            background: "#ffffff",
+            padding: 18,
+            borderRadius: 22,
+            boxShadow: "0 14px 40px rgba(0,0,0,0.1)",
+          }}
+        >
+          <textarea
+            value={newTeacherNote}
+            onChange={(e) => setNewTeacherNote(e.target.value)}
+            placeholder="Write an important note about the student..."
+            style={{
+              width: "100%",
+              minHeight: 100,
+              border: "none",
+              outline: "none",
+              resize: "vertical",
+              fontSize: 15,
+              lineHeight: 1.6,
+            }}
+          />
 
-                        <InfoRow label="Age" value={selectedStudent.age || "N/A"} />
-                        <InfoRow label="Student ID" value={selectedStudent?.userId} />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+            <button
+              onClick={saveTeacherNote}
+              disabled={savingNote}
+              style={{
+                padding: "10px 22px",
+                borderRadius: 999,
+                border: "none",
+                background: "linear-gradient(135deg,#2563eb,#7c3aed)",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+                boxShadow: "0 12px 30px rgba(37,99,235,0.45)",
+              }}
+            >
+              {savingNote ? "Saving..." : "Add Note"}
+            </button>
+          </div>
+        </div>
 
-                        <InfoRow
-                          label="Enrollment Date"
-                          value={selectedStudent.enrollmentDate || "N/A"}
-                        />
+        {/* NOTES LIST */}
+        <div
+          style={{
+            marginTop: 18,
+            display: "flex",
+            flexDirection: "column",
+            gap: 14,
+            maxHeight: 320,
+            overflowY: "auto",
+          }}
+        >
+          {teacherNotes.length === 0 ? (
+            <div
+              style={{
+                textAlign: "center",
+                padding: 18,
+                color: "#64748b",
+                background: "#ffffff",
+                borderRadius: 18,
+              }}
+            >
+              No teacher notes yet
+            </div>
+          ) : (
+            teacherNotes.map((n) => (
+              <div key={n.id} style={{ display: "flex", gap: 12 }}>
+                {/* Avatar */}
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: "50%",
+                    background: "linear-gradient(135deg,#60a5fa,#2563eb)",
+                    color: "#fff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 900,
+                  }}
+                >
+                  {n.teacherName
+                    ?.split(" ")
+                    .map((p) => p[0])
+                    .join("")
+                    .slice(0, 2)
+                    .toUpperCase() || "T"}
+                </div>
 
-                        <InfoRow
-                          label="Parent Name"
-                          value={selectedStudent.parentName || "N/A"}
-                        />
-
-                        <InfoRow
-                          label="Parent Phone"
-                          value={selectedStudent.parentPhone || "N/A"}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Teacher Notes */}
-                    <div
-                      style={{
-                        background: "linear-gradient(180deg, #f1f5f9, #ffffff)",
-                        borderRadius: "20px",
-                        padding: "20px",
-                        marginBottom: "24px",
-                        boxShadow: "0 15px 40px rgba(15, 23, 42, 0.08)",
-                      }}
-                    >
-                      {/* Header */}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "8px",
-                          fontSize: "18px",
-                          fontWeight: "800",
-                          color: "#0f172a",
-                          marginBottom: "18px",
-                          letterSpacing: "0.4px",
-                        }}
-                      >
-                        📝 Teacher Notes
-                      </div>
-
-                      {/* Input Area */}
-                      <div
-                        style={{
-                          background: "#ffffff",
-                          borderRadius: "16px",
-                          padding: "14px",
-                          boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
-                          marginBottom: "18px",
-                          transition: "all 0.3s ease",
-                        }}
-                      >
-                        <textarea
-                          value={newTeacherNote}
-                          onChange={(e) => setNewTeacherNote(e.target.value)}
-                          placeholder="Write a note about this student… 😊"
-                          style={{
-                            width: "100%",
-                            minHeight: "75px",
-                            border: "none",
-                            outline: "none",
-                            resize: "none",
-                            fontSize: "14px",
-                            color: "#0f172a",
-                            lineHeight: "1.6",
-                            background: "transparent",
-                          }}
-                        />
-
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
-                          <button
-                            onClick={saveTeacherNote}
-                            disabled={savingNote}
-                            style={{
-                              padding: "9px 18px",
-                              borderRadius: "999px",
-                              border: "none",
-                              background: "linear-gradient(135deg, #38bdf8, #2563eb)",
-                              color: "#fff",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                              cursor: "pointer",
-                              opacity: savingNote ? 0.6 : 1,
-                              boxShadow: "0 6px 18px rgba(37, 99, 235, 0.4)",
-                              transition: "all 0.25s ease",
-                            }}
-                          >
-                            {savingNote ? "Saving…" : "Send"}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Notes List */}
-                      {teacherNotes.length === 0 ? (
-                        <div
-                          style={{
-                            textAlign: "center",
-                            color: "#94a3b8",
-                            fontSize: "14px",
-                            padding: "12px",
-                          }}
-                        >
-                          No notes yet
-                        </div>
-                      ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                          {teacherNotes.map((n) => {
-                            const initials = n.teacherName
-                              ?.split(" ")
-                              .map((w) => w[0])
-                              .join("")
-                              .slice(0, 2)
-                              .toUpperCase();
-
-                            return (
-                              <div
-                                key={n.id}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "flex-start",
-                                  gap: "10px",
-                                  animation: "fadeIn 0.3s ease",
-                                }}
-                              >
-                                {/* Avatar */}
-                                <div
-                                  style={{
-                                    width: "36px",
-                                    height: "36px",
-                                    borderRadius: "50%",
-                                    background: "linear-gradient(135deg, #60a5fa, #2563eb)",
-                                    color: "#fff",
-                                    fontWeight: "800",
-                                    fontSize: "13px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    flexShrink: 0,
-                                    boxShadow: "0 4px 12px rgba(37,99,235,0.4)",
-                                  }}
-                                >
-                                  {initials}
-                                </div>
-
-                                {/* Message Bubble */}
-                                <div
-                                  style={{
-                                    maxWidth: "80%",
-                                    background: "#e0f2fe",
-                                    borderRadius: "16px 16px 16px 6px",
-                                    padding: "12px 14px",
-                                    boxShadow: "0 6px 16px rgba(0,0,0,0.06)",
-                                  }}
-                                >
-                                  <div
-                                    style={{
-                                      fontSize: "12px",
-                                      fontWeight: "700",
-                                      color: "#0369a1",
-                                      marginBottom: "4px",
-                                    }}
-                                  >
-                                    {n.teacherName}
-                                  </div>
-
-                                  <div
-                                    style={{
-                                      fontSize: "14px",
-                                      color: "#0f172a",
-                                      lineHeight: "1.6",
-                                      whiteSpace: "pre-wrap",
-                                    }}
-                                  >
-                                    {n.note}
-                                  </div>
-
-                                  <div
-                                    style={{
-                                      fontSize: "11px",
-                                      color: "#64748b",
-                                      marginTop: "6px",
-                                      textAlign: "right",
-                                    }}
-                                  >
-                                    {new Date(n.createdAt).toLocaleString()}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {/* Animation */}
-                      <style>
-                        {`
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(6px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-    `}
-                      </style>
-                    </div>
-                    {/* Achievements */}
-                    {selectedStudent.achievements && selectedStudent.achievements.length > 0 && (
-                      <div style={{
-                        background: "#fff",
-                        borderRadius: "15px",
-                        padding: "20px",
-                        marginBottom: "80px", // extra padding for fixed button
-                        boxShadow: "0 8px 25px rgba(0,0,0,0.1)",
-                        transition: "all 0.3s ease"
-                      }}>
-                        <h2 style={{ fontSize: "20px", color: "#d946ef", fontWeight: "700", marginBottom: "12px", textAlign: "center" }}>
-                          Achievements
-                        </h2>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", justifyContent: "center" }}>
-                          {selectedStudent.achievements.map((ach, idx) => (
-                            <div key={idx} style={{
-                              background: "linear-gradient(135deg, #4b6cb7, #182848)",
-                              color: "#fff",
-                              padding: "6px 14px",
-                              borderRadius: "999px",
-                              fontSize: "13px",
-                              fontWeight: "700",
-                              boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
-                              transition: "all 0.3s ease",
-                            }}>
-                              {ach}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                {/* Note Bubble */}
+                <div
+                  style={{
+                    flex: 1,
+                    background: "#ffffff",
+                    padding: 14,
+                    borderRadius: 18,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+                  }}
+                >
+                  <div style={{ fontWeight: 800, color: "#1e293b" }}>
+                    {n.teacherName}
                   </div>
-                )}
+                  <div style={{ marginTop: 6 }}>{n.note}</div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 12,
+                      color: "#64748b",
+                      textAlign: "right",
+                    }}
+                  >
+                    {new Date(n.createdAt).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+
+ 
+  </div>
+)}
+
                 {/* ATTENDANCE TAB */}
-                {studentTab === "attendance" && selectedStudent && (
-                  <div style={{ padding: "20px", background: "#f8fafc", minHeight: "calc(100vh - 180px)", position: "relative" }}>
+             {/* ================= ATTENDANCE TAB ================= */}
+{studentTab === "attendance" && selectedStudent && (
+  <div
+    style={{
+      padding: 30,
+      background: "radial-gradient(circle at top,#eef2ff,#f8fafc)",
+      borderRadius: 26,
+      fontFamily: "Inter, system-ui",
+    }}
+  >
+    {/* ===== VIEW SWITCH ===== */}
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        gap: 16,
+        marginBottom: 32,
+      }}
+    >
+      {["daily", "weekly", "monthly"].map((v) => (
+        <button
+          key={v}
+          onClick={() => setAttendanceView(v)}
+          style={{
+            padding: "12px 28px",
+            borderRadius: 999,
+            border: "none",
+            fontWeight: 800,
+            fontSize: 13,
+            letterSpacing: 1,
+            cursor: "pointer",
+            background:
+              attendanceView === v
+                ? "linear-gradient(135deg,#4f46e5,#2563eb)"
+                : "rgba(255,255,255,.8)",
+            color: attendanceView === v ? "#fff" : "#1f2937",
+            boxShadow:
+              attendanceView === v
+                ? "0 18px 40px rgba(79,70,229,.45)"
+                : "0 6px 14px rgba(0,0,0,.08)",
+            transition: "all .3s ease",
+          }}
+        >
+          {v.toUpperCase()}
+        </button>
+      ))}
+    </div>
 
-                    {/* Daily / Weekly / Monthly Tabs */}
-                    <div style={{ display: "flex", marginBottom: "20px", gap: "10px" }}>
-                      {["daily", "weekly", "monthly"].map((tab) => (
-                        <button
-                          key={tab}
-                          onClick={() => setAttendanceFilter(tab)}
-                          style={{
-                            flex: 1,
-                            padding: "10px 0",
-                            border: "none",
-                            borderRadius: "12px",
-                            backgroundColor: attendanceFilter === tab ? "#4b6cb7" : "#e5e7eb",
-                            color: attendanceFilter === tab ? "#fff" : "#475569",
-                            fontWeight: "600",
-                            cursor: "pointer",
-                            transition: "all 0.3s ease",
-                          }}
-                        >
-                          {tab.toUpperCase()}
-                        </button>
-                      ))}
-                    </div>
-                    {/* Attendance Summary with Filter Percentages */}
-                    {!attendanceLoading && attendanceData.length > 0 && (
-                      <div style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        marginBottom: "20px",
-                        padding: "15px 20px",
-                        background: "#fff",
-                        borderRadius: "15px",
-                        boxShadow: "0 8px 25px rgba(0,0,0,0.08)"
-                      }}>
-                        {["daily", "weekly", "monthly"].map((filter) => {
-                          const today = new Date();
-                          const filteredData = attendanceData.filter(a => {
-                            const recordDate = new Date(a.date);
-                            if (filter === "daily") return recordDate.toDateString() === today.toDateString();
-                            if (filter === "weekly") {
-                              const firstDay = new Date(today.setDate(today.getDate() - today.getDay()));
-                              const lastDay = new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + 6);
-                              return recordDate >= firstDay && recordDate <= lastDay;
-                            }
-                            if (filter === "monthly") return recordDate.getMonth() === today.getMonth() && recordDate.getFullYear() === today.getFullYear();
-                            return true;
-                          });
-                          const presentCount = filteredData.filter(a => a.status.toLowerCase() === "present").length;
-                          const percentage = filteredData.length > 0 ? Math.round((presentCount / filteredData.length) * 100) : 0;
+    {/* ===== SUBJECT CARDS ===== */}
+    {Object.entries(attendanceBySubject)
+      .filter(
+        ([course]) =>
+          attendanceCourseFilter === "All" || course === attendanceCourseFilter
+      )
+      .map(([course, records]) => {
+        const today = new Date().toDateString();
+        const weekRecords = records.filter(
+          (r) => new Date(r.date).getWeek?.() === new Date().getWeek?.()
+        );
+        const monthRecords = records.filter(
+          (r) => new Date(r.date).getMonth() === new Date().getMonth()
+        );
 
-                          return (
-                            <div key={filter}>
-                              <span style={{ fontSize: "14px", color: "#64748b" }}>{filter.toUpperCase()}</span>
-                              <div style={{ fontSize: "18px", fontWeight: "700", color: "#2563eb" }}>{percentage}%</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {/* Attendance Data */}
-                    {attendanceLoading && <p style={{ textAlign: "center", color: "#888" }}>Loading attendance...</p>}
+        const displayRecords =
+          attendanceView === "daily"
+            ? records.filter((r) => new Date(r.date).toDateString() === today)
+            : attendanceView === "weekly"
+            ? weekRecords
+            : monthRecords;
 
-                    {!attendanceLoading && attendanceData.length === 0 && (
-                      <p style={{ color: "#888", textAlign: "center" }}>🚫 No attendance records found.</p>
-                    )}
-                    {!attendanceLoading &&
-                      attendanceData
-                        .filter((a) => {
-                          const today = new Date();
-                          const recordDate = new Date(a.date);
+        const progress = getProgress(displayRecords);
+        const expandKey = `${attendanceView}-${course}`;
 
-                          if (attendanceFilter === "daily") {
-                            return recordDate.toDateString() === today.toDateString();
-                          } else if (attendanceFilter === "weekly") {
-                            const firstDayOfWeek = new Date(today.setDate(today.getDate() - today.getDay()));
-                            const lastDayOfWeek = new Date(firstDayOfWeek.getFullYear(), firstDayOfWeek.getMonth(), firstDayOfWeek.getDate() + 6);
-                            return recordDate >= firstDayOfWeek && recordDate <= lastDayOfWeek;
-                          } else if (attendanceFilter === "monthly") {
-                            return recordDate.getMonth() === today.getMonth() && recordDate.getFullYear() === today.getFullYear();
-                          }
-                          return true;
-                        })
-                        .map((a, index) => (
-                          <div
-                            key={index}
-                            style={{
-                              marginBottom: "15px",
-                              padding: "15px 20px",
-                              borderRadius: "15px",
-                              background: "#fff",
-                              boxShadow: "0 8px 25px rgba(0,0,0,0.08)",
-                              transition: "all 0.3s ease",
-                            }}
-                          >
-                            {/* Subject + Date */}
-                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px", alignItems: "center" }}>
-                              <span style={{ fontWeight: "700", fontSize: "16px", color: "#2563eb" }}>{a.subject}</span>
-                              <span style={{ fontSize: "13px", color: "#64748b" }}>{a.date}</span>
-                            </div>
+        return (
+          <div
+            key={course}
+            style={{
+              background:
+                "linear-gradient(180deg,rgba(255,255,255,.95),rgba(255,255,255,.85))",
+              backdropFilter: "blur(14px)",
+              borderRadius: 26,
+              padding: 26,
+              marginBottom: 26,
+              boxShadow: "0 30px 60px rgba(0,0,0,.12)",
+              position: "relative",
+              overflow: "hidden",
+            }}
+          >
+            {/* Glow */}
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background:
+                  "radial-gradient(circle at top left,rgba(99,102,241,.15),transparent 60%)",
+                pointerEvents: "none",
+              }}
+            />
 
-                            {/* Teacher + Status */}
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                              <span style={{ fontSize: "14px", color: "#374151" }}>👨‍🏫 {a.teacherName}</span>
-                              <span
-                                style={{
-                                  padding: "5px 16px",
-                                  borderRadius: "999px",
-                                  fontSize: "14px",
-                                  fontWeight: "700",
-                                  backgroundColor:
-                                    a.status.toLowerCase() === "present"
-                                      ? "#16a34a"
-                                      : a.status.toLowerCase() === "late"
-                                        ? "#f59e0b"
-                                        : "#dc2626", // red for absent
-                                  color: "#fff",
-                                }}
-                              >
-                                {a.status.toUpperCase()}
-                              </span>
-                            </div>
-                            {/* Progress Bar */}
-                            <div style={{ height: "8px", borderRadius: "12px", background: "#e5e7eb", overflow: "hidden" }}>
-                              <div
-                                style={{
-                                  width:
-                                    a.status.toLowerCase() === "present"
-                                      ? "100%"
-                                      : a.status.toLowerCase() === "late"
-                                        ? "50%"
-                                        : "0%", // 50% for late
-                                  height: "100%",
-                                  background:
-                                    a.status.toLowerCase() === "present"
-                                      ? "#16a34a"
-                                      : a.status.toLowerCase() === "late"
-                                        ? "#f59e0b"
-                                        : "#dc2626",
-                                  transition: "width 0.4s ease",
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ))}
+            {/* HEADER */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 18,
+              }}
+            >
+              <div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: 20,
+                    fontWeight: 900,
+                    color: "#1e3a8a",
+                  }}
+                >
+                  📚 {formatSubjectName(course)}
+                </h3>
+                <p
+                  style={{
+                    margin: "6px 0 0",
+                    fontSize: 13,
+                    color: "#64748b",
+                  }}
+                >
+                  👨‍🏫 {records[0]?.teacherName}
+                </p>
+              </div>
+
+              <div
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 999,
+                  fontSize: 13,
+                  fontWeight: 900,
+                  background:
+                    progress >= 75
+                      ? "linear-gradient(135deg,#22c55e,#16a34a)"
+                      : progress >= 50
+                      ? "linear-gradient(135deg,#facc15,#eab308)"
+                      : "linear-gradient(135deg,#ef4444,#dc2626)",
+                  color: "#fff",
+                  boxShadow: "0 10px 25px rgba(0,0,0,.25)",
+                }}
+              >
+                {progress}%
+              </div>
+            </div>
+
+            {/* PROGRESS BAR */}
+            <div
+              onClick={() => toggleExpand(expandKey)}
+              style={{
+                height: 16,
+                background: "#e5e7eb",
+                borderRadius: 999,
+                cursor: "pointer",
+                overflow: "hidden",
+                marginBottom: 10,
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${progress}%`,
+                  background:
+                    progress >= 75
+                      ? "linear-gradient(90deg,#22c55e,#16a34a)"
+                      : progress >= 50
+                      ? "linear-gradient(90deg,#facc15,#eab308)"
+                      : "linear-gradient(90deg,#ef4444,#dc2626)",
+                  transition: "width .5s cubic-bezier(.4,0,.2,1)",
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#475569",
+                marginBottom: 12,
+                letterSpacing: 0.6,
+              }}
+            >
+              CLICK BAR TO VIEW {attendanceView.toUpperCase()} DETAILS
+            </div>
+
+            {/* EXPANDED DAYS */}
+            {expandedCards[expandKey] && (
+              <div
+                style={{
+                  marginTop: 14,
+                  background: "#f1f5f9",
+                  borderRadius: 18,
+                  padding: 14,
+                }}
+              >
+                {displayRecords.map((r, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "12px 8px",
+                      borderBottom:
+                        i !== displayRecords.length - 1
+                          ? "1px solid #e5e7eb"
+                          : "none",
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: "#1f2937" }}>
+                      📅 {new Date(r.date).toDateString()}
+                    </span>
+
+                    <span
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: 999,
+                        fontSize: 12,
+                        fontWeight: 900,
+                        background:
+                          r.status === "present"
+                            ? "#dcfce7"
+                            : r.status === "late"
+                            ? "#fef3c7"
+                            : "#fee2e2",
+                        color:
+                          r.status === "present"
+                            ? "#166534"
+                            : r.status === "late"
+                            ? "#92400e"
+                            : "#991b1b",
+                      }}
+                    >
+                      {r.status.toUpperCase()}
+                    </span>
                   </div>
-                )}
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+  </div>
+)}
 
-                {/* PERFORMANCE TAB */}
+                  {/* PERFORMANCE TAB */}
+             {/* PERFORMANCE TAB */}
                 {studentTab === "performance" && (
                   <div style={{ position: "relative", paddingBottom: "70px", background: "#f8fafc" }}>
 
@@ -1771,7 +2079,7 @@ function StudentsPage() {
                     </div>
                   </div>
                 )}
-              </div>
+                     </div>
               {/* Chat Button */}
               {!chatOpen && (
                 <div
