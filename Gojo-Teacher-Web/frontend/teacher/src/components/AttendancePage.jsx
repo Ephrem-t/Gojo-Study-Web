@@ -583,8 +583,27 @@ const filteredStudents = students.filter(
 
         {/* MAIN CONTENT */}
        {/* MAIN CONTENT */}
-<div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px", background: "#f0f4f8" }}>
-  <div style={{ width: "60%", position: "relative", marginLeft: "330px", padding: "30px", borderRadius: "15px", background: "#fff", boxShadow: "0 8px 20px rgba(0,0,0,0.1)" }}>
+<div
+  style={{
+    flex: 1,
+    display: "flex",
+    justifyContent: "center",
+    padding: "30px",
+    background: "#f0f4f8"
+  }}
+>
+  <div
+    className="attendance-main-content-responsive"
+    style={{
+      width: "50%",
+      position: "relative",
+      marginLeft: "200px",
+      padding: "30px",
+      borderRadius: "15px",
+      background: "#fff",
+      boxShadow: "0 8px 10px rgba(0,0,0,0.1)"
+    }}
+  >
     <h2 style={{ textAlign: "center", marginBottom: "25px", color: "#333" }}>Attendance</h2>
 
     {/* Course Selection */}

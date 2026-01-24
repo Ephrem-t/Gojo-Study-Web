@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -462,6 +462,42 @@ function saveSeenPost(teacherId, postId) {
 
 
   // ---------------- UI ----------------
+  const marksWrapperRef = useRef(null);
+
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const scrollMarks = (direction) => {
+    const el = marksWrapperRef.current;
+    if (!el) return;
+    const amount = Math.min(el.clientWidth, 420);
+    el.scrollBy({ left: direction * amount, behavior: "smooth" });
+  };
+
+  const updateScrollButtons = () => {
+    const el = marksWrapperRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 8);
+    setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 8);
+  };
+
+  useEffect(() => {
+    const el = marksWrapperRef.current;
+    if (!el) return;
+    // update on mount
+    updateScrollButtons();
+    const onScroll = () => updateScrollButtons();
+    const onResize = () => updateScrollButtons();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onResize);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structureSubmitted, assessmentList.length]);
+
   return (
     <div className="dashboard-page">
       {/* Top Navbar */}
@@ -584,21 +620,8 @@ function saveSeenPost(teacherId, postId) {
         </div>
 
 {/* MAIN CONTENT */}
-<div
-  style={{
-    flex: 1,
-    display: "flex",
-    
-    justifyContent: "center",
-    padding: "40px",
-    marginLeft: "150px",
-    
-    background: "#eef2f7",
-    minHeight: "100vh",
-    fontFamily: "'Inter', sans-serif",
-  }}
->
-  <div style={{ width: "55%" }}>
+<div className="google-main">
+  <div className="main-inner">
     {/* Page Title */}
     <h2
       style={{
@@ -866,22 +889,33 @@ function saveSeenPost(teacherId, postId) {
     {/* Student Marks Table */}
     {structureSubmitted && (
       <div
+        className="marks-table-wrapper"
+        ref={marksWrapperRef}
         style={{
+          position: "relative",
           overflowX: "auto",
-          backdropFilter: "blur(12px)",
-          background: "rgba(255,255,255,0.9)",
-          padding: "30px",
-          borderRadius: "20px",
-          boxShadow: "0 15px 30px rgba(0,0,0,0.12)",
-          transition: "0.3s all",
+          overflowY: "visible",
+          minHeight: 120,
+          paddingBottom: 32,
+          whiteSpace: "nowrap",
         }}
       >
+        <button
+          aria-label="Scroll left"
+          className="marks-scroll-arrow left marks-scroll-arrow-fixed"
+          onClick={() => scrollMarks(-1)}
+          style={{ display: "flex", position: "fixed", left: 80, bottom: 48, zIndex: 1000 }}
+        >
+          ‹
+        </button>
         <table
+          className="marks-table"
           style={{
-            width: "100%s",
             borderCollapse: "separate",
             borderSpacing: "0 12px",
             fontSize: "15px",
+            minWidth: 900,
+            width: "max-content",
           }}
         >
          <thead>
@@ -1066,6 +1100,14 @@ function saveSeenPost(teacherId, postId) {
             })}
           </tbody>
         </table>
+        <button
+          aria-label="Scroll right"
+          className="marks-scroll-arrow right marks-scroll-arrow-fixed"
+          onClick={() => scrollMarks(1)}
+          style={{ display: "flex", position: "fixed", right: 32, bottom: 48, zIndex: 1000 }}
+        >
+          ›
+        </button>
       </div>
     )}
   </div>

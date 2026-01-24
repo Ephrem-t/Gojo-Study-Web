@@ -5,9 +5,37 @@ import "../styles/login.css";
 export default function Register() {
   const navigate = useNavigate();
 
-  const gradeOptions = ["9", "10", "11", "12"];
+  const gradeOptions = ["7", "8", "9", "10", "11 Social", "11 Natural", "12 Social", "12 Natural"];
   const sectionOptions = ["A", "B", "C"];
   const subjectOptions = {
+    "7": [
+      "Mathematics",
+      "Amharic",
+      "English",
+      "Biology",
+      "Physics",
+      "Chemistry",
+      "Geography",
+      "History",
+      "Civics",
+      "ICT",
+      "Oromifa",
+      "Physical Education",
+    ],
+    "8": [
+     "Mathematics",
+      "Amharic",
+      "English",
+      "Biology",
+      "Physics",
+      "Chemistry",
+      "Geography",
+      "History",
+      "Civics",
+      "ICT",
+      "Oromifa",
+      "Physical Education",
+    ],
     "9": [
       "Mathematics",
       "English",
@@ -18,9 +46,10 @@ export default function Register() {
       "History",
       "Civics",
       "ICT",
+      "Physical Education",
     ],
     "10": [
-      "Mathematics",
+     "Mathematics",
       "English",
       "Biology",
       "Physics",
@@ -29,8 +58,9 @@ export default function Register() {
       "History",
       "Civics",
       "ICT",
+      "Physical Education",
     ],
-    "11": [
+    "11 Social": [
       "Mathematics",
       "English",
       "Physics",
@@ -40,7 +70,28 @@ export default function Register() {
       "Geography",
       "History",
     ],
-    "12": [
+
+    "11 Natural": [
+      "Mathematics",
+      "English",
+      "Physics",
+      "Chemistry",
+      "Biology",
+      "Economics",
+      "Geography",
+      "History",
+    ],
+    "12 Social": [
+      "Mathematics",
+      "English",
+      "Physics",
+      "Chemistry",
+      "Biology",
+      "Economics",
+      "Geography",
+      "History",
+    ],
+    "12 Natural": [
       "Mathematics",
       "English",
       "Physics",

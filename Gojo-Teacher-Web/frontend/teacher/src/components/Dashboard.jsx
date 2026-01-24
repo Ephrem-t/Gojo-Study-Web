@@ -13,8 +13,11 @@ import {
   FaClipboardCheck,
   FaFacebookMessenger,
 } from "react-icons/fa";
+
 import axios from "axios";
 import "../styles/global.css";
+import { db } from "../firebase";
+import { ref, get } from "firebase/database";
 
 const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
@@ -52,21 +55,31 @@ export default function Dashboard() {
       navigate("/login");
       return;
     }
-    setTeacher(stored);
 
-    // Fetch latest teacher profile from API for freshness
-    axios
-      .get(`${API_BASE}/teacher/${stored.userId}`)
-      .then((res) => {
-        if (res.data && res.data.userId) {
-          setTeacher(res.data);
-          localStorage.setItem("teacher", JSON.stringify(res.data));
+    // Fetch teacher profile from Users node in Firebase
+    const fetchTeacherProfile = async () => {
+      try {
+        const usersRef = ref(db, `Users`);
+        const snapshot = await get(usersRef);
+        const usersData = snapshot.val() || {};
+        // Find the user with matching userId
+        const teacherEntry = Object.values(usersData).find(
+          (u) => u.userId === stored.userId
+        );
+        if (teacherEntry) {
+          // Merge the teacherEntry (from Users) with stored (from localStorage/API)
+          const merged = { ...stored, ...teacherEntry };
+          setTeacher(merged);
+          localStorage.setItem("teacher", JSON.stringify(merged));
+        } else {
+          setTeacher(stored);
         }
-      })
-      .catch(() => {
-        // fallback to local only / do nothing
-      });
+      } catch (err) {
+        setTeacher(stored);
+      }
+    };
 
+    fetchTeacherProfile();
     fetchPostsAndAdmins();
     fetchConversations(stored);
     // eslint-disable-next-line react-hooks/exhaustive-deps

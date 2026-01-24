@@ -1,3 +1,166 @@
+/* Responsive styles for Schedule page */
+@media (max-width: 1100px) {
+  .schedule-right-sidebar-responsive {
+    position: static !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    top: unset !important;
+    right: unset !important;
+    height: auto !important;
+    min-width: 0 !important;
+    z-index: 10;
+  }
+  .schedule-main-content-responsive {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    border-radius: 0 !important;
+    padding: 10px !important;
+    min-width: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  .schedule-sidebar-responsive {
+    position: static !important;
+    width: 100vw !important;
+    min-width: 0 !important;
+    max-width: 100vw !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    z-index: 10;
+  }
+  .schedule-page-responsive {
+    flex-direction: column !important;
+    gap: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    min-width: 0 !important;
+  }
+}
+@media (max-width: 700px) {
+  .schedule-table-responsive table {
+    min-width: 480px !important;
+    font-size: 13px !important;
+  }
+  .schedule-table-responsive th,
+  .schedule-table-responsive td {
+    padding: 8px 6px !important;
+  }
+  .schedule-main-content-responsive {
+    padding: 4vw !important;
+  }
+}
+@media (max-width: 480px) {
+  .schedule-table-responsive table {
+    min-width: 340px !important;
+    font-size: 12px !important;
+  }
+  .schedule-table-responsive th,
+  .schedule-table-responsive td {
+    padding: 6px 4px !important;
+  }
+}
+@media (max-width: 700px) {
+  .top-navbar {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    width: 100vw !important;
+    min-width: 0 !important;
+    z-index: 1000;
+  }
+  .google-sidebar {
+    position: fixed !important;
+    top: var(--topbar-height, 60px);
+    left: 0;
+    width: 60px !important;
+    min-width: 0 !important;
+    height: calc(100vh - var(--topbar-height, 60px));
+    z-index: 999;
+    padding: 8px 0 !important;
+    overflow-x: hidden;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.07);
+  }
+  .attendance-main-content-responsive {
+    margin-left: 70px !important;
+    width: calc(100vw - 80px) !important;
+    min-width: 0 !important;
+    max-width: 100vw !important;
+    padding: 10px !important;
+    box-sizing: border-box;
+  }
+}
+@media (max-width: 700px) {
+  .attendance-main-content-responsive {
+    margin-left: 10px !important;
+    width: 98vw !important;
+    min-width: 0 !important;
+    max-width: 100vw !important;
+    padding: 10px !important;
+    box-sizing: border-box;
+  }
+}
+@media (max-width: 700px) {
+  .attendance-table-responsive-fix {
+    margin-left: 10px !important;
+  }
+}
+@media (max-width: 700px) {
+  .attendance-table-responsive {
+    margin-left: 10px !important;
+  }
+}
+@media (max-width: 700px) {
+  .main-content {
+    margin-left: 0 !important;
+    padding-left: 4vw !important;
+    padding-right: 4vw !important;
+  }
+}
+/* Responsive: Attendance table aligns left on small screens */
+@media (max-width: 700px) {
+  .attendance-table-responsive {
+    justify-content: flex-start !important;
+    text-align: left !important;
+  }
+  .attendance-table-responsive table {
+    margin-left: 0 !important;
+  }
+}
+/* Responsive Attendance Table */
+.attendance-table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.attendance-table-responsive table {
+  min-width: 600px;
+  width: 100%;
+}
+
+@media (max-width: 700px) {
+  .attendance-table-responsive table {
+    min-width: 480px;
+    font-size: 13px;
+  }
+  .attendance-table-responsive th,
+  .attendance-table-responsive td {
+    padding: 8px 6px;
+  }
+}
+
+@media (max-width: 480px) {
+  .attendance-table-responsive table {
+    min-width: 340px;
+    font-size: 12px;
+  }
+  .attendance-table-responsive th,
+  .attendance-table-responsive td {
+    padding: 6px 4px;
+  }
+}
 /* ---------------- RESET ---------------- */
 * {
   margin: 0;
@@ -222,6 +385,115 @@
   color: #333;
   margin-bottom: 20px;
   text-align: center;
+}
+
+/* Main inner container for content that should be responsive */
+.main-inner {
+  width: 55%;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* Responsive adjustments only for the main content area */
+@media (max-width: 1200px) {
+  .main-inner {
+    width: 75%;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Allow main area to take most of the viewport on small screens */
+  .google-main {
+    margin-left: 20px; /* keep some left spacing from fixed sidebar */
+    width: calc(100% - 40px);
+    padding: 18px;
+  }
+  .main-inner {
+    width: 100%;
+    max-width: none;
+  }
+  /* Make select and form controls fluid inside the main content */
+  .google-main select,
+  .google-main input[type="text"],
+  .google-main input[type="number"] {
+    max-width: 100%;
+    width: 100%;
+  }
+  /* Tables remain horizontally scrollable but inputs shrink on small screens */
+  .google-main table input[type="number"] {
+    width: 56px;
+  }
+}
+
+/* Marks table horizontal scroll wrapper and scrollbar styling (only affects main content) */
+.google-main .marks-table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch; /* smooth scrolling on iOS */
+  background: rgba(255,255,255,0.92);
+  padding: 30px;
+  border-radius: 20px;
+  box-shadow: 0 15px 30px rgba(0,0,0,0.12);
+  transition: 0.3s all;
+}
+
+.google-main .marks-table-wrapper {
+  position: relative; /* for arrow positioning */
+}
+
+.google-main .marks-table {
+  width: 100%;
+  min-width: 960px; /* ensure table can scroll horizontally when many assessments exist */
+  border-collapse: separate;
+  border-spacing: 0 12px;
+  font-size: 15px;
+}
+
+/* Scrollbar styling */
+.google-main .marks-table-wrapper {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.google-main .marks-table-wrapper::-webkit-scrollbar {
+  height: 10px;
+}
+.google-main .marks-table-wrapper::-webkit-scrollbar-track {
+  background: transparent;
+}
+.google-main .marks-table-wrapper::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+.google-main .marks-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #a3aed6;
+}
+
+/* Arrow buttons to scroll the marks table horizontally */
+.marks-scroll-arrow {
+  position: absolute;
+  bottom: 8px;
+  transform: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(30,58,138,0.95);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+  z-index: 30;
+  font-size: 22px;
+  line-height: 1;
+}
+.marks-scroll-arrow.left { left: 12px; }
+.marks-scroll-arrow.right { right: 12px; }
+.marks-scroll-arrow:active { transform: scale(0.98); }
+
+/* Hide arrows on very small screens where touch-scrolling is expected */
+@media (max-width: 480px) {
+  .marks-scroll-arrow { display: none !important; }
 }
 
 /* ---------------- POST BOX ---------------- */
