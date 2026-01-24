@@ -5,7 +5,6 @@ import {
   FaHome,
   FaCog,
   FaSignOutAlt,
-  FaSearch,
   FaUsers,
   FaChalkboardTeacher,
   FaClipboardCheck,
@@ -15,40 +14,45 @@ import {
   FaChevronRight
 } from "react-icons/fa";
 import "../styles/global.css";
-import { ref, onValue, off } from "firebase/database";
-import { db } from "../firebase";
 
+// --- API and RTDB endpoints ---
 const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
+// --- Used to sort chat ids for message threading (helper) ---
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
 
 function Schedule() {
+  // ---------------- STATE -----------------------
   const [teacher, setTeacher] = useState(null);
   const [schedule, setSchedule] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedSection, setSelectedSection] = useState("All");
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
-  const postRefs = useRef({});
-
-  const navigate = useNavigate();
-  const daysOfWeek = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-  const allSections = ["All", "A", "B", "C", "D"];
-
-  // Messenger state (Dashboard-like)
   const [showMessenger, setShowMessenger] = useState(false);
-  const [conversations, setConversations] = useState([]); // conversations with unread messages for this teacher
+  const [conversations, setConversations] = useState([]);
+  const postRefs = useRef({});
+  const navigate = useNavigate();
+  const allSections = ["All", "A", "B", "C", "D"];
+  const daysOfWeek = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= 900 : false);
 
-  // total unread messages (sum of unread counts)
+  // --------------- RESPONSIVE --------------
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth <= 900);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // --------------- UNREAD MESSAGES --------------
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
-  // Load logged-in teacher
+  // --------------- LOAD TEACHER -------------
   useEffect(() => {
     const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
     if (!storedTeacher) {
@@ -58,37 +62,34 @@ function Schedule() {
     setTeacher(storedTeacher);
   }, [navigate]);
 
-  // Fetch full schedule
+  // --------------- FETCH SCHEDULE --------------
   useEffect(() => {
     if (!teacher) return;
-
-    const fetchSchedule = async () => {
+    async function fetchSchedule() {
       setLoading(true);
       try {
         const res = await axios.get(`${RTDB_BASE}/Schedules.json`);
         setSchedule(res.data || {});
         setError("");
       } catch (err) {
-        console.error(err);
         setError("Failed to load schedule.");
       } finally {
         setLoading(false);
       }
-    };
-
+    }
     fetchSchedule();
   }, [teacher]);
 
+  // --------------- LOGOUT HANDLER --------------
   const handleLogout = () => {
     localStorage.removeItem("teacher");
     navigate("/login");
   };
 
-  // Filter teacher schedule for the right sidebar
+  // --------------- TEACHER PERSONAL SCHEDULE (RIGHT SIDEBAR) --------------
   const getTeacherSchedule = () => {
     if (!teacher || !schedule) return {};
     const filtered = {};
-
     Object.entries(schedule).forEach(([day, grades]) => {
       Object.entries(grades || {}).forEach(([grade, periods]) => {
         Object.entries(periods || {}).forEach(([periodName, info]) => {
@@ -96,7 +97,6 @@ function Schedule() {
           if (info.teacherName === teacher.name) {
             if (!filtered[day]) filtered[day] = {};
             if (!filtered[day][periodName]) filtered[day][periodName] = [];
-
             filtered[day][periodName].push({
               class: grade,
               subject: info.subject || "-",
@@ -106,35 +106,34 @@ function Schedule() {
         });
       });
     });
-
     return filtered;
   };
-
   const teacherSchedule = getTeacherSchedule();
 
-  // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+  // ---------------------- NOTIFICATIONS logic ----------------------
+  function getSeenPosts(teacherId) {
+    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+  }
+  function saveSeenPost(teacherId, postId) {
+    const seen = getSeenPosts(teacherId);
+    if (!seen.includes(postId)) {
+      localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
+    }
+  }
   useEffect(() => {
     const fetchNotifications = async () => {
       try {
         const res = await axios.get(`${API_BASE}/get_posts`);
         let postsData = res.data || [];
-        if (!Array.isArray(postsData) && typeof postsData === "object") {
-          postsData = Object.values(postsData);
-        }
-
+        if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
         const [adminsRes, usersRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/School_Admins.json`),
           axios.get(`${RTDB_BASE}/Users.json`),
         ]);
         const schoolAdmins = adminsRes.data || {};
         const users = usersRes.data || {};
-
-        // Get teacher from localStorage so we know who's seen what
         const teacher = JSON.parse(localStorage.getItem("teacher"));
         const seenPosts = getSeenPosts(teacher?.userId);
-
-        // ...resolveAdminInfo as before...
-
         const resolveAdminInfo = (post) => {
           const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
           if (adminId && schoolAdmins[adminId]) {
@@ -147,7 +146,6 @@ function Schedule() {
           }
           return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
         };
-
         const latest = postsData
           .slice()
           .sort((a, b) => {
@@ -155,7 +153,6 @@ function Schedule() {
             const tb = b.time ? new Date(b.time).getTime() : 0;
             return tb - ta;
           })
-          // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
           .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
           .map((post) => {
@@ -167,58 +164,38 @@ function Schedule() {
               adminProfile: info.profile,
             };
           });
-
         setNotifications(latest);
-      } catch (err) {
-        console.error("Error fetching notifications:", err);
-      }
+      } catch (err) {}
     };
-
     fetchNotifications();
   }, []);
 
-  // --- 3. Handler to remove notification after clicked (and mark seen) ---
-
   const handleNotificationClick = (postId) => {
     if (!teacher || !postId) return;
-    // Save to localStorage
     saveSeenPost(teacher.userId, postId);
-    // Remove from UI right away
     setNotifications(prev => prev.filter((n) => n.id !== postId));
-    setShowNotifications(false); // Optionally close the notification panel
+    setShowNotifications(false);
   };
 
-  function getSeenPosts(teacherId) {
-    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
-  }
-
-  function saveSeenPost(teacherId, postId) {
-    const seen = getSeenPosts(teacherId);
-    if (!seen.includes(postId)) {
-      localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
-    }
-  }
-
-  // ---------------- MESSENGER: fetch conversations with unread messages (same as Dashboard) ----------------
-  const fetchConversations = async (currentTeacher = teacher) => {
+  // --------------- MESSENGER LOGIC (all unread conversations) ---------------
+  const fetchConversations = async () => {
     try {
-      const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
+      const t = teacher || JSON.parse(localStorage.getItem("teacher"));
       if (!t || !t.userId) {
         setConversations([]);
         return;
       }
-
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/Chats.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
+      const [chatsRes, usersRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/Chats.json`),
+        axios.get(`${RTDB_BASE}/Users.json`)
+      ]);
       const chats = chatsRes.data || {};
       const users = usersRes.data || {};
-
-      // build maps
       const usersByKey = users || {};
       const userKeyByUserId = {};
       Object.entries(usersByKey).forEach(([pushKey, u]) => {
         if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
       });
-
       const convs = Object.entries(chats)
         .map(([chatId, chat]) => {
           const unreadMap = chat.unread || {};
@@ -227,10 +204,8 @@ function Schedule() {
           const participants = chat.participants || {};
           const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
           if (!otherKeyCandidate) return null;
-
           let otherPushKey = otherKeyCandidate;
           let otherRecord = usersByKey[otherPushKey];
-
           if (!otherRecord) {
             const mapped = userKeyByUserId[otherKeyCandidate];
             if (mapped) {
@@ -238,20 +213,16 @@ function Schedule() {
               otherRecord = usersByKey[mapped];
             }
           }
-
           if (!otherRecord) {
             otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
           }
-
           const contact = {
             pushKey: otherPushKey,
             userId: otherRecord.userId || otherKeyCandidate,
             name: otherRecord.name || otherRecord.username || otherKeyCandidate,
             profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
           };
-
           const lastMessage = chat.lastMessage || {};
-
           return {
             chatId,
             contact,
@@ -264,68 +235,170 @@ function Schedule() {
         })
         .filter(Boolean)
         .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-
       setConversations(convs);
     } catch (err) {
-      console.error("Error fetching conversations:", err);
       setConversations([]);
     }
   };
-
   const handleMessengerToggle = async () => {
     setShowMessenger((s) => !s);
-    await fetchConversations();
+    if (!showMessenger) await fetchConversations();
   };
-
   const handleOpenConversation = async (conv, index) => {
     if (!teacher || !conv) return;
     const { chatId, contact } = conv;
-
-    // Navigate to AllChat with contact + chatId and indicate schedule tab
     navigate("/all-chat", { state: { contact, chatId, tab: "schedule" } });
-
-    // Clear unread in RTDB for this teacher
     try {
       await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
-    } catch (err) {
-      console.error("Failed to clear unread in DB:", err);
-    }
-
+    } catch (err) {}
     setConversations((prev) => prev.filter((_, i) => i !== index));
     setShowMessenger(false);
   };
 
+  // -------------------------- CSS STYLES ----------------------------
+  const css = `
+    body, html, #root { height: 100%; margin: 0; }
+    .gojo-root-dashboard {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: #f0f4f8;
+      overflow: hidden;
+    }
+    .top-navbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      z-index: 1000;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 60px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .google-sidebar {
+      position: fixed;
+      top: 60px;
+      left: 0;
+      width: 220px;
+      height: calc(100vh - 60px);
+      background: #fff;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.04);
+      z-index: 900;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 18px;
+      overflow-y: auto;
+      transition: width 0.2s;
+      min-width: 48px;
+    }
+    .main-area-row {
+      display: flex;
+      flex: 1;
+      flex-direction: row;
+      height: 100vh;
+      margin-top: 60px;
+      width: 100%;
+      min-width: 0;
+    }
+    .schedule-main {
+      flex: 1;
+      margin-left: 220px;
+      padding: 30px;
+      background: #f0f4f8;
+      min-height: calc(100vh - 60px);
+      overflow-y: auto;
+      transition: margin-left 0.2s;
+      position: relative;
+      z-index: 20;
+    }
+    .right-sidebar {
+      position: fixed;
+      top: 60px;
+      right: 0;
+      width: 350px;
+      height: calc(100vh - 60px);
+      z-index: 300;
+      background: #fff;
+      box-shadow: 0 0 20px rgba(0,0,0,0.07);
+      display: flex;
+      flex-direction: column;
+      transition: right 0.2s, left 0.2s, width 0.2s;
+    }
+    .close-sidebar-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: linear-gradient(90deg, #2563eb, #3b82f6);
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 36px;
+      height: 36px;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      z-index: 10;
+      cursor: pointer;
+    }
+    @media (max-width: 900px) {
+      .google-sidebar { width: 60px; min-width: 60px; }
+      .schedule-main { margin-left: 60px; padding: 17px 2vw; }
+      .right-sidebar { width: 90vw; left: 60px; right: initial; }
+    }
+    @media (max-width: 600px) {
+      .top-navbar { height: 54px; padding: 0 7px; }
+      .google-sidebar {
+        top: 54px;
+        width: 48px;
+        min-width: 48px;
+        padding: 0;
+        align-items: flex-start;
+      }
+      .main-area-row { margin-top: 54px; }
+      .schedule-main { margin-left: 48px; padding: 8px 2vw; border-radius: 7px; }
+      .right-sidebar { left: 48px; right: initial; width: 100vw; height: calc(100vh - 54px); }
+      .close-sidebar-btn {
+        top: 8px !important;
+        right: 8px !important;
+        width: 44px !important;
+        height: 44px !important;
+        font-size: 22px !important;
+      }
+    }
+  `;
+
+  // ----------------- PAGE JSX -------------------
   return (
-    <div style={{ display: "flex", gap: "20px" }}>
+    <div className="gojo-root-dashboard">
+      <style>{css}</style>
+      {/* --------- Top Navbar --------- */}
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
-        <div className="nav-right">
+        <div className="nav-right" style={{display: 'flex', alignItems: 'center', gap: 16}}>
           {/* Notifications */}
           <div className="icon-circle" style={{ position: "relative" }}>
             <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
               <FaBell size={24} />
               {notifications.length > 0 && (
-                <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   {notifications.length}
                 </span>
               )}
             </div>
             {showNotifications && (
-              <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                {notifications.length > 0 ? notifications.map((post, index) => (
-                  <div key={post.id || index} onClick={() => {
-                    navigate("/dashboard");
-                    setTimeout(() => {
-                      const postElement = postRefs.current[post.id];
-                      if (postElement) {
-                        postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                        setHighlightedPostId(post.id);
-                        setTimeout(() => setHighlightedPostId(null), 3000);
-                      }
-                    }, 150);
-                    setNotifications(prev => prev.filter((_, i) => i !== index));
-                    setShowNotifications(false);
-                  }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+              <div style={{
+                position: "absolute", top: 28, right: 0, width: 300, maxHeight: 400, overflowY: "auto",
+                background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100
+              }}>
+                {notifications.length ? notifications.map((post, i) => (
+                  <div key={post.id || i} onClick={() => handleNotificationClick(post.id)} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
                     <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
                     <div>
                       <strong>{post.adminName}</strong>
@@ -336,7 +409,7 @@ function Schedule() {
               </div>
             )}
           </div>
-          {/* Messenger (Dashboard-like) */}
+          {/* Messenger */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
             <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
               <FaFacebookMessenger size={22} />
@@ -366,272 +439,217 @@ function Schedule() {
             )}
           </div>
           <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" />
+          <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" style={{width:36, height:36, borderRadius:"50%"}} />
         </div>
       </nav>
-      {/* Left Sidebar */}
-      <div className="google-sidebar" style={{ width: "400px" }}>
-        {teacher && (
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={teacher.profileImage || "/default-profile.png"} alt="profile" />
-            </div>
-            <h3>{teacher.name}</h3>
-            <p>{teacher.username}</p>
-          </div>
-        )}
-        <div className="sidebar-menu">
-          <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-          <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
-          <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
-          <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
-          <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>
-          <Link className="sidebar-btn" to="/attendance"><FaUsers /> Attendance</Link>
-          <Link
-            className="sidebar-btn"
-            to="/schedule"
-            style={{ backgroundColor: "#4b6cb7", color: "#fff" }}
-          >
-            <FaUsers /> Schedule
-          </Link>
-          <button className="sidebar-btn logout-btn" onClick={handleLogout}>
-            <FaSignOutAlt /> Logout
-          </button>
-        </div>
-      </div>
-      {/* Main Content */}
-      <div
-        style={{
-          flex: 1,
-          padding: "30px",
-          background: "#f0f4f8",
-          minHeight: "100vh",
-          borderRadius: "12px",
-          marginLeft: "420px",
-          marginRight: rightSidebarOpen ? "500px" : "20px",
-          marginTop: "60px",
-          marginBottom: "20px",
-          transition: "margin-right 0.3s",
-        }}
-      >
-        {/* Filters + schedule content (unchanged) */}
-        <div
-          style={{
-            display: "flex",
-            gap: "20px",
-            marginBottom: "25px",
-            justifyContent: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <label style={{ marginRight: "8px", fontWeight: "600" }}>Grade:</label>
-            <select
-              value={selectedGrade}
-              onChange={(e) => setSelectedGrade(e.target.value)}
-              style={{
-                padding: "8px 12px",
-                borderRadius: "8px",
-                border: "1px solid #ccc",
-                cursor: "pointer",
-              }}
-            >
-              <option value="All">All</option>
-              <option value="9">9</option>
-              <option value="10">10</option>
-              <option value="12">12</option>
-            </select>
-          </div>
-          <div>
-            <label style={{ marginRight: "8px", fontWeight: "600" }}>Section:</label>
-            <select
-              value={selectedSection}
-              onChange={(e) => setSelectedSection(e.target.value)}
-              style={{
-                padding: "8px 12px",
-                borderRadius: "8px",
-                border: "1px solid #ccc",
-                cursor: "pointer",
-              }}
-            >
-              <option value="All">All</option>
-              {allSections.filter((s) => s !== "All").map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-        <h2 style={{ textAlign: "center", marginBottom: "30px", color: "#2563eb" }}>
-          Full Schedule
-        </h2>
-        {loading && <p style={{ textAlign: "center" }}>Loading schedule...</p>}
-        {error && <p style={{ color: "red", textAlign: "center" }}>{error}</p>}
-        {!loading &&
-          daysOfWeek.map((day) => {
-            const grades = schedule[day];
-            if (!grades) return null;
-            return (
-              <div key={day} style={{ marginBottom: "40px" }}>
-                <h3 style={{ color: "#1c03ffff", marginBottom: "15px" }}>{day}</h3>
-                {Object.entries(grades)
-                  .filter(([grade]) => selectedGrade === "All" || grade.includes(selectedGrade))
-                  .map(([grade, periods]) => {
-                    const sectionFromGrade = grade.slice(-1);
-                    if (selectedSection !== "All" && sectionFromGrade !== selectedSection) return null;
-                    return (
-                      <div key={grade} style={{ marginBottom: "20px" }}>
-                        <h4 style={{ color: "#4603fcff", marginBottom: "10px" }}>{grade}</h4>
-                        <table
-                          style={{
-                            width: "100%",
-                            borderCollapse: "collapse",
-                            background: "#fff",
-                            borderRadius: "12px",
-                            overflow: "hidden",
-                            boxShadow: "0 8px 20px rgba(0,0,0,0.1)",
-                          }}
-                        >
-                          <thead style={{ background: "#2563eb", color: "#fff" }}>
-                            <tr>
-                              <th style={{ padding: "12px", textAlign: "left" }}>Period</th>
-                              <th style={{ padding: "12px", textAlign: "left" }}>Subject</th>
-                              <th style={{ padding: "12px", textAlign: "left" }}>Time</th>
-                              <th style={{ padding: "12px", textAlign: "left" }}>Teacher</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(periods).map(([periodName, info], idx) => {
-                              const isMyClass = info?.teacherName === teacher?.name;
-                              const time = info.time || periodName.match(/\((.*?)\)/)?.[1] || "N/A";
-                              return (
-                                <tr
-                                  key={idx}
-                                  style={{
-                                    borderBottom: "1px solid #eee",
-                                    backgroundColor: isMyClass ? "#dbeafe" : "#f3f4f6",
-                                    color: isMyClass ? "#1e40af" : "#6b7280",
-                                    fontWeight: isMyClass ? "700" : "400",
-                                    borderLeft: isMyClass ? "4px solid #2563eb" : "none",
-                                    opacity: isMyClass ? 1 : 0.7,
-                                  }}
-                                >
-                                  <td style={{ padding: "12px" }}>{periodName}</td>
-                                  <td style={{ padding: "12px" }}>{info.subject || "-"}</td>
-                                  <td style={{ padding: "12px" }}>{time}</td>
-                                  <td style={{ padding: "12px" }}>{info.teacherName || "-"}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-                  })}
+      {/* --------- Main Area Row ------- */}
+      <div className="main-area-row">
+        {/* ---- Left Sidebar ---- */}
+        <div className="google-sidebar">
+          {teacher && (
+            <div className="sidebar-profile" style={{ textAlign: "center", marginBottom: 16 }}>
+              <div className="sidebar-img-circle" style={{margin:"0 auto"}}>
+                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" style={{ width: 60, height: 60, borderRadius: '50%', objectFit:'cover', border: '2.5px solid #4b6cb7'}} />
               </div>
-            );
-          })}
-      </div>
-      {/* Right Sidebar - Teacher Schedule */}
-      {rightSidebarOpen && (
-        <div
-          style={{
-            position: "fixed",
-            top: "60px",
-            right: "20px",
-            width: "450px",
-            height: "calc(100vh - 40px)",
-            background: "#fff",
-            borderRadius: "1px",
-            boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
-            overflow: "hidden",
-            zIndex: 300,
-            transition: "right 0.3s",
-          }}
-        >
-          <div
-            style={{
+              <h3 style={{margin:"10px 0 2px 0", fontSize:"1rem"}}>{teacher.name}</h3>
+              <p style={{ fontSize: ".98rem", color: "#888" }}>{teacher.username}</p>
+            </div>
+          )}
+          <div className="sidebar-menu" style={{display:'flex', flexDirection:'column', gap:8, width:"100%"}}>
+            <Link className="sidebar-btn" to="/dashboard"><FaHome/> Home</Link>
+            <Link className="sidebar-btn" to="/students"><FaUsers/> Students</Link>
+            <Link className="sidebar-btn" to="/admins"><FaUsers/> Admins</Link>
+            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher/> Parents</Link>
+            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck/> Marks</Link>
+            <Link className="sidebar-btn" to="/attendance"><FaUsers/> Attendance</Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaUsers/> Schedule</Link>
+            <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt/> Logout</button>
+          </div>
+        </div>
+        {/* ---- Main Content (scrollable) ---- */}
+        <div className="schedule-main">
+          <div className="schedule-container" style={{width:'100%', maxWidth:900, margin:'0 auto'}}>
+            {/* Filters */}
+            <div style={{display:"flex", gap:"20px", marginBottom:"25px", justifyContent:"center", flexWrap:"wrap"}}>
+              <div>
+                <label style={{marginRight:"8px", fontWeight:"600"}}>Grade:</label>
+                <select value={selectedGrade} onChange={e => setSelectedGrade(e.target.value)}
+                  style={{ padding:"8px 12px", borderRadius:"8px", border:"1px solid #ccc", cursor:"pointer" }}
+                >
+                  <option value="All">All</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="12">12</option>
+                </select>
+              </div>
+              <div>
+                <label style={{marginRight:"8px", fontWeight:"600"}}>Section:</label>
+                <select value={selectedSection} onChange={e => setSelectedSection(e.target.value)}
+                  style={{ padding:"8px 12px", borderRadius:"8px", border:"1px solid #ccc", cursor:"pointer"}}
+                >
+                  <option value="All">All</option>
+                  {allSections.filter(s => s !== "All").map(s =>
+                    <option key={s} value={s}>{s}</option>
+                  )}
+                </select>
+              </div>
+            </div>
+            <h2 style={{textAlign:"center",marginBottom:"30px",color:"#2563eb"}}>Full Schedule</h2>
+            {loading && <p style={{textAlign:"center"}}>Loading schedule...</p>}
+            {error && <p style={{color:"red", textAlign:"center"}}>{error}</p>}
+            {!loading && daysOfWeek.map(day => {
+              const grades = schedule[day];
+              if (!grades) return null;
+              return (
+                <div key={day} style={{marginBottom:"40px"}}>
+                  <h3 style={{color:"#1c03ffff",marginBottom:"15px"}}>{day}</h3>
+                  {Object.entries(grades)
+                    .filter(([grade]) => selectedGrade === "All" || grade.includes(selectedGrade))
+                    .map(([grade, periods]) => {
+                      const sectionFromGrade = grade.slice(-1);
+                      if (selectedSection !== "All" && sectionFromGrade !== selectedSection) return null;
+                      return (
+                        <div key={grade} style={{marginBottom:"18px"}}>
+                          <h4 style={{color:"#4603fcff",marginBottom:"10px"}}>{grade}</h4>
+                          <table style={{
+                            width:"100%", borderCollapse:"collapse", background:"#fff",
+                            borderRadius:"12px", overflow:"hidden", boxShadow:"0 8px 20px rgba(0,0,0,0.1)",
+                          }}>
+                            <thead style={{background:"#2563eb", color:"#fff"}}>
+                              <tr>
+                                <th style={{padding:"12px",textAlign:"left"}}>Period</th>
+                                <th style={{padding:"12px",textAlign:"left"}}>Subject</th>
+                                <th style={{padding:"12px",textAlign:"left"}}>Time</th>
+                                <th style={{padding:"12px",textAlign:"left"}}>Teacher</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {Object.entries(periods).map(([periodName, info], idx) => {
+                                const isMyClass = info?.teacherName === teacher?.name;
+                                const time = info.time || periodName.match(/\((.*?)\)/)?.[1] || "N/A";
+                                return (
+                                  <tr
+                                    key={idx}
+                                    style={{
+                                      borderBottom: "1px solid #eee",
+                                      backgroundColor: isMyClass ? "#dbeafe" : "#f3f4f6",
+                                      color: isMyClass ? "#1e40af" : "#6b7280",
+                                      fontWeight: isMyClass ? "700" : "400",
+                                      borderLeft: isMyClass ? "4px solid #2563eb" : "none",
+                                      opacity: isMyClass ? 1 : 0.85,
+                                    }}
+                                  >
+                                    <td style={{ padding: "12px" }}>{periodName}</td>
+                                    <td style={{ padding: "12px" }}>{info.subject || "-"}</td>
+                                    <td style={{ padding: "12px" }}>{time}</td>
+                                    <td style={{ padding: "12px" }}>{info.teacherName || "-"}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {/* ------ Right Sidebar: Teacher's personal schedule ---- */}
+        {rightSidebarOpen && (
+          <div className="right-sidebar">
+            {/* ABSOLUTE close arrow always visible */}
+            <button
+              title="Close sidebar"
+              onClick={() => setRightSidebarOpen(false)}
+              className="close-sidebar-btn"
+              style={{ marginRight: "40px" }}
+            >
+              <FaChevronRight />
+            </button>
+            <div style={{
               display: "flex",
               alignItems: "center",
               background: "linear-gradient(90deg, #2563eb, #3b82f6)",
               color: "#fff",
-              padding: "12px 20px",
+              padding: "12px 48px 12px 20px",
               textAlign: "center",
               fontWeight: "600",
               fontSize: "1.2rem",
               boxShadow: "0 2px 6px rgba(0,0,0,0.1)",
               borderTopLeftRadius: "1px",
               borderTopRightRadius: "1px",
-              justifyContent: "space-between"
+              justifyContent: "flex-start"
+            }}>
+              My Schedule
+            </div>
+            <div style={{ padding: "20px", height: "calc(100% - 60px)", overflowY: "auto", background: "#f9fafb" }}>
+              {loading ? (
+                <p style={{ textAlign: "center", color: "#6b7280" }}>Loading schedule...</p>
+              ) : Object.keys(teacherSchedule).length === 0 ? (
+                <p style={{ textAlign: "center", color: "#6b7280" }}>No schedule found.</p>
+              ) : (
+                daysOfWeek.map((day) => {
+                  const periods = teacherSchedule[day];
+                  if (!periods) return null;
+                  const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
+                  const isToday = today === day;
+                  return (
+                    <div key={day} style={{
+                      marginBottom: "20px",
+                      padding: "10px",
+                      borderRadius: "12px",
+                      background: isToday ? "#e0f2fe" : "#fff",
+                      boxShadow: isToday ? "0 4px 12px rgba(59, 130, 246, 0.2)" : "0 2px 6px rgba(0,0,0,0.05)"
+                    }}>
+                      <h4 style={{ color: "#1e3a8a", marginBottom: "12px", fontWeight: "600", fontSize: "1.05rem", borderBottom: "1px solid #e5e7eb", paddingBottom: "5px" }}>{day}</h4>
+                      {Object.entries(periods).map(([periodName, entries]) => (
+                        <div key={periodName} style={{ marginBottom: "12px", background: "#f3f4f6", padding: "12px 15px", borderRadius: "10px", borderLeft: "5px solid #2563eb", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", transition: "transform 0.2s, box-shadow 0.2s" }}>
+                          <strong style={{ display: "block", marginBottom: "6px", color: "#1e3a8a", fontSize: "0.98rem" }}>{periodName}</strong>
+                          <ul style={{ paddingLeft: "18px", margin: 0 }}>
+                            {entries.map((entry, idx) => (
+                              <li key={idx} style={{ marginBottom: "6px", color: "#374151", fontSize: "0.95rem" }}>
+                                <span style={{ fontWeight: "600", color: "#2563eb" }}>{entry.class}</span> - {entry.subject} ({entry.time})
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+        {!rightSidebarOpen && (
+          <button
+            title="Open sidebar"
+            onClick={() => setRightSidebarOpen(true)}
+            style={{
+              position: "fixed",
+              top: "80px",
+              right: "20px",
+              width: "35px",
+              height: "40px",
+              background: "linear-gradient(90deg, #2563eb, #3b82f6)",
+              color: "#fff",
+              border: "none",
+              borderRadius: "20px",
+              boxShadow: "0 4px 12px rgba(59,130,246, 0.15)",
+              zIndex: 301,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              transition: "right 0.3s"
             }}
           >
-            <div>My Schedule</div>
-            <button
-              title="Close sidebar"
-              onClick={() => setRightSidebarOpen(false)}
-              style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center" }}
-            >
-              <FaChevronRight />
-            </button>
-          </div>
-          <div style={{ padding: "20px", height: "calc(100% - 60px)", overflowY: "auto", background: "#f9fafb" }}>
-            {loading ? (
-              <p style={{ textAlign: "center", color: "#6b7280" }}>Loading schedule...</p>
-            ) : Object.keys(teacherSchedule).length === 0 ? (
-              <p style={{ textAlign: "center", color: "#6b7280" }}>No schedule found.</p>
-            ) : (
-              ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].map((day) => {
-                const periods = teacherSchedule[day];
-                if (!periods) return null;
-                const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
-                const isToday = today === day;
-                return (
-                  <div key={day} style={{ marginBottom: "20px", padding: "10px", borderRadius: "12px", background: isToday ? "#e0f2fe" : "#fff", boxShadow: isToday ? "0 4px 12px rgba(59, 130, 246, 0.2)" : "0 2px 6px rgba(0,0,0,0.05)" }}>
-                    <h4 style={{ color: "#1e3a8a", marginBottom: "12px", fontWeight: "600", fontSize: "1.05rem", borderBottom: "1px solid #e5e7eb", paddingBottom: "5px" }}>{day}</h4>
-                    {Object.entries(periods).map(([periodName, entries]) => (
-                      <div key={periodName} style={{ marginBottom: "12px", background: "#f3f4f6", padding: "12px 15px", borderRadius: "10px", borderLeft: "5px solid #2563eb", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", transition: "transform 0.2s, box-shadow 0.2s", cursor: "pointer" }}>
-                        <strong style={{ display: "block", marginBottom: "6px", color: "#1e3a8a", fontSize: "0.98rem" }}>{periodName}</strong>
-                        <ul style={{ paddingLeft: "18px", margin: 0 }}>
-                          {entries.map((entry, idx) => (
-                            <li key={idx} style={{ marginBottom: "6px", color: "#374151", fontSize: "0.95rem" }}>
-                              <span style={{ fontWeight: "600", color: "#2563eb" }}>{entry.class}</span> - {entry.subject} ({entry.time})
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-      {!rightSidebarOpen && (
-        <button
-          title="Open sidebar"
-          onClick={() => setRightSidebarOpen(true)}
-          style={{
-            position: "fixed",
-            top: "80px",
-            right: "20px",
-            width: "35px",
-            height: "40px",
-            background: "linear-gradient(90deg, #2563eb, #3b82f6)",
-            color: "#fff",
-            border: "none",
-            borderRadius: "20px",
-            boxShadow: "0 4px 12px rgba(59,130,246, 0.15)",
-            zIndex: 301,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            transition: "right 0.3s"
-          }}
-        >
-          <FaChevronLeft />
-        </button>
-      )}
+            <FaChevronLeft />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

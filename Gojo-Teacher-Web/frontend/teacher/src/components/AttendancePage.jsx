@@ -7,27 +7,104 @@ import "../styles/global.css";
 const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 function AttendancePage() {
+
+  // --- All state declarations at the top ---
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [teacherInfo, setTeacherInfo] = useState(null);
- 
   const [attendance, setAttendance] = useState({});
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [courses, setCourses] = useState([]);
   const navigate = useNavigate();
-const [notifications, setNotifications] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
-// Messenger (Dashboard-like)
   const [showMessenger, setShowMessenger] = useState(false);
   const [conversations, setConversations] = useState([]); // conversations with unread messages for this teacher
-
+  const [teacher, setTeacher] = useState(null);
   // totalUnreadMessages helper
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
-  const [teacher, setTeacher] = useState(null);
+  // --- Effects and handlers below ---
+  // Fetch courses assigned to the teacher
+  useEffect(() => {
+    if (!teacher) return;
+    const fetchCourses = async () => {
+      try {
+        const [assignmentsRes, coursesRes, teachersRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+          axios.get(`${RTDB_BASE}/Courses.json`),
+          axios.get(`${RTDB_BASE}/Teachers.json`),
+        ]);
+        const teacherEntry = Object.entries(teachersRes.data || {}).find(
+          ([_, t]) => t.userId === teacher.userId
+        );
+        if (!teacherEntry) return;
+        const teacherKey = teacherEntry[0];
+        const assignedCourses = Object.values(assignmentsRes.data || {})
+          .filter((a) => a.teacherId === teacherKey)
+          .map((a) => a.courseId);
+        const teacherCourses = Object.entries(coursesRes.data || {})
+          .filter(([courseKey]) => assignedCourses.includes(courseKey))
+          .map(([courseKey, course]) => ({ id: courseKey, ...course }));
+        setCourses(teacherCourses);
+        // Auto-select first course if not already selected
+        if (!selectedCourse && teacherCourses.length > 0) {
+          setSelectedCourse(teacherCourses[0]);
+        }
+      } catch (err) {
+        console.error("Error fetching courses:", err);
+      }
+    };
+    fetchCourses();
+  }, [teacher]);
+
+  // Fetch students for the selected course
+  useEffect(() => {
+    if (!selectedCourse) return;
+    const fetchStudents = async () => {
+      setLoading(true);
+      try {
+        const [studentsRes, usersRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/Students.json`),
+          axios.get(`${RTDB_BASE}/Users.json`),
+        ]);
+        const studentsData = studentsRes.data || {};
+        const usersData = usersRes.data || {};
+        // Only students in the selected course's grade and section
+        const filtered = Object.entries(studentsData)
+          .filter(([, s]) =>
+            s.grade === selectedCourse.grade && s.section === selectedCourse.section
+          )
+          .map(([id, s]) => ({
+            studentId: id,
+            ...s,
+            name: usersData?.[s.userId]?.name || "Unknown",
+            profileImage: usersData?.[s.userId]?.profileImage || "/default-profile.png",
+          }));
+        setStudents(filtered);
+        setError("");
+      } catch (err) {
+        setError("Failed to fetch students. Please try again.");
+        setStudents([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchStudents();
+  }, [selectedCourse]);
+
+  // Logout handler (fixes ReferenceError)
+  const handleLogout = () => {
+    localStorage.removeItem("teacher");
+    navigate("/login");
+  };
+  // Messenger toggle handler (fixes ReferenceError)
+  const handleMessengerToggle = () => {
+    setShowMessenger((prev) => !prev);
+  };
   
   
     // Load teacher from localStorage on mount
@@ -41,221 +118,17 @@ const [notifications, setNotifications] = useState([]);
    const teacherUserId = teacher?.userId;
     
 
+
     // ---------------- LOAD LOGGED-IN TEACHER ----------------
     useEffect(() => {
       const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
       if (!storedTeacher) {
-        navigate("/login");
         return;
       }
       setTeacherInfo(storedTeacher);
-    }, [navigate]);
-  
-    
-   const handleLogout = () => {
-      localStorage.removeItem("teacher"); // or "user", depending on your auth
-      navigate("/login");
-    };
+    }, []);
 
-// ---------------- MESSENGER: same behavior as Dashboard ----------------
-  const fetchConversations = async (currentTeacher = teacher) => {
-    try {
-      const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
-      if (!t || !t.userId) {
-        setConversations([]);
-        return;
-      }
 
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/Chats.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
-      });
-
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-
-          if (!otherRecord) {
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-
-          const lastMessage = chat.lastMessage || {};
-
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-
-      setConversations(convs);
-    } catch (err) {
-      console.error("Error fetching conversations:", err);
-      setConversations([]);
-    }
-  };
-
-  const handleMessengerToggle = async () => {
-    setShowMessenger((s) => !s);
-    await fetchConversations();
-  };
-
-  const handleOpenConversation = async (conv, index) => {
-    if (!teacher || !conv) return;
-    const { chatId, contact } = conv;
-
-    // Navigate to AllChat with contact + chatId and indicate attendance tab
-    navigate("/all-chat", { state: { contact, chatId, tab: "attendance" } });
-
-    // Clear unread for this teacher in DB
-    try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
-    } catch (err) {
-      console.error("Failed to clear unread in DB:", err);
-    }
-
-    setConversations((prev) => prev.filter((_, i) => i !== index));
-    setShowMessenger(false);
-  };
-
-  // ---------------- FETCH COURSES ----------------
-  useEffect(() => {
-    if (!teacherInfo) return;
-
-    const fetchCourses = async () => {
-      try {
-        const [assignmentsRes, coursesRes, teachersRes] = await Promise.all([
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json")
-        ]);
-
-        const assignmentsData = assignmentsRes.data || {};
-        const coursesData = coursesRes.data || {};
-        const teachersData = teachersRes.data || {};
-
-        const teacherEntry = Object.entries(teachersData)
-          .find(([key, value]) => value.userId === teacherInfo.userId);
-        if (!teacherEntry) return;
-
-        const teacherKey = teacherEntry[0];
-
-        const assigned = Object.values(assignmentsData).filter(
-          a => a.teacherId === teacherKey
-        );
-
-        const teacherCourses = Object.entries(coursesData)
-          .filter(([courseKey, course]) => assigned.some(a => a.courseId === courseKey))
-          .map(([courseKey, course]) => ({ id: courseKey, ...course }));
-
-        setCourses(teacherCourses);
-        setSelectedCourse(teacherCourses[0] || null);
-      } catch (err) {
-        console.error("Error fetching courses:", err);
-      }
-    };
-
-    fetchCourses();
-  }, [teacherInfo]);
-
-  // ---------------- FETCH STUDENTS ----------------
-  useEffect(() => {
-    if (!teacherUserId) return;
-
-    const fetchStudents = async () => {
-      try {
-        setLoading(true);
-
-        const [studentsDataRes, usersDataRes, coursesDataRes, teacherAssignmentsRes, teachersDataRes] =
-          await Promise.all([
-            axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"),
-            axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
-            axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
-            axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-            axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json")
-          ]);
-
-        const studentsData = studentsDataRes.data || {};
-        const usersData = usersDataRes.data || {};
-        const coursesData = coursesDataRes.data || {};
-        const teacherAssignmentsData = teacherAssignmentsRes.data || {};
-        const teachersData = teachersDataRes.data || {};
-
-        const teacherEntry = Object.entries(teachersData)
-          .find(([_, t]) => t.userId === teacherUserId);
-        if (!teacherEntry) throw new Error("Teacher not found");
-
-        const teacherKey = teacherEntry[0];
-
-        const assignedCourses = Object.values(teacherAssignmentsData)
-          .filter(a => a.teacherId === teacherKey)
-          .map(a => a.courseId);
-
-        const filteredStudents = Object.entries(studentsData)
-          .filter(([studentKey, s]) => 
-            assignedCourses.some(courseId => {
-              const course = coursesData[courseId];
-              return course && course.grade === s.grade && course.section === s.section;
-            })
-          )
-          .map(([studentKey, s]) => {
-            const user = Object.values(usersData).find(u => u.userId === s.userId);
-            return {
-              studentId: studentKey, // <-- Firebase key as studentId
-              ...s,
-              name: user?.name || "Unknown",
-              profileImage: user?.profileImage || "/default-profile.png"
-            };
-          });
-
-        setStudents(filteredStudents);
-        setError("");
-      } catch (err) {
-        console.error("Error fetching students:", err);
-        setError("Failed to fetch students. Please try again.");
-        setStudents([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStudents();
-  }, [teacherUserId]);
 
   // ---------------- FETCH ATTENDANCE ----------------
   useEffect(() => {
@@ -302,9 +175,8 @@ const handleMark = (studentId, status) => {
 
 
 
-const filteredStudents = students.filter(
-  s => s.grade === selectedCourse?.grade && s.section === selectedCourse?.section
-);
+
+// Students are now filtered in the fetchStudents effect above
 
 
   const grades = [...new Set(students.map(s => s.grade))].sort();
@@ -410,8 +282,117 @@ const filteredStudents = students.filter(
 
 
   // ---------------- RENDER ----------------
+  // Responsive styles for navbar, sidebar, and main content
+  const attendanceResponsiveStyles = `
+    .dashboard-page {
+      min-height: 100vh;
+      background: #f0f4f8;
+      display: flex;
+      flex-direction: column;
+    }
+    .top-navbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      z-index: 1000;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 64px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .google-dashboard {
+      display: flex;
+      flex: 1;
+      margin-top: 64px;
+      min-height: 0;
+    }
+    .google-sidebar {
+      position: fixed;
+      top: 64px;
+      left: 0;
+      width: 200px;
+      height: calc(100vh - 64px);
+      background: #fff;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.04);
+      z-index: 900;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 18px;
+      overflow-y: auto;
+    }
+    .attendance-main-content-responsive {
+      margin-left: 220px;
+      margin-top: 0;
+      width: calc(100vw - 240px);
+      min-width: 320px;
+      max-width: 100vw;
+      background: #fff;
+      border-radius: 15px;
+      box-shadow: 0 8px 10px rgba(0,0,0,0.1);
+      padding: 30px;
+      position: relative;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    @media (max-width: 900px) {
+      .attendance-main-content-responsive {
+        width: 100vw;
+        margin-left: 60px;
+        min-width: unset;
+        max-width: unset;
+        padding: 18px 4vw;
+      }
+      .google-sidebar {
+        width: 60px;
+        padding: 0;
+        align-items: flex-start;
+      }
+    }
+    @media (max-width: 600px) {
+      .top-navbar {
+        height: 54px;
+        padding: 0 8px;
+      }
+      .google-sidebar {
+        top: 54px;
+        width: 48px;
+        min-width: 48px;
+        padding: 0;
+        align-items: flex-start;
+      }
+      .attendance-main-content-responsive {
+        width: 100vw;
+        margin-left: 48px;
+        padding: 10px 2vw;
+        border-radius: 8px;
+        align-items: flex-start;
+      }
+      .dashboard-page {
+        min-height: 100vh;
+      }
+      .google-dashboard {
+        flex-direction: column;
+        margin-top: 54px;
+      }
+    }
+  `;
+
   return (
-   <div className="dashboard-page">
+    <>
+      <style>{attendanceResponsiveStyles}</style>
+      <div className="dashboard-page">
              {/* Top Navbar */}
              <nav className="top-navbar">
                <h2>Gojo Dashboard</h2>
@@ -587,23 +568,12 @@ const filteredStudents = students.filter(
   style={{
     flex: 1,
     display: "flex",
-    justifyContent: "center",
-    padding: "30px",
+    justifyContent: "flex-start",
+    padding: "20px 24px",
     background: "#f0f4f8"
   }}
 >
-  <div
-    className="attendance-main-content-responsive"
-    style={{
-      width: "50%",
-      position: "relative",
-      marginLeft: "200px",
-      padding: "30px",
-      borderRadius: "15px",
-      background: "#fff",
-      boxShadow: "0 8px 10px rgba(0,0,0,0.1)"
-    }}
-  >
+  <div className="attendance-main-content-responsive">
     <h2 style={{ textAlign: "center", marginBottom: "25px", color: "#333" }}>Attendance</h2>
 
     {/* Course Selection */}
@@ -667,7 +637,7 @@ const filteredStudents = students.filter(
           </tr>
         </thead>
         <tbody>
-          {filteredStudents.map(s => (
+          {students.map(s => (
             <tr key={s.studentId} style={{ borderBottom: "1px solid #eee", transition: "background 0.3s" }} 
                 onMouseEnter={e => e.currentTarget.style.background = "#f9f9f9"}
                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
@@ -765,6 +735,7 @@ const filteredStudents = students.filter(
 
       </div>
     </div>
+    </>
   );
 }
 

@@ -889,7 +889,7 @@ useEffect(() => {
 
             {/* Grade Filter */}
             <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", gap: "12px" }}>
-              {["All", "9", "10", "11", "12"].map(g => (
+              {["All", "7", "8", "9", "10", "11", "12"].map(g => (
                 <button key={g} onClick={() => setSelectedGrade(g)} style={{
                   padding: "10px 20px",
                   borderRadius: "8px",

@@ -21,6 +21,8 @@ export default function TeacherAllChat() {
   const [admins, setAdmins] = useState([]);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [presence, setPresence] = useState({}); // userId -> presence info (bool or object)
 
   // incoming navigation state (support both { contact } and { user })
   const locationState = location.state || {};
@@ -156,6 +158,23 @@ export default function TeacherAllChat() {
     return () => unsubscribe();
   }, [selectedChatUser, teacherUserId, currentChatKey]);
 
+  /* ================= PRESENCE LISTENER ================= */
+  useEffect(() => {
+    // Listen to presence node in RTDB. If your backend uses a different path, change it.
+    try {
+      const presenceRef = ref(db, `Presence`);
+      const unsub = onValue(presenceRef, (snap) => {
+        const data = snap.val() || {};
+        setPresence(data);
+      });
+
+      return () => unsub();
+    } catch (e) {
+      // If realtime presence isn't configured, keep presence empty
+      console.warn("Presence listener unavailable:", e);
+    }
+  }, []);
+
   /* ================= SEND MESSAGE ================= */
   const sendMessage = async () => {
     if (!input.trim() || !selectedChatUser) return;
@@ -243,72 +262,182 @@ export default function TeacherAllChat() {
     return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
   };
 
+  const formatDateLabel = (ts) => {
+    if (!ts) return "";
+    const msgDate = new Date(Number(ts));
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
+    const diffMs = startOfToday - startOfMsgDay;
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
+    return msgDate.toLocaleDateString();
+  };
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const list = selectedTab === "student" ? students : selectedTab === "parent" ? parents : admins;
 
+  const isUserOnline = (userId) => {
+    if (!userId) return false;
+    // try to resolve presence entry for multiple key shapes
+    const findPresence = () => {
+      // direct key
+      if (presence?.[userId] !== undefined) return presence[userId];
+      // string form
+      const s = String(userId);
+      if (presence?.[s] !== undefined) return presence[s];
+      // try numeric key
+      const n = Number(userId);
+      if (!Number.isNaN(n) && presence?.[n] !== undefined) return presence[n];
+      // try to find an entry where entry.userId matches
+      for (const [, val] of Object.entries(presence || {})) {
+        try {
+          if (val && (val.userId === userId || String(val.userId) === s)) return val;
+        } catch (e) {
+          // ignore
+        }
+      }
+      return undefined;
+    };
+
+    const p = findPresence();
+    if (p == null) return false;
+    if (typeof p === 'boolean') return p === true;
+    if (typeof p === 'object') {
+      if (p.state === 'online' || p.online === true) return true;
+      if (p.lastSeen) {
+        const last = Number(p.lastSeen) || 0;
+        return Date.now() - last < 60_000;
+      }
+      // if presence value itself is a timestamp
+      if (typeof p === 'number') {
+        return Date.now() - p < 60_000;
+      }
+    }
+    return false;
+  };
+
+  const getLastSeenText = (userId) => {
+    const p = presence?.[userId];
+    if (!p) return null;
+    // accept numeric timestamp or object with common timestamp keys
+    let ts = null;
+    if (typeof p === 'number' || /^[0-9]+$/.test(String(p))) ts = Number(p);
+    if (typeof p === 'object') ts = p.lastSeen || p.timestamp || p.lastActive || p.last_seen || p.time || null;
+    if (!ts) return null;
+    const diff = Date.now() - Number(ts);
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return 'last seen just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `last seen ${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `last seen ${hr}h ago`;
+    const days = Math.floor(hr / 24);
+    if (days < 7) return `last seen ${days}d ago`;
+    return `last seen on ${new Date(ts).toLocaleDateString()}`;
+  };
+
   return (
     <div style={{ display: "flex", height: "100vh", background: "#eef2f7", fontFamily: "sans-serif" }}>
       {/* ===== SIDEBAR ===== */}
-      <div style={{ width: 280, background: "#fff", padding: 16, boxShadow: "2px 0 10px rgba(0,0,0,0.1)" }}>
-        <button onClick={() => navigate(-1)} style={{ border: "none", background: "none" }}>
-          <FaArrowLeft size={20} />
-        </button>
-
-        <div style={{ display: "flex", gap: 6, margin: "12px 0" }}>
-          {["student", "parent", "admin"].map((t) => (
-            <button
-              key={t}
-              onClick={() => {
-                setSelectedTab(t);
-                setSelectedChatUser(null);
-                setCurrentChatKey(null);
-              }}
-              style={{
-                flex: 1,
-                padding: 8,
-                borderRadius: 20,
-                border: "none",
-                background: selectedTab === t ? "#4facfe" : "#ddd",
-                color: selectedTab === t ? "#fff" : "#000",
-                cursor: "pointer",
-              }}
-            >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+      <div style={{ display: 'flex', alignItems: 'stretch' }}>
+        <div style={{
+          width: sidebarOpen ? 280 : 0,
+          background: "#fff",
+          padding: sidebarOpen ? 16 : 0,
+          boxShadow: sidebarOpen ? "2px 0 10px rgba(0,0,0,0.1)" : 'none',
+          display: sidebarOpen ? 'flex' : 'none',
+          flexDirection: "column",
+          transition: 'width 180ms ease'
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <button onClick={() => navigate(-1)} style={{ border: "none", background: "none", padding: 4, cursor: "pointer" }}>
+              <FaArrowLeft size={18} />
             </button>
-          ))}
+            
+          </div>
+
+          <div style={{ display: "flex", gap: 6, margin: "12px 0", alignItems: "center" }}>
+            {["student", "parent", "admin"].map((t) => (
+              <button
+                key={t}
+                onClick={() => {
+                  setSelectedTab(t);
+                  setSelectedChatUser(null);
+                  setCurrentChatKey(null);
+                }}
+                style={{
+                  flex: 1,
+                  padding: 8,
+                  borderRadius: 20,
+                  border: "none",
+                  background: selectedTab === t ? "#4facfe" : "#ddd",
+                  color: selectedTab === t ? "#fff" : "#000",
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+              >
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 8, overflowY: "auto", flex: 1 }}>
+            {list.map((u) => (
+              <div
+                key={u.userId}
+                onClick={() => {
+                  setSelectedChatUser(u);
+                  setCurrentChatKey(null); // compute chat key automatically for selected pair
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: 10,
+                  borderRadius: 14,
+                  cursor: "pointer",
+                  marginBottom: 8,
+                  background: selectedChatUser?.userId === u.userId ? "#dbeafe" : "#f9fafb",
+                  boxShadow: selectedChatUser?.userId === u.userId ? "0 2px 10px rgba(0,0,0,0.1)" : "none",
+                }}
+              >
+                <div style={{ position: 'relative' }}>
+                  <img
+                    src={u.profileImage}
+                    alt={u.name}
+                    onError={(e) => (e.target.src = "/default-profile.png")}
+                    style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover" }}
+                  />
+                  {/* online dot */}
+                  <span style={{
+                    position: 'absolute',
+                    right: -2,
+                    bottom: -2,
+                    width: 12,
+                    height: 12,
+                    borderRadius: 12,
+                    border: '2px solid #fff',
+                    background: isUserOnline(u.userId) ? '#34D399' : '#cbd5e1'
+                  }} />
+                </div>
+                <span style={{ fontWeight: 500, marginLeft: 8 }}>{u.name}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {list.map((u) => (
-          <div
-            key={u.userId}
-            onClick={() => {
-              setSelectedChatUser(u);
-              setCurrentChatKey(null); // compute chat key automatically for selected pair
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: 10,
-              borderRadius: 14,
-              cursor: "pointer",
-              marginBottom: 8,
-              background: selectedChatUser?.userId === u.userId ? "#dbeafe" : "#f9fafb",
-              boxShadow: selectedChatUser?.userId === u.userId ? "0 2px 10px rgba(0,0,0,0.1)" : "none",
-            }}
-          >
-            <img
-              src={u.profileImage}
-              alt={u.name}
-              onError={(e) => (e.target.src = "/default-profile.png")}
-              style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover" }}
-            />
-            <span style={{ fontWeight: 500 }}>{u.name}</span>
-          </div>
-        ))}
+        {/* small toggle bar visible when sidebar is closed */}
+        <div style={{ width: 28, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
+          <button onClick={() => setSidebarOpen((s) => !s)} style={{ border: 'none', background: '#fff', borderRadius: 4, padding: 4, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', cursor: 'pointer', marginTop: 8 }} aria-label="Toggle sidebar">
+            {sidebarOpen ? '‹' : '›'}
+          </button>
+        </div>
       </div>
 
       {/* ===== CHAT ===== */}
@@ -337,8 +466,8 @@ export default function TeacherAllChat() {
               />
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <span style={{ fontWeight: 600, fontSize: 16 }}>{selectedChatUser.name}</span>
-                <span style={{ fontSize: 12, color: "#666" }}>
-                  {selectedTab.charAt(0).toUpperCase() + selectedTab.slice(1)}
+                <span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? '#16A34A' : '#666' }}>
+                  {isUserOnline(selectedChatUser.userId) ? 'Online' : (getLastSeenText(selectedChatUser.userId) || (selectedTab.charAt(0).toUpperCase() + selectedTab.slice(1)))}
                 </span>
               </div>
             </div>
@@ -370,14 +499,15 @@ export default function TeacherAllChat() {
                     >
                       {m.text} {m.edited && <small style={{ fontSize: 10 }}> (edited)</small>}
 
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5, marginTop: 4, fontSize: 10, color: isTeacher ? "#fff" : "#888" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 4, fontSize: 11, color: isTeacher ? "#fff" : "#888" }}>
+                        <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
                         <span>{formatTime(m.timeStamp)}</span>
-                        {isTeacher && !m.deleted && (
-                          <span style={{ display: "flex", gap: 0 }}>
-                            <FaCheck size={10} color="#f2f3f3b9" />
-                            <FaCheck size={10} color={m.seen ? "#f2f3f3b9" : "#f2f3f3b9"} />
-                          </span>
-                        )}
+                      {isTeacher && !m.deleted && (
+  <span style={{ display: "flex", gap: 0 }}>
+    <FaCheck size={10} color="#fff" style={{ opacity: 0.8 }} />
+    {m.seen && <FaCheck size={10} color="#f3f7f8" style={{ marginLeft: 2, opacity: 0.95 }} />}
+  </span>
+)}
                       </div>
                     </div>
 

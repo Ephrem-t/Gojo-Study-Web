@@ -980,13 +980,13 @@ useEffect(() => {
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
-        <div className="main-content" style={{ padding: "30px", width: "55%", marginLeft: "300px" }}>
+        <div className="main-content" style={{ padding: "30px", width: "55%", marginLeft: "400px" }}>
           <h2 style={{ marginBottom: "10px", textAlign: "center" }}>Teachers</h2>
 
           {/* Grade Filter */}
           <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
             <div style={{ display: "flex", gap: "12px" }}>
-              {["All", "9", "10", "11", "12"].map(g => (
+              {["All", "7", "8", "9", "10", "11", "12"].map(g => (
                 <button
                   key={g}
                   onClick={() => setSelectedGrade(g)}
