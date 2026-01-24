@@ -127,7 +127,7 @@ def register_student():
 
     users_ref = db.reference('Users')
     students_ref = db.reference('Students')
-    counters_ref = db.reference('Users_counters/students')
+    counters_ref = db.reference('counters/students')
 
     # ---------- upload profile image (optional) ----------
     profile_url = "/default-profile.png"
