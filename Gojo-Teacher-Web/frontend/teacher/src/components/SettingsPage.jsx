@@ -133,83 +133,114 @@ function SettingsPage() {
 
   // Notification fetch
  
-  // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
-   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
+
+  // --- FETCH NOTIFICATIONS: posts + unread messages ---
   useEffect(() => {
-  const fetchNotifications = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/get_posts`);
-      let postsData = res.data || [];
-      if (!Array.isArray(postsData) && typeof postsData === "object") {
-        postsData = Object.values(postsData);
-      }
+    const fetchNotifications = async () => {
+      try {
+        // 1. Fetch posts
+        const res = await axios.get(`${API_BASE}/get_posts`);
+        let postsData = res.data || [];
+        if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
 
-      const [adminsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/School_Admins.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-      ]);
-      const schoolAdmins = adminsRes.data || {};
-      const users = usersRes.data || {};
+        const [adminsRes, usersRes, chatsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/School_Admins.json`),
+          axios.get(`${RTDB_BASE}/Users.json`),
+          axios.get(`${RTDB_BASE}/Chats.json`),
+        ]);
+        const schoolAdmins = adminsRes.data || {};
+        const users = usersRes.data || {};
+        const chats = chatsRes.data || {};
 
-      // Get teacher from localStorage so we know who's seen what
-      const teacher = JSON.parse(localStorage.getItem("teacher"));
-      const seenPosts = getSeenPosts(teacher?.userId);
+        // Get teacher from localStorage so we know who's seen what
+        const teacher = JSON.parse(localStorage.getItem("teacher"));
+        const seenPosts = getSeenPosts(teacher?.userId);
 
-      // ...resolveAdminInfo as before...
+        // --- Helper to resolve admin info ---
+        const resolveAdminInfo = (post) => {
+          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+          if (adminId && schoolAdmins[adminId]) {
+            const schoolAdminRec = schoolAdmins[adminId];
+            const userKey = schoolAdminRec.userId;
+            const userRec = users[userKey] || null;
+            const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+            const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
+            return { name, profile };
+          }
+          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
+        };
 
-      const resolveAdminInfo = (post) => {
-        const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-        // ...same as your code...
-        if (adminId && schoolAdmins[adminId]) {
-          const schoolAdminRec = schoolAdmins[adminId];
-          const userKey = schoolAdminRec.userId;
-          const userRec = users[userKey] || null;
-          const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
-          const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-          return { name, profile };
+        // --- Post notifications (unseen only) ---
+        const postNotifs = postsData
+          .slice()
+          .sort((a, b) => {
+            const ta = a.time ? new Date(a.time).getTime() : 0;
+            const tb = b.time ? new Date(b.time).getTime() : 0;
+            return tb - ta;
+          })
+          .filter((post) => post.postId && !seenPosts.includes(post.postId))
+          .slice(0, 5)
+          .map((post) => {
+            const info = resolveAdminInfo(post);
+            return {
+              id: post.postId,
+              type: "post",
+              title: post.message?.substring(0, 50) || "Untitled post",
+              adminName: info.name,
+              adminProfile: info.profile,
+            };
+          });
+
+        // --- Message notifications (unread only, for this teacher) ---
+        let messageNotifs = [];
+        if (teacher && teacher.userId) {
+          Object.entries(chats).forEach(([chatId, chat]) => {
+            const unreadMap = chat.unread || {};
+            const unreadForMe = unreadMap[teacher.userId] || 0;
+            if (!unreadForMe) return;
+            const participants = chat.participants || {};
+            const otherKey = Object.keys(participants).find((p) => p !== teacher.userId);
+            let otherUser = users[otherKey] || { userId: otherKey, name: otherKey, profileImage: "/default-profile.png" };
+            messageNotifs.push({
+              chatId,
+              type: "message",
+              displayName: otherUser.name || otherUser.username || otherKey,
+              profile: otherUser.profileImage || otherUser.profile || "/default-profile.png",
+              unreadForMe,
+            });
+          });
         }
-        return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-      };
 
-      const latest = postsData
-        .slice()
-        .sort((a, b) => {
-          const ta = a.time ? new Date(a.time).getTime() : 0;
-          const tb = b.time ? new Date(b.time).getTime() : 0;
-          return tb - ta;
-        })
-        // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
-        .filter((post) => post.postId && !seenPosts.includes(post.postId))
-        .slice(0, 5)
-        .map((post) => {
-          const info = resolveAdminInfo(post);
-          return {
-            id: post.postId,
-            title: post.message?.substring(0, 50) || "Untitled post",
-            adminName: info.name,
-            adminProfile: info.profile,
-          };
-        });
-
-      setNotifications(latest);
-    } catch (err) {
-      console.error("Error fetching notifications:", err);
-    }
-  };
-
-  fetchNotifications();
-}, []);
+        // Only show up to 5 notifications (posts + messages, most recent first)
+        const allNotifs = [...postNotifs, ...messageNotifs].slice(0, 5);
+        setNotifications(allNotifs);
+      } catch (err) {
+        console.error("Error fetching notifications:", err);
+      }
+    };
+    fetchNotifications();
+  }, []);
 
 
-// --- 3. Handler to remove notification after clicked (and mark seen) ---
 
-const handleNotificationClick = (postId) => {
-  if (!teacher || !postId) return;
-  // Save to localStorage
-  saveSeenPost(teacher.userId, postId);
-  // Remove from UI right away
-  setNotifications(prev => prev.filter((n) => n.id !== postId));
-  setShowNotifications(false); // Optionally close the notification panel
+// --- Handler to remove notification after clicked (and mark seen) ---
+const handleNotificationClick = async (notif) => {
+  if (!teacher) return;
+  if (notif.type === "post" && notif.id) {
+    saveSeenPost(teacher.userId, notif.id);
+    setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    setShowNotifications(false);
+    // Optionally: navigate to dashboard and highlight post
+    navigate("/dashboard");
+  } else if (notif.type === "message" && notif.chatId) {
+    setNotifications((prev) => prev.filter((n) => n.chatId !== notif.chatId));
+    setShowNotifications(false);
+    // Mark messages as read in DB
+    try {
+      await axios.put(`${RTDB_BASE}/Chats/${notif.chatId}/unread/${teacher.userId}.json`, null);
+    } catch (err) {}
+    navigate("/all-chat");
+  }
 };
 
 function getSeenPosts(teacherId) {
@@ -323,7 +354,8 @@ function saveSeenPost(teacherId, postId) {
     setShowMessenger(false);
   };
 
-  const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
+  // Messenger badge: count unread messages only (from notifications)
+  const totalUnreadMessages = notifications.filter((n) => n.type === "message").reduce((sum, n) => sum + (n.unreadForMe || 0), 0);
 
   return (
     <div className="dashboard-page">
@@ -369,29 +401,41 @@ function saveSeenPost(teacherId, postId) {
                 zIndex: 100,
               }}>
                 {notifications.length > 0 ? (
-                  notifications.map((post, index) => (
-                    <div
-                      key={post.id || index}
-                      onClick={() => {
-                        // Mark as seen locally and remove the notification
-                        markNotificationSeen(teacher.userId, post.id);
-                        setNotifications(prev => prev.filter((_, i) => i !== index));
-                        setShowNotifications(false);
-                      }}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "10px 15px",
-                        borderBottom: "1px solid #eee",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                      <div>
-                        <strong>{post.adminName}</strong>
-                        <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
+                  notifications.map((notif, index) => (
+                    notif.type === "post" ? (
+                      <div
+                        key={notif.id || index}
+                        onClick={() => handleNotificationClick(notif)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          padding: "10px 15px",
+                          borderBottom: "1px solid #eee",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                        <div>
+                          <strong>{notif.adminName}</strong>
+                          <p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div
+                        key={notif.chatId || index}
+                        onClick={() => handleNotificationClick(notif)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          padding: "10px 15px",
+                          borderBottom: "1px solid #eee",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <img src={notif.profile || "/default-profile.png"} alt={notif.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                        <div><strong>{notif.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
+                      </div>
+                    )
                   ))
                 ) : (
                   <div style={{ padding: 15 }}>No notifications</div>
@@ -400,16 +444,17 @@ function saveSeenPost(teacherId, postId) {
             )}
           </div>
 
-          {/* Messenger (Dashboard-like) */}
+          {/* Messenger: navigates to all-chat, badge only */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
+            <div onClick={() => navigate("/all-chat")}
+                 style={{ cursor: "pointer", position: "relative" }}>
               <FaFacebookMessenger size={22} />
               {totalUnreadMessages > 0 && (
                 <span style={{
                   position: "absolute",
                   top: -6,
                   right: -6,
-                  background: "#0b78f6",
+                  background: "#f60b0b",
                   color: "#fff",
                   borderRadius: "50%",
                   minWidth: 18,
@@ -424,43 +469,6 @@ function saveSeenPost(teacherId, postId) {
                 </span>
               )}
             </div>
-
-            {showMessenger && (
-              <div style={{
-                position: "absolute",
-                top: 34,
-                right: 0,
-                width: 340,
-                maxHeight: 420,
-                overflowY: "auto",
-                background: "#fff",
-                boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
-                borderRadius: 8,
-                zIndex: 200,
-                padding: 8
-              }}>
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : conversations.map((conv, idx) => (
-                  <div key={conv.chatId || idx}
-                       onClick={() => handleOpenConversation(conv, idx)}
-                       style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong>{conv.displayName}</strong>
-                        {conv.unreadForMe > 0 && (
-                          <span style={{ background: "#0b78f6", color: "#fff", padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>
-                            {conv.unreadForMe}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 4 }}>{conv.lastMessageText || "No messages yet"}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
           <Link className="icon-circle" to="/settings">

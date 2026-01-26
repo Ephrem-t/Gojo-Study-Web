@@ -13,9 +13,11 @@ import {
   FaClipboardCheck,
   FaStar,
   FaCheckCircle,
+  FaCheck,
   FaTimesCircle,
   FaFacebookMessenger,
   FaCommentDots,
+  FaPaperPlane,
 } from "react-icons/fa";
 import "../styles/global.css";
 
@@ -50,27 +52,18 @@ const getWeekNumber = (d) => {
 const formatSubjectName = (courseId = "") => {
   if (!courseId) return "Unknown";
   // remove common prefixes/suffixes and underscores, then title-case words
-  let clean = String(courseId)
+  const clean = String(courseId)
     .replace(/^course_/, "")
     .replace(/_[0-9A-Za-z]+$/, "") // remove trailing class id like _9A if present
     .replace(/_/g, " ")
     .trim();
 
-  // Title-case each word
+  // Title-case each word and return
   return clean
     .split(/\s+/)
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
     .join(" ");
-};
 
-
-
-const formatTime = (timeStamp) => {
-  if (!timeStamp) return "";
-  const date = new Date(timeStamp);
-  const hours = date.getHours().toString().padStart(2, "0");
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  return `${hours}:${minutes}`;
 };
 
 const API_BASE = "http://127.0.0.1:5000/api";
@@ -88,6 +81,27 @@ const computeAge = (rawDob) => {
   const m = today.getMonth() - d.getMonth();
   if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
   return age;
+};
+
+// helpers for message time display (copied from AllChat)
+const formatTime = (ts) => {
+  if (!ts) return "";
+  const date = new Date(Number(ts));
+  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+};
+
+const formatDateLabel = (ts) => {
+  if (!ts) return "";
+  const msgDate = new Date(Number(ts));
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
+  const diffMs = startOfToday - startOfMsgDay;
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
+  return msgDate.toLocaleDateString();
 };
 
 // find user by userId in Users node object
@@ -362,6 +376,9 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
             profile: contact.profileImage,
             lastMessageText: lastMessage.text || "",
             lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
+            lastMessageSeen: Boolean(lastMessage.seen),
+            lastMessageSeenAt: lastMessage.seenAt || lastMessage.seenAt || null,
+            lastMessageSenderId: lastMessage.senderId || null,
             unreadForMe,
           };
         })
@@ -599,6 +616,92 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     return () => { cancelled = true; };
   }, [selectedStudent, usersData]);
 
+  // Ensure parent info is resolved from Parents node if not already present
+  useEffect(() => {
+    if (!selectedStudent) return;
+    let cancelled = false;
+
+    const resolveParent = async () => {
+      try {
+        const parentsRes = await axios.get(`${RTDB_BASE}/Parents.json`);
+        const parentsObj = parentsRes.data || {};
+
+        // candidate keys that might point to parent record or userId
+        const candidates = [
+          selectedStudent.raw?.parentId,
+          selectedStudent.raw?.parentUserId,
+          selectedStudent.parentId,
+          selectedStudent.parentUserId,
+        ].filter(Boolean);
+
+        let foundParent = null;
+
+        // direct lookup by key
+        for (const k of candidates) {
+          if (parentsObj[k]) {
+            foundParent = parentsObj[k];
+            break;
+          }
+          // also try matching parent.userId === k
+          const byUserId = Object.values(parentsObj).find((p) => String(p.userId) === String(k));
+          if (byUserId) {
+            foundParent = byUserId;
+            break;
+          }
+        }
+
+        // if not found, search children lists for this student
+        if (!foundParent) {
+          const sid = selectedStudent.studentId || selectedStudent.userId;
+          for (const p of Object.values(parentsObj)) {
+            const children = p?.children || {};
+            const match = Object.values(children).find((c) => String(c?.studentId) === String(sid));
+            if (match) {
+              foundParent = p;
+              break;
+            }
+          }
+        }
+
+        let parentName = null;
+        let parentPhone = null;
+
+        if (foundParent) {
+          parentName = foundParent.name || foundParent.displayName || null;
+          parentPhone = foundParent.phone || foundParent.phoneNumber || foundParent.contact || null;
+
+          // if parent has userId, try to enrich from Users node
+          if ((!parentName || !parentPhone) && foundParent.userId) {
+            try {
+              const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
+              const usersObj = usersRes.data || {};
+              const userRec = Object.values(usersObj).find((u) => String(u.userId) === String(foundParent.userId));
+              if (userRec) {
+                parentName = parentName || userRec.name || null;
+                parentPhone = parentPhone || userRec.phone || null;
+              }
+            } catch (err) {
+              // ignore
+            }
+          }
+        }
+
+        if (!cancelled) {
+          setSelectedStudentDetails((prev) => ({
+            ...(prev || {}),
+            parentName: parentName || prev?.parentName || "—",
+            parentPhone: parentPhone || prev?.parentPhone || "—",
+          }));
+        }
+      } catch (err) {
+        console.error("Error resolving parent info:", err);
+      }
+    };
+
+    resolveParent();
+    return () => (cancelled = true);
+  }, [selectedStudent]);
+
   useEffect(() => {
     const chatContainer = document.querySelector(".chat-messages");
     if (chatContainer) {
@@ -642,8 +745,17 @@ useEffect(() => {
   const fetchAttendance = async () => {
     setAttendanceLoading(true);
     try {
-      const res = await axios.get(`${RTDB_BASE}/Attendance.json`);
-      const raw = res.data || {};
+      // Fetch attendance + teachers + users to resolve teacher names when available
+      const [attendanceRes, teachersRes, usersRes, assignmentsRes] = await Promise.all([
+        axios.get(`${RTDB_BASE}/Attendance.json`),
+        axios.get(`${RTDB_BASE}/Teachers.json`),
+        axios.get(`${RTDB_BASE}/Users.json`),
+        axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+      ]);
+      const raw = attendanceRes.data || {};
+      const teachersObj = teachersRes.data || {};
+      const usersObj = usersRes.data || {};
+      const assignmentsObj = assignmentsRes.data || {};
 
       // Normalized list for this student
       const normalized = [];
@@ -686,8 +798,52 @@ useEffect(() => {
             status = record;
           } else if (typeof record === "object") {
             status = record.status || record.attendance_status || Object.values(record)[0] || "present";
+
+            // Resolve teacher name: prefer explicit teacherName, then teacherId -> Teachers -> Users, then teacherUserId/userId fields
             teacherName = record.teacherName || record.teacher || record.tutor || "";
+
+            if (!teacherName) {
+              // record.teacherId might be a Teachers push key
+              const teacherId = record.teacherId || record.teacherKey || null;
+              if (teacherId && teachersObj[teacherId]) {
+                const tRec = teachersObj[teacherId];
+                // try to get user linked to teacher
+                if (tRec.userId) {
+                  const userRec = Object.values(usersObj).find((u) => String(u?.userId) === String(tRec.userId));
+                  teacherName = userRec?.name || tRec.name || teacherName;
+                } else {
+                  teacherName = tRec.name || teacherName;
+                }
+              }
+            }
+
+            if (!teacherName) {
+              // sometimes record may store teacherUserId / teacherUser
+              const teacherUserId = record.teacherUserId || record.teacherUser || record.takenBy || null;
+              if (teacherUserId) {
+                const userRec = Object.values(usersObj).find((u) => String(u?.userId) === String(teacherUserId));
+                if (userRec) teacherName = userRec.name || teacherName;
+              }
+            }
+
             subject = record.subject || courseId;
+          }
+
+          // If teacherName is still missing, try to infer from TeacherAssignments (course -> teacher key -> Teachers -> Users)
+          if (!teacherName) {
+            const assignment = Object.values(assignmentsObj).find((a) => String(a.courseId) === String(courseId));
+            if (assignment && assignment.teacherId) {
+              const assignedTeacherKey = assignment.teacherId;
+              const tRec = teachersObj[assignedTeacherKey];
+              if (tRec) {
+                if (tRec.userId) {
+                  const userRec = Object.values(usersObj).find((u) => String(u?.userId) === String(tRec.userId));
+                  teacherName = userRec?.name || tRec.name || teacherName;
+                } else {
+                  teacherName = tRec.name || teacherName;
+                }
+              }
+            }
           }
 
           // store normalized record
@@ -726,7 +882,7 @@ const attendanceData = React.useMemo(() => {
   return attendanceRecords.map((r) => ({
     date: r.date,
     courseId: r.courseId,
-    teacherName: r.teacherName || r.subject || "",
+    teacherName: r.teacherName || "",
     status: r.status || "absent",
   }));
 }, [attendanceRecords]);
@@ -919,6 +1075,35 @@ const toggleExpand = (key) => {
     return () => unsubscribe();
   }, [teacherUserId, selectedStudent]);
 
+  // Mark messages as seen when chat popup is open and there are unseen messages for this teacher
+  useEffect(() => {
+    if (!chatOpen || !selectedStudent || !teacherUserId) return;
+    if (!messages || messages.length === 0) return;
+
+    const unseen = messages.filter(
+      (m) => String(m.receiverId) === String(teacherUserId) && !m.seen
+    );
+    if (unseen.length === 0) return;
+
+    const chatId = getChatId(teacherUserId, selectedStudent.userId);
+    const ts = Date.now();
+
+    const payload = { messages: {}, unread: {} };
+    unseen.forEach((m) => {
+      // set seen + seenAt on each message
+      payload.messages[m.id] = { ...(payload.messages[m.id] || {}), seen: true, seenAt: ts };
+    });
+    // clear unread for this teacher (remove the key)
+    payload.unread[teacherUserId] = null;
+    // also mark lastMessage as seen (merge field) so other clients can read it
+    payload.lastMessage = { seen: true, seenAt: ts };
+
+    axios
+      .patch(`${RTDB_BASE}/Chats/${chatId}.json`, payload)
+      .catch((err) => console.error("Failed to mark messages seen:", err));
+
+  }, [chatOpen, messages, selectedStudent, teacherUserId]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -1026,14 +1211,14 @@ React.useEffect(() => {
         <h2>Gojo Dashboard</h2>
         
         <div className="nav-right">
-          {/* Notification Bell & Popup */}
+          {/* Notification Bell & Popup (shows posts and unread messages) */}
           <div className="icon-circle">
             <div
               onClick={() => setShowNotifications(!showNotifications)}
               style={{ cursor: "pointer", position: "relative" }}
             >
               <FaBell size={24} />
-              {notifications.length > 0 && (
+              {(notifications.length + totalUnreadMessages) > 0 && (
                 <span
                   style={{
                     position: "absolute",
@@ -1050,7 +1235,7 @@ React.useEffect(() => {
                     justifyContent: "center",
                   }}
                 >
-                  {notifications.length}
+                  {notifications.length + totalUnreadMessages}
                 </span>
               )}
             </div>
@@ -1070,68 +1255,112 @@ React.useEffect(() => {
                   zIndex: 100,
                 }}
               >
-                {notifications.length > 0 ? (
-                  notifications.map((post, index) => (
-  <div
-    key={post.id || index}
-    onClick={() => {
-      // Remove only the clicked notification (by index)
-      setNotifications(prev => prev.filter((_, i) => i !== index));
-      setShowNotifications(false);
-
-      // Optionally, still navigate and highlight after clicking
-      navigate("/dashboard");
-
-      setTimeout(() => {
-        const postElement = postRefs.current[post.id];
-        if (postElement) {
-          postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-          setHighlightedPostId(post.id);
-          setTimeout(() => setHighlightedPostId(null), 3000);
-        }
-      }, 150);
-    }}
+                {/* Show post notifications */}
+                {notifications.length > 0 && notifications.map((post, index) => (
+                  <div
+                    key={post.id || index}
+                    onClick={() => {
+                      setNotifications(prev => prev.filter((_, i) => i !== index));
+                      setShowNotifications(false);
+                      navigate("/dashboard");
+                      setTimeout(() => {
+                        const postElement = postRefs.current[post.id];
+                        if (postElement) {
+                          postElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                          setHighlightedPostId(post.id);
+                          setTimeout(() => setHighlightedPostId(null), 3000);
+                        }
+                      }, 150);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      padding: "10px 15px",
+                      borderBottom: "1px solid #eee",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <img
+                      src={post.adminProfile}
+                      alt={post.adminName}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "10px 15px",
-                        borderBottom: "1px solid #eee",
-                        cursor: "pointer",
+                        width: 35,
+                        height: 35,
+                        borderRadius: "50%",
+                        marginRight: 10,
                       }}
-                    >
-                      <img
-                        src={post.adminProfile}
-                        alt={post.adminName}
-                        style={{
-                          width: 35,
-                          height: 35,
-                          borderRadius: "50%",
-                          marginRight: 10,
-                        }}
-                      />
-                      <div>
-                        <strong>{post.adminName}</strong>
-                        <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
-                      </div>
+                    />
+                    <div>
+                      <strong>{post.adminName}</strong>
+                      <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
                     </div>
-                  ))
-                ) : (
+                  </div>
+                ))}
+                {/* Show unread message notifications */}
+                {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
+                  <div
+                    key={conv.chatId || idx}
+                    onClick={() => {
+                      setShowNotifications(false);
+                      navigate("/all-chat");
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      padding: "10px 15px",
+                      borderBottom: "1px solid #eee",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <img
+                      src={conv.profile || "/default-profile.png"}
+                      alt={conv.displayName}
+                      style={{
+                        width: 35,
+                        height: 35,
+                        borderRadius: "50%",
+                        marginRight: 10,
+                      }}
+                    />
+                    <div>
+                      <strong>{conv.displayName}</strong>
+                      <p style={{ margin: 0, fontSize: 12, color: '#0b78f6', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {/* show tick only if the last message was sent by me (teacher) */}
+                        {conv.lastMessageSenderId === teacherUserId ? (
+                          <span style={{ color: conv.lastMessageSeen ? '#0bda63' : '#cbd5e1' }}>
+                            {conv.lastMessageSeen ? '✓✓' : '✓'}
+                          </span>
+                        ) : null}
+                        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>
+                          {conv.lastMessageText || 'New message'}
+                        </span>
+                        {conv.lastMessageSeenAt && (
+                          <span style={{ marginLeft: 6, color: '#64748b', fontSize: 11 }}>
+                            {new Date(conv.lastMessageSeenAt).toLocaleTimeString()}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+                {notifications.length === 0 && totalUnreadMessages === 0 && (
                   <div style={{ padding: 15 }}>No notifications</div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Messenger (same as Dashboard) */}
+          {/* Messenger button: navigates to all-chat, badge only */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
+            <div onClick={() => navigate("/all-chat")}
+                 style={{ cursor: "pointer", position: "relative" }}>
               <FaFacebookMessenger size={22} />
               {totalUnreadMessages > 0 && (
                 <span style={{
                   position: "absolute",
                   top: -6,
                   right: -6,
-                  background: "#0b78f6",
+                  background: "#f60b0b",
                   color: "#fff",
                   borderRadius: "50%",
                   minWidth: 18,
@@ -1146,43 +1375,6 @@ React.useEffect(() => {
                 </span>
               )}
             </div>
-
-            {showMessenger && (
-              <div style={{
-                position: "absolute",
-                top: 34,
-                right: 0,
-                width: 340,
-                maxHeight: 420,
-                overflowY: "auto",
-                background: "#fff",
-                boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
-                borderRadius: 8,
-                zIndex: 200,
-                padding: 8
-              }}>
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : conversations.map((conv, idx) => (
-                  <div key={conv.chatId || idx}
-                       onClick={() => handleOpenConversation(conv, idx)}
-                       style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong>{conv.displayName}</strong>
-                        {conv.unreadForMe > 0 && (
-                          <span style={{ background: "#0b78f6", color: "#fff", padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>
-                            {conv.unreadForMe}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 4 }}>{conv.lastMessageText || "No messages yet"}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
           <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
           <img src={teacher?.profileImage || "/default-profile.png"} />
@@ -1256,7 +1448,53 @@ React.useEffect(() => {
             {loading && <p>Loading students...</p>}
             {error && <p style={{ color: "red" }}>{error}</p>}
             {!loading && !error && filteredStudents.length === 0 && <p>No students found.</p>}
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <style>{`
+              .student-list-responsive {
+                display: flex;
+                flex-direction: column;
+                margin-top: 30px;
+                gap: 12px;
+                width: 98vw;
+                max-width: 99vw;
+                margin-left: 0;
+                margin-right: 200px;
+              }
+                @media (min-width: 350px) {
+                .student-list-responsive {
+                  width: 350px;
+                  max-width: 70vw;
+                }
+              }
+              @media (min-width: 600px) {
+                .student-list-responsive {
+                  width: 400px;
+                  max-width: 90vw;
+                }
+              }
+              @media (min-width: 900px) {
+                .student-list-responsive {
+                  width: 500px;
+                  max-width: 80vw;
+                }
+              }
+              @media (min-width: 1200px) {
+                .student-list-responsive {
+                  width: 600px;
+                  max-width: 700px;
+                  margin-left: -100px;
+
+                }
+              }
+                @media (min-width: 1500px) {
+                .student-list-responsive {
+                  width: 600px;
+                  max-width: 700px;
+                  margin-left: -250px;
+
+                }
+              }
+            `}</style>
+            <div className="student-list-responsive">
               {filteredStudents.map((s, index) => (
                 <StudentItem
                   key={s.userId || s.id || index}
@@ -1334,13 +1572,11 @@ React.useEffect(() => {
         />
       </div>
       <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
-      <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.email}</p>
+      <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.studentId}</p>
       <p style={{ color: "#555", margin: "5px 0" }}>
-        <strong>Grade:</strong> {selectedStudent.grade}
+        <strong>Grade:</strong> {selectedStudent.grade}{selectedStudent.section}
       </p>
-      <p style={{ color: "#555", margin: "5px 0" }}>
-        <strong>Section:</strong> {selectedStudent.section}
-      </p>
+      
     </div>
 
     {/* Tabs */}
@@ -1380,9 +1616,9 @@ React.useEffect(() => {
 marginLeft: 0,
 marginRight: 0,
 
-      borderRadius: 28,
+      borderRadius: 0,
       background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-      boxShadow: "0 30px 80px rgba(0,0,0,0.15)",
+     
       fontFamily: "Inter, system-ui",
     }}
   >
@@ -1394,6 +1630,7 @@ marginRight: 0,
           fontSize: 24,
           fontWeight: 900,
           marginBottom: 18,
+          marginTop: -30,
           background: "linear-gradient(90deg,#2563eb,#7c3aed)",
           WebkitBackgroundClip: "text",
           WebkitTextFillColor: "transparent",
@@ -1406,7 +1643,9 @@ marginRight: 0,
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: 16,
+          columnGap: 68,
+          rowGap: 14,
+          
         }}
       >
         {[
@@ -1426,14 +1665,17 @@ marginRight: 0,
               padding: 18,
               borderRadius: 20,
               background: "#ffffff",
-              boxShadow: "0 12px 28px rgba(0,0,0,0.08)",
+              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
+              marginLeft: -30,
+              marginRight: -30,
+            
             }}
           >
             <div
               style={{
                 fontSize: 12,
                 fontWeight: 700,
-                color: "#64748b",
+                color: "#000102",
                 textTransform: "uppercase",
               }}
             >
@@ -1442,9 +1684,9 @@ marginRight: 0,
             <div
               style={{
                 marginTop: 8,
-                fontSize: 17,
-                fontWeight: 800,
-                color: "#0f172a",
+                fontSize: 16,
+                fontWeight: 400,
+                color: "#000102",
               }}
             >
               {value || "—"}
@@ -1463,7 +1705,7 @@ marginRight: 0,
             color: "#1e293b",
           }}
         >
-          Teacher Notes
+          Teacher Comments
         </div>
 
         {/* NOTE INPUT */}
@@ -1472,16 +1714,17 @@ marginRight: 0,
             background: "#ffffff",
             padding: 18,
             borderRadius: 22,
+           
             boxShadow: "0 14px 40px rgba(0,0,0,0.1)",
           }}
         >
           <textarea
             value={newTeacherNote}
             onChange={(e) => setNewTeacherNote(e.target.value)}
-            placeholder="Write an important note about the student..."
+            placeholder="Write an important comment about the student..."
             style={{
               width: "100%",
-              minHeight: 100,
+              minHeight: 30,
               border: "none",
               outline: "none",
               resize: "vertical",
@@ -1505,7 +1748,7 @@ marginRight: 0,
                 boxShadow: "0 12px 30px rgba(37,99,235,0.45)",
               }}
             >
-              {savingNote ? "Saving..." : "Add Note"}
+              {savingNote ? "Saving..." : "Add Comment"}
             </button>
           </div>
         </div>
@@ -1517,8 +1760,6 @@ marginRight: 0,
             display: "flex",
             flexDirection: "column",
             gap: 14,
-            maxHeight: 320,
-            overflowY: "auto",
           }}
         >
           {teacherNotes.length === 0 ? (
@@ -1531,7 +1772,7 @@ marginRight: 0,
                 borderRadius: 18,
               }}
             >
-              No teacher notes yet
+              No teacher comments yet
             </div>
           ) : (
             teacherNotes.map((n) => (
@@ -1633,8 +1874,8 @@ marginRight: 0,
             color: attendanceView === v ? "#fff" : "#1f2937",
             boxShadow:
               attendanceView === v
-                ? "0 18px 40px rgba(79,70,229,.45)"
-                : "0 6px 14px rgba(0,0,0,.08)",
+                ? "0 5px 5px rgba(79,70,229,.45)"
+                : "0 5px 5px rgba(0,0,0,.08)",
             transition: "all .3s ease",
           }}
         >
@@ -1671,14 +1912,16 @@ marginRight: 0,
         return (
           <div
             key={course}
+            onClick={() => toggleExpand(expandKey)}
             style={{
+              cursor: "pointer",
               background:
                 "linear-gradient(180deg,rgba(255,255,255,.95),rgba(255,255,255,.85))",
               backdropFilter: "blur(14px)",
               borderRadius: 26,
               padding: 26,
               marginBottom: 26,
-              boxShadow: "0 30px 60px rgba(0,0,0,.12)",
+              boxShadow: "0 10px 10px rgba(0,0,0,.12)",
               position: "relative",
               overflow: "hidden",
             }}
@@ -1808,9 +2051,12 @@ marginRight: 0,
                           : "none",
                     }}
                   >
-                    <span style={{ fontSize: 13, color: "#1f2937" }}>
-                      📅 {new Date(r.date).toDateString()}
-                    </span>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <span style={{ fontSize: 13, color: "#1f2937" }}>
+                        📅 {new Date(r.date).toDateString()}
+                      </span>
+                     
+                    </div>
 
                     <span
                       style={{
@@ -2088,9 +2334,9 @@ marginRight: 0,
                     position: "fixed",
                     bottom: "20px",
                     right: "20px",
-                    width: "50px",
-                    height: "50px",
-                    background: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
+                    width: "60px",
+                    height: "60px",
+                    background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
                     borderRadius: "50%",
                     display: "flex",
                     alignItems: "center",
@@ -2102,7 +2348,7 @@ marginRight: 0,
                     transition: "transform 0.2s ease",
                   }}
                 >
-                  <FaCommentDots size={24} />
+                  <FaCommentDots size={30} />
                 </div>
               )}
               {/* Chat Popup */}
@@ -2190,32 +2436,42 @@ marginRight: 0,
                         Start chatting with {selectedStudent.name}
                       </p>
                     ) : (
-                      messages.map((m) => (
-                        <div
-                          key={m.messageId || m.id}
-                          style={{
-                            display: "flex",
-                            justifyContent:
-                              m.senderId === teacher?.userId ? "flex-end" : "flex-start",
-                          }}
-                        >
-                          <span
-                            style={{
-                              display: "inline-block",
-                              padding: "8px 14px",
-                              borderRadius: "20px",
-                              background:
-                                m.senderId === teacher?.userId ? "#4b6cb7" : "#e5e5ea",
-                              color: m.senderId === teacher?.userId ? "#fff" : "#000",
-                              maxWidth: "70%",
-                              wordWrap: "break-word",
-                              transition: "all 0.2s",
-                            }}
-                          >
-                            {m.text}
-                          </span>
-                        </div>
-                      ))
+                      messages.map((m) => {
+                        const isTeacher = String(m.senderId) === String(teacher?.userId);
+
+                        return (
+                          <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isTeacher ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                            <div
+                              style={{
+                                maxWidth: "70%",
+                                background: isTeacher ? "#4facfe" : "#fff",
+                                color: isTeacher ? "#fff" : "#000",
+                                padding: "10px 14px",
+                                borderRadius: 18,
+                                borderTopRightRadius: isTeacher ? 0 : 18,
+                                borderTopLeftRadius: isTeacher ? 18 : 0,
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                                wordBreak: "break-word",
+                                cursor: "default",
+                                position: "relative",
+                              }}
+                            >
+                              {m.text} {m.edited && <small style={{ fontSize: 10 }}> (edited)</small>}
+
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 11, color: isTeacher ? "#fff" : "#888" }}>
+                                <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
+                                <span>{formatTime(m.timeStamp)}</span>
+                                {isTeacher && !m.deleted && (
+                                  <span style={{ display: "flex", gap: 0, alignItems: 'center' }}>
+                                    <FaCheck size={12} color={isTeacher ? "#fff" : "#888"} style={{ opacity: 0.85, marginLeft: 6 }} />
+                                    {m.seen && <FaCheck size={12} color={isTeacher ? "#f3f7f8" : "#ccc"} style={{ marginLeft: 2, opacity: 0.95 }} />}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
                     )}
                     <div ref={messagesEndRef} />
                   </div>
@@ -2237,32 +2493,30 @@ marginRight: 0,
                       style={{
                         flex: 1,
                         padding: "10px 14px",
-                        borderRadius: "999px",
+                        borderRadius: "25px",
                         border: "1px solid #ccc",
                         outline: "none",
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") sendMessage(newMessageText);
+                        if (e.key === "Enter") sendMessage();
                       }}
                     />
                     <button
-                      onClick={() => sendMessage(newMessageText)}
+                      onClick={() => sendMessage()}
                       style={{
-                        background:
-                          "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
-                        border: "none",
+                        width: 45,
+                        height: 45,
                         borderRadius: "50%",
-                        width: "42px",
-                        height: "42px",
+                        background: "#4facfe",
+                        border: "none",
                         color: "#fff",
-                        cursor: "pointer",
                         display: "flex",
-                        alignItems: "center",
                         justifyContent: "center",
-                        fontSize: "18px",
+                        alignItems: "center",
+                        cursor: "pointer",
                       }}
                     >
-                      ➤
+                      <FaPaperPlane />
                     </button>
                   </div>
                 </div>

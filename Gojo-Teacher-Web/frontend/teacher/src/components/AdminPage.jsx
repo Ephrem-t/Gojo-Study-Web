@@ -15,6 +15,7 @@ import {
   FaFacebookMessenger,
   FaCommentDots,
   FaCheck,
+  FaPaperPlane,
 } from "react-icons/fa";
 import "../styles/global.css";
 
@@ -26,6 +27,20 @@ const formatTime = (timeStamp) => {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
+};
+
+const formatDateLabel = (ts) => {
+  if (!ts) return "";
+  const msgDate = new Date(Number(ts));
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
+  const diffMs = startOfToday - startOfMsgDay;
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
+  return msgDate.toLocaleDateString();
 };
 
 const API_BASE = "http://127.0.0.1:5000/api";
@@ -185,10 +200,11 @@ function AdminPage() {
         .sort((a, b) => a.timeStamp - b.timeStamp);
       setMessages(msgs);
 
-      // mark seen for messages where teacher is receiver
+      // mark seen for messages where teacher is receiver and set seenAt
       Object.entries(data).forEach(([id, m]) => {
         if (m && !m.seen && m.receiverId === teacherUserId) {
-          update(ref(db, `Chats/${chatKey}/messages/${id}`), { seen: true }).catch(() => {});
+          const ts = Date.now();
+          update(ref(db, `Chats/${chatKey}/messages/${id}`), { seen: true, seenAt: ts }).catch(() => {});
         }
       });
 
@@ -423,18 +439,30 @@ function saveSeenPost(teacherId, postId) {
 
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
-const [isPortrait, setIsPortrait] = React.useState(
-  window.innerWidth < window.innerHeight
-);
+const [isPortrait, setIsPortrait] = React.useState(window.innerWidth < window.innerHeight);
+const [screenWidth, setScreenWidth] = React.useState(window.innerWidth);
 
 React.useEffect(() => {
   const handleResize = () => {
-    setIsPortrait(window.innerWidth < window.innerHeight);
+    const w = window.innerWidth;
+    setIsPortrait(w < window.innerHeight);
+    setScreenWidth(w);
   };
+
+  // initialize
+  handleResize();
 
   window.addEventListener("resize", handleResize);
   return () => window.removeEventListener("resize", handleResize);
 }, []);
+
+// compute admin list main column width: keep small-device default, expand on larger screens
+const mainListWidth = (() => {
+  if (screenWidth >= 1800) return "800px";
+  if (screenWidth >= 1500) return "600px";
+  if (screenWidth >= 1200) return "400px";
+  return "300px"; // default for small and medium screens (preserves existing look)
+})();
 
 
 
@@ -447,19 +475,21 @@ React.useEffect(() => {
       
 
         <div className="nav-right">
+          {/* Notification Bell & Popup (shows posts and unread messages) */}
           <div className="icon-circle" style={{ position: "relative" }}>
             <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
               <FaBell size={24} />
-              {notifications.length > 0 && (
+              {(notifications.length + totalUnreadMessages) > 0 && (
                 <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {notifications.length}
+                  {notifications.length + totalUnreadMessages}
                 </span>
               )}
             </div>
 
             {showNotifications && (
               <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                {notifications.length > 0 ? notifications.map((post, index) => (
+                {/* Show post notifications */}
+                {notifications.length > 0 && notifications.map((post, index) => (
                   <div key={post.id || index} onClick={() => {
                     navigate("/dashboard");
                     setTimeout(() => {
@@ -476,40 +506,33 @@ React.useEffect(() => {
                     <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
                     <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
                   </div>
-                )) : <div style={{ padding: 15 }}>No notifications</div>}
+                ))}
+                {/* Show unread message notifications */}
+                {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
+                  <div key={conv.chatId || idx} onClick={() => {
+                    setShowNotifications(false);
+                    navigate("/all-chat");
+                  }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                    <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
+                  </div>
+                ))}
+                {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
               </div>
             )}
           </div>
 
-          {/* Messenger */}
+          {/* Messenger button: navigates to all-chat, badge only */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
+            <div onClick={() => navigate("/all-chat")}
+                 style={{ cursor: "pointer", position: "relative" }}>
               <FaFacebookMessenger size={22} />
               {totalUnreadMessages > 0 && (
-                <span style={{ position: "absolute", top: -6, right: -6, background: "#0b78f6", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+                <span style={{ position: "absolute", top: -6, right: -6, background: "#f60b0b", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
                   {totalUnreadMessages}
                 </span>
               )}
             </div>
-
-            {showMessenger && (
-              <div style={{ position: "absolute", top: 34, right: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", borderRadius: 8, zIndex: 200, padding: 8 }}>
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : conversations.map((conv, idx) => (
-                  <div key={conv.chatId || idx} onClick={() => handleOpenConversation(conv, idx)} style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong>{conv.displayName}</strong>
-                        {conv.unreadForMe > 0 && <span style={{ background: "#0b78f6", color: "#fff", padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{conv.unreadForMe}</span>}
-                      </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 4 }}>{conv.lastMessageText || "No messages yet"}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
          <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
@@ -544,7 +567,7 @@ React.useEffect(() => {
 
         {/* MAIN */}
         <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
-          <div style={{ width: "350px", marginLeft: "40px" }}>
+          <div style={{ width: mainListWidth, marginLeft: "40px" }}>
             <h2 style={{ textAlign: "center", marginBottom: "20px" }}>All Admins</h2>
 
             {loading && <p>Loading admins...</p>}
@@ -620,11 +643,11 @@ React.useEffect(() => {
         <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
       <h2>{selectedAdmin.name}</h2>
-      <p>{selectedAdmin.email}</p>
+      <p>{selectedAdmin.adminId}</p>
     </div>
 
               <div style={{ display: "flex", marginBottom: "15px" }}>
-                {["details", "attendance", "performance"].map((tab) => (
+                {["details", "Plan", "Report"].map((tab) => (
                   <button key={tab} onClick={() => setAdminTab(tab)} style={{ flex: 1, padding: "10px", border: "none", background: "none", cursor: "pointer", fontWeight: "600", color: adminTab === tab ? "#4b6cb7" : "#777", borderBottom: adminTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>{tab.toUpperCase()}</button>
                 ))}
               </div>
@@ -742,8 +765,8 @@ React.useEffect(() => {
     </div>
   </div>
 )}
-              {adminTab === "attendance" && <p>Attendance data here.</p>}
-              {adminTab === "performance" && <p>Performance data here.</p>}
+              {adminTab === "Plan" && <p>Attendance data here.</p>}
+              {adminTab === "Report" && <p>Performance data here.</p>}
 
               {!adminChatOpen && selectedAdmin && (
                 <div onClick={() => setAdminChatOpen(true)} style={{ position: "fixed", bottom: "20px", right: "20px", width: "50px", height: "50px", background: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", cursor: "pointer", zIndex: 1000, boxShadow: "0 8px 18px rgba(0,0,0,0.25)" }}>

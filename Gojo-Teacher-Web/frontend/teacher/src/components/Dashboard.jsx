@@ -40,6 +40,7 @@ export default function Dashboard() {
   const [teacher, setTeacher] = useState(null);
   const [posts, setPosts] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [messageNotifs, setMessageNotifs] = useState([]); // for message notifications
   const [highlightedPostId, setHighlightedPostId] = useState(null);
   const [showNotifications, setShowNotifications] = useState(false);
 
@@ -79,9 +80,85 @@ export default function Dashboard() {
       }
     };
 
+    // Fetch unread messages for notification dropdown
+    const fetchMessageNotifs = async (teacherObj) => {
+      try {
+        const t = teacherObj || JSON.parse(localStorage.getItem("teacher"));
+        if (!t || !t.userId) {
+          setMessageNotifs([]);
+          return;
+        }
+        const [chatsRes, usersRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/Chats.json`),
+          axios.get(`${RTDB_BASE}/Users.json`),
+        ]);
+        const chats = chatsRes.data || {};
+        const users = usersRes.data || {};
+        const usersByKey = users || {};
+        const userKeyByUserId = {};
+        Object.entries(usersByKey).forEach(([pushKey, u]) => {
+          if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+        });
+        const notifs = Object.entries(chats)
+          .map(([chatId, chat]) => {
+            const unreadMap = chat.unread || {};
+            const unreadForMe = unreadMap[t.userId] || 0;
+            if (!unreadForMe) return null;
+            const participants = chat.participants || {};
+            const otherKeyCandidate = Object.keys(participants || {}).find(
+              (p) => p !== t.userId
+            );
+            if (!otherKeyCandidate) return null;
+            let otherPushKey = otherKeyCandidate;
+            let otherRecord = usersByKey[otherPushKey];
+            if (!otherRecord) {
+              const mappedPushKey = userKeyByUserId[otherKeyCandidate];
+              if (mappedPushKey) {
+                otherPushKey = mappedPushKey;
+                otherRecord = usersByKey[mappedPushKey];
+              }
+            }
+            if (!otherRecord) {
+              otherRecord = {
+                userId: otherKeyCandidate,
+                name: otherKeyCandidate,
+                profileImage: "/default-profile.png",
+              };
+            }
+            const contact = {
+              pushKey: otherPushKey,
+              userId: otherRecord.userId || otherKeyCandidate,
+              name:
+                otherRecord.name ||
+                otherRecord.username ||
+                otherKeyCandidate,
+              profileImage: getSafeProfileImage(
+                otherRecord.profileImage ||
+                  otherRecord.profile ||
+                  ""
+              ),
+            };
+            const lastMessage = chat.lastMessage || {};
+            return {
+              id: chatId,
+              title: lastMessage.text || "New message",
+              adminName: contact.name,
+              adminProfile: contact.profileImage,
+              isMessage: true,
+              unreadForMe,
+            };
+          })
+          .filter(Boolean);
+        setMessageNotifs(notifs);
+      } catch (err) {
+        setMessageNotifs([]);
+      }
+    };
+
     fetchTeacherProfile();
     fetchPostsAndAdmins();
     fetchConversations(stored);
+    fetchMessageNotifs(stored);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -171,30 +248,36 @@ export default function Dashboard() {
     }
   };
 
-  const handleLikePost = async (postId) => {
-    if (!teacher) return;
+  // ---------------- HANDLE LIKE ----------------
+  const handleLike = async (postId) => {
     try {
-      const res = await axios.post(`${API_BASE}/like_post`, {
+      // ✅ Use full backend URL
+      const res = await axios.post(`http://127.0.0.1:5000/api/like_post`, {
         postId,
-        teacherId: teacher.userId,
+        teacherId: teacher.userId, // or teacher.teacherId if your backend expects it
       });
+
       if (res.data.success) {
-        setPosts((prev) =>
-          prev.map((p) => {
-            if (p.postId !== postId) return p;
-            const likesSet = new Set(p.likes || []);
-            if (res.data.liked) likesSet.add(teacher.userId);
-            else likesSet.delete(teacher.userId);
-            return {
-              ...p,
-              likes: Array.from(likesSet),
-              likeCount: res.data.likeCount,
-            };
-          })
+        const liked = res.data.liked; // boolean returned by backend
+        const likeCount = res.data.likeCount; // number returned by backend
+
+        setPosts((prevPosts) =>
+          prevPosts.map((post) =>
+            post.postId === postId
+              ? {
+                  ...post,
+                  likeCount,
+                  likes: {
+                    ...post.likes,
+                    [teacher.userId]: liked ? true : undefined,
+                  },
+                }
+              : post
+          )
         );
       }
     } catch (err) {
-      console.error("Error toggling like:", err);
+      console.error("Error liking post:", err);
     }
   };
 
@@ -372,7 +455,7 @@ export default function Dashboard() {
     onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
   >
     <FaBell size={22} />
-    {notifications.length > 0 && (
+    {(notifications.length + messageNotifs.length) > 0 && (
       <span
         style={{
           position: "absolute",
@@ -389,31 +472,41 @@ export default function Dashboard() {
           justifyContent: "center",
         }}
       >
-        {notifications.length}
+        {notifications.length + messageNotifs.length}
       </span>
     )}
   </div>
 
   {showNotifications && (
     <div className="notification-popup">
-      {notifications.length > 0 ? (
-        notifications.map((n, i) => (
+      {[...notifications, ...messageNotifs].length > 0 ? (
+        [...notifications, ...messageNotifs].map((n, i) => (
           <div
             key={n.id || i}
             className="notification-item"
             onClick={() => {
-              saveSeenPost(teacher.userId, n.id); // mark as seen
-              setNotifications(prev => prev.filter(o => o.id !== n.id));
-              setShowNotifications(false);
+              if (n.isMessage) {
+                navigate("/all-chat");
+                setShowNotifications(false);
+              } else {
+                saveSeenPost(teacher.userId, n.id); // mark as seen
+                setNotifications(prev => prev.filter(o => o.id !== n.id));
+                setShowNotifications(false);
+              }
             }}
             tabIndex={0}
             role="button"
-            aria-label={"See post notification " + n.title}
+            aria-label={n.isMessage ? "See message notification " + n.title : "See post notification " + n.title}
             onKeyPress={e => {
               if (e.key === 'Enter') {
-                saveSeenPost(teacher.userId, n.id);
-                setNotifications(prev => prev.filter(o => o.id !== n.id));
-                setShowNotifications(false);
+                if (n.isMessage) {
+                  navigate("/all-chat");
+                  setShowNotifications(false);
+                } else {
+                  saveSeenPost(teacher.userId, n.id);
+                  setNotifications(prev => prev.filter(o => o.id !== n.id));
+                  setShowNotifications(false);
+                }
               }
             }}
           >
@@ -425,6 +518,9 @@ export default function Dashboard() {
             <div>
               <strong>{n.adminName}</strong>
               <div className="notification-title">{n.title}</div>
+              {n.isMessage && (
+                <span style={{ color: '#0b78f6', fontSize: 12, fontWeight: 500 }}>[Message]</span>
+              )}
             </div>
           </div>
         ))
@@ -438,117 +534,34 @@ export default function Dashboard() {
           {/* Messenger */}
           <div
             className="icon-circle"
-            style={{ position: "relative", marginLeft: 12 }}
+            style={{ position: "relative", marginLeft: 12, cursor: "pointer" }}
+            onClick={() => navigate("/all-chat")}
+            aria-label="Go to all chat"
+            tabIndex={0}
+            role="button"
+            onKeyPress={e => { if (e.key === 'Enter') navigate("/all-chat"); }}
           >
-            <div
-              onClick={handleMessengerToggle}
-              style={{ cursor: "pointer", position: "relative" }}
-            >
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span
-                  style={{
-                    position: "absolute",
-                    top: -6,
-                    right: -6,
-                    background: "#0b78f6",
-                    color: "#fff",
-                    borderRadius: "50%",
-                    minWidth: 18,
-                    height: 18,
-                    fontSize: 12,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "0 5px",
-                  }}
-                >
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-
-            {showMessenger && (
-              <div
+            <FaFacebookMessenger size={22} />
+            {totalUnreadMessages > 0 && (
+              <span
                 style={{
                   position: "absolute",
-                  top: 34,
+                  top: 1,
                   right: 0,
-                  width: 340,
-                  maxHeight: 420,
-                  overflowY: "auto",
-                  background: "#fff",
-                  boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
-                  borderRadius: 8,
-                  zIndex: 200,
-                  padding: 8,
+                  background: "#f60b0b",
+                  color: "#fff",
+                  borderRadius: "50%",
+                  minWidth: 18,
+                  height: 18,
+                  fontSize: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 5px",
                 }}
               >
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : (
-                  conversations.map((conv, idx) => (
-                    <div
-                      key={conv.chatId || idx}
-                      onClick={() =>
-                        handleOpenConversation(conv, idx)
-                      }
-                      style={{
-                        display: "flex",
-                        gap: 12,
-                        alignItems: "center",
-                        padding: 10,
-                        borderBottom: "1px solid #eee",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <img
-                        src={getSafeProfileImage(conv.profile)}
-                        alt={conv.displayName}
-                        style={{
-                          width: 44,
-                          height: 44,
-                          borderRadius: "50%",
-                          objectFit: "cover",
-                        }}
-                      />
-                      <div style={{ flex: 1 }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                          }}
-                        >
-                          <strong>{conv.displayName}</strong>
-                          {conv.unreadForMe > 0 && (
-                            <span
-                              style={{
-                                background: "#0b78f6",
-                                color: "#fff",
-                                padding: "2px 8px",
-                                borderRadius: 999,
-                                fontSize: 12,
-                              }}
-                            >
-                              {conv.unreadForMe}
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            color: "#444",
-                            marginTop: 4,
-                          }}
-                        >
-                          {conv.lastMessageText || "No messages yet"}
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+                {totalUnreadMessages}
+              </span>
             )}
           </div>
 
@@ -673,7 +686,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <p style={{ marginTop: 12 }}>{post.message}</p>
+                <p className="post-message" style={{ marginTop: 12 }}>{post.message}</p>
 
                 {post.postUrl && (
                   <img
@@ -688,37 +701,44 @@ export default function Dashboard() {
                   />
                 )}
 
-                <div className="like-button" style={{ marginTop: 12 }}>
-                  <button
-                    onClick={() => handleLikePost(post.postId)}
-                    className="admin-like-btn"
-                    style={{
-                      color: (post.likes || []).includes(
-                        teacher?.userId
-                      )
-                        ? "#e0245e"
-                        : "#555",
-                    }}
-                  >
-                    <span className="like-left">
-                      {(post.likes || []).includes(teacher?.userId) ? (
-                        <FaHeart />
-                      ) : (
-                        <FaRegHeart />
-                      )}{" "}
-                      &nbsp;{" "}
-                      {(post.likes || []).includes(teacher?.userId)
-                        ? "Liked"
-                        : "Like"}
-                    </span>
-                    <span
-                      className="like-count"
-                      style={{ marginLeft: 8 }}
-                    >
-                      {post.likeCount || 0}
-                    </span>
-                  </button>
-                </div>
+                <div className="post-actions">
+                                    <div className="like-button">
+                                      <button
+                                        onClick={() => handleLike(post.postId)}
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "space-between",
+                                          gap: "18px",
+                                          width: "120px",
+                                          padding: "8px 18px",
+                                          background: "transparent",
+                                          border: "none",
+                                          cursor: "pointer",
+                                          fontSize: "16px",
+                                          fontWeight: "500",
+                                          color: post.likes && post.likes[teacher.userId] ? "#e0245e" : "#555",
+                                          transition: "all 0.2s ease",
+                                        }}
+                                      >
+                                        {/* LEFT: Heart + Text */}
+                                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                          {post.likes && post.likes[teacher.userId] ? (
+                                            <FaHeart style={{ color: "#e0245e", fontSize: "16px" }} />
+                                          ) : (
+                                            <FaRegHeart style={{ fontSize: "16px" }} />
+                                          )}
+                
+                                          {post.likes && post.likes[teacher.userId] ? "Liked" : "Like"}
+                                        </span>
+                
+                                        {/* RIGHT: Count */}
+                                        <span style={{ marginRight: "550px", fontSize: "15px", color: "#777" }}>
+                                          {post.likeCount || 0}
+                                        </span>
+                                      </button>
+                                    </div>
+                                  </div>
               </div>
             ))}
           </div>
@@ -726,4 +746,15 @@ export default function Dashboard() {
       </div>
     </div>
   );
+      {/* Responsive style for post message size */}
+      <style>{`
+        .post-message {
+          font-size: 1.08rem;
+        }
+        @media (max-width: 600px) {
+          .post-message {
+            font-size: 0.92rem;
+          }
+        }
+      `}</style>
 }

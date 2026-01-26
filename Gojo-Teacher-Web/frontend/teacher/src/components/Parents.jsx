@@ -43,7 +43,8 @@ const [activeTab, setActiveTab] = useState("Details"); // default tab
   const messagesEndRef = useRef(null);
 const [children, setChildren] = useState([]);
  const [notifications, setNotifications] = useState([]);
-  const [showNotifications, setShowNotifications] = useState(false);
+ const [showNotifications, setShowNotifications] = useState(false);
+ const [messageNotifications, setMessageNotifications] = useState([]);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
 
   const [showMessenger, setShowMessenger] = useState(false);
@@ -226,10 +227,14 @@ const [children, setChildren] = useState([]);
   useEffect(() => {
     const fetchNotifications = async () => {
       try {
+        // Fetch posts
         const res = await axios.get(`${API_BASE}/get_posts`);
         let postsData = res.data || [];
         if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
-        const [adminsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/School_Admins.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
+        const [adminsRes, usersRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/School_Admins.json`),
+          axios.get(`${RTDB_BASE}/Users.json`)
+        ]);
         const schoolAdmins = adminsRes.data || {};
         const users = usersRes.data || {};
         const teacherLocal = JSON.parse(localStorage.getItem("teacher"));
@@ -246,16 +251,72 @@ const [children, setChildren] = useState([]);
           }
           return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
         };
-        const latest = postsData
+        const latestPosts = postsData
           .slice()
           .sort((a, b) => ((b.time ? new Date(b.time).getTime() : 0) - (a.time ? new Date(a.time).getTime() : 0)))
           .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
           .map((post) => {
             const info = resolveAdminInfo(post);
-            return { id: post.postId, title: post.message?.substring(0, 50) || "Untitled post", adminName: info.name, adminProfile: info.profile };
+            return {
+              type: "post",
+              id: post.postId,
+              title: post.message?.substring(0, 50) || "Untitled post",
+              adminName: info.name,
+              adminProfile: info.profile
+            };
           });
-        setNotifications(latest);
+
+        // Fetch unread messages (conversations)
+        let messageNotifs = [];
+        try {
+          const t = teacherLocal;
+          if (t && t.userId) {
+            const [chatsRes, usersRes] = await Promise.all([
+              axios.get(`${RTDB_BASE}/Chats.json`),
+              axios.get(`${RTDB_BASE}/Users.json`)
+            ]);
+            const chats = chatsRes.data || {};
+            const users = usersRes.data || {};
+            const usersByKey = users || {};
+            const userKeyByUserId = {};
+            Object.entries(usersByKey).forEach(([pushKey, u]) => { if (u && u.userId) userKeyByUserId[u.userId] = pushKey; });
+            messageNotifs = Object.entries(chats)
+              .map(([chatId, chat]) => {
+                const unreadMap = chat.unread || {};
+                const unreadForMe = unreadMap[t.userId] || 0;
+                if (!unreadForMe) return null;
+                const participants = chat.participants || {};
+                const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
+                if (!otherKeyCandidate) return null;
+                let otherPushKey = otherKeyCandidate;
+                let otherRecord = usersByKey[otherPushKey];
+                if (!otherRecord) {
+                  const mapped = userKeyByUserId[otherKeyCandidate];
+                  if (mapped) { otherPushKey = mapped; otherRecord = usersByKey[mapped]; }
+                }
+                if (!otherRecord) otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
+                const contact = { pushKey: otherPushKey, userId: otherRecord.userId || otherKeyCandidate, name: otherRecord.name || otherRecord.username || otherKeyCandidate, profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png" };
+                const lastMessage = chat.lastMessage || {};
+                return {
+                  type: "message",
+                  chatId,
+                  displayName: contact.name,
+                  profile: contact.profileImage,
+                  lastMessageText: lastMessage.text || "",
+                  lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
+                  unreadForMe
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+          }
+        } catch (err) {
+          console.error("Error fetching message notifications:", err);
+        }
+
+        setNotifications([...latestPosts, ...messageNotifs]);
+        setMessageNotifications(messageNotifs);
       } catch (err) {
         console.error("Error fetching notifications:", err);
       }
@@ -331,7 +392,7 @@ const [children, setChildren] = useState([]);
     setShowMessenger(false);
   };
 
-  const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
+  const totalUnreadMessages = messageNotifications.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
   // Prevent background scroll while sidebar is open (applies on small screens)
   useEffect(() => {
@@ -350,62 +411,68 @@ const [children, setChildren] = useState([]);
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
 
-        <div className="nav-right">
-          <div className="icon-circle" style={{ position: "relative" }}>
-            <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
-              <FaBell size={24} />
-              {notifications.length > 0 && (
-                <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {notifications.length}
-                </span>
-              )}
-            </div>
+         <div className="nav-right">
+                  {/* Notification Bell & Popup (shows posts and unread messages) */}
+                  <div className="icon-circle" style={{ position: "relative" }}>
+                    <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
+                      <FaBell size={24} />
+                      {notifications.length > 0 && (
+                        <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {notifications.length}
+                        </span>
+                      )}
+                    </div>
 
-            {showNotifications && (
-              <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                {notifications.length > 0 ? notifications.map((post, index) => (
-                  <div key={post.id || index} onClick={() => { saveSeenPost(teacher?.userId, post.id); setNotifications(prev => prev.filter((_, i) => i !== index)); setShowNotifications(false); navigate("/dashboard"); }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                    <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
-                  </div>
-                )) : <div style={{ padding: 15 }}>No notifications</div>}
-              </div>
-            )}
-          </div>
-
-          <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span style={{ position: "absolute", top: -6, right: -6, background: "#0b78f6", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-
-            {showMessenger && (
-              <div style={{ position: "absolute", top: 34, right: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", borderRadius: 8, zIndex: 200, padding: 8 }}>
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : conversations.map((conv, idx) => (
-                  <div key={conv.chatId || idx} onClick={() => handleOpenConversation(conv, idx)} style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong>{conv.displayName}</strong>
-                        {conv.unreadForMe > 0 && <span style={{ background: "#0b78f6", color: "#fff", padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{conv.unreadForMe}</span>}
+                    {showNotifications && (
+                      <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
+                        {notifications.length > 0 ? notifications.map((notif, index) => (
+                          notif.type === "post" ? (
+                            <div key={notif.id || index} onClick={() => {
+                              navigate("/dashboard");
+                              setTimeout(() => {
+                                const postElement = postRefs?.current?.[notif.id];
+                                if (postElement) {
+                                  postElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  setHighlightedPostId(notif.id);
+                                  setTimeout(() => setHighlightedPostId(null), 3000);
+                                }
+                              }, 150);
+                              setNotifications(prev => prev.filter((_, i) => i !== index));
+                              setShowNotifications(false);
+                            }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                              <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                              <div><strong>{notif.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p></div>
+                            </div>
+                          ) : (
+                            <div key={notif.chatId || index} onClick={() => {
+                              setShowNotifications(false);
+                              navigate("/all-chat");
+                            }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                              <img src={notif.profile || "/default-profile.png"} alt={notif.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                              <div><strong>{notif.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
+                            </div>
+                          )
+                        )) : <div style={{ padding: 15 }}>No notifications</div>}
                       </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 4 }}>{conv.lastMessageText || "No messages yet"}</div>
+                    )}
+                  </div>
+        
+                  {/* Messenger button: navigates to all-chat, badge only */}
+                  <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
+                    <div onClick={() => navigate("/all-chat")}
+                         style={{ cursor: "pointer", position: "relative" }}>
+                      <FaFacebookMessenger size={22} />
+                      {totalUnreadMessages > 0 && (
+                        <span style={{ position: "absolute", top: -6, right: -6, background: "#f60b0b", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+                          {totalUnreadMessages}
+                        </span>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" style={{ width: 36, height: 36, borderRadius: "50%" }} />
-        </div>
+        
+                 <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
+                  <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
+                </div>
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex" }}>

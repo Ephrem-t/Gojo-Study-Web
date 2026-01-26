@@ -34,7 +34,6 @@ function Schedule() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
-  const [showMessenger, setShowMessenger] = useState(false);
   const [conversations, setConversations] = useState([]);
   const postRefs = useRef({});
   const navigate = useNavigate();
@@ -49,8 +48,8 @@ function Schedule() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // --------------- UNREAD MESSAGES --------------
-  const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
+  // Messenger badge: count unread messages only (from notifications)
+  const totalUnreadMessages = notifications.filter((n) => n.type === "message").reduce((sum, n) => sum + (n.unreadForMe || 0), 0);
 
   // --------------- LOAD TEACHER -------------
   useEffect(() => {
@@ -120,20 +119,29 @@ function Schedule() {
       localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seen, postId]));
     }
   }
+  // --- FETCH NOTIFICATIONS: posts + unread messages ---
   useEffect(() => {
     const fetchNotifications = async () => {
       try {
+        // 1. Fetch posts
         const res = await axios.get(`${API_BASE}/get_posts`);
         let postsData = res.data || [];
         if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
-        const [adminsRes, usersRes] = await Promise.all([
+
+        const [adminsRes, usersRes, chatsRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/School_Admins.json`),
           axios.get(`${RTDB_BASE}/Users.json`),
+          axios.get(`${RTDB_BASE}/Chats.json`),
         ]);
         const schoolAdmins = adminsRes.data || {};
         const users = usersRes.data || {};
+        const chats = chatsRes.data || {};
+
+        // Get teacher from localStorage so we know who's seen what
         const teacher = JSON.parse(localStorage.getItem("teacher"));
         const seenPosts = getSeenPosts(teacher?.userId);
+
+        // --- Helper to resolve admin info ---
         const resolveAdminInfo = (post) => {
           const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
           if (adminId && schoolAdmins[adminId]) {
@@ -146,7 +154,9 @@ function Schedule() {
           }
           return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
         };
-        const latest = postsData
+
+        // --- Post notifications (unseen only) ---
+        const postNotifs = postsData
           .slice()
           .sort((a, b) => {
             const ta = a.time ? new Date(a.time).getTime() : 0;
@@ -159,101 +169,63 @@ function Schedule() {
             const info = resolveAdminInfo(post);
             return {
               id: post.postId,
+              type: "post",
               title: post.message?.substring(0, 50) || "Untitled post",
               adminName: info.name,
               adminProfile: info.profile,
             };
           });
-        setNotifications(latest);
+
+        // --- Message notifications (unread only, for this teacher) ---
+        let messageNotifs = [];
+        if (teacher && teacher.userId) {
+          Object.entries(chats).forEach(([chatId, chat]) => {
+            const unreadMap = chat.unread || {};
+            const unreadForMe = unreadMap[teacher.userId] || 0;
+            if (!unreadForMe) return;
+            const participants = chat.participants || {};
+            const otherKey = Object.keys(participants).find((p) => p !== teacher.userId);
+            let otherUser = users[otherKey] || { userId: otherKey, name: otherKey, profileImage: "/default-profile.png" };
+            messageNotifs.push({
+              chatId,
+              type: "message",
+              displayName: otherUser.name || otherUser.username || otherKey,
+              profile: otherUser.profileImage || otherUser.profile || "/default-profile.png",
+              unreadForMe,
+            });
+          });
+        }
+
+        // Only show up to 5 notifications (posts + messages, most recent first)
+        const allNotifs = [...postNotifs, ...messageNotifs].slice(0, 5);
+        setNotifications(allNotifs);
       } catch (err) {}
     };
     fetchNotifications();
   }, []);
 
-  const handleNotificationClick = (postId) => {
-    if (!teacher || !postId) return;
-    saveSeenPost(teacher.userId, postId);
-    setNotifications(prev => prev.filter((n) => n.id !== postId));
-    setShowNotifications(false);
+  // --- Handler to remove notification after clicked (and mark seen) ---
+  const handleNotificationClick = async (notif) => {
+    if (!teacher) return;
+    if (notif.type === "post" && notif.id) {
+      saveSeenPost(teacher.userId, notif.id);
+      setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+      setShowNotifications(false);
+      // Optionally: navigate to dashboard and highlight post
+      navigate("/dashboard");
+    } else if (notif.type === "message" && notif.chatId) {
+      setNotifications((prev) => prev.filter((n) => n.chatId !== notif.chatId));
+      setShowNotifications(false);
+      // Mark messages as read in DB
+      try {
+        await axios.put(`${RTDB_BASE}/Chats/${notif.chatId}/unread/${teacher.userId}.json`, null);
+      } catch (err) {}
+      navigate("/all-chat");
+    }
   };
 
   // --------------- MESSENGER LOGIC (all unread conversations) ---------------
-  const fetchConversations = async () => {
-    try {
-      const t = teacher || JSON.parse(localStorage.getItem("teacher"));
-      if (!t || !t.userId) {
-        setConversations([]);
-        return;
-      }
-      const [chatsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Chats.json`),
-        axios.get(`${RTDB_BASE}/Users.json`)
-      ]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
-      });
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-          if (!otherRecord) {
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-          const lastMessage = chat.lastMessage || {};
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-      setConversations(convs);
-    } catch (err) {
-      setConversations([]);
-    }
-  };
-  const handleMessengerToggle = async () => {
-    setShowMessenger((s) => !s);
-    if (!showMessenger) await fetchConversations();
-  };
-  const handleOpenConversation = async (conv, index) => {
-    if (!teacher || !conv) return;
-    const { chatId, contact } = conv;
-    navigate("/all-chat", { state: { contact, chatId, tab: "schedule" } });
-    try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
-    } catch (err) {}
-    setConversations((prev) => prev.filter((_, i) => i !== index));
-    setShowMessenger(false);
-  };
+  // ...existing code...
 
   // -------------------------- CSS STYLES ----------------------------
   const css = `
@@ -409,34 +381,17 @@ function Schedule() {
               </div>
             )}
           </div>
-          {/* Messenger */}
+          {/* Messenger: navigates to all-chat, badge only */}
           <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={handleMessengerToggle} style={{ cursor: "pointer", position: "relative" }}>
+            <div onClick={() => navigate("/all-chat")}
+                 style={{ cursor: "pointer", position: "relative" }}>
               <FaFacebookMessenger size={22} />
               {totalUnreadMessages > 0 && (
-                <span style={{ position: "absolute", top: -6, right: -6, background: "#0b78f6", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px", fontSize: 12 }}>
+                <span style={{ position: "absolute", top: -6, right: -6, background: "#ff0000", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px", fontSize: 12 }}>
                   {totalUnreadMessages}
                 </span>
               )}
             </div>
-            {showMessenger && (
-              <div style={{ position: "absolute", top: 34, right: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.12)", borderRadius: 8, zIndex: 200, padding: 8 }}>
-                {conversations.length === 0 ? (
-                  <div style={{ padding: 14 }}>No unread messages</div>
-                ) : conversations.map((conv, idx) => (
-                  <div key={conv.chatId || idx} onClick={() => handleOpenConversation(conv, idx)} style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong>{conv.displayName}</strong>
-                        {conv.unreadForMe > 0 && <span style={{ background: "#0b78f6", color: "#fff", padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{conv.unreadForMe}</span>}
-                      </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 4 }}>{conv.lastMessageText || "No messages yet"}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
           <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
           <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" style={{width:36, height:36, borderRadius:"50%"}} />
