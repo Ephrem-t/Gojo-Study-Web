@@ -10,6 +10,7 @@ import {
   FaUsers,
   FaFacebookMessenger,
   FaCommentDots,
+  FaCheck,
 } from "react-icons/fa";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
@@ -30,6 +31,14 @@ import "../styles/global.css";
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
 const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+
+const formatTime = (ts) => {
+  if (!ts) return "";
+  const d = new Date(Number(ts));
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
+};
 
 function TeacherParent() {
 const [teacher, setTeacher] = useState(null);
@@ -109,34 +118,41 @@ const [children, setChildren] = useState([]);
           .filter((a) => a.teacherId === teacherId)
           .map((a) => a.courseId);
 
-        // Build student->parent map
+        // Build student->parent map including relationship
         const studentToParentMap = {};
         Object.entries(parentsData).forEach(([parentId, parent]) => {
           if (!parent.children) return;
           Object.values(parent.children).forEach((child) => {
             if (!child.studentId) return;
+            const rel = child.relationship || child.relation || child.relationToChild || child.type || child.role || null;
             if (!studentToParentMap[child.studentId]) studentToParentMap[child.studentId] = [];
-            studentToParentMap[child.studentId].push(parentId);
+            studentToParentMap[child.studentId].push({ parentId, relationship: rel });
           });
         });
 
-        // Build parent->children (use all students; you can filter by teacherCourses if desired)
+        // Build parent->children map with relationship data
         const parentChildrenMap = {};
         Object.entries(students).forEach(([studentId, student]) => {
           const studentUser = Object.values(users).find((u) => String(u.userId) === String(student.userId));
           const studentName = studentUser?.name || "No Name";
           const studentProfileImage = studentUser?.profileImage || "/default-profile.png";
 
-          const parentIds = studentToParentMap[studentId] || [];
-          parentIds.forEach((pid) => {
-            if (!parentChildrenMap[pid]) parentChildrenMap[pid] = [];
-            parentChildrenMap[pid].push({
+          const parentEntries = studentToParentMap[studentId] || [];
+          parentEntries.forEach(({ parentId, relationship }) => {
+            if (!parentChildrenMap[parentId]) parentChildrenMap[parentId] = [];
+            parentChildrenMap[parentId].push({
               studentId,
               name: studentName,
               grade: student.grade,
               section: student.section,
               profileImage: studentProfileImage,
               userId: student.userId,
+                relationship: relationship || "—",
+                age: student.age || studentUser?.age || null,
+                city: student.city || studentUser?.city || (student.address && student.address.city) || null,
+                citizenship: student.citizenship || studentUser?.citizenship || student.nationality || null,
+                address: student.address || studentUser?.address || null,
+                status: student.status || "Active",
             });
           });
         });
@@ -144,6 +160,8 @@ const [children, setChildren] = useState([]);
         const finalParents = Object.keys(parentChildrenMap).map((pid) => {
           const parent = parentsData[pid] || {};
           const parentUser = Object.values(users).find((u) => String(u.userId) === String(parent.userId)) || {};
+          const childrenList = parentChildrenMap[pid] || [];
+          const relationships = Array.from(new Set(childrenList.map((c) => c.relationship).filter(Boolean)));
           return {
             id: pid,
             userId: parent.userId,
@@ -151,10 +169,14 @@ const [children, setChildren] = useState([]);
             email: parentUser.email || parent.email || "N/A",
             phone: parentUser.phone || parent.phone || "",
             profileImage: parentUser.profileImage || parent.profileImage || "/default-profile.png",
-            children: parentChildrenMap[pid],
+            children: childrenList,
+            relationships,
+            age: parent.age || parentUser.age || null,
+            city: parent.city || parentUser.city || parent.address?.city || null,
+            citizenship: parent.citizenship || parentUser.citizenship || parent.nationality || null,
             status: parent.status || "Active",
             createdAt: parent.createdAt,
-            address: parent.address,
+            address: parent.address || parentUser.address || null,
             extra: parent.extra,
           };
         });
@@ -611,22 +633,96 @@ const [children, setChildren] = useState([]);
                   </div>
 
                   <div style={{ paddingBottom: 40 }}>
-                    {activeTab === "Details" && (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                        {[
-                          { label: "User ID", value: selectedParent.userId },
-                          { label: "Email", value: selectedParent.email || "N/A" },
-                          { label: "Phone", value: selectedParent.phone || "N/A" },
-                          { label: "Address", value: selectedParent.address || "N/A" },
-                          { label: "Extra", value: selectedParent.extra || "N/A", span: true },
-                        ].map((it, idx) => (
-                          <div key={idx} style={{ background: "#f7f9fc", padding: 12, borderRadius: 10, gridColumn: it.span ? "span 2" : "span 1" }}>
-                            <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700, marginBottom: 6 }}>{it.label}</div>
-                            <div style={{ fontWeight: 800 }}>{it.value}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                 {activeTab === "Details" && (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 28,
+      padding: isPortrait ? 50 : 50,
+      marginLeft: 0,
+      marginRight: 0,
+      borderRadius: 0,
+      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
+      fontFamily: "Inter, system-ui",
+    }}
+  >
+    {/* ================= LEFT COLUMN ================= */}
+    <div>
+      {/* PARENT DETAILS */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 900,
+          marginBottom: 18,
+          marginTop: -30,
+          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+        }}
+      >
+        Parent Details
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          columnGap: 68,
+          rowGap: 14,
+        }}
+      >
+        {[
+          ["User ID", selectedParent.userId],
+          ["Email", selectedParent.email || "N/A"],
+          ["Phone", selectedParent.phone || "N/A"],
+          ["Relationship(s)", (selectedParent.relationships && selectedParent.relationships.length) ? selectedParent.relationships.join(", ") : "—"],
+          ["Age", selectedParent.age || "—"],
+          ["City", selectedParent.city || (selectedParent.address && typeof selectedParent.address === 'object' ? selectedParent.address.city : selectedParent.city) || "—"],
+          ["Citizenship", selectedParent.citizenship || "—"],
+          ["Status", selectedParent.status ? (selectedParent.status.charAt(0).toUpperCase() + selectedParent.status.slice(1)) : "—"],
+          ["Address", (typeof selectedParent.address === 'string' ? selectedParent.address : (selectedParent.address && (selectedParent.address.street || selectedParent.address.city || JSON.stringify(selectedParent.address))) ) || "—", true],
+        ].map(([label, value, span]) => (
+          <div
+            key={label}
+            style={{
+              padding: 18,
+              borderRadius: 20,
+              background: "#ffffff",
+              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
+              marginLeft: -30,
+              marginRight: -30,
+              gridColumn: span ? "span 2" : "span 1",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#000102",
+                textTransform: "uppercase",
+              }}
+            >
+              {label}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 16,
+                fontWeight: 400,
+                color: "#000102",
+              }}
+            >
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+     
+    </div>
+  </div>
+)}
 
                     {activeTab === "Children" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -634,8 +730,11 @@ const [children, setChildren] = useState([]);
                           <div key={c.studentId} style={{ display: "flex", gap: 12, alignItems: "center", background: "#fff", padding: 12, borderRadius: 10 }}>
                             <img src={c.profileImage} alt={c.name} style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid #4b6cb7" }} />
                             <div style={{ flex: 1 }}>
-                              <div style={{ fontWeight: 800, color: "#0b1220" }}>{c.name}</div>
-                              <div style={{ color: "#64748b", fontSize: 13 }}>{c.userId}</div>
+                              <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                                <div style={{ fontWeight: 800, color: "#0b1220" }}>{c.name}</div>
+                                <div style={{ fontSize: 12, color: "#64748b" }}>{c.relationship ? `(${c.relationship})` : ""}</div>
+                              </div>
+                              <div style={{ color: "#64748b", fontSize: 13 }}>{c.studentId}</div>
                             </div>
                             <div style={{ display: "flex", gap: 8 }}>
                               <div style={{ background: "linear-gradient(135deg,#6a11cb,#2575fc)", color: "#fff", padding: "6px 10px", borderRadius: 999 }}>Grade {c.grade}</div>
@@ -663,9 +762,9 @@ const [children, setChildren] = useState([]);
             position: "fixed",
             bottom: "20px",
             right: "20px",
-            width: "50px",
-            height: "50px",
-            background: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
+            width: "60px",
+            height: "60px",
+            background: "linear-gradient(135deg, #3a6fb4, #2147f0, #457ffc)",
             borderRadius: "50%",
             display: "flex",
             alignItems: "center",
@@ -677,7 +776,7 @@ const [children, setChildren] = useState([]);
             transition: "transform 0.2s ease",
           }}
         >
-          <FaCommentDots size={24} />
+          <FaCommentDots size={30} />
         </div>
       )}
 
@@ -773,25 +872,29 @@ const [children, setChildren] = useState([]);
                   key={m.messageId}
                   style={{
                     display: "flex",
-                    justifyContent:
-                      m.senderId === teacher.userId ? "flex-end" : "flex-start",
+                    flexDirection: m.senderId === teacher.userId ? "row-reverse" : "row",
+                    alignItems: "flex-end",
+                    marginBottom: 10,
                   }}
                 >
-                  <span
-                    style={{
-                      display: "inline-block",
-                      padding: "8px 14px",
-                      borderRadius: "20px",
-                      background:
-                        m.senderId === teacher.userId ? "#4b6cb7" : "#e5e5ea",
-                      color: m.senderId === teacher.userId ? "#fff" : "#000",
-                      maxWidth: "70%",
-                      wordWrap: "break-word",
-                      transition: "all 0.2s",
-                    }}
-                  >
-                    {m.text}
-                  </span>
+                  <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.senderId === teacher.userId ? "flex-end" : "flex-start" }}>
+                    <div style={{
+                      background: m.senderId === teacher.userId ? "#4b6cb7" : "#fff",
+                      color: m.senderId === teacher.userId ? "#fff" : "#0f172a",
+                      padding: "10px 14px",
+                      borderRadius: 18,
+                      boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
+                      wordBreak: "break-word",
+                      position: "relative",
+                      paddingBottom: "26px",
+                    }}>
+                      <div>{m.text}</div>
+                      <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.senderId === teacher.userId ? "rgba(255,255,255,0.9)" : "#64748b" }}>
+                        <span style={{ fontSize: 11 }}>{formatTime(m.timeStamp)}</span>
+                        {m.senderId === teacher.userId && <FaCheck size={12} color={m.seen ? (m.seenAt ? "#10b981" : "#10b981") : (m.seen ? "#10b981" : "#94a3b8")} />}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               ))
             )}
@@ -827,7 +930,7 @@ const [children, setChildren] = useState([]);
               onClick={() => sendMessage(newMessageText)}
               style={{
                 background:
-                  "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
+                  "linear-gradient(135deg, #3a65b4, #2c4fee, #458efc)",
                 border: "none",
                 borderRadius: "50%",
                 width: "42px",

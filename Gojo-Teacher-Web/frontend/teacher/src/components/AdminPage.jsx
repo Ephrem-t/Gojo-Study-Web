@@ -139,7 +139,7 @@ function AdminPage() {
       setLoading(true);
       const [usersRes, schoolAdminsRes] = await Promise.all([
         axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/School_Admins.json`)
+        axios.get(`${RTDB_BASE}/School_Admins.json`),
       ]);
       const users = usersRes.data || {};
       const schoolAdmins = schoolAdminsRes.data || {};
@@ -159,13 +159,15 @@ function AdminPage() {
         .map(([key, u]) => {
           const schoolAdminInfo = adminByUserId[u.userId];
           return {
-            adminId: key,
+            adminId: (schoolAdminInfo && schoolAdminInfo.adminKey) || key,
             ...u,
-            ...(schoolAdminInfo ? {
-              title: schoolAdminInfo.title,
-              status: schoolAdminInfo.status,
-              schoolAdminKey: schoolAdminInfo.adminKey,
-            } : {}),
+            ...(schoolAdminInfo
+              ? {
+                  title: schoolAdminInfo.title,
+                  status: schoolAdminInfo.status,
+                  schoolAdminKey: schoolAdminInfo.adminKey,
+                }
+              : {}),
           };
         });
       setAdmins(adminsArray);
@@ -643,7 +645,7 @@ const mainListWidth = (() => {
         <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
       <h2>{selectedAdmin.name}</h2>
-      <p>{selectedAdmin.adminId}</p>
+      <p>{selectedAdmin.username}</p>
     </div>
 
               <div style={{ display: "flex", marginBottom: "15px" }}>
@@ -655,122 +657,96 @@ const mainListWidth = (() => {
               {adminTab === "details" && selectedAdmin && (
   <div
     style={{
-      background: "linear-gradient(120deg,#f8fafc 70%,#eef2ff 100%)",
-      borderRadius: 20,
-      boxShadow: "0 10px 32px rgba(84,115,255,0.07)",
-      padding: "28px 26px",
-     maxWidth: isPortrait ? "100%" : 520,
-      margin: "0 auto",
+      display: "flex",
+      flexDirection: "column",
+      gap: 28,
+      padding: isPortrait ? 50 : 50,
+      marginLeft: 0,
+      marginRight: 0,
+      borderRadius: 0,
+      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
+      fontFamily: "Inter, system-ui",
     }}
   >
-    <div style={{display: "flex", alignItems: "center", gap: 22, marginBottom: 24}}>
-      
-       
-     
-      <div style={{ minWidth: 0 }}>
-        
-        <div style={{ color: "#64748b", fontWeight: 600, fontSize: 15 }}>
-          <span style={{marginRight: 8, letterSpacing: 0.4}}>{selectedAdmin.title || "Administrator"}</span>
-          <span
+    {/* ================= LEFT COLUMN ================= */}
+    <div>
+      {/* ADMINISTRATOR DETAILS */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 900,
+          marginBottom: 18,
+          marginTop: -30,
+          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+        }}
+      >
+        Administrator Details
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          columnGap: 68,
+          rowGap: 14,
+        }}
+      >
+        {[
+          ["Admin ID", selectedAdmin.adminId || selectedAdmin.userId],
+          ["Email", selectedAdmin.email],
+          ["Phone", selectedAdmin.phone],
+          ["Gender", selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase() + selectedAdmin.gender.slice(1)) : null],
+          ["Title", selectedAdmin.title],
+          ["Status", selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : null],
+         
+        ].map(([label, value]) => (
+          <div
+            key={label}
             style={{
-              padding: "2px 12px",
-              borderRadius: 999,
-              fontWeight: 700,
-              background: selectedAdmin.status?.toLowerCase() === "active" ? "#e0fbe6" : "#fee4e2",
-              color: selectedAdmin.status?.toLowerCase() === "active" ? "#16a34a" : "#b91c1c",
-              fontSize: "12px",
-              marginLeft: 6,
+              padding: 18,
+              borderRadius: 20,
+              background: "#ffffff",
+              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
+              marginLeft: -30,
+              marginRight: -30,
             }}
           >
-            {selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : "Status Unknown"}
-          </span>
-        </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#000102",
+                textTransform: "uppercase",
+              }}
+            >
+              {label}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 16,
+                fontWeight: 400,
+                color: "#000102",
+              }}
+            >
+              {value || "—"}
+            </div>
+          </div>
+        ))}
       </div>
-    </div>
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 18,
-      marginTop: 8,
-    }}>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.08)",
-        padding: "18px 14px",
-        minWidth: 0
-      }}>
-        <div style={{
-          fontWeight: 700,
-          fontSize: 11,
-          color: "#64748b",
-          textTransform: "uppercase",
-          marginBottom: 8,
-          letterSpacing: ".6px"
-        }}>Admin ID</div>
-        <div style={{
-          fontWeight: 800,
-          fontSize: 15,
-          color: "#18243c",
-          wordBreak: "break-word"
-        }}>{selectedAdmin.adminId || selectedAdmin.userId || "—"}</div>
-      </div>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
-        padding: "18px 14px"
-      }}>
-        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Email</div>
-        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c", wordBreak: "break-word"}}>{selectedAdmin.email || "—"}</div>
-      </div>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
-        padding: "18px 14px"
-      }}>
-        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Phone Number</div>
-        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.phone || "—"}</div>
-      </div>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
-        padding: "18px 14px"
-      }}>
-        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Gender</div>
-        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase()+selectedAdmin.gender.slice(1)) : "—"}</div>
-      </div>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
-        padding: "18px 14px"
-      }}>
-        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Title</div>
-        <div style={{fontWeight: 800, fontSize: 15, color: "#18243c"}}>{selectedAdmin.title || "—"}</div>
-      </div>
-      <div style={{
-        background: "#fff",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(59,130,246,.06)",
-        padding: "18px 14px"
-      }}>
-        <div style={{fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase", marginBottom: 8}}>Status</div>
-        <div style={{fontWeight: 800, fontSize: 15, color: selectedAdmin.status?.toLowerCase() === "active" ? "#16a34a" : "#b91c1c" }}>
-          {selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : "—"}
-        </div>
-      </div>
+
+      
     </div>
   </div>
 )}
-              {adminTab === "Plan" && <p>Attendance data here.</p>}
-              {adminTab === "Report" && <p>Performance data here.</p>}
+              {adminTab === "Plan" && <p>Plan data here.</p>}
+              {adminTab === "Report" && <p>Report data here.</p>}
 
               {!adminChatOpen && selectedAdmin && (
-                <div onClick={() => setAdminChatOpen(true)} style={{ position: "fixed", bottom: "20px", right: "20px", width: "50px", height: "50px", background: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", cursor: "pointer", zIndex: 1000, boxShadow: "0 8px 18px rgba(0,0,0,0.25)" }}>
-                  <FaCommentDots size={24} />
+                <div onClick={() => setAdminChatOpen(true)} style={{ position: "fixed", bottom: "20px", right: "20px", width: "60px", height: "60px", background: "linear-gradient(135deg, #833ab4, #202ef3, #395a8b)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", cursor: "pointer", zIndex: 1000, boxShadow: "0 8px 18px rgba(0,0,0,0.25)" }}>
+                  <FaCommentDots size={30} />
                 </div>
               )}
 
@@ -804,7 +780,7 @@ const mainListWidth = (() => {
 
                   <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
                     <input value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "999px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(); }} />
-                    <button onClick={sendMessage} style={{ background: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)", border: "none", borderRadius: "50%", width: "42px", height: "42px", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>➤</button>
+                    <button onClick={sendMessage} style={{ background: "linear-gradient(135deg, #0751f1, #0e35e4, #0f5afc)", border: "none", borderRadius: "50%", width: "42px", height: "42px", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>➤</button>
                   </div>
                 </div>
               )}
