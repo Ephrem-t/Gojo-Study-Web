@@ -48,6 +48,7 @@ export default function Dashboard() {
   const [showMessenger, setShowMessenger] = useState(false);
   const [conversations, setConversations] = useState([]);
   const postRefs = useRef({});
+  const teacherId = teacher?.userId || null;
 
   useEffect(() => {
     // Load teacher from localStorage first
@@ -251,10 +252,14 @@ export default function Dashboard() {
   // ---------------- HANDLE LIKE ----------------
   const handleLike = async (postId) => {
     try {
+      if (!teacherId) {
+        // no teacher logged in, ignore like
+        return;
+      }
       // ✅ Use full backend URL
       const res = await axios.post(`http://127.0.0.1:5000/api/like_post`, {
         postId,
-        teacherId: teacher.userId, // or teacher.teacherId if your backend expects it
+        teacherId: teacherId, // or teacher.teacherId if your backend expects it
       });
 
       if (res.data.success) {
@@ -268,9 +273,9 @@ export default function Dashboard() {
                   ...post,
                   likeCount,
                   likes: {
-                    ...post.likes,
-                    [teacher.userId]: liked ? true : undefined,
-                  },
+                      ...post.likes,
+                      [teacherId]: liked ? true : undefined,
+                    },
                 }
               : post
           )
@@ -299,7 +304,7 @@ export default function Dashboard() {
 
   const handleNotificationClick = (postId) => {
     if (!teacher) return;
-    saveSeenPost(teacher.userId, postId);
+    if (teacherId) saveSeenPost(teacherId, postId);
     setHighlightedPostId(postId);
     const el = postRefs.current[postId];
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -412,7 +417,7 @@ export default function Dashboard() {
 
     try {
       await axios.put(
-        `${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`,
+        `${RTDB_BASE}/Chats/${chatId}/unread/${teacherId}.json`,
         null
       );
     } catch (err) {
@@ -432,9 +437,7 @@ export default function Dashboard() {
     (sum, c) => sum + (c.unreadForMe || 0),
     0
   );
-
   const t = teacher || {};
-
   return (
     <div className="dashboard-page">
       <nav className="top-navbar">
@@ -477,7 +480,7 @@ export default function Dashboard() {
     )}
   </div>
 
-  {showNotifications && (
+              {showNotifications && (
     <div className="notification-popup">
       {[...notifications, ...messageNotifs].length > 0 ? (
         [...notifications, ...messageNotifs].map((n, i) => (
@@ -489,7 +492,7 @@ export default function Dashboard() {
                 navigate("/all-chat");
                 setShowNotifications(false);
               } else {
-                saveSeenPost(teacher.userId, n.id); // mark as seen
+                            if (teacherId) saveSeenPost(teacherId, n.id); // mark as seen
                 setNotifications(prev => prev.filter(o => o.id !== n.id));
                 setShowNotifications(false);
               }
@@ -503,7 +506,7 @@ export default function Dashboard() {
                   navigate("/all-chat");
                   setShowNotifications(false);
                 } else {
-                  saveSeenPost(teacher.userId, n.id);
+                  if (teacherId) saveSeenPost(teacherId, n.id);
                   setNotifications(prev => prev.filter(o => o.id !== n.id));
                   setShowNotifications(false);
                 }
@@ -717,19 +720,19 @@ export default function Dashboard() {
                                           cursor: "pointer",
                                           fontSize: "16px",
                                           fontWeight: "500",
-                                          color: post.likes && post.likes[teacher.userId] ? "#e0245e" : "#555",
+                                          color: post.likes && teacherId && post.likes[teacherId] ? "#e0245e" : "#555",
                                           transition: "all 0.2s ease",
                                         }}
                                       >
                                         {/* LEFT: Heart + Text */}
                                         <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                          {post.likes && post.likes[teacher.userId] ? (
+                                          {post.likes && teacherId && post.likes[teacherId] ? (
                                             <FaHeart style={{ color: "#e0245e", fontSize: "16px" }} />
                                           ) : (
                                             <FaRegHeart style={{ fontSize: "16px" }} />
                                           )}
                 
-                                          {post.likes && post.likes[teacher.userId] ? "Liked" : "Like"}
+                                          {post.likes && teacherId && post.likes[teacherId] ? "Liked" : "Like"}
                                         </span>
                 
                                         {/* RIGHT: Count */}

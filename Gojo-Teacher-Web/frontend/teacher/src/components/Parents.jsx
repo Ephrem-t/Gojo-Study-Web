@@ -88,6 +88,9 @@ const [children, setChildren] = useState([]);
     navigate("/login");
   };
 
+  // safe teacher id for renders when `teacher` may be null briefly
+  const teacherId = teacher?.userId || "";
+
   // fetch parents & related data
   useEffect(() => {
     if (!teacher) return;
@@ -203,7 +206,7 @@ const [children, setChildren] = useState([]);
   // fetch messages when chat popup open for selectedParent
   useEffect(() => {
     if (!selectedParent || !teacher || !chatOpen) return;
-    const chatId = getChatId(teacher.userId, selectedParent.userId);
+    const chatId = getChatId(teacherId, selectedParent.userId);
     const messagesRef = ref(db, `Chats/${chatId}/messages`);
     const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
@@ -217,7 +220,7 @@ const [children, setChildren] = useState([]);
 
   const sendMessage = async (text) => {
     if (!text?.trim() || !selectedParent || !teacher) return;
-    const senderId = teacher.userId;
+    const senderId = teacherId;
     const receiverId = selectedParent.userId;
     const chatId = getChatId(senderId, receiverId);
     const timeStamp = Date.now();
@@ -237,7 +240,7 @@ const [children, setChildren] = useState([]);
 
   const markAsSeen = async (chatId) => {
     try {
-      await axios.patch(`${RTDB_BASE}/Chats/${chatId}/unread.json`, { [teacher.userId]: 0 });
+      await axios.patch(`${RTDB_BASE}/Chats/${chatId}/unread.json`, { [teacherId]: 0 });
       await axios.patch(`${RTDB_BASE}/Chats/${chatId}/lastMessage.json`, { seen: true });
     } catch (err) {
       console.error("Mark as seen error:", err);
@@ -406,7 +409,7 @@ const [children, setChildren] = useState([]);
     const { chatId, contact } = conv;
     navigate("/all-chat", { state: { contact, chatId, tab: "parents" } });
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacherId}.json`, null);
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
@@ -673,7 +676,7 @@ const [children, setChildren] = useState([]);
         }}
       >
         {[
-          ["User ID", selectedParent.userId],
+      
           ["Email", selectedParent.email || "N/A"],
           ["Phone", selectedParent.phone || "N/A"],
           ["Relationship(s)", (selectedParent.relationships && selectedParent.relationships.length) ? selectedParent.relationships.join(", ") : "—"],
@@ -724,27 +727,101 @@ const [children, setChildren] = useState([]);
   </div>
 )}
 
-                    {activeTab === "Children" && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {selectedParent.children.map((c) => (
-                          <div key={c.studentId} style={{ display: "flex", gap: 12, alignItems: "center", background: "#fff", padding: 12, borderRadius: 10 }}>
-                            <img src={c.profileImage} alt={c.name} style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid #4b6cb7" }} />
-                            <div style={{ flex: 1 }}>
-                              <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                                <div style={{ fontWeight: 800, color: "#0b1220" }}>{c.name}</div>
-                                <div style={{ fontSize: 12, color: "#64748b" }}>{c.relationship ? `(${c.relationship})` : ""}</div>
-                              </div>
-                              <div style={{ color: "#64748b", fontSize: 13 }}>{c.studentId}</div>
-                            </div>
-                            <div style={{ display: "flex", gap: 8 }}>
-                              <div style={{ background: "linear-gradient(135deg,#6a11cb,#2575fc)", color: "#fff", padding: "6px 10px", borderRadius: 999 }}>Grade {c.grade}</div>
-                              <div style={{ background: "linear-gradient(135deg,#ff7e5f,#feb47b)", color: "#fff", padding: "6px 10px", borderRadius: 999 }}>Section {c.section}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
+       {activeTab === "Children" && (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 20,
+      background: "#f5f7fa",
+      padding: 18,
+      borderRadius: 10,
+    }}
+  >
+    {selectedParent.children.map((c) => (
+      <div
+        key={c.studentId}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 22,
+          background: "#fff",
+          borderRadius: 16,
+          padding: "22px 30px",
+          boxShadow: "0 4px 24px rgba(80,90,130,0.10)",
+          border: "1px solid #edeef2",
+          transition: "box-shadow 0.2s, transform 0.18s",
+          cursor: "pointer",
+        }}
+        onMouseEnter={e =>
+          (e.currentTarget.style.boxShadow =
+            "0 8px 32px 0 rgba(60,72,120,0.17)")
+        }
+        onMouseLeave={e =>
+          (e.currentTarget.style.boxShadow =
+            "0 4px 24px rgba(80,90,130,0.10)")
+        }
+      >
+        {/* Profile Image */}
+        <img
+          src={c.profileImage}
+          alt={c.name}
+          style={{
+            width: 66,
+            height: 66,
+            borderRadius: "50%",
+            border: "3px solid #2868f1",
+            objectFit: "cover",
+            background: "#f0f4fa",
+            flexShrink: 0,
+            boxShadow: "0 2px 8px 0 rgba(60,72,120,0.07)",
+          }}
+        />
+        {/* User Info */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2 }}>
+            {c.name}
+          </span>
+          
+          {/* Badges Row */}
+          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -19 }}>
+            <div
+              style={{
+             
+                color: "#050505",
+                fontWeight: 400,
+                fontSize: 14,
+                padding: "6px 18px",
+                borderRadius: 999,
+                letterSpacing: 0.5,
+                boxShadow: "0 2px 8px rgba(22,119,255,.09)",
+              }}
+            >
+              Grade:{c.grade}
+            </div>
+            <div
+              style={{
+              
+                color: "#000000",
+                fontWeight: 400,
+                fontSize: 14,
+                padding: "6px 1px",
+                borderRadius: 999,
+                letterSpacing: 0.5,
+                boxShadow: "0 2px 8px rgba(255,126,95,.09)",
+              }}
+            >
+              Section:{c.section}
+            </div>
+          </div>
+          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px" }}>
+            {c.relationship && `Relation: ${c.relationship}`}
+          </span>
+        </div>
+      </div>
+    ))}
+  </div>
+)}
                     {activeTab === "Status" && (
                       <div>
                         <p><strong>Status:</strong> {selectedParent.status || "Active"}</p>
@@ -870,17 +947,17 @@ const [children, setChildren] = useState([]);
               messages.map((m) => (
                 <div
                   key={m.messageId}
-                  style={{
+                    style={{
                     display: "flex",
-                    flexDirection: m.senderId === teacher.userId ? "row-reverse" : "row",
+                    flexDirection: m.senderId === teacherId ? "row-reverse" : "row",
                     alignItems: "flex-end",
                     marginBottom: 10,
                   }}
                 >
-                  <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.senderId === teacher.userId ? "flex-end" : "flex-start" }}>
+                  <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.senderId === teacherId ? "flex-end" : "flex-start" }}>
                     <div style={{
-                      background: m.senderId === teacher.userId ? "#4b6cb7" : "#fff",
-                      color: m.senderId === teacher.userId ? "#fff" : "#0f172a",
+                      background: m.senderId === teacherId ? "#4b6cb7" : "#fff",
+                      color: m.senderId === teacherId ? "#fff" : "#0f172a",
                       padding: "10px 14px",
                       borderRadius: 18,
                       boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
@@ -889,9 +966,9 @@ const [children, setChildren] = useState([]);
                       paddingBottom: "26px",
                     }}>
                       <div>{m.text}</div>
-                      <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.senderId === teacher.userId ? "rgba(255,255,255,0.9)" : "#64748b" }}>
+                      <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.senderId === teacherId ? "rgba(255,255,255,0.9)" : "#64748b" }}>
                         <span style={{ fontSize: 11 }}>{formatTime(m.timeStamp)}</span>
-                        {m.senderId === teacher.userId && <FaCheck size={12} color={m.seen ? (m.seenAt ? "#10b981" : "#10b981") : (m.seen ? "#10b981" : "#94a3b8")} />}
+                        {m.senderId === teacherId && <FaCheck size={12} color={m.seen ? (m.seenAt ? "#10b981" : "#10b981") : (m.seen ? "#10b981" : "#94a3b8")} />}
                       </div>
                     </div>
                   </div>

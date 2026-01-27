@@ -506,7 +506,8 @@ function saveSeenPost(teacherId, postId) {
   const scrollMarks = (direction) => {
     const el = marksWrapperRef.current;
     if (!el) return;
-    const amount = Math.min(el.clientWidth, 420);
+    // Scroll by ~90% of the visible wrapper width (but at least 420px)
+    const amount = Math.max(Math.floor(el.clientWidth * 0.9), 420);
     el.scrollBy({ left: direction * amount, behavior: "smooth" });
   };
 
@@ -798,7 +799,7 @@ function saveSeenPost(teacherId, postId) {
     )}
 
     {/* Assessment Builder */}
-    {selectedCourseId && !structureSubmitted && (
+    {selectedCourseId && !structureSubmitted && (<> 
       <div
         style={{
           backdropFilter: "blur(15px)",
@@ -912,6 +913,24 @@ function saveSeenPost(teacherId, postId) {
           Submit Structure
         </button>
       </div>
+
+      <style>{`
+        /* Larger fixed table width on wide screens to give more horizontal space */
+        @media (min-width: 1024px) {
+          /* Wider layout for large screens to increase horizontal scroll area */
+          .marks-table-wrapper { overflow-x: visible !important; white-space: normal !important; }
+          .marks-table { width: 1600px !important; min-width: 1600px !important; table-layout: auto !important; }
+          .marks-table th, .marks-table td { white-space: normal !important; }
+          .marks-table td input { width: 120px !important; }
+          .marks-scroll-arrow-fixed { display: none !important; }
+        }
+
+        @media (max-width: 1023px) {
+          .marks-table { width: max-content !important; min-width: 1600px; }
+        }
+      `}</style>
+
+    </>
     )}
 
     {/* Student Marks Table */}
@@ -924,26 +943,21 @@ function saveSeenPost(teacherId, postId) {
           overflowX: "auto",
           overflowY: "visible",
           minHeight: 120,
+         width: "1130px",
           paddingBottom: 32,
+        
           whiteSpace: "nowrap",
         }}
       >
-        <button
-          aria-label="Scroll left"
-          className="marks-scroll-arrow left marks-scroll-arrow-fixed"
-          onClick={() => scrollMarks(-1)}
-          style={{ display: "flex", position: "fixed", left: 80, bottom: 48, zIndex: 1000 }}
-        >
-          ‹
-        </button>
+        
         <table
           className="marks-table"
           style={{
             borderCollapse: "separate",
             borderSpacing: "0 12px",
             fontSize: "15px",
-            minWidth: 900,
-            width: "max-content",
+            minWidth: 0,
+            width: "1100px",
           }}
         >
          <thead>
@@ -1128,14 +1142,7 @@ function saveSeenPost(teacherId, postId) {
             })}
           </tbody>
         </table>
-        <button
-          aria-label="Scroll right"
-          className="marks-scroll-arrow right marks-scroll-arrow-fixed"
-          onClick={() => scrollMarks(1)}
-          style={{ display: "flex", position: "fixed", right: 32, bottom: 48, zIndex: 1000 }}
-        >
-          ›
-        </button>
+       
       </div>
     )}
   </div>
