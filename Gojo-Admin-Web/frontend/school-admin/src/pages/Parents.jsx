@@ -11,6 +11,8 @@ import {
   FaSearch,
   FaCalendarAlt,
   FaCommentDots,
+  FaPaperPlane,
+  FaCheck,
 } from "react-icons/fa";
 import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
@@ -20,7 +22,7 @@ const getChatId = (a, b) => [a, b].sort().join("_");
 
 function Parent() {
   const [parents, setParents] = useState([]);
-  const [parentTab, setParentTab] = useState("details");
+  const [parentTab, setParentTab] = useState("Details");
   const [parentChatOpen, setParentChatOpen] = useState(false);
   const [newMessageText, setNewMessageText] = useState("");
   const [parentInfo, setParentInfo] = useState(null);
@@ -44,7 +46,18 @@ function Parent() {
       : null;
 
   const messagesEndRef = useRef(null);
+  const formatDateLabel = (ts) => {
+    if (!ts) return "";
+    try { return new Date(ts).toLocaleDateString(); } catch { return ""; }
+  };
+  const formatTime = (ts) => {
+    if (!ts) return "";
+    try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ""; }
+  };
   const [windowW, setWindowW] = useState(window.innerWidth);
+
+  // Portrait detection helper used in sidebar layout
+  const isPortrait = windowW <= 600;
 
   // Window resize handling for responsiveness
   useEffect(() => {
@@ -71,6 +84,12 @@ function Parent() {
             name: users[uid].name || users[uid].username || "No Name",
             email: users[uid].email || "N/A",
             profileImage: users[uid].profileImage || "/default-profile.png",
+            phone: users[uid].phone || users[uid].phoneNumber || "N/A",
+            age: users[uid].age || null,
+            city: users[uid].city || (users[uid].address && users[uid].address.city) || null,
+            citizenship: users[uid].citizenship || null,
+            job: users[uid].job || null,
+            address: users[uid].address || null,
           }));
         setParents(parentList);
       } catch (err) {
@@ -251,27 +270,54 @@ function Parent() {
         const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
         const parentsData = parentsRes.data || {};
         const parentRecord = Object.values(parentsData).find((p) => p.userId === selectedParent.userId);
-        if (!parentRecord) {
-          setParentInfo(null);
-          setChildren([]);
-          return;
-        }
         const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
         const usersData = usersRes.data || {};
         const userInfo = usersData[selectedParent.userId] || {};
-        setParentInfo({
+
+        // compute age from possible DOB fields or explicit age field
+        const dobRaw = userInfo?.dob || userInfo?.birthDate || parentRecord?.dob || parentRecord?.birthDate || null;
+        const computeAge = (dob) => {
+          if (!dob) return null;
+          try {
+            const d = typeof dob === "number" ? new Date(dob) : new Date(String(dob));
+            const now = new Date();
+            let age = now.getFullYear() - d.getFullYear();
+            const m = now.getMonth() - d.getMonth();
+            if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+            return age;
+          } catch (e) {
+            return null;
+          }
+        };
+
+        const age = parentRecord?.age || userInfo?.age || computeAge(dobRaw) || null;
+
+        // derive relationships from child links if present
+        const rels = (Object.values(parentRecord?.children || {}).map((c) => c.relationship).filter(Boolean)) || [];
+
+        const info = {
           userId: selectedParent.userId,
           name: userInfo.name || userInfo.username || "No Name",
+          username: userInfo.username || null,
           email: userInfo.email || "N/A",
-          phone: parentRecord.phone || "N/A",
-          status: parentRecord.status || "N/A",
-          additionalInfo: parentRecord.additionalInfo || "N/A",
-          createdAt: parentRecord.createdAt || "N/A",
+          phone: userInfo.phone || parentRecord?.phone || "N/A",
+          isActive: userInfo.isActive ?? parentRecord?.isActive ?? true,
+          job: userInfo.job || parentRecord?.job || null,
+          relationships: rels,
+          age: age ?? "—",
+          city: parentRecord?.city || (parentRecord?.address && parentRecord.address.city) || userInfo.city || "—",
+          citizenship: parentRecord?.citizenship || userInfo.citizenship || "—",
+          status: parentRecord?.status || (userInfo.isActive ? "Active" : "Inactive") || "N/A",
+          address: parentRecord?.address || userInfo.address || null,
+          additionalInfo: parentRecord?.additionalInfo || "N/A",
+          createdAt: parentRecord?.createdAt || userInfo.createdAt || "N/A",
           profileImage: userInfo.profileImage || "/default-profile.png",
-        });
+        };
+        setParentInfo(info);
+        setSelectedParent((prev) => ({ ...(prev || {}), ...info }));
         const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
         const studentsData = studentsRes.data || {};
-        const childrenList = Object.values(parentRecord.children || {})
+        const childrenList = Object.values(parentRecord?.children || {})
           .map((childLink) => {
             const studentRecord = studentsData[childLink.studentId];
             if (!studentRecord) return null;
@@ -304,15 +350,68 @@ function Parent() {
     if (!chatId) return;
     const db = getDatabase();
     const messagesRef = rdbRef(db, `Chats/${chatId}/messages`);
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
+    const unsubscribe = onValue(messagesRef, async (snapshot) => {
       const data = snapshot.val() || {};
       const list = Object.entries(data)
         .map(([id, msg]) => ({ messageId: id, ...msg }))
         .sort((a, b) => a.timeStamp - b.timeStamp);
       setMessages(list);
+
+      // mark unseen messages addressed to admin as seen
+      const updates = {};
+      Object.entries(data).forEach(([msgId, msg]) => {
+        if (msg && msg.receiverId === admin.userId && !msg.seen) {
+          updates[`${msgId}/seen`] = true;
+        }
+      });
+
+      if (Object.keys(updates).length > 0) {
+        try {
+          await axios.patch(`${DB}/Chats/${chatId}/messages.json`, updates).catch(() => {});
+        } catch (err) {
+          console.warn('Failed to patch parent seen updates', err);
+        }
+        // also reset unread and mark lastMessage seen
+        axios.patch(`${DB}/Chats/${chatId}.json`, { unread: { [admin.userId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+        // optimistic local update
+        setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
+      }
     });
     return () => unsubscribe();
   }, [chatId]);
+
+  // Mark messages as seen when the chat popup opens or selected parent changes
+  useEffect(() => {
+    if (!parentChatOpen || !selectedParent || !admin?.userId) return;
+    const chatKey = getChatId(admin.userId, selectedParent.userId);
+
+    const markSeen = async () => {
+      try {
+        const res = await axios.get(`${DB}/Chats/${chatKey}/messages.json`);
+        const data = res.data || {};
+        const updates = {};
+        Object.entries(data).forEach(([msgId, msg]) => {
+          if (msg && msg.receiverId === admin.userId && !msg.seen) {
+            updates[`${msgId}/seen`] = true;
+          }
+        });
+
+        if (Object.keys(updates).length > 0) {
+          // Patch the messages node with per-message seen updates
+          await axios.patch(`${DB}/Chats/${chatKey}/messages.json`, updates).catch(() => {});
+        }
+
+        // Optimistically update local state
+        setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
+      } catch (err) {
+        console.warn("Failed to mark messages as seen:", err);
+      }
+    };
+
+    markSeen();
+    // also reset unread counter for admin in chat root
+    axios.patch(`${DB}/Chats/${chatKey}.json`, { unread: { [admin.userId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+  }, [parentChatOpen, selectedParent, admin]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -368,6 +467,10 @@ function Parent() {
     await axios.patch(`${DB}/Chats/${id}/lastMessage.json`, { seen: true }).catch(() => {});
   };
 
+  // badge counts
+  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalNotifications = (postNotifications?.length || 0) + messageCount;
+
   if (!admin?.userId) return null;
 
   // MAIN CONTENT responsive & centered when sidebar closed
@@ -399,6 +502,7 @@ function Parent() {
         <h2>Gojo Dashboard</h2>
 
         <div className="nav-right">
+          {/* Combined bell: shows posts + message senders in one dropdown */}
           <div
             className="icon-circle"
             style={{ position: "relative", cursor: "pointer" }}
@@ -408,65 +512,130 @@ function Parent() {
             }}
           >
             <FaBell />
-            {postNotifications.length > 0 && (
-              <span className="badge">{postNotifications.length}</span>
+            {(
+              postNotifications.length + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)
+            ) > 0 && (
+              <span className="badge">{postNotifications.length + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
             )}
+
             {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()}>
-                {postNotifications.length === 0 ? (
+              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{
+                  position: "absolute",
+                  top: "45px",
+                  right: "0",
+                  width: "360px",
+                  maxHeight: "420px",
+                  overflowY: "auto",
+                  background: "#fff",
+                  borderRadius: 10,
+                  boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+                  zIndex: 1000,
+                  padding: 6,
+                }}>
+                {totalNotifications === 0 ? (
                   <p className="muted">No new notifications</p>
                 ) : (
-                  postNotifications.map((n) => (
-                    <div
-                      key={n.notificationId}
-                      className="notification-row"
-                      onClick={async () => {
-                        await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
-                          notificationId: n.notificationId,
-                        });
-
-                        setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
-                        setShowPostDropdown(false);
-                        navigate("/dashboard", {
-                          state: {
-                            postId: n.postId,
-                            posterName: n.adminName,
-                            posterProfile: n.adminProfile,
-                          },
-                        });
-                      }}
-                    >
-                      <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} className="notif-img" />
+                  <div>
+                    {/* Posts section */}
+                    {postNotifications.length > 0 && (
                       <div>
-                        <strong>{n.adminName}</strong>
-                        <p style={{ margin: 0 }}>{n.message}</p>
+                        <div className="notification-section-title">Posts</div>
+                        {postNotifications.map((n) => (
+                          <div
+                            key={n.notificationId}
+                            className="notification-row"
+                            onClick={async () => {
+                              try {
+                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                  notificationId: n.notificationId,
+                                });
+                              } catch (err) {
+                                console.warn("Failed to mark notification:", err);
+                              }
+
+                              setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
+                              setShowPostDropdown(false);
+                              navigate("/dashboard", {
+                                state: {
+                                  postId: n.postId,
+                                  posterName: n.adminName,
+                                  posterProfile: n.adminProfile,
+                                },
+                              });
+                            }}
+                            style={{
+                              padding: 10,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 12,
+                              cursor: "pointer",
+                              borderBottom: "1px solid #f0f0f0",
+                              transition: "background 120ms ease",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                          >
+                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                            </div>
+                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))
+                    )}
+
+                    {/* Messages section */}
+                    {messageCount > 0 && (
+                      <div>
+                        <div className="notification-section-title" style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                              <div
+                                key={userId}
+                                className="notification-row"
+                                onClick={async () => {
+                                  await markMessagesAsSeen(userId);
+                                  setUnreadSenders((prev) => {
+                                    const copy = { ...prev };
+                                    delete copy[userId];
+                                    return copy;
+                                  });
+                                  setShowPostDropdown(false);
+                                  navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
+                                }}
+                                style={{
+                                  padding: 10,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  cursor: "pointer",
+                                  borderBottom: "1px solid #f0f0f0",
+                                  transition: "background 120ms ease",
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                              >
+                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                                  <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
+                                </div>
+                              </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}
           </div>
 
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); setShowMessageDropdown((p) => !p); }}>
+          {/* Messenger icon: only counts messages and navigates straight to /all-chat */}
+          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
             <FaFacebookMessenger />
-            {Object.keys(unreadSenders).length > 0 && <span className="badge">{Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}</span>}
-            {showMessageDropdown && (
-              <div className="notification-dropdown">
-                {Object.keys(unreadSenders).length === 0 ? (
-                  <p className="muted">No new messages</p>
-                ) : (
-                  Object.entries(unreadSenders).map(([userId, sender]) => (
-                    <div key={userId} className="notification-row" onClick={() => navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } })}>
-                      <img src={sender.profileImage} alt={sender.name} className="notif-img" />
-                      <div>
-                        <strong>{sender.name}</strong>
-                        <p style={{ margin: 0 }}>{sender.count} new message{sender.count > 1 && "s"}</p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+            {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
+              <span className="badge">{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
             )}
           </div>
 
@@ -481,7 +650,7 @@ function Parent() {
           <div className="sidebar-profile">
             <div className="sidebar-img-circle"><img src={admin?.profileImage || "/default-profile.png"} alt="profile" /></div>
             <h3>{admin?.name || "Admin Name"}</h3>
-            <p>{admin?.username || "username"}</p>
+           <p>{admin?.adminId || "username"}</p>
           </div>
 
           <div className="sidebar-menu">
@@ -558,6 +727,7 @@ function Parent() {
                   cursor: "pointer",
                   padding: 4,
                   lineHeight: 1,
+                 
                 }}
               >
                 ×
@@ -566,135 +736,313 @@ function Parent() {
 
             <div style={{ textAlign: "center" }}>
               {/* Parent Profile */}
-              <div style={{ background: "#becff7ff", padding: "25px 10px", height: 200, margin: "-25px -25px 20px", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
-                <div style={{ width: 100, height: 100, margin: "-20px auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
+              <div style={{ background: "rgb(206, 218, 248)", padding: "25px 10px", height: 250, margin: "-25px -25px 20px", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
+                <div style={{ width: 100, height: 100, margin: "20px auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
                   <img src={selectedParent.profileImage} alt={selectedParent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 </div>
                 <h2 style={{ margin: 0, fontSize: 22, marginTop: -10, color: "#333" }}>{selectedParent.name}</h2>
                 <h2 style={{ margin: 0, fontSize: 16, marginTop: 0, color: "#585656ff" }}>{selectedParent.email}</h2>
               </div>
 
-              {/* Tabs */}
-              <div style={{ background: "#fff", borderRadius: 10, padding: 15, boxShadow: "0 4px 12px rgba(0,0,0,0.05)", width: "100%", textAlign: "left" }}>
-                <div style={{ display: "flex", borderBottom: "1px solid #eee", marginBottom: 15 }}>
-                  {["details", "children", "status"].map((tab) => (
-                    <button key={tab} onClick={() => setParentTab(tab)} style={{ flex: 1, padding: 10, border: "none", background: "none", cursor: "pointer", fontWeight: 600, color: parentTab === tab ? "#4b6cb7" : "#777", borderBottom: parentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>
-                      {tab.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-
-                {/* DETAILS */}
-                {parentTab === "details" && parentInfo && (
-                  <div style={{ padding: 20, background: "linear-gradient(180deg,#eef2ff,#f8fafc)", borderRadius: 24, boxShadow: "0 10px 16px rgba(0,0,0,0.15)" }}>
-                    <div style={{ marginBottom: 26 }}>
-                      <h3 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: "#1e40af" }}>👤 Parent Profile</h3>
-                      <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>Account & personal information overview</p>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 18 }}>
-                      {[
-                        { label: "User ID", value: parentInfo.userId, icon: "🆔" },
-                        { label: "Email", value: parentInfo.email, icon: "📧" },
-                        { label: "Phone", value: parentInfo.phone, icon: "📞" },
-                        { label: "Status", value: parentInfo.status, icon: "✅" },
-                        { label: "Additional Info", value: parentInfo.additionalInfo, icon: "📝" },
-                        { label: "Created At", value: parentInfo.createdAt, icon: "📅" },
-                      ].map((item, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: 8, background: "white", borderRadius: 18, boxShadow: "0 10px 25px rgba(0,0,0,0.1)" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                            <div style={{ width: 42, height: 42, borderRadius: 14, background: "linear-gradient(135deg,#6366f1,#2563eb)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{item.icon}</div>
-                            <div>
-                              <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#64748b" }}>{item.label}</div>
-                              <div style={{ marginTop: 4, fontSize: 15, fontWeight: 700, color: "#1f2937", wordBreak: "break-word" }}>{item.value || "-"}</div>
-                            </div>
-                          </div>
-                          {item.label === "Status" && (
-                            <span style={{ padding: "6px 14px", borderRadius: 999, fontSize: 12, fontWeight: 800, background: parentInfo.status === "active" ? "#dcfce7" : "#fee2e2", color: parentInfo.status === "active" ? "#166534" : "#991b1b" }}>{parentInfo.status?.toUpperCase()}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    {["Details", "Children", "Status"].map((t) => (
+                      <button key={t} onClick={() => setParentTab(t)} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: "none", cursor: "pointer", background: parentTab === t ? "#4b6cb7" : "#f0f0f0", color: parentTab === t ? "#fff" : "#333", fontWeight: 700 }}>
+                        {t}
+                      </button>
+                    ))}
                   </div>
-                )}
 
-                {/* CHILDREN */}
-                {parentTab === "children" && (
-                  <div style={{ padding: 30 }}>
-                    <h4 style={{ marginBottom: 30, color: "#4b6cb7", fontSize: 26, fontWeight: 700, borderBottom: "3px solid #4b6cb7", paddingBottom: 10 }}>Children</h4>
-                    {children.length === 0 ? <p style={{ color: "#777", fontStyle: "italic", textAlign: "center", fontSize: 16 }}>No children found</p> :
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 25 }}>
-                        {children.map((child) => {
-                          const expanded = expandedChildren[child.studentId];
-                          return (
-                            <div key={child.studentId} style={{ background: "#fff", borderRadius: 16, padding: 20, boxShadow: "0 8px 24px rgba(0,0,0,0.08)", borderLeft: "6px solid #4b6cb7" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
-                                <img src={child.profileImage || "/default-profile.png"} alt={child.name} style={{ width: 64, height: 64, borderRadius: 32, objectFit: "cover", border: "2px solid #4b6cb7" }} />
-                                <div style={{ flex: 1 }}>
-                                  <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#1f2937" }}>{child.name}</h3>
-                                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-                                    <span style={{ background: "#eef2ff", color: "#4b6cb7", padding: "4px 10px", borderRadius: 8, fontSize: 12, fontWeight: 600 }}>Grade {child.grade}</span>
-                                    <span style={{ background: "#f1f5f9", color: "#334155", padding: "4px 10px", borderRadius: 8, fontSize: 12, fontWeight: 600 }}>Section {child.section}</span>
-                                  </div>
-                                </div>
-                                <button onClick={() => setExpandedChildren(prev => ({ ...prev, [child.studentId]: !prev[child.studentId] }))} style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: expanded ? "#1e293b" : "#4b6cb7", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{expanded ? "Hide" : "Details"}</button>
-                              </div>
-                              {expanded && (
-                                <>
-                                  <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 12, fontSize: 14, color: "#475569", lineHeight: 1.7 }}>
-                                    <p><strong>Email:</strong> <a href={`mailto:${child.email}`} style={{ color: "#4b6cb7" }}>{child.email}</a></p>
-                                    <p><strong>Parent Phone:</strong> <a href={`tel:${child.parentPhone}`} style={{ color: "#16a34a" }}>{child.parentPhone}</a></p>
-                                    <p><strong>Relationship:</strong> {child.relationship}</p>
-                                  </div>
-                                  <div style={{ display: "flex", gap: 12, marginTop: 14 }}>
-                                    <a href={`mailto:${child.email}`} style={{ flex: 1, textAlign: "center", padding: 8, background: "#4b6cb7", color: "#fff", borderRadius: 10, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>Email</a>
-                                    <a href={`tel:${child.parentPhone}`} style={{ flex: 1, textAlign: "center", padding: 8, background: "#16a34a", color: "#fff", borderRadius: 10, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>Call</a>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          );
-                        })}
+                  <div style={{ paddingBottom: 40 }}>
+                 {parentTab === "Details" && (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 28,
+      padding: isPortrait ? 50 : 50,
+      marginLeft: 0,
+      marginRight: 0,
+      borderRadius: 0,
+      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
+      fontFamily: "Inter, system-ui",
+    }}
+  >
+    {/* ================= LEFT COLUMN ================= */}
+    <div>
+      {/* PARENT DETAILS */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 900,
+          marginBottom: 18,
+          marginTop: -30,
+          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+        }}
+      >
+        Parent Details
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          columnGap: 68,
+          rowGap: 14,
+        }}
+      >
+        {[
+      
+          ["Email", selectedParent.email || "N/A"],
+          ["Phone", selectedParent.phone || "N/A"],
+          ["Relationship(s)", (selectedParent.relationships && selectedParent.relationships.length) ? selectedParent.relationships.join(", ") : "—"],
+          ["Age", selectedParent.age || "—"],
+          ["City", selectedParent.city || (selectedParent.address && typeof selectedParent.address === 'object' ? selectedParent.address.city : selectedParent.city) || "—"],
+          ["Citizenship", selectedParent.citizenship || "—"],
+          ["Job", selectedParent.job || "—"],
+          ["Status", selectedParent.status ? (selectedParent.status.charAt(0).toUpperCase() + selectedParent.status.slice(1)) : "—"],
+          ["Address", (typeof selectedParent.address === 'string' ? selectedParent.address : (selectedParent.address && (selectedParent.address.street || selectedParent.address.city || JSON.stringify(selectedParent.address))) ) || "—", true],
+        ].map(([label, value, span]) => (
+          <div
+            key={label}
+            style={{
+              padding: 18,
+              borderRadius: 20,
+              background: "#ffffff",
+              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
+              marginLeft: -30,
+              marginRight: -30,
+              gridColumn: span ? "span 2" : "span 1",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#000102",
+                textTransform: "uppercase",
+              }}
+            >
+              {label}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 16,
+                fontWeight: 400,
+                color: "#000102",
+              }}
+            >
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+     
+    </div>
+  </div>
+)}
+
+       {parentTab === "Children" && (
+  <div
+    style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 20,
+      background: "#f5f7fa",
+      padding: 18,
+      borderRadius: 10,
+    }}
+  >
+    {children.map((c) => (
+      <div
+        key={c.studentId}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 22,
+          background: "#fff",
+          borderRadius: 16,
+          padding: "22px 30px",
+          boxShadow: "0 4px 24px rgba(80,90,130,0.10)",
+          border: "1px solid #edeef2",
+          transition: "box-shadow 0.2s, transform 0.18s",
+          cursor: "pointer",
+        }}
+        onMouseEnter={e =>
+          (e.currentTarget.style.boxShadow =
+            "0 8px 32px 0 rgba(60,72,120,0.17)")
+        }
+        onMouseLeave={e =>
+          (e.currentTarget.style.boxShadow =
+            "0 4px 24px rgba(80,90,130,0.10)")
+        }
+      >
+        {/* Profile Image */}
+        <img
+          src={c.profileImage}
+          alt={c.name}
+          style={{
+            width: 66,
+            height: 66,
+            borderRadius: "50%",
+            border: "3px solid #2868f1",
+            objectFit: "cover",
+            background: "#f0f4fa",
+            flexShrink: 0,
+            boxShadow: "0 2px 8px 0 rgba(60,72,120,0.07)",
+          }}
+        />
+        {/* User Info */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2, marginLeft: -99 }}>
+            {c.name}
+          </span>
+          
+          {/* Badges Row */}
+          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -21 }}>
+            <div
+              style={{
+             
+                color: "#050505",
+                fontWeight: 400,
+                fontSize: 14,
+                padding: "6px 18px",
+                borderRadius: 999,
+                letterSpacing: 0.5,
+                boxShadow: "0 2px 8px rgba(22,119,255,.09)",
+              }}
+            >
+              Grade:{c.grade}
+            </div>
+            <div
+              style={{
+              
+                color: "#000000",
+                fontWeight: 400,
+                fontSize: 14,
+                padding: "6px 1px",
+                borderRadius: 999,
+                letterSpacing: 0.5,
+                boxShadow: "0 2px 8px rgba(255,126,95,.09)",
+              }}
+            >
+              Section:{c.section}
+            </div>
+          </div>
+          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px", marginLeft: -115 }}>
+            {c.relationship && `Relation: ${c.relationship}`}
+          </span>
+        </div>
+      </div>
+    ))}
+  </div>
+)}
+                    {parentTab === "Status" && (
+                      <div>
+                        <p><strong>Status:</strong> {selectedParent.status || "Active"}</p>
+                        <p><strong>Created:</strong> {selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—"}</p>
                       </div>
-                    }
+                    )}
                   </div>
-                )}
 
-                {/* STATUS */}
-                {parentTab === "status" && <div><p style={{ color: "#555" }}>Parent account status and activity info will be displayed here.</p></div>}
-              </div>
-
-              {/* Chat button & Popup */}
+              {/* Chat button & Popup - matches Students UI */}
               {!parentChatOpen && (
-                <div onClick={() => setParentChatOpen(true)} style={{ position: "fixed", bottom: 20, right: 20, width: 48, height: 48, background: "linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045)", borderRadius: 24, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", cursor: "pointer", zIndex: 400 }}>
-                  <FaCommentDots size={22} />
+                <div
+                  onClick={() => setParentChatOpen(true)}
+                  style={{
+                    position: "fixed",
+                    bottom: "20px",
+                    right: "20px",
+                    width: "60px",
+                    height: "60px",
+                    background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    cursor: "pointer",
+                    zIndex: 1000,
+                    boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
+                    transition: "transform 0.2s ease",
+                  }}
+                >
+                  <FaCommentDots size={30} />
                 </div>
               )}
 
               {parentChatOpen && selectedParent && (
-                <div style={{ position: "fixed", bottom: 20, right: 20, width: 340, height: 420, background: "#fff", borderRadius: 16, boxShadow: "0 12px 30px rgba(0,0,0,0.25)", zIndex: 500, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                  <div style={{ padding: "12px 14px", borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fafafa" }}>
+                <div
+                  style={{
+                    position: "fixed",
+                    bottom: "20px",
+                    right: "20px",
+                    width: "360px",
+                    height: "480px",
+                    background: "#fff",
+                    borderRadius: "16px",
+                    boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+                    zIndex: 2000,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                  }}
+                >
+                  {/* HEADER */}
+                  <div style={{ padding: "14px", borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fafafa" }}>
                     <strong>{selectedParent.name}</strong>
                     <div style={{ display: "flex", gap: 10 }}>
-                      <button onClick={() => { setParentChatOpen(false); navigate("/all-chat", { state: { user: selectedParent } }); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18 }}>⤢</button>
-                      <button onClick={() => setParentChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20 }}>×</button>
+                      <button
+                        onClick={() => {
+                          setParentChatOpen(false);
+                          navigate("/all-chat", { state: { user: selectedParent, tab: "parent" } });
+                        }}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px" }}
+                      >
+                        ⤢
+                      </button>
+                      <button onClick={() => setParentChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>×</button>
                     </div>
                   </div>
 
-                  <div style={{ flex: 1, padding: 10, overflowY: "auto" }}>
-                    {messages.length === 0 ? <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedParent.name}</p> :
-                      messages.map((m) => (
-                        <div key={m.messageId} style={{ textAlign: m.senderId === admin.userId ? "right" : "left", marginBottom: 8 }}>
-                          <span style={{ display: "inline-block", padding: "8px 12px", borderRadius: 18, background: m.senderId === admin.userId ? "#4b6cb7" : "#f1f1f1", color: m.senderId === admin.userId ? "#fff" : "#000" }}>{m.text}</span>
-                        </div>
-                      ))
-                    }
+                  {/* Messages */}
+                  <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "#f9f9f9" }}>
+                    {messages.length === 0 ? (
+                      <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedParent.name}</p>
+                    ) : (
+                      messages.map((m) => {
+                        const isAdmin = String(m.senderId) === String(admin.userId);
+                        return (
+                          <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                            <div style={{ maxWidth: "70%", background: isAdmin ? "#4facfe" : "#fff", color: isAdmin ? "#fff" : "#000", padding: "10px 14px", borderRadius: 18, borderTopRightRadius: isAdmin ? 0 : 18, borderTopLeftRadius: isAdmin ? 18 : 0, boxShadow: "0 1px 3px rgba(0,0,0,0.1)", wordBreak: "break-word", cursor: "default", position: "relative" }}>
+                              {m.text} {m.edited && (<small style={{ fontSize: 10 }}> (edited)</small>)}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 11, color: isAdmin ? "#fff" : "#888" }}>
+                                <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
+                                <span>{formatTime(m.timeStamp)}</span>
+                                {isAdmin && !m.deleted && (
+                                  <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
+                                    <FaCheck size={10} color={isAdmin ? "#fff" : "#888"} style={{ opacity: 0.90, marginLeft: 2 }} />
+                                    {m.seen && (<FaCheck size={10} color={isAdmin ? "#f3f7f8" : "#ccc"} style={{ marginLeft: -6, opacity: 0.95 }} />)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                     <div ref={messagesEndRef} />
                   </div>
 
-                  <div style={{ padding: 10, borderTop: "1px solid #eee", display: "flex", gap: 8 }}>
-                    <input value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} placeholder="Message..." style={{ flex: 1, padding: 10, borderRadius: 999, border: "1px solid #ccc" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(newMessageText); }} />
-                    <button onClick={() => sendMessage(newMessageText)} style={{ background: "linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045)", border: "none", borderRadius: "50%", width: 40, height: 40, color: "#fff", cursor: "pointer" }}>➤</button>
+                  {/* Input */}
+                  <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
+                    <input value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(newMessageText); }} />
+                    <button onClick={() => sendMessage(newMessageText)} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
+                      <FaPaperPlane />
+                    </button>
                   </div>
                 </div>
               )}

@@ -11,6 +11,8 @@ function AllChat() {
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
   const adminUserId = admin.userId;
 
+  const getChatKey = (a, b) => [a, b].sort().join("_");
+
   const { userId, userType, name, profileImage } = location.state || {};
   const passedUser = location.state?.user || null;
 
@@ -49,20 +51,9 @@ function AllChat() {
           Object.keys(listData || {}).map(id => {
             const userId = listData[id].userId;
             const user = usersData[userId] || {};
-            const chatKeyA = `${adminUserId}_${userId}`;
-            const chatKeyB = `${userId}_${adminUserId}`;
-            // Try both directions for unread
-            const unreadA = chatsData[chatKeyA]?.unread?.[adminUserId] || 0;
-            const unreadB = chatsData[chatKeyB]?.unread?.[adminUserId] || 0;
-            // Use the one where they're the other participant (unread for YOU)
-            const unread = Math.max(unreadA, unreadB);
-
-            // Get last message in either chat (most recent by time)
-            const lastA = chatsData[chatKeyA]?.lastMessage;
-            const lastB = chatsData[chatKeyB]?.lastMessage;
-            let lastMsg = lastA && lastB
-              ? (lastA.timeStamp > lastB.timeStamp ? lastA : lastB)
-              : (lastA || lastB);
+            const chatKey = getChatKey(adminUserId, userId);
+            const unread = chatsData[chatKey]?.unread?.[adminUserId] || 0;
+            const lastMsg = chatsData[chatKey]?.lastMessage || null;
 
             return {
               id,
@@ -98,27 +89,12 @@ function AllChat() {
   // ------------------- Real-time messages -------------------
   useEffect(() => {
     if (!selectedChatUser || !adminUserId) return;
-    const chatKeyA = `${adminUserId}_${selectedChatUser.userId}`;
-    const chatKeyB = `${selectedChatUser.userId}_${adminUserId}`;
-    // Try both possible keys
-    let foundKey = null;
-
-    // Check which chat exists
+    const chatKey = getChatKey(adminUserId, selectedChatUser.userId);
     const dbCheck = async () => {
       const dbInst = getDatabase();
-      const refA = ref(dbInst, `Chats/${chatKeyA}/messages`);
-      const refB = ref(dbInst, `Chats/${chatKeyB}/messages`);
-      let usedKey = chatKeyA;
-      await get(refA).then(snapshot => {
-        if (!snapshot.exists()) {
-          usedKey = chatKeyB;
-        }
-      });
-      foundKey = usedKey;
-
-      const messagesRef = ref(db, `Chats/${usedKey}/messages`);
-      const typingRefDB = ref(db, `Chats/${usedKey}/typing`);
-      const lastSeenRef = ref(db, `Users/${selectedChatUser.userId}/lastSeen`);
+      const messagesRef = ref(dbInst, `Chats/${chatKey}/messages`);
+      const typingRefDB = ref(dbInst, `Chats/${chatKey}/typing`);
+      const lastSeenRef = ref(dbInst, `Users/${selectedChatUser.userId}/lastSeen`);
 
       const unsubscribeMessages = onValue(messagesRef, (snapshot) => {
         const data = snapshot.val();

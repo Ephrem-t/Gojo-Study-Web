@@ -9,13 +9,21 @@ import { useLocation } from "react-router-dom";
 
 function Dashboard() {
   // ---------------- STATE ----------------
+  const _storedAdmin = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("admin")) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
   const [admin, setAdmin] = useState({
-    adminId: "",
-    userId: "",          // ✅ ADD THIS
-    name: "",
-    username: "",
-    profileImage: "/default-profile.png",
-    isActive: false,
+    adminId: _storedAdmin.adminId || "",
+    userId: _storedAdmin.userId || _storedAdmin.userId || "",
+    name: _storedAdmin.name || _storedAdmin.username || "Admin",
+    username: _storedAdmin.username || "",
+    profileImage: _storedAdmin.profileImage || "/default-profile.png",
+    isActive: _storedAdmin.isActive || false,
   });
 
   const [posts, setPosts] = useState([]);
@@ -552,6 +560,10 @@ function Dashboard() {
     }
   };
 
+  // counts for badges
+  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalNotifications = (unreadPostList?.length || 0) + messageCount;
+
   // ---------------- RENDER ----------------
   return (
     <div className="dashboard-page">
@@ -569,7 +581,7 @@ function Dashboard() {
           >
             <FaBell />
 
-            {unreadPostList.length > 0 && (
+            {totalNotifications > 0 && (
               <span style={{
                 position: "absolute",
                 top: "-5px",
@@ -581,7 +593,7 @@ function Dashboard() {
                 fontSize: "10px",
                 fontWeight: "bold"
               }}>
-                {unreadPostList.length}
+                {totalNotifications}
               </span>
             )}
 
@@ -604,49 +616,112 @@ function Dashboard() {
                 zIndex: 1000
               }}
             >
-              {unreadPostList.length === 0 ? (
+              {totalNotifications === 0 ? (
                 <p style={{ padding: "10px", textAlign: "center", color: "#777" }}>
-                  No new posts
+                  No new notifications
                 </p>
               ) : (
-                unreadPostList.map(post => (
-                  <div
-                    key={post.postId}
-                    onClick={() => openPostFromNotif(post)}
-                    style={{
-                      padding: "10px",
-                      borderBottom: "1px solid #eee",
-                      display: "flex",
-                      alignItems: "center",
-                      cursor: "pointer"
-                    }}
-                  >
-                    <img
-                      src={post.adminProfile || "/default-profile.png"}
-                      alt=""
-                      style={{
-                        width: "40px",
-                        height: "40px",
-                        borderRadius: "50%",
-                        marginRight: "10px"
-                      }}
-                    />
+                <div>
+                  {/* Posts section */}
+                  {unreadPostList.length > 0 && (
+                    <div>
+                      <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
+                      {unreadPostList.map(post => (
+                        <div
+                          key={post.postId}
+                          onClick={() => openPostFromNotif(post)}
+                          style={{
+                            padding: "10px",
+                            borderBottom: "1px solid #eee",
+                            display: "flex",
+                            alignItems: "center",
+                            cursor: "pointer"
+                          }}
+                        >
+                          <img
+                            src={post.adminProfile || "/default-profile.png"}
+                            alt=""
+                            style={{
+                              width: "40px",
+                              height: "40px",
+                              borderRadius: "50%",
+                              marginRight: "10px"
+                            }}
+                          />
 
-                    <div style={{ flex: 1 }}>
-                      <strong>{post.adminName}</strong>
-                      <p style={{ margin: 0, fontSize: "12px", color: "#555" }}>
-                        {post.message?.slice(0, 40) || "New post"}
-                      </p>
+                          <div style={{ flex: 1 }}>
+                            <strong>{post.adminName}</strong>
+                            <p style={{ margin: 0, fontSize: "12px", color: "#555" }}>
+                              {post.message?.slice(0, 40) || "New post"}
+                            </p>
+                          </div>
+
+                          <span style={{ fontSize: "10px", color: "#888" }}>
+                            {new Date(post.time).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            })}
+                          </span>
+                        </div>
+                      ))}
                     </div>
+                  )}
 
-                    <span style={{ fontSize: "10px", color: "#888" }}>
-                      {new Date(post.time).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                      })}
-                    </span>
-                  </div>
-                ))
+                  {/* Messages section */}
+                  {messageCount > 0 && (
+                    <div>
+                      <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Messages</div>
+                      {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                        <div
+                          key={userId}
+                          style={{
+                            padding: "12px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                            cursor: "pointer",
+                            borderBottom: "1px solid #eee"
+                          }}
+                          onClick={async () => {
+                            // mark messages seen, remove sender and navigate to all-chat
+                            await markMessagesAsSeen(userId);
+                            setUnreadSenders(prev => {
+                              const copy = { ...prev };
+                              delete copy[userId];
+                              return copy;
+                            });
+                            navigate("/all-chat", {
+                              state: {
+                                user: {
+                                  userId,
+                                  name: sender.name,
+                                  profileImage: sender.profileImage,
+                                  type: sender.type
+                                }
+                              }
+                            });
+                          }}
+                        >
+                          <img
+                            src={sender.profileImage}
+                            alt={sender.name}
+                            style={{
+                              width: "42px",
+                              height: "42px",
+                              borderRadius: "50%"
+                            }}
+                          />
+                          <div>
+                            <strong>{sender.name}</strong>
+                            <p style={{ fontSize: "12px", margin: 0 }}>
+                              {sender.count} new message{sender.count > 1 && "s"}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -655,15 +730,12 @@ function Dashboard() {
           <div
             className="icon-circle"
             style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowMessageDropdown((prev) => !prev);
-            }}
+            onClick={() => navigate("/all-chat")}
           >
             <FaFacebookMessenger />
 
-            {/* 🔴 TOTAL UNREAD COUNT */}
-            {Object.keys(unreadSenders).length > 0 && (
+            {/* 🔴 MESSAGE COUNT ONLY */}
+            {messageCount > 0 && (
               <span
                 style={{
                   position: "absolute",
@@ -677,85 +749,8 @@ function Dashboard() {
                   fontWeight: "bold"
                 }}
               >
-                {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
+                {messageCount}
               </span>
-            )}
-
-            {/* 📩 DROPDOWN */}
-            {showMessageDropdown && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "40px",
-                  right: "0",
-                  width: "300px",
-                  background: "#fff",
-                  borderRadius: "10px",
-                  boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-                  zIndex: 1000
-                }}
-              >
-                {Object.keys(unreadSenders).length === 0 ? (
-                  <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-                    No new messages
-                  </p>
-                ) : (
-                  Object.entries(unreadSenders).map(([userId, sender]) => (
-                    <div
-                      key={userId}
-                      style={{
-                        padding: "12px",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "10px",
-                        cursor: "pointer",
-                        borderBottom: "1px solid #eee"
-                      }}
-                      onClick={async () => {
-                        setShowMessageDropdown(false);
-
-                        // 1️⃣ Mark messages as seen in DB
-                        await markMessagesAsSeen(userId);
-
-                        // 2️⃣ Remove sender immediately from UI
-                        setUnreadSenders(prev => {
-                          const copy = { ...prev };
-                          delete copy[userId];
-                          return copy;
-                        });
-
-                        // 3️⃣ Navigate to exact chat
-                        navigate("/all-chat", {
-                          state: {
-                            user: {
-                              userId,
-                              name: sender.name,
-                              profileImage: sender.profileImage,
-                              type: sender.type
-                            }
-                          }
-                        });
-                      }}
-                    >
-                      <img
-                        src={sender.profileImage}
-                        alt={sender.name}
-                        style={{
-                          width: "42px",
-                          height: "42px",
-                          borderRadius: "50%"
-                        }}
-                      />
-                      <div>
-                        <strong>{sender.name}</strong>
-                        <p style={{ fontSize: "12px", margin: 0 }}>
-                          {sender.count} new message{sender.count > 1 && "s"}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
             )}
           </div>
 

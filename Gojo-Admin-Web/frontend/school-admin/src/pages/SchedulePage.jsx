@@ -57,7 +57,7 @@ export default function SchedulePage() {
   const [editingCell, setEditingCell] = useState(null);
   const [editTarget, setEditTarget] = useState(null);
 // { day, period, subject, teacherId }
-const [unreadSenders, setUnreadSenders] = useState([]); 
+const [unreadSenders, setUnreadSenders] = useState({}); 
 const [teachers, setTeachers] = useState([]);
 const [unreadTeachers, setUnreadTeachers] = useState({});
 const [popupMessages, setPopupMessages] = useState([]);
@@ -865,198 +865,77 @@ const cancelEdit = () => setEditTarget(null);
   <h2>Gojo Dashboard</h2>
   
   <div className="nav-right">
-           <div
-  className="icon-circle"
-  style={{ position: "relative", cursor: "pointer" }}
-  onClick={(e) => {
-    e.stopPropagation();
-    setShowPostDropdown(prev => !prev);
-  }}
->
-  <FaBell />
-
-  {/* 🔴 Notification Count */}
-  {postNotifications.length > 0 && (
-    <span
-      style={{
-        position: "absolute",
-        top: "-5px",
-        right: "-5px",
-        background: "red",
-        color: "#fff",
-        borderRadius: "50%",
-        padding: "2px 6px",
-        fontSize: "10px",
-        fontWeight: "bold"
-      }}
-    >
-      {postNotifications.length}
-    </span>
-  )}
-
-  {/* 🔔 Notification Dropdown */}
-  {showPostDropdown && (
-    <div
-      className="notification-dropdown"
-      style={{
-        position: "absolute",
-        top: "40px",
-        right: "0",
-        width: "350px",
-        maxHeight: "400px",
-        overflowY: "auto",
-        background: "#fff",
-        borderRadius: "10px",
-        boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-        zIndex: 1000
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {postNotifications.length === 0 ? (
-        <p style={{ padding: "12px", textAlign: "center" }}>
-          No new notifications
-        </p>
-      ) : (
-        postNotifications.map(n => (
           <div
-            key={n.notificationId}
-            style={{
-              display: "flex",
-              gap: "10px",
-              padding: "10px",
-              cursor: "pointer",
-              borderBottom: "1px solid #eee"
+            className="icon-circle"
+            style={{ position: "relative", cursor: "pointer" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowPostDropdown(prev => !prev);
             }}
-            onClick={() => handleNotificationClick(n)}
           >
-            <img
-              src={n.adminProfile || "/default-profile.png"}
-              alt={n.adminName}
-              style={{
-                width: "40px",
-                height: "40px",
-                borderRadius: "50%"
-              }}
-            />
-            <div>
-              <strong>{n.adminName}</strong>
-              <p style={{ margin: 0 }}>{n.message}</p>
-            </div>
+            <FaBell />
+
+            {(() => {
+              const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
+              const total = (postNotifications?.length || 0) + messageCount;
+              return total > 0 ? (
+                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
+              ) : null;
+            })()}
+
+            {showPostDropdown && (
+              <div
+                className="notification-dropdown"
+                style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "#fff", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.12)", zIndex: 1000, padding: 6 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
+                  <p style={{ padding: 12, textAlign: "center", color: "#777" }}>No new notifications</p>
+                ) : (
+                  <div>
+                    {/* Posts */}
+                    {postNotifications.length > 0 && (
+                      <div>
+                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
+                        {postNotifications.map(n => (
+                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
+                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                            </div>
+                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Messages */}
+                    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
+                      <div>
+                        <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
+                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        ))
-      )}
-    </div>
-  )}
-</div>
 
   {/* ================= MESSENGER ================= */}
-  <div
-    className="icon-circle"
-    style={{ position: "relative", cursor: "pointer" }}
-    onClick={(e) => {
-      e.stopPropagation();
-      setShowMessageDropdown((prev) => !prev);
-    }}
-  >
+  <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
     <FaFacebookMessenger />
-  
-    {/* 🔴 TOTAL UNREAD COUNT */}
-    {Object.keys(unreadSenders).length > 0 && (
-      <span
-        style={{
-          position: "absolute",
-          top: "-5px",
-          right: "-5px",
-          background: "red",
-          color: "#fff",
-          borderRadius: "50%",
-          padding: "2px 6px",
-          fontSize: "10px",
-          fontWeight: "bold"
-        }}
-      >
-        {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
-      </span>
-    )}
-  
-    {/* 📩 DROPDOWN */}
-    {showMessageDropdown && (
-      <div
-        style={{
-          position: "absolute",
-          top: "40px",
-          right: "0",
-          width: "300px",
-          background: "#fff",
-          borderRadius: "10px",
-          boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-          zIndex: 1000
-        }}
-      >
-        {Object.keys(unreadSenders).length === 0 ? (
-          <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-            No new messages
-          </p>
-        ) : (
-          Object.entries(unreadSenders).map(([userId, sender]) => (
-            <div
-              key={userId}
-              style={{
-                padding: "12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                cursor: "pointer",
-                borderBottom: "1px solid #eee"
-              }}
-            onClick={async () => {
-  setShowMessageDropdown(false);
-
-  // 1️⃣ Mark messages as seen in DB
-  await markMessagesAsSeen(userId);
-
-  // 2️⃣ Remove sender immediately from UI
-  setUnreadSenders(prev => {
-    const copy = { ...prev };
-    delete copy[userId];
-    return copy;
-  });
-
-  // 3️⃣ Navigate to exact chat
-  navigate("/all-chat", {
-    state: {
-      user: {
-        userId,
-        name: sender.name,
-        profileImage: sender.profileImage,
-        type: sender.type
-      }
-    }
-  });
-}}
-
-  
-  
-            >
-              <img
-                src={sender.profileImage}
-                alt={sender.name}
-                style={{
-                  width: "42px",
-                  height: "42px",
-                  borderRadius: "50%"
-                }}
-              />
-              <div>
-                <strong>{sender.name}</strong>
-                <p style={{ fontSize: "12px", margin: 0 }}>
-                  {sender.count} new message{sender.count > 1 && "s"}
-                </p>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
+      <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
     )}
   </div>
   {/* ============== END MESSENGER ============== */}
@@ -1080,7 +959,7 @@ const cancelEdit = () => setEditTarget(null);
       />
     </div>
     <h3>{admin?.name || "Admin Name"}</h3>
-    <p>Admin</p>
+     <p>{admin?.adminId || "username"}</p>
   </div>
 
   {/* MENU */}

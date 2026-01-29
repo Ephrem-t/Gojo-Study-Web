@@ -25,7 +25,7 @@ function MyPosts() {
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
-  const [unreadSenders, setUnreadSenders] = useState([]);
+  const [unreadSenders, setUnreadSenders] = useState({});
   const [postNotifications, setPostNotifications] = useState([]);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
 
@@ -60,6 +60,43 @@ function MyPosts() {
   }, [token]);
 
   const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+
+  // counts for badges
+  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalNotifications = (postNotifications?.length || 0) + messageCount;
+
+  const markMessagesAsSeen = async (userId) => {
+    if (!admin?.userId) return;
+
+    try {
+      const key1 = `${admin.userId}_${userId}`;
+      const key2 = `${userId}_${admin.userId}`;
+
+      const [r1, r2] = await Promise.all([
+        axios.get(`${RTDB_BASE}/Chats/${key1}/messages.json`),
+        axios.get(`${RTDB_BASE}/Chats/${key2}/messages.json`),
+      ]);
+
+      const updates = {};
+
+      const collectUpdates = (data, basePath) => {
+        Object.entries(data || {}).forEach(([msgId, msg]) => {
+          if (msg.receiverId === admin.userId && !msg.seen) {
+            updates[`${basePath}/${msgId}/seen`] = true;
+          }
+        });
+      };
+
+      collectUpdates(r1.data, `Chats/${key1}/messages`);
+      collectUpdates(r2.data, `Chats/${key2}/messages`);
+
+      if (Object.keys(updates).length > 0) {
+        await axios.patch(`${RTDB_BASE}/.json`, updates);
+      }
+    } catch (err) {
+      console.warn("markMessagesAsSeen failed", err);
+    }
+  };
 
   const fetchPostNotifications = async () => {
     if (!adminId) return;
@@ -106,6 +143,93 @@ function MyPosts() {
       setPostNotifications([]);
     }
   };
+
+  // ---------------- FETCH UNREAD MESSAGES ----------------
+  const fetchUnreadMessages = async () => {
+    if (!admin?.userId) return;
+
+    const senders = {};
+
+    try {
+      // load all users for names/images
+      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
+      const usersData = usersRes.data || {};
+
+      const findUserByUserId = (userId) => Object.values(usersData).find(u => u.userId === userId);
+
+      const getUnreadCount = async (userId) => {
+        const key1 = `${admin.userId}_${userId}`;
+        const key2 = `${userId}_${admin.userId}`;
+
+        const [r1, r2] = await Promise.all([
+          axios.get(`${RTDB_BASE}/Chats/${key1}/messages.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/Chats/${key2}/messages.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
+        return msgs.filter(m => m.receiverId === admin.userId && !m.seen).length;
+      };
+
+      // Teachers
+      const teachersRes = await axios.get(`${RTDB_BASE}/Teachers.json`).catch(() => ({ data: {} }));
+      for (const k in teachersRes.data || {}) {
+        const t = teachersRes.data[k];
+        const unread = await getUnreadCount(t.userId);
+        if (unread > 0) {
+          const user = findUserByUserId(t.userId);
+          senders[t.userId] = {
+            type: 'teacher',
+            name: user?.name || 'Teacher',
+            profileImage: user?.profileImage || '/default-profile.png',
+            count: unread,
+          };
+        }
+      }
+
+      // Students
+      const studentsRes = await axios.get(`${RTDB_BASE}/Students.json`).catch(() => ({ data: {} }));
+      for (const k in studentsRes.data || {}) {
+        const s = studentsRes.data[k];
+        const unread = await getUnreadCount(s.userId);
+        if (unread > 0) {
+          const user = findUserByUserId(s.userId);
+          senders[s.userId] = {
+            type: 'student',
+            name: user?.name || s.name || 'Student',
+            profileImage: user?.profileImage || s.profileImage || '/default-profile.png',
+            count: unread,
+          };
+        }
+      }
+
+      // Parents
+      const parentsRes = await axios.get(`${RTDB_BASE}/Parents.json`).catch(() => ({ data: {} }));
+      for (const k in parentsRes.data || {}) {
+        const p = parentsRes.data[k];
+        const unread = await getUnreadCount(p.userId);
+        if (unread > 0) {
+          const user = findUserByUserId(p.userId);
+          senders[p.userId] = {
+            type: 'parent',
+            name: user?.name || p.name || 'Parent',
+            profileImage: user?.profileImage || p.profileImage || '/default-profile.png',
+            count: unread,
+          };
+        }
+      }
+
+      setUnreadSenders(senders);
+    } catch (err) {
+      console.error('Unread fetch failed:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!admin?.userId) return;
+    fetchUnreadMessages();
+    const interval = setInterval(fetchUnreadMessages, 5000);
+    return () => clearInterval(interval);
+  }, [admin?.userId]);
 
   useEffect(() => {
     fetchPostNotifications();
@@ -384,66 +508,125 @@ function MyPosts() {
             }}
           >
             <FaBell />
-            {postNotifications.length > 0 && (
-              <span className="badge">{postNotifications.length}</span>
+            {totalNotifications > 0 && (
+              <span className="badge">{totalNotifications}</span>
             )}
             {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()}>
-                {postNotifications.length === 0 ? (
+              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{
+                  position: "absolute",
+                  top: "45px",
+                  right: "0",
+                  width: "360px",
+                  maxHeight: "420px",
+                  overflowY: "auto",
+                  background: "#fff",
+                  borderRadius: 10,
+                  boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+                  zIndex: 1000,
+                  padding: 6,
+                }}>
+                {totalNotifications === 0 ? (
                   <p className="muted">No new notifications</p>
                 ) : (
-                  postNotifications.map((n) => (
-                    <div
-                      key={n.notificationId}
-                      className="notification-row"
-                      onClick={async () => {
-                        await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
-                          notificationId: n.notificationId,
-                        });
-
-                        setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
-                        setShowPostDropdown(false);
-                        navigate("/dashboard", {
-                          state: {
-                            postId: n.postId,
-                            posterName: n.adminName,
-                            posterProfile: n.adminProfile,
-                          },
-                        });
-                      }}
-                    >
-                      <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} className="notif-img" />
+                  <div>
+                    {/* Posts section */}
+                    {postNotifications.length > 0 && (
                       <div>
-                        <strong>{n.adminName}</strong>
-                        <p style={{ margin: 0 }}>{n.message}</p>
+                        <div className="notification-section-title">Posts</div>
+                        {postNotifications.map((n) => (
+                          <div
+                            key={n.notificationId}
+                            className="notification-row"
+                            onClick={async () => {
+                              try {
+                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                  notificationId: n.notificationId,
+                                });
+                              } catch (err) {
+                                console.warn("Failed to mark notification:", err);
+                              }
+
+                              setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
+                              setShowPostDropdown(false);
+                              navigate("/dashboard", {
+                                state: {
+                                  postId: n.postId,
+                                  posterName: n.adminName,
+                                  posterProfile: n.adminProfile,
+                                },
+                              });
+                            }}
+                            style={{
+                              padding: 10,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 12,
+                              cursor: "pointer",
+                              borderBottom: "1px solid #f0f0f0",
+                              transition: "background 120ms ease",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                          >
+                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                            </div>
+                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))
+                    )}
+
+                    {/* Messages section */}
+                    {messageCount > 0 && (
+                      <div>
+                        <div className="notification-section-title" style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                              <div
+                                key={userId}
+                                className="notification-row"
+                                onClick={async () => {
+                                  await markMessagesAsSeen(userId);
+                                  setUnreadSenders((prev) => {
+                                    const copy = { ...prev };
+                                    delete copy[userId];
+                                    return copy;
+                                  });
+                                  setShowPostDropdown(false);
+                                  navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
+                                }}
+                                style={{
+                                  padding: 10,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  cursor: "pointer",
+                                  borderBottom: "1px solid #f0f0f0",
+                                  transition: "background 120ms ease",
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                              >
+                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                                  <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
+                                </div>
+                              </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}
           </div>
 
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); setShowMessageDropdown((p) => !p); }}>
+          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
             <FaFacebookMessenger />
-            {Object.keys(unreadSenders).length > 0 && <span className="badge">{Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}</span>}
-            {showMessageDropdown && (
-              <div className="notification-dropdown">
-                {Object.keys(unreadSenders).length === 0 ? (
-                  <p className="muted">No new messages</p>
-                ) : (
-                  Object.entries(unreadSenders).map(([userId, sender]) => (
-                    <div key={userId} className="notification-row" onClick={() => navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } })}>
-                      <img src={sender.profileImage} alt={sender.name} className="notif-img" />
-                      <div>
-                        <strong>{sender.name}</strong>
-                        <p style={{ margin: 0 }}>{sender.count} new message{sender.count > 1 && "s"}</p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+            {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
 
           <Link className="icon-circle" to="/settings"><FaCog /></Link>
@@ -457,12 +640,12 @@ function MyPosts() {
           <div className="sidebar-profile">
             <div className="sidebar-img-circle"><img src={admin?.profileImage || "/default-profile.png"} alt="profile" /></div>
             <h3>{admin?.name || "Admin Name"}</h3>
-            <p>{admin?.username || "username"}</p>
+            <p>{admin?.adminId || "username"}</p>
           </div>
 
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn active" to="/my-posts"><FaFileAlt /> My Posts</Link>
+            <Link className="sidebar-btn active" to="/my-posts" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaFileAlt /> My Posts</Link>
             <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
             <Link className="sidebar-btn" to="/students"><FaChalkboardTeacher /> Students</Link>
             <Link className="sidebar-btn" to="/schedule"><FaCalendarAlt /> Schedule</Link>
@@ -480,7 +663,7 @@ function MyPosts() {
             {posts.map((post) => (
               <article key={post.postId} id={`post-${post.postId}`} className="post-card">
                 <header className="post-card-header">
-                  <div className="avatar">
+                  <div className="fb-post-top">
                     <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
                   </div>
                   <div className="post-meta">

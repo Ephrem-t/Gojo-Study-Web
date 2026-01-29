@@ -365,7 +365,7 @@
 .post-header h4 {
   font-size: 18px;
   color: #333;
-  margin: 0; /* remove default margin */
+  margin-top: 10px; /* remove default margin */
 }
 
 .post-header span {
@@ -373,29 +373,58 @@
   color: #888;
 }
 
-.post-header img {
-  flex-shrink: 0;        /* prevent flexbox from stretching/shrinking */
-}
 
-.img-circle {
-  width: 50px;
-  height: 50px;
-  border-radius: 50%;
-  overflow: hidden;
-  flex-shrink: 0;
-  margin-left: 5px;
-  border: 2px solid red; /* optional for debugging */
-}
+
 
 .img-circle img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;                  /* ensures image fills the circle */
-  object-position: top;               /* keeps top alignment for cropping */
-  display: block;
-  transform: scale(1.55) translateX(-5px) translateY(1.5px); /* zoom + move left + move down */
+   width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
+/* Ensure avatar inside post header never scales on hover (override generic img hover) */
+.img-circle img:hover {
+  transform: none !important;
+}
+
+/* Top navbar profile image styling */
+.profile-img {
+    width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Ensure post header avatar matches top-nav profile image exactly */
+.post-header .img-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  
+}
+.post-header .img-circle img {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+
+}
+
+/* Ensure MyPosts post avatar matches dashboard top-nav avatar */
+.post-card-header .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+ 
+ 
+}
+.post-card-header .avatar img {
+   width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+}
 
 
 .post-card p {

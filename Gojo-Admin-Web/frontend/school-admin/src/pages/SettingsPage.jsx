@@ -408,6 +408,10 @@ useEffect(() => {
     }
   };
 
+  // badge counts (match MyPosts UI)
+  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalNotifications = (postNotifications?.length || 0) + messageCount;
+
   return (
     <div className="dashboard-page">
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
@@ -418,7 +422,6 @@ useEffect(() => {
    
 
         <div className="nav-right">
-          {/* Notification */}
           <div
             className="icon-circle"
             style={{ position: "relative", cursor: "pointer" }}
@@ -428,187 +431,126 @@ useEffect(() => {
             }}
           >
             <FaBell />
-
-            {/* 🔴 Notification Count */}
-            {postNotifications.length > 0 && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: "-5px",
-                  right: "-5px",
-                  background: "red",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  padding: "2px 6px",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                }}
-              >
-                {postNotifications.length}
-              </span>
+            {totalNotifications > 0 && (
+              <span className="badge">{totalNotifications}</span>
             )}
-
-            {/* 🔔 Notification Dropdown */}
             {showPostDropdown && (
-              <div
-                className="notification-dropdown"
-                style={{
+              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{
                   position: "absolute",
-                  top: "40px",
+                  top: "45px",
                   right: "0",
-                  width: "350px",
-                  maxHeight: "400px",
+                  width: "360px",
+                  maxHeight: "420px",
                   overflowY: "auto",
                   background: "#fff",
-                  borderRadius: "10px",
-                  boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
+                  borderRadius: 10,
+                  boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
                   zIndex: 1000,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {postNotifications.length === 0 ? (
-                  <p style={{ padding: "12px", textAlign: "center" }}>No new notifications</p>
+                  padding: 6,
+                }}>
+                {totalNotifications === 0 ? (
+                  <p className="muted">No new notifications</p>
                 ) : (
-                  postNotifications.map((n) => (
-                    <div
-                      key={n.notificationId}
-                      style={{
-                        display: "flex",
-                        gap: "10px",
-                        padding: "10px",
-                        cursor: "pointer",
-                        borderBottom: "1px solid #eee",
-                      }}
-                      onClick={() => handleNotificationClick(n)}
-                    >
-                      <img
-                        src={n.adminProfile || "/default-profile.png"}
-                        alt={n.adminName}
-                        style={{
-                          width: "40px",
-                          height: "40px",
-                          borderRadius: "50%",
-                        }}
-                      />
+                  <div>
+                    {/* Posts section */}
+                    {postNotifications.length > 0 && (
                       <div>
-                        <strong>{n.adminName}</strong>
-                        <p style={{ margin: 0 }}>{n.message}</p>
+                        <div className="notification-section-title">Posts</div>
+                        {postNotifications.map((n) => (
+                          <div
+                            key={n.notificationId}
+                            className="notification-row"
+                            onClick={async () => {
+                              try {
+                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                  notificationId: n.notificationId,
+                                });
+                              } catch (err) {
+                                console.warn("Failed to mark notification:", err);
+                              }
+
+                              setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
+                              setShowPostDropdown(false);
+                              navigate("/dashboard", {
+                                state: {
+                                  postId: n.postId,
+                                  posterName: n.adminName,
+                                  posterProfile: n.adminProfile,
+                                },
+                              });
+                            }}
+                            style={{
+                              padding: 10,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 12,
+                              cursor: "pointer",
+                              borderBottom: "1px solid #f0f0f0",
+                              transition: "background 120ms ease",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                          >
+                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                            </div>
+                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))
+                    )}
+
+                    {/* Messages section */}
+                    {messageCount > 0 && (
+                      <div>
+                        <div className="notification-section-title" style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                              <div
+                                key={userId}
+                                className="notification-row"
+                                onClick={async () => {
+                                  await markMessagesAsSeen(userId);
+                                  setUnreadSenders((prev) => {
+                                    const copy = { ...prev };
+                                    delete copy[userId];
+                                    return copy;
+                                  });
+                                  setShowPostDropdown(false);
+                                  navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
+                                }}
+                                style={{
+                                  padding: 10,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  cursor: "pointer",
+                                  borderBottom: "1px solid #f0f0f0",
+                                  transition: "background 120ms ease",
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+                              >
+                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                                  <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
+                                </div>
+                              </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* ================= MESSENGER ================= */}
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowMessageDropdown((prev) => !prev);
-            }}
-          >
+          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
             <FaFacebookMessenger />
-
-            {/* 🔴 TOTAL UNREAD COUNT */}
-            {Object.keys(unreadSenders).length > 0 && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: "-5px",
-                  right: "-5px",
-                  background: "red",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  padding: "2px 6px",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                }}
-              >
-                {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
-              </span>
-            )}
-
-            {/* 📩 DROPDOWN */}
-            {showMessageDropdown && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "40px",
-                  right: "0",
-                  width: "300px",
-                  background: "#fff",
-                  borderRadius: "10px",
-                  boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-                  zIndex: 1000,
-                }}
-              >
-                {Object.keys(unreadSenders).length === 0 ? (
-                  <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-                    No new messages
-                  </p>
-                ) : (
-                  Object.entries(unreadSenders).map(([userId, sender]) => (
-                    <div
-                      key={userId}
-                      style={{
-                        padding: "12px",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "10px",
-                        cursor: "pointer",
-                        borderBottom: "1px solid #eee",
-                      }}
-                      onClick={async () => {
-                        setShowMessageDropdown(false);
-
-                        // 1️⃣ Mark messages as seen in DB
-                        await markMessagesAsSeen(userId);
-
-                        // 2️⃣ Remove sender immediately from UI
-                        setUnreadSenders((prev) => {
-                          const copy = { ...prev };
-                          delete copy[userId];
-                          return copy;
-                        });
-
-                        // 3️⃣ Navigate to exact chat
-                        navigate("/all-chat", {
-                          state: {
-                            user: {
-                              userId,
-                              name: sender.name,
-                              profileImage: sender.profileImage,
-                              type: sender.type,
-                            },
-                          },
-                        });
-                      }}
-                    >
-                      <img
-                        src={sender.profileImage}
-                        alt={sender.name}
-                        style={{
-                          width: "42px",
-                          height: "42px",
-                          borderRadius: "50%",
-                        }}
-                      />
-                      <div>
-                        <strong>{sender.name}</strong>
-                        <p style={{ fontSize: "12px", margin: 0 }}>
-                          {sender.count} new message{sender.count > 1 && "s"}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+            {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
-          {/* ============== END MESSENGER ============== */}
 
           {/* Settings */}
           <Link className="icon-circle" to="/settings">
@@ -638,7 +580,7 @@ useEffect(() => {
               <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
             </div>
             <h3>{admin.name}</h3>
-            <p>{admin.username}</p>
+            <p>{admin?.adminId || "username"}</p>
           </div>
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/dashboard">

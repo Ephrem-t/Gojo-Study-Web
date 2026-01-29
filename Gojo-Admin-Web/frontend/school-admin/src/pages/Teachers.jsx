@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   FaHome,
@@ -8,10 +8,15 @@ import {
   FaSignOutAlt,
   FaBell,
   FaFacebookMessenger,
-  FaSearch , FaCalendarAlt, FaCommentDots
-
+  FaSearch,
+  FaCalendarAlt,
+  FaCommentDots,
+  FaPaperPlane,
+  FaCheck
 } from "react-icons/fa";
 import axios from "axios";
+import { getDatabase, ref, onValue } from "firebase/database";
+import app from "../firebase";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 
@@ -25,19 +30,36 @@ function TeachersPage() {
   const [activeTab, setActiveTab] = useState("details");
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
+  const messagesEndRef = useRef(null);
+
+  const formatDateLabel = (ts) => {
+    if (!ts) return "";
+    try { return new Date(ts).toLocaleDateString(); } catch { return ""; }
+  };
+  const formatTime = (ts) => {
+    if (!ts) return "";
+    try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ""; }
+  };
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [popupMessages, teacherChatOpen]);
   const [teacherSchedule, setTeacherSchedule] = useState({}); // store schedule
 
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 
   const [unreadTeachers, setUnreadTeachers] = useState({});
-  const [unreadSenders, setUnreadSenders] = useState([]); 
+  const [unreadSenders, setUnreadSenders] = useState({}); 
   const [postNotifications, setPostNotifications] = useState([]);
 const [showPostDropdown, setShowPostDropdown] = useState(false);
 const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
+  const [isPortrait, setIsPortrait] = useState(typeof window !== "undefined" ? window.innerWidth < window.innerHeight : false);
+  const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" ? window.innerWidth < 900 : false);
   const navigate = useNavigate();
  const admin = JSON.parse(localStorage.getItem("admin")) || {};
 const adminUserId = admin.userId;   // ✅ now it exists
 const adminId = admin.userId; 
+const dbRT = getDatabase(app);
 const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 
@@ -124,6 +146,15 @@ useEffect(() => {
   }
   fetchUser();
 }, [selectedTeacher]);
+
+useEffect(() => {
+  const onResize = () => {
+    setIsPortrait(window.innerWidth < window.innerHeight);
+    setIsNarrow(window.innerWidth < 900);
+  };
+  window.addEventListener("resize", onResize);
+  return () => window.removeEventListener("resize", onResize);
+}, []);
 
 useEffect(() => {
   if (!adminId) return;
@@ -564,24 +595,31 @@ const fetchUnreadMessages = async () => {
 
 
 
-    // helper to read messages from BOTH chat keys
+    // helper to read messages from BOTH chat keys (resilient)
     const getUnreadCount = async (userId) => {
       const key1 = `${admin.userId}_${userId}`;
       const key2 = `${userId}_${admin.userId}`;
 
-      const [r1, r2] = await Promise.all([
-        axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-        axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-      ]);
+      try {
+        // use Promise.allSettled so one failing key doesn't abort both
+        const results = await Promise.allSettled([
+          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`, { timeout: 10000 }),
+          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`, { timeout: 10000 }),
+        ]);
 
-      const msgs = [
-        ...Object.values(r1.data || {}),
-        ...Object.values(r2.data || {})
-      ];
+        const msgs = [];
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value && r.value.data) {
+            msgs.push(...Object.values(r.value.data || {}));
+          }
+        }
 
-      return msgs.filter(
-        m => m.receiverId === admin.userId && !m.seen
-      ).length;
+        return msgs.filter(m => m && m.receiverId === admin.userId && !m.seen).length;
+      } catch (err) {
+        // don't throw; return 0 if there's any problem
+        console.warn('getUnreadCount error for', userId, err?.message || err);
+        return 0;
+      }
     };
 
     // 2️⃣ TEACHERS
@@ -687,32 +725,36 @@ useEffect(() => {
 useEffect(() => {
   if (!teacherChatOpen || !selectedTeacher) return;
 
-  const markMessagesAsSeen = async () => {
-    const chatKey = `${adminUserId}_${selectedTeacher.userId}`;
-    try {
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
-      );
-      const msgs = Object.entries(res.data || {});
-      const updates = {};
-      msgs.forEach(([key, msg]) => {
-        if (msg.receiverId === adminUserId && !msg.seen) updates[key + "/seen"] = true;
-      });
+  const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+  const messagesRef = ref(dbRT, `Chats/${chatKey}/messages`);
 
-      if (Object.keys(updates).length > 0) {
-        await axios.patch(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
-          updates
-        );
-        // remove badge
-        setUnreadTeachers(prev => ({ ...prev, [selectedTeacher.userId]: 0 }));
+  const handleSnapshot = async (snapshot) => {
+    const data = snapshot.val() || {};
+    const list = Object.entries(data)
+      .map(([id, msg]) => ({ messageId: id, ...msg }))
+      .sort((a, b) => a.timeStamp - b.timeStamp);
+    setPopupMessages(list);
+
+    const updates = {};
+    Object.entries(data).forEach(([msgId, msg]) => {
+      if (msg && msg.receiverId === adminUserId && !msg.seen) {
+        updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
       }
-    } catch (err) {
-      console.error(err);
+    });
+
+    if (Object.keys(updates).length > 0) {
+      try {
+        await axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json`, updates);
+        setUnreadTeachers(prev => ({ ...prev, [selectedTeacher.userId]: 0 }));
+        axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+      } catch (err) {
+        console.error('Failed to patch seen updates:', err);
+      }
     }
   };
 
-  markMessagesAsSeen();
+  const unsubscribe = onValue(messagesRef, handleSnapshot);
+  return () => unsubscribe();
 }, [teacherChatOpen, selectedTeacher, adminUserId]);
 
 
@@ -733,198 +775,83 @@ useEffect(() => {
 
   <div className="nav-right">
     <div
-  className="icon-circle"
-  style={{ position: "relative", cursor: "pointer" }}
-  onClick={(e) => {
-    e.stopPropagation();
-    setShowPostDropdown(prev => !prev);
-  }}
->
-  <FaBell />
-
-  {/* 🔴 Notification Count */}
-  {postNotifications.length > 0 && (
-    <span
-      style={{
-        position: "absolute",
-        top: "-5px",
-        right: "-5px",
-        background: "red",
-        color: "#fff",
-        borderRadius: "50%",
-        padding: "2px 6px",
-        fontSize: "10px",
-        fontWeight: "bold"
-      }}
-    >
-      {postNotifications.length}
-    </span>
-  )}
-
-  {/* 🔔 Notification Dropdown */}
-  {showPostDropdown && (
-    <div
-      className="notification-dropdown"
-      style={{
-        position: "absolute",
-        top: "40px",
-        right: "0",
-        width: "350px",
-        maxHeight: "400px",
-        overflowY: "auto",
-        background: "#fff",
-        borderRadius: "10px",
-        boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-        zIndex: 1000
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {postNotifications.length === 0 ? (
-        <p style={{ padding: "12px", textAlign: "center" }}>
-          No new notifications
-        </p>
-      ) : (
-        postNotifications.map(n => (
-          <div
-            key={n.notificationId}
-            style={{
-              display: "flex",
-              gap: "10px",
-              padding: "10px",
-              cursor: "pointer",
-              borderBottom: "1px solid #eee"
-            }}
-            onClick={() => handleNotificationClick(n)}
-          >
-            <img
-              src={n.adminProfile || "/default-profile.png"}
-              alt={n.adminName}
-              style={{
-                width: "40px",
-                height: "40px",
-                borderRadius: "50%"
-              }}
-            />
-            <div>
-              <strong>{n.adminName}</strong>
-              <p style={{ margin: 0 }}>{n.message}</p>
-            </div>
-          </div>
-        ))
-      )}
-    </div>
-  )}
-</div>
-
-
-    {/* ================= MESSENGER ================= */}
-    <div
       className="icon-circle"
       style={{ position: "relative", cursor: "pointer" }}
       onClick={(e) => {
         e.stopPropagation();
-        setShowMessageDropdown((prev) => !prev);
+        setShowPostDropdown(prev => !prev);
       }}
     >
-      <FaFacebookMessenger />
-    
-      {/* 🔴 TOTAL UNREAD COUNT */}
-      {Object.keys(unreadSenders).length > 0 && (
-        <span
-          style={{
-            position: "absolute",
-            top: "-5px",
-            right: "-5px",
-            background: "red",
-            color: "#fff",
-            borderRadius: "50%",
-            padding: "2px 6px",
-            fontSize: "10px",
-            fontWeight: "bold"
-          }}
-        >
-          {Object.values(unreadSenders).reduce((a, b) => a + b.count, 0)}
-        </span>
-      )}
-    
-      {/* 📩 DROPDOWN */}
-      {showMessageDropdown && (
+      <FaBell />
+
+      {/* combined notifications count */}
+      {(() => {
+        const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
+        const total = (postNotifications?.length || 0) + messageCount;
+        return total > 0 ? (
+          <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
+        ) : null;
+      })()}
+
+      {showPostDropdown && (
         <div
-          style={{
-            position: "absolute",
-            top: "40px",
-            right: "0",
-            width: "300px",
-            background: "#fff",
-            borderRadius: "10px",
-            boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-            zIndex: 1000
-          }}
+          className="notification-dropdown"
+          style={{ position: "absolute", top: "40px", right: "0", width: "360px", maxHeight: "420px", overflowY: "auto", background: "#fff", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.12)", zIndex: 1000, padding: 6 }}
+          onClick={(e) => e.stopPropagation()}
         >
-          {Object.keys(unreadSenders).length === 0 ? (
-            <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-              No new messages
-            </p>
+          {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
+            <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>No new notifications</p>
           ) : (
-            Object.entries(unreadSenders).map(([userId, sender]) => (
-              <div
-                key={userId}
-                style={{
-                  padding: "12px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  cursor: "pointer",
-                  borderBottom: "1px solid #eee"
-                }}
-              onClick={async () => {
-  setShowMessageDropdown(false);
-
-  // 1️⃣ Mark messages as seen in DB
-  await markMessagesAsSeen(userId);
-
-  // 2️⃣ Remove sender immediately from UI
-  setUnreadSenders(prev => {
-    const copy = { ...prev };
-    delete copy[userId];
-    return copy;
-  });
-
-  // 3️⃣ Navigate to exact chat
-  navigate("/all-chat", {
-    state: {
-      user: {
-        userId,
-        name: sender.name,
-        profileImage: sender.profileImage,
-        type: sender.type
-      }
-    }
-  });
-}}
-
-    
-    
-              >
-                <img
-                  src={sender.profileImage}
-                  alt={sender.name}
-                  style={{
-                    width: "42px",
-                    height: "42px",
-                    borderRadius: "50%"
-                  }}
-                />
+            <div>
+              {/* Posts */}
+              {postNotifications.length > 0 && (
                 <div>
-                  <strong>{sender.name}</strong>
-                  <p style={{ fontSize: "12px", margin: 0 }}>
-                    {sender.count} new message{sender.count > 1 && "s"}
-                  </p>
+                  <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
+                  {postNotifications.map(n => (
+                    <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")} onMouseLeave={(e) => (e.currentTarget.style.background = "") } onClick={() => handleNotificationClick(n)}>
+                      <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
+                        <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))
+              )}
+
+              {/* Messages */}
+              {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
+                <div>
+                  <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                  {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
+                    <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")} onMouseLeave={(e) => (e.currentTarget.style.background = "") } onClick={async () => {
+                      await markMessagesAsSeen(userId);
+                      setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; });
+                      setShowPostDropdown(false);
+                      navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
+                    }}>
+                      <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                        <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
+      )}
+    </div>
+
+
+    {/* ================= MESSENGER ================= */}
+    <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
+      <FaFacebookMessenger />
+      {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
+        <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
       )}
     </div>
     {/* ============== END MESSENGER ============== */}
@@ -947,7 +874,7 @@ useEffect(() => {
               <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
             </div>
             <h3>{admin.name}</h3>
-            <p>{admin.username}</p>
+             <p>{admin?.adminId || "username"}</p>
           </div>
           <div className="sidebar-menu">
                               <Link className="sidebar-btn" to="/dashboard"
@@ -980,7 +907,7 @@ useEffect(() => {
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
-        <div className="main-content" style={{ padding: "30px", width: "55%", marginLeft: "400px" }}>
+        <div className="main-content" style={{ padding: "20px", width: isNarrow ? "100%" : "100%", marginLeft: selectedTeacher && !isPortrait ? "-100px" : 0, boxSizing: "border-box" }}>
           <h2 style={{ marginBottom: "10px", textAlign: "center" }}>Teachers</h2>
 
           {/* Grade Filter */}
@@ -1015,7 +942,7 @@ useEffect(() => {
                   key={t.teacherId}
                   onClick={() => setSelectedTeacher(t)}
                   style={{
-                    width: "500px",
+                    width: isNarrow ? "90%" : "500px",
                     height: "100px",
                     border: "1px solid #ddd",
                     borderRadius: "12px",
@@ -1069,17 +996,18 @@ useEffect(() => {
 
         {/* ---------------- RIGHT SIDEBAR ---------------- */}
       {selectedTeacher && (
-  <div
-    className="teacher-info-sidebar"
-    style={{
-      width: "30%",
+    <div
+      className="teacher-info-sidebar"
+      style={{
+      width: isPortrait ? "100%" : "30%",
       position: "fixed",
+      left: isPortrait ? 0 : "auto",
       right: 0,
-      top: "70px",
-      height: "calc(100vh - 70px)",
+      top: isPortrait ? 0 : "70px",
+      height: isPortrait ? "100vh" : "calc(100vh - 70px)",
       background: "#ffffff",
       boxShadow: "0 0 18px rgba(0,0,0,0.08)",
-      borderLeft: "1px solid #e5e7eb",
+      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
       zIndex: 120,
       display: "flex",
       flexDirection: "column"
@@ -1143,7 +1071,7 @@ useEffect(() => {
         </h2>
 
         <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "14px" }}>
-          {selectedTeacher.email || "teacher@example.com"}
+          {selectedTeacherUser?.email || selectedTeacher.email || "teacher@example.com"}
         </p>
       </div>
 
@@ -1214,9 +1142,9 @@ useEffect(() => {
       }}
     >
       {[
-        { label: "Email", icon: "📧", value: selectedTeacher.email },
-        { label: "Gender", icon: selectedTeacher.gender === "male" ? "♂️" : selectedTeacher.gender === "female" ? "♀️" : "⚧", value: selectedTeacher.gender || "N/A" },
-        { label: "Phone", icon: "📱", value: selectedTeacher.phone || selectedTeacher.phoneNumber },
+        { label: "Email", icon: "📧", value: selectedTeacherUser?.email || selectedTeacher.email },
+        { label: "Gender", icon: (selectedTeacherUser?.gender || selectedTeacher.gender) === "male" ? "♂️" : (selectedTeacherUser?.gender || selectedTeacher.gender) === "female" ? "♀️" : "⚧", value: selectedTeacherUser?.gender || selectedTeacher.gender || "N/A" },
+        { label: "Phone", icon: "📱", value: selectedTeacherUser?.phone || selectedTeacher.phone || selectedTeacher.phoneNumber || "N/A" },
         { label: "Status", icon: "✅", value: selectedTeacher.status || "Active" },
         { label: "Subject(s)", icon: "📚", value: selectedTeacher.gradesSubjects?.map(gs => gs.subject).filter(Boolean).join(", ") },
         { label: "Teacher ID", icon: "🆔", value: selectedTeacher.teacherId },
@@ -1464,35 +1392,26 @@ useEffect(() => {
 <div
   onClick={() => setTeacherChatOpen(true)}
   style={{
-    position: "fixed",        // 🔒 RIGID
+    position: "fixed",
     bottom: "20px",
     right: "20px",
-    width: "48px",
-    height: "48px",
-    background:
-      "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)",
+    width: "60px",
+    height: "60px",
+    background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
     borderRadius: "50%",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     color: "#fff",
     cursor: "pointer",
-    zIndex: 9999,
+    zIndex: 1000,
     boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
-    transition: "transform 0.2s ease, box-shadow 0.2s ease",
+    transition: "transform 0.2s ease",
   }}
-  onMouseEnter={(e) => {
-    e.currentTarget.style.transform = "scale(1.08)";
-    e.currentTarget.style.boxShadow =
-      "0 12px 26px rgba(0,0,0,0.35)";
-  }}
-  onMouseLeave={(e) => {
-    e.currentTarget.style.transform = "scale(1)";
-    e.currentTarget.style.boxShadow =
-      "0 8px 18px rgba(0,0,0,0.25)";
-  }}
+  onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.05)")}
+  onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1) ")}
 >
-  <FaCommentDots size={22} />
+  <FaCommentDots size={30} />
 </div>
 
 
@@ -1507,87 +1426,83 @@ useEffect(() => {
 
       {/* ---------------- MINI POPUP CHAT ---------------- */}
       {teacherChatOpen && selectedTeacher && (
-        <div style={{
-          
-          position: "fixed",
-          bottom: "6px",
-          right: "22px",
-          width: "320px",
-          background: "#fff",
-          borderRadius: "12px",
-          boxShadow: "0 8px 25px rgba(0,0,0,0.15)",
-          padding: "15px",
-          zIndex: 999
-        }}>
-          {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #ddd", paddingBottom: "10px" }}>
+        <div
+          style={{
+            position: "fixed",
+            bottom: "20px",
+            right: "20px",
+            width: "360px",
+            height: "480px",
+            background: "#fff",
+            borderRadius: "16px",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+            zIndex: 2000,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          {/* HEADER */}
+          <div
+            style={{
+              padding: "14px",
+              borderBottom: "1px solid #eee",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              background: "#fafafa",
+            }}
+          >
             <strong>{selectedTeacher.name}</strong>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
-  onClick={() => {
-    setTeacherChatOpen(false); // close mini popup
-    navigate("/all-chat", { state: { user: selectedTeacher } }); // pass teacher as selected user
-  }}
-  style={{
-    background: "none",
-    border: "none",
-    fontSize: "18px",
-    cursor: "pointer"
-  }}
->
-  ↗
-</button>
-
-              <button
-                onClick={() => setTeacherChatOpen(false)}
-                style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}
+                onClick={() => {
+                  setTeacherChatOpen(false);
+                  navigate("/all-chat", { state: { user: selectedTeacher, tab: "teacher" } });
+                }}
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px" }}
               >
-                ×
+                ⤢
               </button>
+              <button onClick={() => setTeacherChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>×</button>
             </div>
           </div>
 
-          {/* Chat Body */}
-          <div style={{ height: "260px", overflowY: "auto", padding: "10px" }}>
+          {/* Messages */}
+          <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "#f9f9f9" }}>
             {popupMessages.length === 0 ? (
-              <p style={{ color: "#aaa", textAlign: "center" }}>Start a conversation with {selectedTeacher.name}...</p>
+              <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedTeacher.name}</p>
             ) : (
-              popupMessages.map((m, i) => (
-                <div key={i} style={{ marginBottom: "8px", textAlign: m.sender === "admin" ? "right" : "left" }}>
-                  <span style={{
-                    padding: "8px 12px",
-                    borderRadius: "10px",
-                    background: m.sender === "admin" ? "#4b6cb7" : "#eee",
-                    color: m.sender === "admin" ? "#fff" : "#000",
-                    display: "inline-block",
-                    maxWidth: "80%"
-                  }}>{m.text}</span>
-                </div>
-              ))
+              popupMessages.map((m) => {
+                const isAdmin = String(m.senderId) === String(adminUserId) || m.sender === "admin";
+                return (
+                  <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                    <div style={{ maxWidth: "70%", background: isAdmin ? "#4facfe" : "#fff", color: isAdmin ? "#fff" : "#000", padding: "10px 14px", borderRadius: 18, borderTopRightRadius: isAdmin ? 0 : 18, borderTopLeftRadius: isAdmin ? 18 : 0, boxShadow: "0 1px 3px rgba(0,0,0,0.1)", wordBreak: "break-word", cursor: "default", position: "relative" }}>
+                      {m.text} {m.edited && (<small style={{ fontSize: 10 }}> (edited)</small>)}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 11, color: isAdmin ? "#fff" : "#888" }}>
+                        <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
+                        <span>{formatTime(m.timeStamp)}</span>
+                        {isAdmin && !m.deleted && (
+                          <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
+                            <FaCheck size={10} color={isAdmin ? "#fff" : "#888"} style={{ opacity: 0.85, marginLeft: 4 }} />
+                            {m.seen && (<FaCheck size={10} color={isAdmin ? "#f3f7f8" : "#ccc"} style={{ marginLeft: 2, opacity: 0.95 }} />)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
             )}
+            <div ref={messagesEndRef} />
           </div>
 
-          {/* Chat Input */}
-          <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
-            <input
-              value={popupInput}
-              onChange={e => setPopupInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && sendPopupMessage()}
-              placeholder="Type a message..."
-              style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
-            />
-            <button
-        onClick={() => sendMessage(newMessageText)}
-        style={{
-          background: "none",
-          border: "none",
-          color: "#3654dada",
-          cursor: "pointer",
-          fontSize: "30px",
-        }}
-      >
-        ➤
-      </button>
+          {/* Input */}
+          <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
+            <input value={popupInput} onChange={(e) => setPopupInput(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendPopupMessage(); }} />
+            <button onClick={() => sendPopupMessage()} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
+              <FaPaperPlane />
+            </button>
           </div>
         </div>
       )}
