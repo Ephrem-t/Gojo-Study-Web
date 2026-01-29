@@ -979,7 +979,8 @@ const cancelEdit = () => setEditTarget(null);
                                                          </Link>
                                               <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents
                                                          </Link>
-                                                                   
+                                                 <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
+                                                              </Link>                    
                                         
                                            <button
                                              className="sidebar-btn logout-btn"
@@ -1084,7 +1085,7 @@ const cancelEdit = () => setEditTarget(null);
           <b>{p}</b>
           <div>{d?.subject}</div>
           <div style={{ color: "#2563eb" }}>{d?.teacherName}</div>
-          <small style={{ fontSize: 11, opacity: 0.6 }}>Double-click to edit</small>
+          
         </div>
       )}
     </Draggable>

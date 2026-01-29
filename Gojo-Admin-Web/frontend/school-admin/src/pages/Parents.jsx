@@ -431,9 +431,10 @@ function Parent() {
     if (!text || !text.trim() || !selectedParent) return;
     if (!admin?.userId || !selectedParent?.userId) return;
     const id = getChatId(admin.userId, selectedParent.userId);
-    const messageId = Date.now();
     await initChatIfMissing();
-    await axios.put(`${DB}/Chats/${id}/messages/${messageId}.json`, {
+
+    // build message payload
+    const newMsg = {
       senderId: admin.userId,
       receiverId: selectedParent.userId,
       type: "text",
@@ -444,12 +445,35 @@ function Parent() {
       edited: false,
       deleted: false,
       timeStamp: Date.now(),
-    }).catch(() => {});
-    await axios.patch(`${DB}/Chats/${id}.json`, {
-      lastMessage: { text, senderId: admin.userId, seen: false, timeStamp: Date.now() },
-      unread: { [selectedParent.userId]: 1 },
-    }).catch(() => {});
-    setNewMessageText("");
+    };
+
+    try {
+      // push message (let Firebase generate id)
+      const pushRes = await axios.post(`${DB}/Chats/${id}/messages.json`, newMsg).catch(() => ({ data: null }));
+      const generatedId = pushRes?.data?.name || `${Date.now()}`;
+
+      // patch lastMessage including messageId and participants
+      const lastMessage = { ...newMsg, messageId: generatedId };
+      await axios.patch(`${DB}/Chats/${id}.json`, {
+        participants: { [admin.userId]: true, [selectedParent.userId]: true },
+        lastMessage,
+      }).catch(() => {});
+
+      // increment unread for receiver (preserve existing unread counts)
+      try {
+        const unreadRes = await axios.get(`${DB}/Chats/${id}/unread.json`);
+        const unread = unreadRes.data || {};
+        const prev = Number(unread[selectedParent.userId] || 0);
+        const updated = { ...(unread || {}), [selectedParent.userId]: prev + 1, [admin.userId]: Number(unread[admin.userId] || 0) };
+        await axios.put(`${DB}/Chats/${id}/unread.json`, updated).catch(() => {});
+      } catch (uErr) {
+        await axios.put(`${DB}/Chats/${id}/unread.json`, { [selectedParent.userId]: 1, [admin.userId]: 0 }).catch(() => {});
+      }
+
+      setNewMessageText("");
+    } catch (err) {
+      console.error("Failed to send parent message:", err);
+    }
   };
 
   // Mark as seen when selectedParent changes
@@ -662,6 +686,8 @@ function Parent() {
             <Link className="sidebar-btn" to="/students" ><FaChalkboardTeacher /> Students</Link>
             <Link className="sidebar-btn" to="/schedule" ><FaCalendarAlt /> Schedule</Link>
             <Link className="sidebar-btn" to="/parents" style={{ background: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Parents</Link>
+             <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
+                          </Link>
             <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}>
               <FaSignOutAlt /> Logout
             </button>
@@ -974,7 +1000,7 @@ function Parent() {
                 </div>
               )}
 
-              {parentChatOpen && selectedParent && (
+            {parentChatOpen && selectedParent && (
                 <div
                   style={{
                     position: "fixed",
@@ -1045,7 +1071,7 @@ function Parent() {
                     </button>
                   </div>
                 </div>
-              )}
+              )}   
             </div>
           </aside>
         )}

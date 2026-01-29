@@ -416,7 +416,7 @@
   width: 48px;
   height: 48px;
   border-radius: 50%;
- 
+                      
  
 }
 .post-card-header .avatar img {
@@ -1576,3 +1576,16 @@ button.dark-mode:hover {
 /* thin scrollbar style (non-breaking) */
 .student-info-scroll::-webkit-scrollbar { width: 10px; }
 .student-info-scroll::-webkit-scrollbar-thumb { background: rgba(15,23,42,0.08); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+
+/* Enable horizontal scrolling inside main content for wide layouts (tables, grids) */
+.main-content {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch; /* smooth scrolling on iOS */
+}
+
+/* If inner content is wider than the centered container, allow it to render naturally
+   and be horizontally scrollable. Use the utility class `wide` on elements that need
+   a minimum width to trigger scrolling (e.g. schedule grid). */
+.main-content .wide {
+  min-width: 1000px;
+}

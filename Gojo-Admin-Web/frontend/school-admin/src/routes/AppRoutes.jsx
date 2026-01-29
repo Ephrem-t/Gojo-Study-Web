@@ -12,7 +12,11 @@ import SettingsPage from "../pages/SettingsPage";
 import AllChat from "../pages/AllChat";
 import StudentChatPage from "../pages/StudentChatPage";
 import SchedulePage from "../pages/SchedulePage"; // ✅ NEW
-
+import RegistrationForm from "../pages/RegistrationForm"; // NEW
+import TeacherRegister from "../pages/TeacherRegister"; // NEW
+import StudentRegister from "../pages/StudentRegister"; // NEW
+import ParentRegister from "../pages/ParentRegister"; // NEW
+import Register from "../pages/Register"; // NEW
 export default function AppRoutes() {
   return (
     <Router>
@@ -36,6 +40,11 @@ export default function AppRoutes() {
         {/* Chat */}
         <Route path="/all-chat" element={<AllChat />} />
         <Route path="/student-chat" element={<StudentChatPage />} />
+        <Route path="/registration-form" element={<RegistrationForm />} /> {/* NEW */}
+        <Route path="/teacher-register" element={<TeacherRegister />} /> {/* NEW */}
+        <Route path="/student-register" element={<StudentRegister />} /> {/* NEW */}
+        <Route path="/parent-register" element={<ParentRegister />} /> {/* NEW */}
+         <Route path="/register" element={<Register />} /> {/* NEW */}
       </Routes>
     </Router>
   );

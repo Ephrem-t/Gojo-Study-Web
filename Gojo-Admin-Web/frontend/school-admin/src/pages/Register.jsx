@@ -49,7 +49,15 @@ function Register() {
   return (
     <div className="auth-container">
       <div className="auth-box">
-        <h2>Register</h2>
+         <button
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label="Go back"
+            style={{ background: "none", width: "30px", border: "none", cursor: "pointer", fontSize: 20, color: "black", borderRadius: 4, marginLeft: "-300px", marginBottom: "10px" }}
+          >
+            ←
+          </button>
+        <h2 style={{ textAlign: "center", marginTop: "-50px" }}>Register</h2>
         {message && <div className="auth-message">{message}</div>}
         <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column" }}>
           <input type="text" placeholder="Full Name" value={name} onChange={e => setName(e.target.value)} required />
@@ -71,7 +79,7 @@ function Register() {
         {assignedAdminId && (<div className="auth-success" style={{ marginTop:12 }}>
           <b>Your adminId (username):</b> <span style={{ color: "green" }}>{assignedAdminId}</span>
         </div>)}
-        <p>Already have an account? <Link to="/login">Login here</Link></p>
+      
       </div>
     </div>
   );

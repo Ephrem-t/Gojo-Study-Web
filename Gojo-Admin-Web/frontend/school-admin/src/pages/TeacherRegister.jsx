@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import "../styles/login.css";
+import { BACKEND_BASE } from "../config";
 
 export default function Register() {
   const navigate = useNavigate();
@@ -201,7 +202,7 @@ export default function Register() {
       dataToSend.append("courses", JSON.stringify(formData.courses));
       if (profile) dataToSend.append("profile", profile);
 
-      const res = await fetch("http://127.0.0.1:5000/register/teacher", {
+      const res = await fetch(`${BACKEND_BASE}/register/teacher`, {
         method: "POST",
         body: dataToSend,
       });
@@ -236,7 +237,17 @@ export default function Register() {
   return (
     <div className="auth-container">
       <div className="auth-box" style={{ maxWidth: "600px" }}>
-        <h2>Teacher Registration</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label="Go back"
+            style={{ background: "none", width: "30px", border: "none", cursor: "pointer", fontSize: 20, color: "black", borderRadius: 4}}
+          >
+            ←
+          </button>
+          <h2 style={{ margin: 0 }}>Teacher Registration</h2>
+        </div>
         {message && <p className="auth-error">{message}</p>}
 
         <form onSubmit={handleRegister}>
@@ -362,10 +373,10 @@ export default function Register() {
             </div>
           ))}
 
-          <button type="button" className="add-btn" onClick={addCourse}>
+          <button type="button" className="add-btn" onClick={addCourse} style={{marginTop: 10}}>
             Add Course
           </button>
-          <button type="submit" className="submit-btn">
+          <button type="submit" className="submit-btn" style={{marginTop: 10}}>
             Register
           </button>
         </form>
@@ -376,15 +387,11 @@ export default function Register() {
               Registration complete. Your teacherId (username) is:{" "}
               <strong>{assignedTeacherId}</strong>
             </p>
-            <p>
-              Use this ID to log in: <Link to="/login">Go to Login</Link>
-            </p>
+            
           </div>
         )}
 
-        <p className="auth-link">
-          Already have an account? <Link to="/login">Go to Login</Link>
-        </p>
+       
       </div>
     </div>
   );

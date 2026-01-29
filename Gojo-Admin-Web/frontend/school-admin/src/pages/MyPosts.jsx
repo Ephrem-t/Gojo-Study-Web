@@ -650,6 +650,8 @@ function MyPosts() {
             <Link className="sidebar-btn" to="/students"><FaChalkboardTeacher /> Students</Link>
             <Link className="sidebar-btn" to="/schedule"><FaCalendarAlt /> Schedule</Link>
             <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
+             <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
+                          </Link>
             <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}><FaSignOutAlt /> Logout</button>
           </div>
         </div>
