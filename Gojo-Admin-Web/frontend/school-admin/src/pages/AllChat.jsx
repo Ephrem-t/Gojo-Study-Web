@@ -343,7 +343,7 @@ function AllChat() {
                 <strong>{selectedChatUser.name}</strong>
                 <div style={{ fontSize: 12, color: "#666" }}>
                   {typing ? "Typing..." : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
-                </div>
+                </div>ddddddddddddddddddddddddddd
               </div>
             </div>
 

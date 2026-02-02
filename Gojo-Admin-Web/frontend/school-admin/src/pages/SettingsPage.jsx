@@ -601,7 +601,8 @@ useEffect(() => {
             <Link className="sidebar-btn" to="/parents">
               <FaChalkboardTeacher /> Parents
             </Link>
-
+           <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
+                        </Link>
             <button
               className="sidebar-btn logout-btn"
               onClick={() => {

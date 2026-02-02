@@ -626,6 +626,7 @@ export default function Dashboard() {
             <Link className="sidebar-btn" to="/schedule">
               <FaUsers /> Schedule
             </Link>
+             <Link className="sidebar-btn" to="/lesson-plan" ><FaClipboardCheck /> Lesson Plan</Link>
             <button
               className="sidebar-btn logout-btn"
               onClick={handleLogout}

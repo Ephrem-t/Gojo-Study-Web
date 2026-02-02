@@ -2,7 +2,7 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
 import Login from "../components/Login";
-import Register from "../components/Register";
+
 import Dashboard from "../components/Dashboard";
 import Students from "../components/Students";
 import Marks from "../components/MarksPage";
@@ -12,6 +12,7 @@ import TeacherNotesPage from "../components/TeacherNotesPage";
 import Parents from "../components/Parents";
 import SettingsPage from "../components/SettingsPage";
 import Schedule from "../components/Schedule";
+import LessonPlan from "../components/LessonPlan";
 // ✅ Chat Pages
 import AllChat from "../components/AllChat";
 
@@ -22,7 +23,7 @@ export default function AppRoutes() {
         {/* Auth */}
         <Route path="/" element={<Login />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
+       
 
         {/* Dashboard & Pages */}
         <Route path="/dashboard" element={<Dashboard />} />
@@ -35,6 +36,7 @@ export default function AppRoutes() {
          <Route path="/settings" element={<SettingsPage />} />
         <Route path="all-chat" element={<AllChat />} />
         <Route path="schedule" element={<Schedule />} />
+          <Route path="lesson-plan" element={<LessonPlan />} />
         {/* Chat */}
         
       </Routes>
