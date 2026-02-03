@@ -8,7 +8,7 @@ import Students from "../components/Students";
 import Marks from "../components/MarksPage";
 import Attendance from "../components/AttendancePage";
 import AdminPage from "../components/AdminPage";
-import TeacherNotesPage from "../components/TeacherNotesPage";
+
 import Parents from "../components/Parents";
 import SettingsPage from "../components/SettingsPage";
 import Schedule from "../components/Schedule";
@@ -31,7 +31,7 @@ export default function AppRoutes() {
         <Route path="/admins" element={<AdminPage />} />
         <Route path="/marks" element={<Marks />} />
         <Route path="/attendance" element={<Attendance />} />
-        <Route path="/notes" element={<TeacherNotesPage />} /> {/* ✅ Teacher Notes */}
+     
         <Route path="/parents" element={<Parents />} /> 
          <Route path="/settings" element={<SettingsPage />} />
         <Route path="all-chat" element={<AllChat />} />

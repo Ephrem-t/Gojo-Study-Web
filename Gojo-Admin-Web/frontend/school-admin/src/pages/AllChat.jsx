@@ -106,7 +106,7 @@ function AllChat() {
 
       const unsubscribeTyping = onValue(typingRefDB, (snapshot) => {
         const val = snapshot.val();
-        setTyping(val?.userId === selectedChatUser.userId);
+        setTyping( selectedChatUser.userId === val?.userId );
       });
 
       const unsubscribeLastSeen = onValue(lastSeenRef, (snapshot) => {
@@ -127,7 +127,7 @@ function AllChat() {
   const sendPopupMessage = async () => {
     if (!popupInput.trim() || !selectedChatUser) return;
 
-    const chatKeyA = `${adminUserId}_${selectedChatUser.userId}`;
+    const chatKeyA = `${selectedChatUser.userId}_${adminUserId}`;
     const chatKeyB = `${selectedChatUser.userId}_${adminUserId}`;
     // Prefer existing, else use ordering
     let chatRefKey = chatKeyA;
@@ -174,7 +174,7 @@ function AllChat() {
   // ------------------- Delete message -------------------
   const deleteMessage = async (msgId) => {
     if (!selectedChatUser) return;
-    const chatKeyA = `${adminUserId}_${selectedChatUser.userId}`;
+    const chatKeyA = `${selectedChatUser.userId}_${adminUserId}`;
     const chatKeyB = `${selectedChatUser.userId}_${adminUserId}`;
     let chatRefKey = chatKeyA;
     let existA = false, existB = false;
@@ -201,7 +201,7 @@ function AllChat() {
     setPopupInput(e.target.value);
     if (!selectedChatUser) return;
 
-    const chatKeyA = `${adminUserId}_${selectedChatUser.userId}`;
+    const chatKeyA = `${selectedChatUser.userId}_${adminUserId}`;
     const chatKeyB = `${selectedChatUser.userId}_${adminUserId}`;
     let chatRefKey = chatKeyA;
     let existA = false, existB = false;
@@ -343,7 +343,7 @@ function AllChat() {
                 <strong>{selectedChatUser.name}</strong>
                 <div style={{ fontSize: 12, color: "#666" }}>
                   {typing ? "Typing..." : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
-                </div>ddddddddddddddddddddddddddd
+                </div>
               </div>
             </div>
 

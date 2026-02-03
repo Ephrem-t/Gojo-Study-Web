@@ -12,7 +12,11 @@ import {
   FaCalendarAlt,
   FaCommentDots,
   FaPaperPlane,
-  FaCheck
+  FaCheck,
+  FaChevronLeft,
+  FaChevronRight,
+  FaCheckCircle,
+  FaClock
 } from "react-icons/fa";
 import axios from "axios";
 import { getDatabase, ref, onValue } from "firebase/database";
@@ -31,6 +35,8 @@ function TeachersPage() {
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
   const messagesEndRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const [typingUserId, setTypingUserId] = useState(null);
 
   const formatDateLabel = (ts) => {
     if (!ts) return "";
@@ -45,156 +51,47 @@ function TeachersPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [popupMessages, teacherChatOpen]);
   const [teacherSchedule, setTeacherSchedule] = useState({}); // store schedule
+  const [teacherDailyPlans, setTeacherDailyPlans] = useState([]);
+  const [planSidebarTab, setPlanSidebarTab] = useState('daily'); // daily | weekly | monthly
+  const [planWeeks, setPlanWeeks] = useState([]);
+  const [planCurrentWeeks, setPlanCurrentWeeks] = useState([]); // per-course current week blocks
+  const [planCurrentWeekIndex, setPlanCurrentWeekIndex] = useState(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState('');
+  const [planSubmittedKeys, setPlanSubmittedKeys] = useState([]);
+  const [planSidebarOpen, setPlanSidebarOpen] = useState(true);
+  const [planRefreshKey, setPlanRefreshKey] = useState(0);
+  const [planSelectedCourseId, setPlanSelectedCourseId] = useState('all');
+  const [planCourseLabelMap, setPlanCourseLabelMap] = useState({});
+  const [planAnnualOpen, setPlanAnnualOpen] = useState(false);
 
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 
   const [unreadTeachers, setUnreadTeachers] = useState({});
   const [unreadSenders, setUnreadSenders] = useState({}); 
   const [postNotifications, setPostNotifications] = useState([]);
-const [showPostDropdown, setShowPostDropdown] = useState(false);
-const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
+  const [showPostDropdown, setShowPostDropdown] = useState(false);
+  const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
   const [isPortrait, setIsPortrait] = useState(typeof window !== "undefined" ? window.innerWidth < window.innerHeight : false);
   const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" ? window.innerWidth < 900 : false);
+
   const navigate = useNavigate();
- const admin = JSON.parse(localStorage.getItem("admin")) || {};
-const adminUserId = admin.userId;   // ✅ now it exists
-const adminId = admin.userId; 
-const dbRT = getDatabase(app);
-const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const admin = JSON.parse(localStorage.getItem("admin")) || {};
+  const adminUserId = admin.userId;
+  const adminId = admin.userId;
+  const dbRT = getDatabase(app);
+  const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
-
-const fetchPostNotifications = async () => {
-  if (!adminId) return;
-
-  try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-    );
-
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
-
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
-
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRes, adminsRes] = await Promise.all([
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      ),
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
-      ),
-    ]);
-
-    const users = usersRes.data || {};
-    const admins = adminsRes.data || {};
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
-        notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
-
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
-      };
-    });
-
-    setPostNotifications(enriched);
-  } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
-  }
-};
-
-useEffect(() => {
-  if (!selectedTeacher?.userId) {
-    setSelectedTeacherUser(null);
-    return;
-  }
-
-  async function fetchUser() {
-    try {
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${selectedTeacher.userId}.json`
-      );
-      setSelectedTeacherUser(res.data || {});
-    } catch (err) {
-      setSelectedTeacherUser(null);
-    }
-  }
-  fetchUser();
-}, [selectedTeacher]);
-
-useEffect(() => {
-  const onResize = () => {
-    setIsPortrait(window.innerWidth < window.innerHeight);
-    setIsNarrow(window.innerWidth < 900);
+  const dayOrder = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
   };
-  window.addEventListener("resize", onResize);
-  return () => window.removeEventListener("resize", onResize);
-}, []);
-
-useEffect(() => {
-  if (!adminId) return;
-
-  fetchPostNotifications();
-  const interval = setInterval(fetchPostNotifications, 5000);
-
-  return () => clearInterval(interval);
-}, [adminId]);
-
-const handleNotificationClick = async (notification) => {
-  try {
-    await axios.post(
-      "http://127.0.0.1:5000/api/mark_post_notification_read",
-      {
-        notificationId: notification.notificationId,
-        adminId: admin.userId,
-      }
-    );
-  } catch (err) {
-    console.warn("Failed to delete notification:", err);
-  }
-
-  // 🔥 REMOVE FROM UI IMMEDIATELY
-  setPostNotifications((prev) =>
-    prev.filter((n) => n.notificationId !== notification.notificationId)
-  );
-
-  setShowPostDropdown(false);
-
-  // ➜ Navigate to post
-  navigate("/dashboard", {
-    state: { postId: notification.postId },
-  });
-};
-useEffect(() => {
-  if (location.state?.postId) {
-    setPostNotifications([]);
-  }
-}, []);
 
 
 useEffect(() => {
@@ -266,10 +163,6 @@ useEffect(() => {
       : teachers.filter(t => t.gradesSubjects.some(gs => gs.grade === selectedGrade));
 
 
-const handleClick = () => {
-    navigate("/all-chat"); // replace with your target route
-  };
-
 
 // ---------------- FETCH TEACHER SCHEDULE ----------------
 // ---------------- FETCH TEACHER SCHEDULE (FIXED & WORKING) ----------------
@@ -329,48 +222,601 @@ useEffect(() => {
   }, []);
 
 
+// Fetch teacher daily lesson plan from RTDB LessonPlans node when Plan tab is active
+useEffect(() => {
+  if (!selectedTeacher || activeTab !== "plan") {
+    setTeacherDailyPlans([]);
+    setPlanWeeks([]);
+    setPlanCurrentWeeks([]);
+    setPlanCurrentWeekIndex(null);
+    setPlanSubmittedKeys([]);
+    setPlanSelectedCourseId('all');
+    setPlanCourseLabelMap({});
+    setPlanAnnualOpen(false);
+    setPlanError('');
+    setPlanLoading(false);
+    return;
+  }
+
+  const fetchLessonPlans = async () => {
+    try {
+      setPlanLoading(true);
+      setPlanError('');
+      const teacherUserId = selectedTeacher.userId;
+      const teacherId = selectedTeacher.teacherId;
+      if (!teacherUserId && !teacherId) {
+        setTeacherDailyPlans([]);
+        setPlanWeeks([]);
+        setPlanCurrentWeeks([]);
+        setPlanCurrentWeekIndex(null);
+        return;
+      }
+
+      const today = new Date();
+      const todayISO = today.toISOString().slice(0, 10);
+      const todayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+      const todayIndex = today.getDay();
+      const getScheduledIndex = (dayName) => {
+        const lname = (dayName || '').toString().toLowerCase();
+        return Object.prototype.hasOwnProperty.call(dayOrder, lname) ? dayOrder[lname] : null;
+      };
+
+      const normalizeWeekForKey = (val) => {
+        if (val === undefined || val === null) return '';
+        const s = String(val).trim();
+        if (!s) return '';
+        const m = s.match(/\d+/);
+        return m ? m[0] : s;
+      };
+
+      const normalizeDayForKey = (dayName) => {
+        return String(dayName || '').trim().toLowerCase();
+      };
+
+      const canonicalSubmissionKey = (teacherId, courseId, weekVal, dayName) => {
+        const t = String(teacherId || '').trim();
+        const c = String(courseId || '').trim();
+        return `${t}::${c}::${normalizeWeekForKey(weekVal)}::${normalizeDayForKey(dayName)}`;
+      };
+
+      const normalizeISODate = (val) => {
+        if (!val) return '';
+        const s = String(val).trim();
+        // Accept YYYY-MM-DD
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        // Try Date parsing as fallback
+        const dt = new Date(s);
+        if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+        return '';
+      };
+
+      const isPastISODate = (iso) => {
+        const d = normalizeISODate(iso);
+        if (!d) return false;
+        // String compare works for ISO yyyy-mm-dd
+        return d < todayISO;
+      };
+
+      const normalizeWeekDays = (input) => {
+        if (!input) return [];
+        if (Array.isArray(input)) {
+          return input.map(d => ({
+            dayName: (d.dayName || d.name || d.day || d.label || '').toString(),
+            date: normalizeISODate(d.date || d.dayDate || d.isoDate || d.dayISO || ''),
+            topic: d.topic || d.subject || d.title || '',
+            method: d.method || d.methods || '',
+            aids: d.aids || d.material || d.materials || '',
+            assessment: d.assessment || d.assess || d.evaluation || '',
+          }));
+        }
+        if (typeof input === 'object') {
+          return Object.keys(input).map((key) => {
+            const val = input[key] || {};
+            if (typeof val === 'string') return { dayName: key, date: '', topic: val, method: '', aids: '', assessment: '' };
+            return {
+              dayName: (val.dayName || val.name || key).toString(),
+              date: normalizeISODate(val.date || val.dayDate || val.isoDate || val.dayISO || ''),
+              topic: val.topic || val.subject || '',
+              method: val.method || val.methods || '',
+              aids: val.aids || val.material || '',
+              assessment: val.assessment || val.assess || '',
+            };
+          });
+        }
+        return [];
+      };
+
+      const pickAcademicYearKey = (obj, preferred = null) => {
+        if (!obj || typeof obj !== 'object') return null;
+        const keys = Object.keys(obj);
+        if (!keys.length) return null;
+        if (preferred && obj[preferred]) return preferred;
+        // RTDB keys cannot contain '/', so try common variants
+        if (preferred) {
+          const variants = [
+            preferred,
+            preferred.replaceAll('/', '_'),
+            preferred.replaceAll('/', '-'),
+            preferred.replaceAll('/', ''),
+          ];
+          for (const v of variants) {
+            if (obj[v]) return v;
+          }
+        }
+        // heuristic: choose lexicographically latest
+        return keys.sort().slice(-1)[0];
+      };
+
+      const parsePreferredAcademicYear = (preferred) => {
+        const s = String(preferred || '').trim();
+        const m = s.match(/^(\d{4})\s*\/\s*(\d{2,4})$/);
+        if (!m) return null;
+        const yearKey = m[1];
+        let termKey = m[2];
+        // store as 2-digit if given as 4-digit (e.g., 2026 -> 26)
+        if (termKey.length === 4) termKey = termKey.slice(2);
+        return { yearKey, termKey };
+      };
+
+      const resolveAcademicYearNode = (root, preferred) => {
+        if (!root || typeof root !== 'object') return { node: {}, path: [] };
+
+        // 1) direct key match (e.g., "2025_26" or "202526")
+        const directKey = pickAcademicYearKey(root, preferred);
+        if (directKey && root[directKey] && typeof root[directKey] === 'object') {
+          const directNode = root[directKey];
+          if (directNode.courses && typeof directNode.courses === 'object') return { node: directNode, path: [directKey] };
+        }
+
+        // 2) nested structure: root["2025"]["26"].courses
+        const parsed = parsePreferredAcademicYear(preferred);
+        if (parsed && root[parsed.yearKey] && typeof root[parsed.yearKey] === 'object') {
+          const yearLevel = root[parsed.yearKey];
+          if (yearLevel[parsed.termKey] && typeof yearLevel[parsed.termKey] === 'object') {
+            const nestedNode = yearLevel[parsed.termKey];
+            if (nestedNode.courses && typeof nestedNode.courses === 'object') return { node: nestedNode, path: [parsed.yearKey, parsed.termKey] };
+          }
+          // try any child that contains courses
+          for (const subKey of Object.keys(yearLevel || {})) {
+            const nestedNode = yearLevel?.[subKey];
+            if (nestedNode && typeof nestedNode === 'object' && nestedNode.courses && typeof nestedNode.courses === 'object') {
+              return { node: nestedNode, path: [parsed.yearKey, subKey] };
+            }
+          }
+        }
+
+        // 3) heuristic: find first node in root (or its first child) that has courses
+        for (const k of Object.keys(root || {})) {
+          const v = root?.[k];
+          if (v && typeof v === 'object') {
+            if (v.courses && typeof v.courses === 'object') return { node: v, path: [k] };
+            for (const sk of Object.keys(v || {})) {
+              const vv = v?.[sk];
+              if (vv && typeof vv === 'object' && vv.courses && typeof vv.courses === 'object') return { node: vv, path: [k, sk] };
+            }
+          }
+        }
+
+        return { node: {}, path: [] };
+      };
+
+      // Like resolveAcademicYearNode, but does NOT require a `.courses` child.
+      // Used for nodes like LessonPlanSubmissions where the year node directly contains courseIds.
+      const resolveAcademicYearNodeAny = (root, preferred) => {
+        if (!root || typeof root !== 'object') return { node: {}, path: [] };
+
+        // 1) nested structure: root["2025"]["26"] (matches the provided LessonPlanSubmissions schema)
+        const parsed = parsePreferredAcademicYear(preferred);
+        if (parsed && root[parsed.yearKey] && typeof root[parsed.yearKey] === 'object') {
+          const yearLevel = root[parsed.yearKey];
+          if (yearLevel[parsed.termKey] && typeof yearLevel[parsed.termKey] === 'object') {
+            return { node: yearLevel[parsed.termKey], path: [parsed.yearKey, parsed.termKey] };
+          }
+          // fallback to any child node
+          for (const subKey of Object.keys(yearLevel || {})) {
+            const nestedNode = yearLevel?.[subKey];
+            if (nestedNode && typeof nestedNode === 'object') {
+              return { node: nestedNode, path: [parsed.yearKey, subKey] };
+            }
+          }
+        }
+
+        // 2) direct key match (e.g., "2025_26" or "202526").
+        // IMPORTANT: avoid heuristically picking the latest key when preferred doesn't match,
+        // otherwise we can stop at the year container (e.g., "2025") and miss the term node ("26").
+        if (preferred) {
+          const variants = [
+            preferred,
+            String(preferred).replaceAll('/', '_'),
+            String(preferred).replaceAll('/', '-'),
+            String(preferred).replaceAll('/', ''),
+          ];
+          const directKey = variants.find((k) => root[k] && typeof root[k] === 'object');
+          if (directKey) return { node: root[directKey], path: [directKey] };
+        }
+
+        // 3) heuristic: pick first object-ish node
+        for (const k of Object.keys(root || {})) {
+          const v = root?.[k];
+          if (v && typeof v === 'object') {
+            // If it looks like a year container, try one level down
+            for (const sk of Object.keys(v || {})) {
+              const vv = v?.[sk];
+              if (vv && typeof vv === 'object') return { node: vv, path: [k, sk] };
+            }
+            return { node: v, path: [k] };
+          }
+        }
+
+        return { node: {}, path: [] };
+      };
+
+      const ALL_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const inferMonthFromWeekDays = (weekDays) => {
+        const d = (weekDays || []).find((x) => normalizeISODate(x?.date));
+        const iso = normalizeISODate(d?.date);
+        if (!iso) return '';
+        const dt = new Date(`${iso}T00:00:00`);
+        if (Number.isNaN(dt.getTime())) return '';
+        return ALL_MONTHS[dt.getMonth()] || '';
+      };
+
+      // Load teacher's LessonPlans root.
+      // IMPORTANT: LessonPlans may be keyed by teacherId (Teachers node key) or by userId (legacy).
+      const candidatePlanKeys = Array.from(new Set([
+        String(teacherId || '').trim(),
+        String(teacherUserId || '').trim(),
+      ].filter(Boolean)));
+
+      let teacherPlansRoot = {};
+      for (const k of candidatePlanKeys) {
+        // eslint-disable-next-line no-await-in-loop
+        const res = await axios.get(`${RTDB_BASE}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null }));
+        if (res && res.data && typeof res.data === 'object') {
+          teacherPlansRoot = res.data;
+          // Prefer the first non-empty object
+          if (Object.keys(teacherPlansRoot || {}).length) break;
+        }
+      }
+
+      const preferredAcademicYear = '2025/26';
+      const resolvedPlans = resolveAcademicYearNode(teacherPlansRoot, preferredAcademicYear);
+      const coursesNode = (resolvedPlans.node && resolvedPlans.node.courses && typeof resolvedPlans.node.courses === 'object') ? resolvedPlans.node.courses : {};
+
+      // Submissions are keyed by teacherId in LessonPlanSubmissions (per provided schema)
+      const teacherSubmissionId = String(teacherId || teacherUserId || '').trim();
+
+      // Load submissions (optional, for status)
+      // Support both node names: LessonPlanSubmissions (legacy) and LessonPlanSubmission (current)
+      // Support both teacher key styles: selectedTeacher.userId and selectedTeacher.teacherId
+      let submittedKeySet = new Set();
+      try {
+        const candidateTeacherKeys = Array.from(new Set([
+          String(teacherUserId || '').trim(),
+          String(selectedTeacher?.teacherId || '').trim(),
+        ].filter(Boolean)));
+
+        const submissionRoots = [];
+
+        for (const tKey of candidateTeacherKeys) {
+          const urls = [
+            `${RTDB_BASE}/LessonPlanSubmissions/${encodeURIComponent(tKey)}.json`,
+          
+          ];
+
+          const results = await Promise.all(
+            urls.map((u) => axios.get(u).catch(() => ({ data: null })))
+          );
+
+          results.forEach((r) => {
+            if (r && r.data && typeof r.data === 'object') submissionRoots.push(r.data);
+          });
+        }
+
+        submissionRoots.forEach((submissionsRoot) => {
+          const resolvedSubs = resolveAcademicYearNodeAny(submissionsRoot, preferredAcademicYear);
+          const submissionsYearNode = resolvedSubs.node || {};
+          Object.values(submissionsYearNode || {}).forEach((courseSubNode) => {
+            if (!courseSubNode || typeof courseSubNode !== 'object') return;
+            Object.values(courseSubNode).forEach((sub) => {
+              if (!sub) return;
+              // Store canonicalized submission keys so matching is robust
+              if (sub.key) {
+                const raw = String(sub.key).trim();
+                submittedKeySet.add(raw);
+                const parts = raw.split('::');
+                if (parts.length >= 4) {
+                  const [tId, cId, wk, dn] = parts.map((p) => String(p ?? '').trim());
+                  submittedKeySet.add(canonicalSubmissionKey(tId, cId, wk, dn));
+                }
+              }
+
+              // Also derive the canonical key from structured fields (preferred, matches your DB sample)
+              if (sub.teacherId || sub.courseId || sub.week || sub.dayName) {
+                submittedKeySet.add(
+                  canonicalSubmissionKey(sub.teacherId, sub.courseId, sub.week, sub.dayName)
+                );
+              }
+
+              // If childKey exists like teacherId__courseId__week__Monday, derive from it too
+              if (sub.childKey) {
+                const ck = String(sub.childKey).trim();
+                const parts = ck.split('__').map((p) => String(p ?? '').trim());
+                if (parts.length >= 4) {
+                  const [tId, cId, wk, dn] = parts;
+                  submittedKeySet.add(canonicalSubmissionKey(tId, cId, wk, dn));
+                }
+              }
+            });
+          });
+        });
+      } catch (e) {
+        // ignore missing submissions
+        submittedKeySet = new Set();
+      }
+
+      setPlanSubmittedKeys(Array.from(submittedKeySet));
+
+      const extractWeeksFromCourse = (courseId, courseEntry) => {
+        if (!courseEntry) return [];
+        const out = [];
+
+        const pushWeek = (weekObj, weekFallback = '') => {
+          if (!weekObj) return;
+          const weekDays = normalizeWeekDays(weekObj.weekDays || weekObj.days || weekObj.daily || []);
+          if (!weekDays.length && !(weekObj.topic || weekObj.weekTopic)) return;
+          const month = (weekObj.month || weekObj.monthName || '').toString() || inferMonthFromWeekDays(weekDays);
+          out.push({
+            month,
+            week: weekObj.week || weekObj.weekNumber || weekFallback || '',
+            topic: weekObj.topic || weekObj.weekTopic || '',
+            objective: weekObj.objective || weekObj.objectives || weekObj.weekObjective || weekObj.weekObjectives || '',
+            method: weekObj.method || weekObj.teachingMethod || weekObj.methods || '',
+            material: weekObj.material || weekObj.materials || weekObj.aids || weekObj.resources || '',
+            assessment: weekObj.assessment || weekObj.evaluation || weekObj.assessments || '',
+            weekDays,
+            courseId: courseId || weekObj.courseId || null,
+          });
+        };
+
+        // annual rows
+        if (courseEntry.annual && Array.isArray(courseEntry.annual.annualRows)) {
+          courseEntry.annual.annualRows.forEach((r) => pushWeek(r, r.week || ''));
+        }
+
+        // week_{x}
+        Object.keys(courseEntry).forEach((k) => {
+          if (!k) return;
+          if (k.startsWith('week_')) {
+            const wk = courseEntry[k];
+            const fallback = k.replace(/^week_/, '');
+            if (wk && typeof wk === 'object') pushWeek(wk, wk.week || fallback);
+          }
+        });
+
+        return out;
+      };
+
+      // Extract weeks across all courses
+      let weeks = [];
+      Object.entries(coursesNode || {}).forEach(([courseId, courseEntry]) => {
+        weeks = weeks.concat(extractWeeksFromCourse(courseId, courseEntry));
+      });
+
+      // Dedupe loosely by courseId+week+month+topic
+      const seen = new Set();
+      weeks = weeks.filter((w) => {
+        const key = `${String(w.courseId)}::${String(w.week)}::${String(w.month)}::${String(w.topic)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      setPlanWeeks(weeks);
+
+      // Per-course current week (the one containing today's weekday; fallback to first)
+      const currentWeeks = [];
+      const dailyPlans = [];
+      const coursesGrouped = (weeks || []).reduce((acc, w) => {
+        const cid = String(w.courseId || 'unknown');
+        if (!acc[cid]) acc[cid] = [];
+        acc[cid].push(w);
+        return acc;
+      }, {});
+
+      Object.entries(coursesGrouped).forEach(([courseId, courseWeeks]) => {
+        let idx = null;
+        for (let i = 0; i < courseWeeks.length; i++) {
+          if ((courseWeeks[i].weekDays || []).some(d => normalizeISODate(d.date) === todayISO)) {
+            idx = i;
+            break;
+          }
+          if ((courseWeeks[i].weekDays || []).some(d => (d.dayName || '').toString().toLowerCase() === todayName)) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx === null && courseWeeks.length) idx = 0;
+        if (idx === null) return;
+
+        const wk = courseWeeks[idx];
+        currentWeeks.push(wk);
+
+        (wk.weekDays || []).forEach((d) => {
+          const scheduledIndex = getScheduledIndex(d.dayName || '');
+          const submissionKey = canonicalSubmissionKey(teacherSubmissionId, courseId, wk.week || '', d.dayName || '');
+          const submitted = submittedKeySet.has(submissionKey) || submittedKeySet.has(String(submissionKey).replace(/::([a-z]+)$/i, (m) => m));
+          const status = submitted
+            ? 'submitted'
+            : (d.date && isPastISODate(d.date))
+              ? 'missed'
+              : (scheduledIndex !== null && scheduledIndex < todayIndex)
+                ? 'missed'
+                : 'pending';
+
+          const matchesToday = (d.date && normalizeISODate(d.date) === todayISO)
+            || scheduledIndex === todayIndex
+            || (d.dayName || '').toString().toLowerCase() === todayName;
+
+          if (matchesToday) {
+            dailyPlans.push({
+              ...d,
+              courseId,
+              week: wk.week || '',
+              month: wk.month || '',
+              status,
+              key: submissionKey,
+              scheduledIndex,
+            });
+          }
+        });
+      });
+
+      // Dedupe daily plans (can match by both date and weekday)
+      const seenDaily = new Set();
+      const dedupedDailyPlans = dailyPlans.filter((p) => {
+        const k = String(p.key || '');
+        if (!k) return true;
+        if (seenDaily.has(k)) return false;
+        seenDaily.add(k);
+        return true;
+      });
+
+      setPlanCurrentWeeks(currentWeeks);
+      // Keep legacy state for compatibility (first current week)
+      setPlanCurrentWeekIndex(currentWeeks.length ? 0 : null);
+      setTeacherDailyPlans(dedupedDailyPlans);
+    } catch (err) {
+      console.error('Failed to fetch LessonPlans', err);
+      setTeacherDailyPlans([]);
+      setPlanWeeks([]);
+      setPlanCurrentWeeks([]);
+      setPlanCurrentWeekIndex(null);
+      setPlanSubmittedKeys([]);
+      setPlanError('Failed to load lesson plans from database.');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  fetchLessonPlans();
+}, [selectedTeacher, activeTab, planRefreshKey]);
+
+// Fetch course labels for Plan tab dropdown (based on courseIds present in plan data)
+useEffect(() => {
+  if (!selectedTeacher || activeTab !== 'plan') return;
+
+  const ids = Array.from(new Set([
+    ...(Array.isArray(planWeeks) ? planWeeks.map((w) => String(w?.courseId || '')).filter(Boolean) : []),
+    ...(Array.isArray(planCurrentWeeks) ? planCurrentWeeks.map((w) => String(w?.courseId || '')).filter(Boolean) : []),
+  ]));
+
+  if (!ids.length) {
+    setPlanCourseLabelMap({});
+    setPlanSelectedCourseId('all');
+    return;
+  }
+
+  let cancelled = false;
+
+  const run = async () => {
+    try {
+      const res = await axios.get(`${RTDB_BASE}/Courses.json`);
+      const courses = res.data || {};
+      const map = {};
+      ids.forEach((courseId) => {
+        const c = courses?.[courseId];
+        if (!c) return;
+        const subject = (c.subject || '').toString().trim() || courseId;
+        const grade = c.grade ? `Grade ${c.grade}` : '';
+        const section = c.section ? `${c.section}` : '';
+        const meta = [grade, section].filter(Boolean).join(' ');
+        map[courseId] = meta ? `${subject} • ${meta}` : subject;
+      });
+
+      if (cancelled) return;
+      setPlanCourseLabelMap(map);
+      setPlanSelectedCourseId((prev) => {
+        if (prev === 'all') return prev;
+        return ids.includes(prev) ? prev : 'all';
+      });
+    } catch (e) {
+      if (cancelled) return;
+      setPlanCourseLabelMap({});
+      setPlanSelectedCourseId('all');
+    }
+  };
+
+  run();
+  return () => { cancelled = true; };
+}, [selectedTeacher, activeTab, planWeeks, planCurrentWeeks, RTDB_BASE]);
+
+
 // helper: canonical chat key (sorted so it's consistent)
 const getChatKey = (userA, userB) => {
   // ensure stable ordering: "lower_higher"
   return [userA, userB].sort().join("_");
 };
 
-// FETCH CHAT MESSAGES for popup (replace your existing effect)
-useEffect(() => {
-  if (!teacherChatOpen || !selectedTeacher) return;
+const ensureChatRoot = async (chatKey, otherUserId) => {
+  if (!adminUserId || !otherUserId) return;
+  try {
+    const res = await axios.get(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}.json`).catch(() => ({ data: null }));
+    const existing = res.data || {};
+    const participants = { ...(existing.participants || {}), [adminUserId]: true, [otherUserId]: true };
 
-  const fetchMessages = async () => {
-    try {
-      const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+    const unread = { ...(existing.unread || {}) };
+    if (unread[adminUserId] === undefined) unread[adminUserId] = 0;
+    if (unread[otherUserId] === undefined) unread[otherUserId] = 0;
 
-      // read messages node
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`
-      );
+    const patch = { participants, unread };
+    if (existing.typing === undefined) patch.typing = null;
+    if (existing.lastMessage === undefined) patch.lastMessage = null;
 
-      const data = res.data || {};
-      // transform object -> array with messageId and sender role
-      const msgs = Object.entries(data || {})
-        .map(([id, msg]) => ({
-          messageId: id,
-          ...msg,
-          sender: msg.senderId === adminUserId ? "admin" : "teacher",
-        }))
-        .sort((a, b) => (a.timeStamp || 0) - (b.timeStamp || 0));
+    await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}.json`, patch).catch(() => {});
+  } catch (e) {
+    // ignore
+  }
+};
 
-      setPopupMessages(msgs);
-    } catch (err) {
-      console.error("Failed to fetch chat messages:", err);
-      setPopupMessages([]);
+const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+  try {
+    const res = await axios.get(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`).catch(() => ({ data: null }));
+    const last = res.data;
+    if (!last) return;
+    if (String(last.receiverId) === String(adminUserId) && last.seen === false) {
+      await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`, { seen: true }).catch(() => {});
     }
-  };
+  } catch (e) {
+    // ignore
+  }
+};
 
-  fetchMessages();
+const clearTyping = (chatKey) => {
+  axios.put(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/typing.json`, null).catch(() => {});
+};
 
-  // optional: poll for new messages while popup is open
-  const interval = setInterval(fetchMessages, 3000);
-  return () => clearInterval(interval);
-}, [teacherChatOpen, selectedTeacher, adminUserId]);
+const handleTyping = (text) => {
+  if (!adminUserId || !selectedTeacher?.userId) return;
+  const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+
+  if (!text || !text.trim()) {
+    clearTyping(chatKey);
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+    return;
+  }
+
+  axios.put(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/typing.json`, { userId: adminUserId }).catch(() => {});
+
+  if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+  typingTimeoutRef.current = setTimeout(() => {
+    clearTyping(chatKey);
+    typingTimeoutRef.current = null;
+  }, 1800);
+};
 
 //----------------------Fetch unread messages for teachers--------------------
 
@@ -381,7 +827,7 @@ useEffect(() => {
     const unread = {};
 
     for (const t of teachers) {
-      const chatKey = `${adminUserId}_${t.userId}`;
+      const chatKey = getChatKey(adminUserId, t.userId);
       try {
         const res = await axios.get(
           `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
@@ -405,33 +851,7 @@ useEffect(() => {
 }, [teachers, adminUserId]);
 
 
-  // ---------------- FETCH CHAT MESSAGES ----------------
-useEffect(() => {
-  if (!teacherChatOpen || !selectedTeacher) return;
-
-  const fetchMessages = async () => {
-    try {
-      const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
-
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
-      );
-
-      const msgs = Object.entries(res.data || {}).map(([id, msg]) => ({
-        messageId: id,
-        ...msg,
-        sender: msg.senderId === adminUserId ? "admin" : "teacher"
-      })).sort((a, b) => a.timeStamp - b.timeStamp);
-
-      setPopupMessages(msgs);
-    } catch (err) {
-      console.error(err);
-      setPopupMessages([]);
-    }
-  };
-
-  fetchMessages();
-}, [teacherChatOpen, selectedTeacher, adminUserId]);
+// (Popup messages are handled by the realtime subscription below)
 
 // ---------------- SEND POPUP MESSAGE ----------------
 const sendPopupMessage = async () => {
@@ -454,6 +874,9 @@ const sendPopupMessage = async () => {
   };
 
   try {
+    // Ensure chat root exists in the correct schema
+    await ensureChatRoot(chatKey, selectedTeacher.userId);
+
     // 1) Push message to messages node (POST -> returns a name/key)
     const pushRes = await axios.post(
       `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`,
@@ -461,26 +884,23 @@ const sendPopupMessage = async () => {
     );
     const generatedId = pushRes.data && pushRes.data.name;
 
-    // 2) Update lastMessage (so UI can show previews)
+    // 2) Update lastMessage with full schema
     const lastMessage = {
-      text: newMessage.text,
+      messageId: generatedId || `${timestamp}`,
       senderId: newMessage.senderId,
+      receiverId: newMessage.receiverId,
+      text: newMessage.text || "",
+      type: newMessage.type || "text",
+      timeStamp: newMessage.timeStamp,
       seen: false,
-      timeStamp: newMessage.timeStamp
+      edited: false,
+      deleted: false,
     };
 
-    await axios.patch(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}.json`,
-      {
-        lastMessage,
-        // ensure participants entry exists
-        participants: {
-          ...(/* keep existing participants if any */ {}),
-          [adminUserId]: true,
-          [selectedTeacher.userId]: true
-        }
-      }
-    );
+    await axios.put(
+      `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`,
+      lastMessage
+    ).catch(() => {});
 
     // 3) Increment unread count for receiver (non-atomic: read -> increment -> write)
     try {
@@ -489,7 +909,7 @@ const sendPopupMessage = async () => {
       );
       const unread = unreadRes.data || {};
       const prev = Number(unread[selectedTeacher.userId] || 0);
-      const updated = { ...(unread || {}), [selectedTeacher.userId]: prev + 1 };
+      const updated = { ...(unread || {}), [selectedTeacher.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
       await axios.put(
         `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`,
         updated
@@ -502,6 +922,9 @@ const sendPopupMessage = async () => {
       );
     }
 
+    // Clear typing after sending
+    clearTyping(chatKey);
+
     // 4) Optimistically update UI
     setPopupMessages(prev => [
       ...prev,
@@ -513,51 +936,6 @@ const sendPopupMessage = async () => {
   }
 };
 
-const markMessagesAsSeen = async (userId) => {
-  const chatKey = getChatKey(userId, adminUserId);
-
-  try {
-    // read messages
-    const res = await axios.get(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/messages.json`
-    );
-    const data = res.data || {};
-
-    // build updates to set seen=true for messages where receiverId === adminUserId and seen is false
-    const updates = {};
-    Object.entries(data).forEach(([msgId, msg]) => {
-      if (msg.receiverId === adminUserId && !msg.seen) {
-        updates[`messages/${msgId}/seen`] = true;
-      }
-    });
-
-    // apply updates (PATCH at chat root)
-    if (Object.keys(updates).length > 0) {
-      await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}.json`,
-        updates
-      );
-    }
-
-    // reset unread counter for adminUserId
-    try {
-      const unreadRes = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`
-      );
-      const unread = unreadRes.data || {};
-      // set admin unread to 0
-      const updated = { ...(unread || {}), [adminUserId]: 0 };
-      await axios.put(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${encodeURIComponent(chatKey)}/unread.json`,
-        updated
-      );
-    } catch (uErr) {
-      // ignore
-    }
-  } catch (err) {
-    console.error("markMessagesAsSeen error:", err);
-  }
-};
 
 const getUnreadCount = async (userId) => {
   const chatKey = getChatKey(userId, adminUserId);
@@ -576,122 +954,6 @@ const getUnreadCount = async (userId) => {
 };
 
 
- // ---------------- FETCH UNREAD MESSAGES ----------------
-const fetchUnreadMessages = async () => {
-  if (!admin.userId) return;
-
-  const senders = {};
-
-  try {
-    // 1️⃣ USERS (names & images)
-    const usersRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-    );
-    const usersData = usersRes.data || {};
-
- const findUserByUserId = (userId) => {
-  return Object.values(usersData).find(u => u.userId === userId);
-};
-
-
-
-    // helper to read messages from BOTH chat keys (resilient)
-    const getUnreadCount = async (userId) => {
-      const key1 = `${admin.userId}_${userId}`;
-      const key2 = `${userId}_${admin.userId}`;
-
-      try {
-        // use Promise.allSettled so one failing key doesn't abort both
-        const results = await Promise.allSettled([
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`, { timeout: 10000 }),
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`, { timeout: 10000 }),
-        ]);
-
-        const msgs = [];
-        for (const r of results) {
-          if (r.status === 'fulfilled' && r.value && r.value.data) {
-            msgs.push(...Object.values(r.value.data || {}));
-          }
-        }
-
-        return msgs.filter(m => m && m.receiverId === admin.userId && !m.seen).length;
-      } catch (err) {
-        // don't throw; return 0 if there's any problem
-        console.warn('getUnreadCount error for', userId, err?.message || err);
-        return 0;
-      }
-    };
-
-    // 2️⃣ TEACHERS
-    const teachersRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
-    );
-
-    for (const k in teachersRes.data || {}) {
-      const t = teachersRes.data[k];
-      const unread = await getUnreadCount(t.userId);
-
-      if (unread > 0) {
-       const user = findUserByUserId(t.userId);
-
-senders[t.userId] = {
-  type: "teacher",
-  name: user?.name || "Teacher",
-  profileImage: user?.profileImage || "/default-profile.png",
-  count: unread
-};
-      }
-    }
-
-    // 3️⃣ STUDENTS
-    const studentsRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
-    );
-
-    for (const k in studentsRes.data || {}) {
-      const s = studentsRes.data[k];
-      const unread = await getUnreadCount(s.userId);
-
-      if (unread > 0) {
-        const user = findUserByUserId(s.userId);
-
-senders[s.userId] = {
-  type: "student",
-  name: user?.name || s.name || "Student",
-  profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
-  count: unread
-};
-
-      }
-    }
-
-    // 4️⃣ PARENTS
-    const parentsRes = await axios.get(
-      "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
-    );
-
-    for (const k in parentsRes.data || {}) {
-      const p = parentsRes.data[k];
-      const unread = await getUnreadCount(p.userId);
-
-      if (unread > 0) {
-       const user = findUserByUserId(p.userId);
-
-senders[p.userId] = {
-  type: "parent",
-  name: user?.name || p.name || "Parent",
-  profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
-  count: unread
-};
-
-      }
-    }
-
-    setUnreadSenders(senders);
-  } catch (err) {
-    console.error("Unread fetch failed:", err);
-  }
-};
 
   // ---------------- CLOSE DROPDOWN ON OUTSIDE CLICK ----------------
 useEffect(() => {
@@ -746,7 +1008,9 @@ useEffect(() => {
       try {
         await axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json`, updates);
         setUnreadTeachers(prev => ({ ...prev, [selectedTeacher.userId]: 0 }));
-        axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+        await ensureChatRoot(chatKey, selectedTeacher.userId);
+        await axios.put(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread/${adminUserId}.json`, 0).catch(() => {});
+        await maybeMarkLastMessageSeenForAdmin(chatKey);
       } catch (err) {
         console.error('Failed to patch seen updates:', err);
       }
@@ -756,6 +1020,348 @@ useEffect(() => {
   const unsubscribe = onValue(messagesRef, handleSnapshot);
   return () => unsubscribe();
 }, [teacherChatOpen, selectedTeacher, adminUserId]);
+
+
+useEffect(() => {
+  if (!teacherChatOpen || !selectedTeacher) {
+    setTypingUserId(null);
+    return;
+  }
+
+  const chatKey = getChatKey(selectedTeacher.userId, adminUserId);
+  const typingRef = ref(dbRT, `Chats/${chatKey}/typing`);
+
+  const unsubscribe = onValue(typingRef, (snapshot) => {
+    const data = snapshot.val();
+    setTypingUserId(data?.userId || null);
+  });
+
+  return () => {
+    unsubscribe();
+    setTypingUserId(null);
+  };
+}, [teacherChatOpen, selectedTeacher, adminUserId]);
+
+
+
+ const fetchPostNotifications = async () => {
+  if (!adminId) return;
+
+  try {
+    // 1️⃣ Get post notifications
+    const res = await axios.get(
+      `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
+    );
+
+    let notifications = Array.isArray(res.data)
+      ? res.data
+      : Object.values(res.data || {});
+
+    if (notifications.length === 0) {
+      setPostNotifications([]);
+      return;
+    }
+
+    // 2️⃣ Fetch Users & School_Admins
+    const [usersRes, adminsRes] = await Promise.all([
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      ),
+      axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
+      ),
+    ]);
+
+    const users = usersRes.data || {};
+    const admins = adminsRes.data || {};
+
+    // 3️⃣ Helpers
+    const findAdminUser = (adminId) => {
+      const admin = admins[adminId];
+      if (!admin) return null;
+
+      return Object.values(users).find(
+        (u) => u.userId === admin.userId
+      );
+    };
+
+    // 4️⃣ Enrich notifications
+    const enriched = notifications.map((n) => {
+      const posterUser = findAdminUser(n.adminId);
+
+      return {
+        ...n,
+        notificationId:
+          n.notificationId ||
+          n.id ||
+          `${n.postId}_${n.adminId}`,
+
+        adminName: posterUser?.name || "Unknown Admin",
+        adminProfile:
+          posterUser?.profileImage || "/default-profile.png",
+      };
+    });
+
+    setPostNotifications(enriched);
+  } catch (err) {
+    console.error("Post notification fetch failed", err);
+    setPostNotifications([]);
+  }
+};
+
+
+  useEffect(() => {
+    if (!adminId) return;
+
+    fetchPostNotifications();
+    const interval = setInterval(fetchPostNotifications, 5000);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminId]);
+
+ const handleNotificationClick = async (notification) => {
+  try {
+    await axios.post(
+      "http://127.0.0.1:5000/api/mark_post_notification_read",
+      {
+        notificationId: notification.notificationId,
+        adminId: admin.userId,
+      }
+    );
+  } catch (err) {
+    console.warn("Failed to delete notification:", err);
+  }
+
+  // 🔥 REMOVE FROM UI IMMEDIATELY
+  setPostNotifications((prev) =>
+    prev.filter((n) => n.notificationId !== notification.notificationId)
+  );
+
+  setShowPostDropdown(false);
+
+  // ➜ Navigate to post
+  navigate("/dashboard", {
+    state: { postId: notification.postId },
+  });
+};
+useEffect(() => {
+  if (location.state?.postId) {
+    setPostNotifications([]);
+  }
+}, []);
+
+
+  useEffect(() => {
+    const closeDropdown = (e) => {
+      if (
+        !e.target.closest(".icon-circle") &&
+        !e.target.closest(".notification-dropdown")
+      ) {
+        setShowPostDropdown(false);
+      }
+    };
+
+    document.addEventListener("click", closeDropdown);
+    return () => document.removeEventListener("click", closeDropdown);
+  }, []);
+
+
+  const toggleDropdown = () => {
+    setShowMessageDropdown((prev) => !prev);
+  };
+
+  useEffect(() => {
+    const closeDropdown = (e) => {
+      setShowMessageDropdown(false);
+    };
+
+    document.addEventListener("click", closeDropdown);
+    return () => document.removeEventListener("click", closeDropdown);
+  }, []);
+
+  useEffect(() => {
+    const fetchUnreadSenders = async () => {
+      try {
+        const response = await fetch("/api/unreadSenders");
+        const data = await response.json();
+        setUnreadSenders(data);
+      } catch (err) {
+        // ignore
+      }
+    };
+    fetchUnreadSenders();
+  }, []);
+
+  const handleClick = () => {
+    navigate("/all-chat");
+  };
+
+  // ---------------- FETCH UNREAD MESSAGES ----------------
+  const fetchUnreadMessages = async () => {
+    if (!admin.userId) return;
+
+    const senders = {};
+
+    try {
+      // 1) USERS (names & images)
+      const usersRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+      );
+      const usersData = usersRes.data || {};
+
+      const findUserByUserId = (userId) => {
+        return Object.values(usersData).find((u) => u.userId === userId);
+      };
+
+      const getUnreadCount = async (userId) => {
+        const key1 = `${admin.userId}_${userId}`;
+        const key2 = `${userId}_${admin.userId}`;
+
+        const [r1, r2] = await Promise.all([
+          axios.get(
+            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+          ),
+          axios.get(
+            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+          ),
+        ]);
+
+        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
+
+        return msgs.filter((m) => m.receiverId === admin.userId && !m.seen).length;
+      };
+
+      // TEACHERS
+      const teachersRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+      );
+
+      for (const k in teachersRes.data || {}) {
+        const t = teachersRes.data[k];
+        const unread = await getUnreadCount(t.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(t.userId);
+
+          senders[t.userId] = {
+            type: "teacher",
+            name: user?.name || "Teacher",
+            profileImage: user?.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      // STUDENTS
+      const studentsRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+      );
+
+      for (const k in studentsRes.data || {}) {
+        const s = studentsRes.data[k];
+        const unread = await getUnreadCount(s.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(s.userId);
+
+          senders[s.userId] = {
+            type: "student",
+            name: user?.name || s.name || "Student",
+            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      // PARENTS
+      const parentsRes = await axios.get(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
+      );
+
+      for (const k in parentsRes.data || {}) {
+        const p = parentsRes.data[k];
+        const unread = await getUnreadCount(p.userId);
+
+        if (unread > 0) {
+          const user = findUserByUserId(p.userId);
+
+          senders[p.userId] = {
+            type: "parent",
+            name: user?.name || p.name || "Parent",
+            profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
+            count: unread,
+          };
+        }
+      }
+
+      setUnreadSenders(senders);
+    } catch (err) {
+      console.error("Unread fetch failed:", err);
+    }
+  };
+
+  // ---------------- CLOSE DROPDOWN WHEN CLICKING OUTSIDE ----------------
+  useEffect(() => {
+    const closeDropdown = (e) => {
+      if (!e.target.closest(".icon-circle") && !e.target.closest(".messenger-dropdown")) {
+        setShowMessageDropdown(false);
+      }
+    };
+
+    document.addEventListener("click", closeDropdown);
+    return () => document.removeEventListener("click", closeDropdown);
+  }, []);
+
+  useEffect(() => {
+    if (!admin.userId) return;
+
+    fetchUnreadMessages();
+    const interval = setInterval(fetchUnreadMessages, 5000);
+
+    return () => clearInterval(interval);
+  }, [admin.userId]);
+
+  const markMessagesAsSeen = async (userId) => {
+    const key1 = `${admin.userId}_${userId}`;
+    const key2 = `${userId}_${admin.userId}`;
+
+    const [r1, r2] = await Promise.all([
+      axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+      ),
+      axios.get(
+        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+      ),
+    ]);
+
+    const updates = {};
+
+    const collectUpdates = (data, basePath) => {
+      Object.entries(data || {}).forEach(([msgId, msg]) => {
+        if (msg.receiverId === admin.userId && !msg.seen) {
+          updates[`${basePath}/${msgId}/seen`] = true;
+        }
+      });
+    };
+
+    collectUpdates(r1.data, `Chats/${key1}/messages`);
+    collectUpdates(r2.data, `Chats/${key2}/messages`);
+
+    if (Object.keys(updates).length > 0) {
+      await axios.patch(
+        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
+        updates
+      );
+    }
+  };
+
+  // badge counts (match MyPosts UI)
+  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalNotifications = (postNotifications?.length || 0) + messageCount;
+
+
+
 
 
 
@@ -945,7 +1551,6 @@ useEffect(() => {
                   style={{
                     width: isNarrow ? "90%" : "500px",
                     height: "100px",
-                    border: "1px solid #ddd",
                     borderRadius: "12px",
                     padding: "15px",
                     background: selectedTeacher?.teacherId === t.teacherId ? "#e0e7ff" : "#fff",
@@ -1380,11 +1985,895 @@ useEffect(() => {
 
 
       {/* ================= PLAN TAB ================= */}
-      {activeTab === "plan" && (
-        <p style={{ color: "#6b7280" }}>
-          Teacher lesson plans will be shown here.
-        </p>
-      )}
+      {activeTab === "plan" && (() => {
+        const teacherUserId = selectedTeacher?.userId;
+        const teacherSubmissionId = String(selectedTeacher?.teacherId || teacherUserId || '').trim();
+        const today = new Date();
+        const todayISO = today.toISOString().slice(0, 10);
+        const todayIndex = today.getDay();
+        const currentMonthName = today.toLocaleDateString('en-US', { month: 'long' });
+        const normalizeWeekForKey = (val) => {
+          if (val === undefined || val === null) return '';
+          const s = String(val).trim();
+          if (!s) return '';
+          const m = s.match(/\d+/);
+          return m ? m[0] : s;
+        };
+
+        const normalizeDayForKey = (dayName) => String(dayName || '').trim().toLowerCase();
+
+        const canonicalSubmissionKey = (teacherId, courseId, weekVal, dayName) => {
+          const t = String(teacherId || '').trim();
+          const c = String(courseId || '').trim();
+          return `${t}::${c}::${normalizeWeekForKey(weekVal)}::${normalizeDayForKey(dayName)}`;
+        };
+
+        const submittedKeySet = new Set(
+          (planSubmittedKeys || []).flatMap((k) => {
+            const raw = String(k).trim();
+            const parts = raw.split('::');
+            if (parts.length >= 4) {
+              const [tId, cId, wk, dn] = parts.map((p) => String(p ?? '').trim());
+              return [raw, canonicalSubmissionKey(tId, cId, wk, dn)];
+            }
+            return [raw];
+          })
+        );
+
+        const allCourseIds = Array.from(new Set([
+          ...(Array.isArray(planWeeks) ? planWeeks.map((w) => String(w?.courseId || '')).filter(Boolean) : []),
+          ...(Array.isArray(planCurrentWeeks) ? planCurrentWeeks.map((w) => String(w?.courseId || '')).filter(Boolean) : []),
+          ...(Array.isArray(teacherDailyPlans) ? teacherDailyPlans.map((p) => String(p?.courseId || '')).filter(Boolean) : []),
+        ]));
+
+        const courseOptions = [
+          { value: 'all', label: 'All Subjects' },
+          ...allCourseIds.map((id) => ({
+            value: id,
+            label: planCourseLabelMap?.[id] || id,
+          })),
+        ];
+
+        const selectedCourseLabel = planSelectedCourseId === 'all'
+          ? 'All Subjects'
+          : (planCourseLabelMap?.[planSelectedCourseId] || planSelectedCourseId);
+
+        const visibleDailyPlans = planSelectedCourseId === 'all'
+          ? (teacherDailyPlans || [])
+          : (teacherDailyPlans || []).filter((p) => String(p?.courseId || '') === String(planSelectedCourseId));
+
+        const visibleCurrentWeeks = planSelectedCourseId === 'all'
+          ? (planCurrentWeeks || [])
+          : (planCurrentWeeks || []).filter((w) => String(w?.courseId || '') === String(planSelectedCourseId));
+
+        const visiblePlanWeeks = planSelectedCourseId === 'all'
+          ? (planWeeks || [])
+          : (planWeeks || []).filter((w) => String(w?.courseId || '') === String(planSelectedCourseId));
+
+        const getScheduledIndex = (dayName) => {
+          const lname = (dayName || '').toString().toLowerCase();
+          return Object.prototype.hasOwnProperty.call(dayOrder, lname) ? dayOrder[lname] : null;
+        };
+
+        const buildSubmissionKey = (courseId, weekVal, dayName) => {
+          return canonicalSubmissionKey(teacherSubmissionId || 'anon', courseId || 'unknown', weekVal || '', dayName || '');
+        };
+
+        const getDayStatus = (courseId, weekVal, day) => {
+          const dayName = (day?.dayName || '').toString();
+          const iso = (day?.date || '').toString().slice(0, 10);
+          const scheduledIndex = getScheduledIndex(dayName);
+          const key = buildSubmissionKey(courseId, weekVal, dayName);
+          const submitted = submittedKeySet.has(key);
+          if (submitted) return { status: 'submitted', key };
+
+          // Prefer ISO date if present, otherwise fallback to weekday ordering
+          if (iso && iso < todayISO) return { status: 'missed', key };
+          if (scheduledIndex !== null && scheduledIndex < todayIndex) return { status: 'missed', key };
+          return { status: 'pending', key };
+        };
+
+        const weekStats = (() => {
+          const stats = { submitted: 0, missed: 0, pending: 0, total: 0 };
+          (visibleCurrentWeeks || []).forEach((wk) => {
+            (wk?.weekDays || []).forEach((d) => {
+              const ds = getDayStatus(wk?.courseId, wk?.week, d);
+              stats[ds.status] = (stats[ds.status] || 0) + 1;
+              stats.total += 1;
+            });
+          });
+          return stats;
+        })();
+
+        const currentMonthWeeks = (visiblePlanWeeks || []).filter((w) => {
+          const m = (w?.month || '').toString().trim().toLowerCase();
+          return m && m === currentMonthName.toLowerCase();
+        });
+
+        const monthlyCount = currentMonthWeeks.length;
+
+        const monthStats = (() => {
+          const stats = { submitted: 0, missed: 0, pending: 0, total: 0, topics: [] };
+          (currentMonthWeeks || []).forEach((w) => {
+            if (w?.topic) stats.topics.push(w.topic);
+            (w?.weekDays || []).forEach((d) => {
+              const ds = getDayStatus(w?.courseId, w?.week, d);
+              stats[ds.status] = (stats[ds.status] || 0) + 1;
+              stats.total += 1;
+              if (d?.topic) stats.topics.push(d.topic);
+            });
+          });
+          // de-dupe topics
+          stats.topics = Array.from(new Set(stats.topics.filter(Boolean)));
+          return stats;
+        })();
+
+        const monthPct = monthStats.total ? Math.round((monthStats.submitted / monthStats.total) * 100) : 0;
+
+        const monthIndexMap = {
+          january: 1,
+          february: 2,
+          march: 3,
+          april: 4,
+          may: 5,
+          june: 6,
+          july: 7,
+          august: 8,
+          september: 9,
+          october: 10,
+          november: 11,
+          december: 12,
+        };
+
+        const getMonthIndex = (m) => {
+          const key = (m || '').toString().trim().toLowerCase();
+          return monthIndexMap[key] || 999;
+        };
+
+        const annualWeeks = Array.isArray(visiblePlanWeeks) ? visiblePlanWeeks : [];
+        const annualByMonth = annualWeeks.reduce((acc, w) => {
+          const monthKey = (w?.month || '').toString().trim() || 'Other';
+          if (!acc[monthKey]) acc[monthKey] = [];
+          acc[monthKey].push(w);
+          return acc;
+        }, {});
+
+        const annualMonthKeys = Object.keys(annualByMonth).sort((a, b) => {
+          const ai = getMonthIndex(a);
+          const bi = getMonthIndex(b);
+          if (ai !== bi) return ai - bi;
+          return a.localeCompare(b);
+        });
+
+        const getWeekSortValue = (w) => {
+          const raw = w?.week;
+          if (raw === undefined || raw === null) return 9999;
+          const n = Number(raw);
+          if (!Number.isNaN(n)) return n;
+          const m = String(raw).match(/\d+/);
+          return m ? Number(m[0]) : 9999;
+        };
+
+        const downloadAnnualExcel = () => {
+          try {
+            const normalizeText = (v) => {
+              if (v === undefined || v === null) return '';
+              if (Array.isArray(v)) return v.map((x) => String(x ?? '').trim()).filter(Boolean).join('; ');
+              return String(v).trim();
+            };
+
+            const uniqJoin = (vals) => {
+              const out = Array.from(new Set((vals || []).map((x) => normalizeText(x)).filter(Boolean)));
+              return out.join('; ');
+            };
+
+            const escapeHtml = (s) => {
+              return String(s ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+            };
+
+            const rows = [];
+            annualMonthKeys.forEach((mKey) => {
+              const monthWeeks = (annualByMonth[mKey] || []).slice().sort((a, b) => getWeekSortValue(a) - getWeekSortValue(b));
+              monthWeeks.forEach((wk) => {
+                const weekLabel = wk?.week ? `Week ${wk.week}` : '-';
+                const days = Array.isArray(wk?.weekDays) ? wk.weekDays : [];
+
+                const topic = normalizeText(wk?.topic) || uniqJoin(days.map((d) => d?.topic));
+                const objective =
+                  normalizeText(wk?.objective) ||
+                  normalizeText(wk?.objectives) ||
+                  uniqJoin(days.map((d) => d?.objective ?? d?.objectives));
+                const method = normalizeText(wk?.method) || uniqJoin(days.map((d) => d?.method));
+                const material =
+                  normalizeText(wk?.material) ||
+                  normalizeText(wk?.materials) ||
+                  normalizeText(wk?.aids) ||
+                  uniqJoin(days.map((d) => d?.material ?? d?.materials ?? d?.aids));
+                const assessment = normalizeText(wk?.assessment) || uniqJoin(days.map((d) => d?.assessment));
+
+                const agg = (() => {
+                  const c = { submitted: 0, missed: 0, pending: 0, total: 0 };
+                  (days || []).forEach((d) => {
+                    const ds = getDayStatus(wk?.courseId, wk?.week, d);
+                    c[ds.status] = (c[ds.status] || 0) + 1;
+                    c.total += 1;
+                  });
+                  return c;
+                })();
+
+                const status = agg.missed > 0 ? 'missed' : (agg.submitted > 0 ? 'submitted' : 'pending');
+
+                rows.push({
+                  month: mKey,
+                  week: weekLabel,
+                  topic,
+                  objective,
+                  method,
+                  material,
+                  assessment,
+                  status,
+                });
+              });
+            });
+
+            if (!rows.length) return;
+
+            const teacherLabel = (selectedTeacher?.fullName || selectedTeacher?.name || selectedTeacher?.userId || 'teacher').toString();
+            const safeTeacher = teacherLabel.replace(/[\\/:*?"<>|]/g, '_');
+            const safeCourse = (selectedCourseLabel || 'all').toString().replace(/[\\/:*?"<>|]/g, '_');
+            const dateStamp = new Date().toISOString().slice(0, 10);
+            const filename = `Annual_Lesson_Plan_${safeTeacher}_${safeCourse}_${dateStamp}.xls`;
+
+            const exportYear = '2025/26';
+
+            const selectedLabel = (selectedCourseLabel || '').toString();
+            const parsed = (() => {
+              if (!selectedLabel || planSelectedCourseId === 'all') {
+                return { subject: 'All Subjects', gradeSection: '' };
+              }
+
+              // Expected label format: "Subject • Grade X Section" (best-effort parsing)
+              const parts = selectedLabel.split('•').map((s) => s.trim()).filter(Boolean);
+              const subject = parts[0] || selectedLabel;
+              const meta = parts[1] || '';
+              if (!meta) return { subject, gradeSection: '' };
+
+              const m = meta.match(/Grade\s*(\d+)\s*(.*)$/i);
+              if (!m) return { subject, gradeSection: meta };
+              const grade = m[1] ? `Grade ${m[1]}` : '';
+              const section = (m[2] || '').trim();
+              const gradeSection = [grade, section].filter(Boolean).join(' ');
+              return { subject, gradeSection };
+            })();
+
+            const css = `
+              table { border-collapse: collapse; font-family: Calibri, Arial, sans-serif; font-size: 12pt; }
+              th, td { border: 1px solid #000; padding: 6px 8px; vertical-align: top; }
+              th { background: #f1f5f9; font-weight: 700; }
+            `;
+
+            const header = ['Month', 'Week', 'Topic', 'Objective', 'Method', 'Material', 'Assessment'];
+            const metaHtml = `
+              <div style="font-family: Calibri, Arial, sans-serif; font-size: 12pt;">
+                <div><strong>Teacher Name:</strong> ${escapeHtml(teacherLabel)}</div>
+                <div><strong>Grade &amp; Section:</strong> ${escapeHtml(parsed.gradeSection || '-')}</div>
+                <div><strong>Subject:</strong> ${escapeHtml(parsed.subject || selectedLabel || '-')}</div>
+                <div><strong>Year:</strong> ${escapeHtml(exportYear)}</div>
+              </div>
+              <br />
+            `;
+            const tableHtml = `
+              <table>
+                <thead>
+                  <tr>${header.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+                </thead>
+                <tbody>
+                  ${rows.map((r) => {
+                    const bg = r.status === 'missed' ? '#FEE2E2' : (r.status === 'submitted' ? '#DCFCE7' : '#FFFFFF');
+                    return (
+                    `<tr style="background-color:${bg};">
+                      <td>${escapeHtml(r.month)}</td>
+                      <td>${escapeHtml(r.week)}</td>
+                      <td>${escapeHtml(r.topic || '-') }</td>
+                      <td>${escapeHtml(r.objective || '-') }</td>
+                      <td>${escapeHtml(r.method || '-') }</td>
+                      <td>${escapeHtml(r.material || '-') }</td>
+                      <td>${escapeHtml(r.assessment || '-') }</td>
+                    </tr>`
+                    );
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+
+            const html = `
+              <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+                <head>
+                  <meta charset="utf-8" />
+                  <style>${css}</style>
+                </head>
+                <body>
+                  ${metaHtml}
+                  ${tableHtml}
+                </body>
+              </html>
+            `;
+
+            const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            console.error('Failed to export annual plan', e);
+          }
+        };
+
+        const renderPlanSidebarContent = () => {
+          if (planSidebarTab === 'daily') {
+            const submittedDailyPlans = (() => {
+              const out = [];
+              (visiblePlanWeeks || []).forEach((wk) => {
+                (wk?.weekDays || []).forEach((d) => {
+                  const ds = getDayStatus(wk?.courseId, wk?.week, d);
+                  if (ds.status !== 'submitted') return;
+                  out.push({
+                    ...d,
+                    courseId: wk?.courseId,
+                    week: wk?.week,
+                    month: wk?.month,
+                    key: ds.key,
+                    status: 'submitted',
+                    topic: d?.topic || wk?.topic || '',
+                    method: d?.method || wk?.method || '',
+                    aids: d?.aids || wk?.material || wk?.materials || wk?.aids || '',
+                    assessment: d?.assessment || wk?.assessment || '',
+                  });
+                });
+              });
+
+              // Prefer sorting by ISO date (desc), then week (desc)
+              out.sort((a, b) => {
+                const aISO = (a?.date || '').toString().slice(0, 10);
+                const bISO = (b?.date || '').toString().slice(0, 10);
+                if (aISO && bISO && aISO !== bISO) return bISO.localeCompare(aISO);
+                const aw = Number(String(a?.week ?? '').match(/\d+/)?.[0] ?? 0);
+                const bw = Number(String(b?.week ?? '').match(/\d+/)?.[0] ?? 0);
+                return bw - aw;
+              });
+
+              return out;
+            })();
+
+            return (
+              <div className="space-y-3">
+                <div style={{ background: '#fff', borderRadius: 12, padding: 12, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="font-semibold" style={{ margin: 0 }}>Submitted Daily Plans</h3>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>Total</div>
+                      <div style={{ fontWeight: 800, color: '#16a34a' }}>{submittedDailyPlans.length}</div>
+                    </div>
+                  </div>
+
+                  {submittedDailyPlans.length ? (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {submittedDailyPlans.slice(0, 10).map((p, idx) => (
+                        <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 10, background: '#ecfdf5', border: '1px solid #bbf7d0', alignItems: 'center' }}>
+                          <div style={{ width: 8, height: 48, borderRadius: 6, background: '#16a34a' }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div style={{ fontWeight: 800 }}>{p.dayName || `Submitted ${idx + 1}`}</div>
+                              <div style={{ fontSize: 12, color: '#166534' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}{p?.date ? ` • ${String(p.date).slice(0, 10)}` : ''}</div>
+                            </div>
+                            <div style={{ fontSize: 13, color: '#14532d', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
+                            <div style={{ fontSize: 12, color: '#166534', marginTop: 6 }}>
+                              {p.method ? `Method: ${p.method}` : p.aids ? `Material: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
+                            </div>
+                          </div>
+                          <div style={{ background: '#16a34a', color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 800 }}>
+                            Submitted
+                          </div>
+                        </div>
+                      ))}
+                      {submittedDailyPlans.length > 10 && (
+                        <div style={{ fontSize: 12, color: '#166534', textAlign: 'center' }}>
+                          Showing latest 10 submitted daily plans.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, textAlign: 'center', color: '#666' }}>No submitted daily plans yet.</div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="font-semibold">Today's Plan</h3>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>Today</div>
+                    <div style={{ fontWeight: 700 }}>{(visibleDailyPlans || []).length}</div>
+                  </div>
+                </div>
+
+                {(visibleDailyPlans && visibleDailyPlans.length > 0) ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {visibleDailyPlans.map((p, idx) => {
+                      const status = p?.status || 'pending';
+                      const color = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
+                      return (
+                        <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 4px 10px rgba(11,20,30,0.04)', alignItems: 'center' }}>
+                          <div style={{ width: 8, height: 48, borderRadius: 6, background: color }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div style={{ fontWeight: 700 }}>{p.dayName || `Plan ${idx + 1}`}</div>
+                              <div style={{ fontSize: 12, color: '#666' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}</div>
+                            </div>
+                            <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
+                            <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+                              {p.method ? `Method: ${p.method}` : p.aids ? `Aids: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                            <div style={{ background: color, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
+                              {status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center', color: '#666' }}>No plans for today.</div>
+                )}
+              </div>
+            );
+          }
+
+          if (planSidebarTab === 'weekly') {
+            const blocks = Array.isArray(visibleCurrentWeeks) ? visibleCurrentWeeks : [];
+            if (!blocks.length) return (<div style={{ textAlign: 'center', color: '#666' }}>No weekly plan found.</div>);
+
+            return (
+              <div className="sidebar-week-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <h3 className="font-semibold">Week Plan</h3>
+                {blocks.map((wk, bi) => {
+                  const days = wk?.weekDays || [];
+                  if (!days.length) return null;
+                  return (
+                    <div key={bi} style={{ background: '#fff', padding: 10, borderRadius: 10, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                        <div style={{ fontWeight: 800 }}>{wk.courseId || 'Course'}</div>
+                        <div style={{ fontSize: 12, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {days.map((d, i) => {
+                          const ds = getDayStatus(wk.courseId, wk.week, d);
+                          const status = ds.status;
+                          const statusColor = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
+                          const cardBg = status === 'submitted' ? '#d9f8d5' : status === 'missed' ? '#ffe4e4' : '#ffffff';
+                          return (
+                            <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 22, color: '#333', padding: 12, borderRadius: 10, background: cardBg, alignItems: 'center', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
+                              <div style={{ width: 10, height: 46, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,#9ae6b4,#2f855a)' : status === 'missed' ? 'linear-gradient(180deg,#feb2b2,#c53030)' : 'linear-gradient(180deg,#e2e8f0,#4a5568)' }} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div style={{ fontWeight: 700 }}>{d.dayName || `Day ${i + 1}`}</div>
+                                  <div style={{ fontSize: 12, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
+                                </div>
+                                <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{d.topic || wk.topic || 'No topic set'}</div>
+                                {d?.date ? (<div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>Date: {d.date}</div>) : null}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                                <div style={{ background: statusColor, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          // monthly
+          return (
+            <div className="space-y-2">
+              <h3 className="font-semibold">This Month</h3>
+              {!currentMonthWeeks.length && <div className="text-xs text-gray-500" style={{ color: '#666' }}>No plans for this month.</div>}
+
+              {!!currentMonthWeeks.length && (
+                <div style={{ padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{currentMonthName}</div>
+                      <div style={{ fontSize: 12, color: '#666' }}>{currentMonthWeeks.length} week(s) • {monthStats.total} day(s)</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>Completed</div>
+                      <div style={{ fontWeight: 700 }}>{monthPct}%</div>
+                    </div>
+                  </div>
+
+                  <div style={{ height: 8, background: '#edf2f7', borderRadius: 999, marginTop: 10, overflow: 'hidden' }}>
+                    <div style={{ width: `${monthPct}%`, height: '100%', background: 'linear-gradient(90deg,#67e8f9,#4b6cb7)' }} />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#2f855a' }}>Submitted: <strong>{monthStats.submitted}</strong></div>
+                      <div style={{ fontSize: 12, color: '#c53030' }}>Missed: <strong>{monthStats.missed}</strong></div>
+                      <div style={{ fontSize: 12, color: '#4a5568' }}>Pending: <strong>{monthStats.pending}</strong></div>
+                    </div>
+                  </div>
+
+                  {monthStats.topics && monthStats.topics.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Topics this month</div>
+                      <ul style={{ margin: 0, paddingLeft: 16 }}>
+                        {monthStats.topics.slice(0, 3).map((t, i) => (<li key={i} style={{ fontSize: 13, color: '#333' }}>{t}</li>))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        return (
+          <>
+            {planAnnualOpen && (
+              <div
+                role="dialog"
+                aria-modal="true"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 5000,
+                  background: 'rgba(15, 23, 42, 0.55)',
+                  padding: 16,
+                }}
+                onClick={() => setPlanAnnualOpen(false)}
+              >
+                <div
+                  style={{
+                    position: 'relative',
+                    width: '100%',
+                    height: '100%',
+                    background: '#f7fafc',
+                    borderRadius: 16,
+                    overflow: 'hidden',
+                    boxShadow: '0 18px 60px rgba(0,0,0,0.35)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 1,
+                      background: '#ffffff',
+                      borderBottom: '1px solid #e5e7eb',
+                      padding: 14,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 900, fontSize: 16, color: '#0f172a' }}>Annual Lesson Plan</div>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                        Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, justifyContent: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
+                      <select
+                        value={planSelectedCourseId}
+                        onChange={(e) => setPlanSelectedCourseId(e.target.value)}
+                        style={{
+                          width: 'min(520px, 100%)',
+                          padding: '8px 10px',
+                          borderRadius: 10,
+                          border: '1px solid #e5e7eb',
+                          background: '#f8fafc',
+                          outline: 'none',
+                          fontSize: 13,
+                          color: '#111827',
+                        }}
+                      >
+                        {courseOptions.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={downloadAnnualExcel}
+                        disabled={!annualWeeks.length}
+                        style={{
+                          borderRadius: 12,
+                          background: annualWeeks.length ? 'linear-gradient(135deg,#16a34a,#22c55e)' : '#e5e7eb',
+                          color: annualWeeks.length ? '#fff' : '#94a3b8',
+                          padding: '10px 14px',
+                          fontWeight: 900,
+                          cursor: annualWeeks.length ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        Download Excel
+                      </button>
+
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setPlanAnnualOpen(false)}
+                        style={{
+                          borderRadius: 12,
+                          background: '#0f172a',
+                          color: '#fff',
+                          padding: '10px 14px',
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
+                    {!annualWeeks.length && (
+                      <div style={{ padding: 14, borderRadius: 12, background: '#fff', border: '1px solid #e5e7eb', color: '#64748b' }}>
+                        No annual lesson plan found for this selection.
+                      </div>
+                    )}
+
+                    {!!annualWeeks.length && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        {annualMonthKeys.map((mKey) => {
+                          const monthWeeks = (annualByMonth[mKey] || []).slice().sort((a, b) => getWeekSortValue(a) - getWeekSortValue(b));
+                          const normalizeText = (v) => {
+                            if (v === undefined || v === null) return '';
+                            if (Array.isArray(v)) return v.map((x) => String(x ?? '').trim()).filter(Boolean).join('; ');
+                            return String(v).trim();
+                          };
+
+                          const uniqJoin = (vals) => {
+                            const out = Array.from(new Set((vals || []).map((x) => normalizeText(x)).filter(Boolean)));
+                            return out.join('; ');
+                          };
+
+                          return (
+                            <div key={mKey} style={{ background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb', boxShadow: '0 10px 28px rgba(14,30,37,0.06)' }}>
+                              <div style={{ padding: 14, borderBottom: '1px solid #eef2f7', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                                <div style={{ fontWeight: 900, fontSize: 16, color: '#0f172a' }}>{mKey}</div>
+                                <div style={{ fontSize: 12, color: '#64748b' }}>{monthWeeks.length} week(s)</div>
+                              </div>
+
+                              <div style={{ padding: 14 }}>
+                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 12, border: '1px solid #e5e7eb' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 880, background: '#fff' }}>
+                                    <thead>
+                                      <tr style={{ background: '#f8fafc' }}>
+                                        {['Week', 'Topic', 'Objective', 'Method', 'Material', 'Assessment'].map((h) => (
+                                          <th
+                                            key={h}
+                                            style={{
+                                              textAlign: 'left',
+                                              padding: '10px 12px',
+                                              fontSize: 12,
+                                              color: '#475569',
+                                              fontWeight: 900,
+                                              borderBottom: '1px solid #e5e7eb',
+                                              position: 'sticky',
+                                              top: 0,
+                                              background: '#f8fafc',
+                                              zIndex: 1,
+                                            }}
+                                          >
+                                            {h}
+                                          </th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {monthWeeks.map((wk, wi) => {
+                                        const weekLabel = wk?.week ? `Week ${wk.week}` : '-';
+                                        const days = Array.isArray(wk?.weekDays) ? wk.weekDays : [];
+
+                                        const topic = normalizeText(wk?.topic) || uniqJoin(days.map((d) => d?.topic));
+                                        const objective =
+                                          normalizeText(wk?.objective) ||
+                                          normalizeText(wk?.objectives) ||
+                                          uniqJoin(days.map((d) => d?.objective ?? d?.objectives));
+                                        const method = normalizeText(wk?.method) || uniqJoin(days.map((d) => d?.method));
+                                        const material =
+                                          normalizeText(wk?.material) ||
+                                          normalizeText(wk?.materials) ||
+                                          normalizeText(wk?.aids) ||
+                                          uniqJoin(days.map((d) => d?.material ?? d?.materials ?? d?.aids));
+                                        const assessment = normalizeText(wk?.assessment) || uniqJoin(days.map((d) => d?.assessment));
+
+                                        const agg = (() => {
+                                          const c = { submitted: 0, missed: 0, pending: 0, total: 0 };
+                                          (days || []).forEach((d) => {
+                                            const ds = getDayStatus(wk?.courseId, wk?.week, d);
+                                            c[ds.status] = (c[ds.status] || 0) + 1;
+                                            c.total += 1;
+                                          });
+                                          return c;
+                                        })();
+
+                                        const isMissed = agg.missed > 0;
+                                        const isSubmitted = !isMissed && agg.submitted > 0;
+
+                                        const rowBg = isMissed
+                                          ? '#fff1f2'
+                                          : isSubmitted
+                                            ? '#ecfdf5'
+                                            : (wi % 2 === 0 ? '#ffffff' : '#fcfcfd');
+
+                                        const accent = isMissed
+                                          ? '#dc2626'
+                                          : isSubmitted
+                                            ? '#16a34a'
+                                            : '#e2e8f0';
+
+                                        return (
+                                          <tr key={`${wk?.courseId || 'c'}-${wk?.week || 'w'}-${wi}`} style={{ background: rowBg }}>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#0f172a', borderBottom: '1px solid #eef2f7', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
+                                              {weekLabel}
+                                            </td>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{topic || '-'}</td>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{objective || '-'}</td>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{method || '-'}</td>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{material || '-'}</td>
+                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{assessment || '-'}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 16 : 6, background: '#f7fafc', display: 'flex', flexDirection: 'column', gap: 12, transition: 'all 220ms ease', borderRadius: 12 }}>
+              
+
+              {planSidebarOpen && (
+                <>
+                <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.06)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ background: '#eef2ff', padding: 8, borderRadius: 8 }}><FaCalendarAlt color="#4b6cb7" /></div>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>Lesson Overview</div>
+                        <div style={{ fontSize: 12, color: '#666' }}>{today.toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setPlanAnnualOpen(true)}
+                        style={{
+                          borderRadius: 12,
+                          background: '#eef2ff',
+                          color: '#1e40af',
+                          fontWeight: 800,
+                          padding: '8px 10px',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Annual Lesson Plan
+                      </button>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: 12, color: '#666' }}>This Week</div>
+                        <div style={{ fontWeight: 700 }}>{weekStats.total}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div style={{ fontSize: 12, color: '#666', fontWeight: 700, whiteSpace: 'nowrap' }}>Subject</div>
+                    <select
+                      value={planSelectedCourseId}
+                      onChange={(e) => setPlanSelectedCourseId(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        border: '1px solid #e5e7eb',
+                        background: '#f7fafc',
+                        outline: 'none',
+                        fontSize: 13,
+                        color: '#111827',
+                      }}
+                    >
+                      {courseOptions.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+                    Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <div style={{ flex: 1, background: '#f0fff4', padding: 8, borderRadius: 8, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#2f855a' }}><FaCheckCircle /></div>
+                      <div style={{ fontWeight: 700 }}>{weekStats.submitted}</div>
+                      <div style={{ fontSize: 11, color: '#555' }}>Submitted</div>
+                    </div>
+                    <div style={{ flex: 1, background: '#fff7f7', padding: 8, borderRadius: 8, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#c53030' }}><FaClock /></div>
+                      <div style={{ fontWeight: 700 }}>{weekStats.missed}</div>
+                      <div style={{ fontSize: 11, color: '#555' }}>Missed</div>
+                    </div>
+                    <div style={{ flex: 1, background: '#f7fafc', padding: 8, borderRadius: 8, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#4a5568' }}>•</div>
+                      <div style={{ fontWeight: 700 }}>{weekStats.pending}</div>
+                      <div style={{ fontSize: 11, color: '#555' }}>Pending</div>
+                    </div>
+                  </div>
+
+                  {planError && (
+                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: '#fff7f7', color: '#991b1b', fontSize: 13 }}>
+                      {planError}
+                    </div>
+                  )}
+
+                  {planLoading && (
+                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: '#f3f4f6', color: '#6b7280', fontSize: 13 }}>
+                      Loading lesson plans...
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button onClick={() => setPlanSidebarTab('daily')} className={"btn " + (planSidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Daily</button>
+                  <button onClick={() => setPlanSidebarTab('weekly')} className={"btn " + (planSidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Weekly</button>
+                  <button onClick={() => setPlanSidebarTab('monthly')} className={"btn " + (planSidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Monthly</button>
+                </div>
+
+                <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.04)', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
+                  {renderPlanSidebarContent()}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                  <div style={{ fontSize: 12, color: '#666' }}>Monthly entries: <strong>{monthlyCount}</strong></div>
+                  <div>
+                    <button className="btn btn-ghost" onClick={() => setPlanRefreshKey((k) => k + 1)}>Refresh</button>
+                  </div>
+                </div>
+              </>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {/* ================= MESSAGE BUTTON ================= */}
      
@@ -1454,10 +2943,18 @@ useEffect(() => {
               background: "#fafafa",
             }}
           >
-            <strong>{selectedTeacher.name}</strong>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <strong>{selectedTeacher.name}</strong>
+              {typingUserId && String(typingUserId) !== String(adminUserId) && (
+                <span style={{ fontSize: 12, color: "#666" }}>Typing…</span>
+              )}
+            </div>
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={() => {
+                  if (selectedTeacher?.userId && adminUserId) {
+                    clearTyping(getChatKey(selectedTeacher.userId, adminUserId));
+                  }
                   setTeacherChatOpen(false);
                   navigate("/all-chat", { state: { user: selectedTeacher, tab: "teacher" } });
                 }}
@@ -1465,7 +2962,17 @@ useEffect(() => {
               >
                 ⤢
               </button>
-              <button onClick={() => setTeacherChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>×</button>
+              <button
+                onClick={() => {
+                  if (selectedTeacher?.userId && adminUserId) {
+                    clearTyping(getChatKey(selectedTeacher.userId, adminUserId));
+                  }
+                  setTeacherChatOpen(false);
+                }}
+                style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}
+              >
+                ×
+              </button>
             </div>
           </div>
 
@@ -1500,7 +3007,17 @@ useEffect(() => {
 
           {/* Input */}
           <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
-            <input value={popupInput} onChange={(e) => setPopupInput(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendPopupMessage(); }} />
+            <input
+              value={popupInput}
+              onChange={(e) => {
+                const value = e.target.value;
+                setPopupInput(value);
+                handleTyping(value);
+              }}
+              placeholder="Type a message..."
+              style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }}
+              onKeyDown={(e) => { if (e.key === "Enter") sendPopupMessage(); }}
+            />
             <button onClick={() => sendPopupMessage()} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
               <FaPaperPlane />
             </button>

@@ -35,6 +35,8 @@ function Parent() {
   const [selectedParent, setSelectedParent] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 900);
+  const typingTimeoutRef = useRef(null);
+  const [typingUserId, setTypingUserId] = useState(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -44,6 +46,19 @@ function Parent() {
     admin?.userId && selectedParent?.userId
       ? getChatId(admin.userId, selectedParent.userId)
       : null;
+
+  const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+    try {
+      const res = await axios.get(`${DB}/Chats/${chatKey}/lastMessage.json`).catch(() => ({ data: null }));
+      const last = res.data;
+      if (!last) return;
+      if (String(last.receiverId) === String(admin.userId) && last.seen === false) {
+        await axios.patch(`${DB}/Chats/${chatKey}/lastMessage.json`, { seen: true }).catch(() => {});
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
 
   const messagesEndRef = useRef(null);
   const formatDateLabel = (ts) => {
@@ -371,14 +386,30 @@ function Parent() {
         } catch (err) {
           console.warn('Failed to patch parent seen updates', err);
         }
-        // also reset unread and mark lastMessage seen
-        axios.patch(`${DB}/Chats/${chatId}.json`, { unread: { [admin.userId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+        // also reset unread for admin; only mark lastMessage seen if it was sent to admin
+        axios.patch(`${DB}/Chats/${chatId}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
+        maybeMarkLastMessageSeenForAdmin(chatId);
         // optimistic local update
         setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
       }
     });
     return () => unsubscribe();
   }, [chatId]);
+
+  // Listen to typing in realtime (only while popup open)
+  useEffect(() => {
+    if (!chatId || !parentChatOpen) {
+      setTypingUserId(null);
+      return;
+    }
+    const db = getDatabase();
+    const typingRef = rdbRef(db, `Chats/${chatId}/typing`);
+    const unsub = onValue(typingRef, (snapshot) => {
+      const t = snapshot.val();
+      setTypingUserId(t && t.userId ? t.userId : null);
+    });
+    return () => unsub();
+  }, [chatId, parentChatOpen]);
 
   // Mark messages as seen when the chat popup opens or selected parent changes
   useEffect(() => {
@@ -410,7 +441,46 @@ function Parent() {
 
     markSeen();
     // also reset unread counter for admin in chat root
-    axios.patch(`${DB}/Chats/${chatKey}.json`, { unread: { [admin.userId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+    axios.patch(`${DB}/Chats/${chatKey}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
+    maybeMarkLastMessageSeenForAdmin(chatKey);
+    axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
+  }, [parentChatOpen, selectedParent, admin]);
+
+  // Typing handler: write typing.userId to chat root while admin types
+  const handleTyping = (text) => {
+    if (!admin?.userId || !selectedParent?.userId) return;
+    const chatKey = getChatId(admin.userId, selectedParent.userId);
+
+    // If input cleared, clear typing immediately
+    if (!text || !text.trim()) {
+      axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    // write typing user
+    axios.put(`${DB}/Chats/${chatKey}/typing.json`, { userId: admin.userId }).catch(() => {});
+
+    // debounce clearing
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
+      typingTimeoutRef.current = null;
+    }, 1800);
+  };
+
+  // Clear typing when popup closes or selectedParent changes
+  useEffect(() => {
+    if (!parentChatOpen && selectedParent && admin?.userId) {
+      const chatKey = getChatId(admin.userId, selectedParent.userId);
+      axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
+    }
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    };
   }, [parentChatOpen, selectedParent, admin]);
 
   useEffect(() => {
@@ -423,6 +493,8 @@ function Parent() {
     await axios.patch(`${DB}/Chats/${chatId}.json`, {
       participants: { [admin.userId]: true, [selectedParent.userId]: true },
       unread: { [admin.userId]: 0, [selectedParent.userId]: 0 },
+      typing: null,
+      lastMessage: null,
     }).catch(() => {});
   };
 
@@ -452,11 +524,24 @@ function Parent() {
       const pushRes = await axios.post(`${DB}/Chats/${id}/messages.json`, newMsg).catch(() => ({ data: null }));
       const generatedId = pushRes?.data?.name || `${Date.now()}`;
 
-      // patch lastMessage including messageId and participants
-      const lastMessage = { ...newMsg, messageId: generatedId };
+      // Build a full lastMessage object matching desired DB structure
+      const lastMessage = {
+        messageId: generatedId,
+        senderId: newMsg.senderId,
+        receiverId: newMsg.receiverId,
+        text: newMsg.text || "",
+        type: newMsg.type || "text",
+        timeStamp: newMsg.timeStamp,
+        seen: false,
+        edited: false,
+        deleted: false,
+      };
+
+      // Ensure chat root contains participants, typing cleared, and full lastMessage
       await axios.patch(`${DB}/Chats/${id}.json`, {
         participants: { [admin.userId]: true, [selectedParent.userId]: true },
         lastMessage,
+        typing: null,
       }).catch(() => {});
 
       // increment unread for receiver (preserve existing unread counts)
@@ -470,7 +555,10 @@ function Parent() {
         await axios.put(`${DB}/Chats/${id}/unread.json`, { [selectedParent.userId]: 1, [admin.userId]: 0 }).catch(() => {});
       }
 
+      // update local UI state immediately and clear typing indicator
       setNewMessageText("");
+      // clear typing flag now that message was sent
+      axios.put(`${DB}/Chats/${id}/typing.json`, null).catch(() => {});
     } catch (err) {
       console.error("Failed to send parent message:", err);
     }
@@ -480,7 +568,8 @@ function Parent() {
   useEffect(() => {
     if (!selectedParent || !admin?.userId) return;
     const id = getChatId(admin.userId, selectedParent.userId);
-    axios.patch(`${DB}/Chats/${id}.json`, { unread: { [admin.userId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+    axios.patch(`${DB}/Chats/${id}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
+    maybeMarkLastMessageSeenForAdmin(id);
   }, [selectedParent, admin]);
 
   // Mark messages seen helper for dropdown click
@@ -488,7 +577,7 @@ function Parent() {
     if (!admin?.userId || !userId) return;
     const id = getChatId(admin.userId, userId);
     await axios.patch(`${DB}/Chats/${id}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-    await axios.patch(`${DB}/Chats/${id}/lastMessage.json`, { seen: true }).catch(() => {});
+    await maybeMarkLastMessageSeenForAdmin(id);
   };
 
   // badge counts
@@ -923,12 +1012,12 @@ function Parent() {
         />
         {/* User Info */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
-          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2, marginLeft: -99 }}>
+          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2, marginLeft: -159 }}>
             {c.name}
           </span>
           
           {/* Badges Row */}
-          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -21 }}>
+          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -15 }}>
             <div
               style={{
              
@@ -958,7 +1047,7 @@ function Parent() {
               Section:{c.section}
             </div>
           </div>
-          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px", marginLeft: -115 }}>
+          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px", marginLeft: -175 }}>
             {c.relationship && `Relation: ${c.relationship}`}
           </span>
         </div>
@@ -1019,7 +1108,12 @@ function Parent() {
                 >
                   {/* HEADER */}
                   <div style={{ padding: "14px", borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fafafa" }}>
-                    <strong>{selectedParent.name}</strong>
+                    <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
+                      <strong>{selectedParent.name}</strong>
+                      {typingUserId && String(typingUserId) === String(selectedParent.userId) && (
+                        <small style={{ color: '#0b78f6', marginTop: 4 }}>Typing…</small>
+                      )}
+                    </div>
                     <div style={{ display: "flex", gap: 10 }}>
                       <button
                         onClick={() => {
@@ -1065,7 +1159,7 @@ function Parent() {
 
                   {/* Input */}
                   <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
-                    <input value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(newMessageText); }} />
+                    <input value={newMessageText} onChange={(e) => { setNewMessageText(e.target.value); handleTyping(e.target.value); }} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(newMessageText); }} />
                     <button onClick={() => sendMessage(newMessageText)} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
                       <FaPaperPlane />
                     </button>
