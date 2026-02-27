@@ -11,18 +11,37 @@ import {
   FaFacebookMessenger,
   FaBell,
   FaChevronLeft,
-  FaChevronRight
+  FaChevronRight,
+  FaUserCheck,
+  FaCalendarAlt,
+  FaBookOpen
 } from "react-icons/fa";
+import Sidebar from "./Sidebar";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 
 // --- API and RTDB endpoints ---
-const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
 // --- Used to sort chat ids for message threading (helper) ---
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
 
 function Schedule() {
+  // Sidebar toggle state for mobile (like Dashboard)
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
+    // Hide sidebar by default on phone size, show on desktop
+    useEffect(() => {
+      const handleResize = () => {
+        if (window.innerWidth <= 600) {
+          setSidebarOpen(false);
+        } else {
+          setSidebarOpen(true);
+        }
+      };
+      window.addEventListener("resize", handleResize);
+      handleResize();
+      return () => window.removeEventListener("resize", handleResize);
+    }, []);
   // ---------------- STATE -----------------------
   const [teacher, setTeacher] = useState(null);
   const [schedule, setSchedule] = useState({});
@@ -139,7 +158,6 @@ function Schedule() {
 
         // Get teacher from localStorage so we know who's seen what
         const teacher = JSON.parse(localStorage.getItem("teacher"));
-        const seenPosts = getSeenPosts(teacher?.userId);
 
         // --- Helper to resolve admin info ---
         const resolveAdminInfo = (post) => {
@@ -155,7 +173,7 @@ function Schedule() {
           return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
         };
 
-        // --- Post notifications (unseen only) ---
+        // --- Post notifications (latest 5, regardless of seen) ---
         const postNotifs = postsData
           .slice()
           .sort((a, b) => {
@@ -163,7 +181,7 @@ function Schedule() {
             const tb = b.time ? new Date(b.time).getTime() : 0;
             return tb - ta;
           })
-          .filter((post) => post.postId && !seenPosts.includes(post.postId))
+          .filter((post) => post.postId)
           .slice(0, 5)
           .map((post) => {
             const info = resolveAdminInfo(post);
@@ -173,6 +191,7 @@ function Schedule() {
               title: post.message?.substring(0, 50) || "Untitled post",
               adminName: info.name,
               adminProfile: info.profile,
+              time: post.time ? new Date(post.time).getTime() : 0,
             };
           });
 
@@ -192,12 +211,15 @@ function Schedule() {
               displayName: otherUser.name || otherUser.username || otherKey,
               profile: otherUser.profileImage || otherUser.profile || "/default-profile.png",
               unreadForMe,
+              time: chat.lastMessage?.timeStamp ? new Date(chat.lastMessage.timeStamp).getTime() : 0,
             });
           });
         }
 
-        // Only show up to 5 notifications (posts + messages, most recent first)
-        const allNotifs = [...postNotifs, ...messageNotifs].slice(0, 5);
+        // Merge and sort by recency, then take top 5
+        const allNotifs = [...postNotifs, ...messageNotifs]
+          .sort((a, b) => (b.time || 0) - (a.time || 0))
+          .slice(0, 5);
         setNotifications(allNotifs);
       } catch (err) {}
     };
@@ -292,7 +314,7 @@ function Schedule() {
       position: fixed;
       top: 60px;
       right: 0;
-      width: 350px;
+      width: 420px;
       height: calc(100vh - 60px);
       z-index: 300;
       background: #fff;
@@ -320,22 +342,14 @@ function Schedule() {
       cursor: pointer;
     }
     @media (max-width: 900px) {
-      .google-sidebar { width: 60px; min-width: 60px; }
-      .schedule-main { margin-left: 60px; padding: 17px 2vw; }
-      .right-sidebar { width: 90vw; left: 60px; right: initial; }
+      .schedule-main { margin-left: 220px; padding: 17px 2vw; }
+      .right-sidebar { width: 100vw; left: 0; right: initial; }
     }
     @media (max-width: 600px) {
       .top-navbar { height: 54px; padding: 0 7px; }
-      .google-sidebar {
-        top: 54px;
-        width: 48px;
-        min-width: 48px;
-        padding: 0;
-        align-items: flex-start;
-      }
       .main-area-row { margin-top: 54px; }
-      .schedule-main { margin-left: 48px; padding: 8px 2vw; border-radius: 7px; }
-      .right-sidebar { left: 48px; right: initial; width: 100vw; height: calc(100vh - 54px); }
+      .schedule-main { margin-left: 0; padding: 8px 2vw; border-radius: 7px; }
+      .right-sidebar { left: 0; right: initial; width: 100vw; height: calc(100vh - 54px); }
       .close-sidebar-btn {
         top: 8px !important;
         right: 8px !important;
@@ -365,20 +379,61 @@ function Schedule() {
               )}
             </div>
             {showNotifications && (
-              <div style={{
-                position: "absolute", top: 28, right: 0, width: 300, maxHeight: 400, overflowY: "auto",
-                background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100
-              }}>
-                {notifications.length ? notifications.map((post, i) => (
-                  <div key={post.id || i} onClick={() => handleNotificationClick(post.id)} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                    <div>
-                      <strong>{post.adminName}</strong>
-                      <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
+              <>
+                {/* Overlay for closing notification list by clicking outside */}
+                <div
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0,0,0,0.08)',
+                    zIndex: 1999,
+                  }}
+                  onClick={() => setShowNotifications(false)}
+                />
+                <div
+                  className="notification-popup"
+                  style={
+                    typeof window !== 'undefined' && window.innerWidth <= 600
+                      ? {
+                          position: 'fixed',
+                          left: '50%',
+                          top: '8%',
+                          transform: 'translate(-50%, 0)',
+                          width: '90vw',
+                          maxWidth: 340,
+                          zIndex: 2000,
+                          background: '#fff',
+                          borderRadius: 12,
+                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
+                          maxHeight: '70vh',
+                          overflowY: 'auto',
+                          padding: 12,
+                        }
+                      : {
+                          position: 'absolute',
+                          top: 28,
+                          right: 0,
+                          width: 300,
+                          maxHeight: 400,
+                          overflowY: 'auto',
+                          background: '#fff',
+                          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+                          borderRadius: 8,
+                          zIndex: 100,
+                        }
+                  }
+                >
+                  {notifications.length ? notifications.map((post, i) => (
+                    <div key={post.id || i} onClick={() => handleNotificationClick(post.id)} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                      <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                      <div>
+                        <strong>{post.adminName}</strong>
+                        <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
+                      </div>
                     </div>
-                  </div>
-                )) : <div style={{ padding: 15 }}>No notifications</div>}
-              </div>
+                  )) : <div style={{ padding: 15 }}>No notifications</div>}
+                </div>
+              </>
             )}
           </div>
           {/* Messenger: navigates to all-chat, badge only */}
@@ -393,37 +448,22 @@ function Schedule() {
               )}
             </div>
           </div>
-          <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
+          <div className="icon-circle" onClick={() => navigate("/settings")}> <FaCog /> </div>
           <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" style={{width:36, height:36, borderRadius:"50%"}} />
         </div>
       </nav>
       {/* --------- Main Area Row ------- */}
       <div className="main-area-row">
-        {/* ---- Left Sidebar ---- */}
-        <div className="google-sidebar">
-          {teacher && (
-            <div className="sidebar-profile" style={{ textAlign: "center", marginBottom: 16 }}>
-              <div className="sidebar-img-circle" style={{margin:"0 auto"}}>
-                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" style={{ width: 60, height: 60, borderRadius: '50%', objectFit:'cover', border: '2.5px solid #4b6cb7'}} />
-              </div>
-              <h3 style={{margin:"10px 0 2px 0", fontSize:"1rem"}}>{teacher.name}</h3>
-              <p style={{ fontSize: ".98rem", color: "#888" }}>{teacher.username}</p>
-            </div>
-          )}
-          <div className="sidebar-menu" style={{display:'flex', flexDirection:'column', gap:8, width:"100%"}}>
-            <Link className="sidebar-btn" to="/dashboard"><FaHome/> Home</Link>
-            <Link className="sidebar-btn" to="/students"><FaUsers/> Students</Link>
-            <Link className="sidebar-btn" to="/admins"><FaUsers/> Admins</Link>
-            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher/> Parents</Link>
-            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck/> Marks</Link>
-            <Link className="sidebar-btn" to="/attendance"><FaUsers/> Attendance</Link>
-            <Link className="sidebar-btn" to="/schedule" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaUsers/> Schedule</Link>
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt/> Logout</button>
-          </div>
-        </div>
+        <Sidebar
+          active="schedule"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
         {/* ---- Main Content (scrollable) ---- */}
         <div className="schedule-main">
-          <div className="schedule-container" style={{width:'100%', maxWidth:900, margin:'0 auto'}}>
+          <div className="schedule-container" style={{width:'100%', maxWidth:900, margin:'0 auto', marginLeft: "50px"}}>
             {/* Filters */}
             <div style={{display:"flex", gap:"20px", marginBottom:"25px", justifyContent:"center", flexWrap:"wrap"}}>
               <div>
@@ -432,6 +472,8 @@ function Schedule() {
                   style={{ padding:"8px 12px", borderRadius:"8px", border:"1px solid #ccc", cursor:"pointer" }}
                 >
                   <option value="All">All</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
                   <option value="9">9</option>
                   <option value="10">10</option>
                   <option value="12">12</option>

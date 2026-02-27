@@ -373,6 +373,14 @@ def register_role(role):
         users_ref().child(user_id).update({'managementId': management_code, 'username': management_code, 'employeeId': emp_key})
         employees_ref().child(emp_key).update({'managementId': management_code})
         role_result = management_key
+    elif role == 'hr':
+        hr_code = _generate_hr_code()
+        hr_key = f"-{hr_code}"
+        teacher_payload.update({'hrId': hr_code})
+        hrs_ref().child(hr_key).set(teacher_payload)
+        users_ref().child(user_id).update({'hrId': hr_code, 'username': hr_code, 'employeeId': emp_key})
+        employees_ref().child(emp_key).update({'hrId': hr_code})
+        role_result = hr_key
     else:
         node = db.reference(role.capitalize()).push(teacher_payload)
         role_node_id = node.key
@@ -403,6 +411,85 @@ def update_employee(emp_id):
 def delete_employee(emp_id):
     ref().child(emp_id).delete()
     return jsonify({'ok': True})
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    payload = request.get_json() or {}
+    username = (payload.get('username') or '').strip()
+    password = payload.get('password') or ''
+    if not username or not password:
+        return jsonify({'error': 'username and password required'}), 400
+
+    users = users_ref().get() or {}
+    # users is a mapping of uid -> user object
+    for uid, user in (users.items() if isinstance(users, dict) else []):
+        if not isinstance(user, dict):
+            continue
+        if (user.get('username') or '').strip() == username and (user.get('password') or '') == password:
+            # successful login - return minimal user info
+            safe = {
+                'id': uid,
+                'username': user.get('username'),
+                'name': user.get('name'),
+                'role': user.get('role'),
+                'isActive': user.get('isActive', True),
+                'email': user.get('email', ''),
+                'profileImage': user.get('profileImage', '')
+            }
+            return jsonify({'ok': True, 'user': safe})
+
+    return jsonify({'ok': False, 'error': 'invalid credentials'}), 401
+
+
+# ...existing code...
+def managements_ref():
+    return db.reference('Management')
+
+
+def finances_ref():
+    return db.reference('Finance')
+
+
+def hrs_ref():
+    return db.reference('HR')
+
+
+def _generate_employee_code():
+    year_suffix = datetime.now().year % 100
+    employees_all = employees_ref().get() or {}
+    emp_seq = (len(employees_all) or 0) + 1
+    return f"EMP_{emp_seq:04d}_{year_suffix}"
+
+
+def _generate_teacher_code():
+    year_suffix = datetime.now().year % 100
+    teachers_all = teachers_ref().get() or {}
+    teacher_seq = (len(teachers_all) or 0) + 1
+    return f"GET_{teacher_seq:04d}_{year_suffix}"
+
+
+def _generate_management_code():
+    year_suffix = datetime.now().year % 100
+    managements_all = managements_ref().get() or {}
+    mgmt_seq = (len(managements_all) or 0) + 1
+    return f"GEM_{mgmt_seq:04d}_{year_suffix}"
+
+
+def _generate_finance_code():
+    
+    year_suffix = datetime.now().year % 100
+    finances_all = finances_ref().get() or {}
+    fin_seq = (len(finances_all) or 0) + 1
+    return f"GEF_{fin_seq:04d}_{year_suffix}"
+
+
+def _generate_hr_code():
+    year_suffix = datetime.now().year % 100
+    hrs_all = hrs_ref().get() or {}
+    hr_seq = (len(hrs_all) or 0) + 1
+    return f"GEH_{hr_seq:04d}_{year_suffix}"
+# ...existing code...
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   FaHome,
   FaChalkboardTeacher,
@@ -11,7 +11,11 @@ import {
   FaFacebookMessenger,
   FaCommentDots,
   FaCheck,
+   FaUserCheck,
+  FaCalendarAlt,
+  FaBookOpen
 } from "react-icons/fa";
+import Sidebar from "./Sidebar";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import { ref, onValue, off } from "firebase/database";
@@ -28,8 +32,14 @@ import "../styles/global.css";
  * - Minor polish to layout so it adapts to narrow viewports.
  */
 
-const getChatId = (id1, id2) => [id1, id2].sort().join("_");
-const API_BASE = "http://127.0.0.1:5000/api";
+// Chat thread key for teacher<->parent must be: teacherUserId_parentUserId
+// (teacher first, no sorting) so the DB path is predictable.
+const getChatId = (teacherUserId, parentUserId) => {
+  const t = String(teacherUserId || "").trim();
+  const p = String(parentUserId || "").trim();
+  return `${t}_${p}`;
+};
+import { API_BASE } from "../api/apiConfig";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
 const formatTime = (ts) => {
@@ -41,6 +51,8 @@ const formatTime = (ts) => {
 };
 
 function TeacherParent() {
+  // Responsive sidebar state for mobile (match Students.jsx)
+  const [sidebarOpen, setSidebarOpen] = useState(typeof window !== 'undefined' ? window.innerWidth > 600 : true);
 const [teacher, setTeacher] = useState(null);
   const [parents, setParents] = useState([]);
   const [selectedParent, setSelectedParent] = useState(null);
@@ -58,6 +70,7 @@ const [children, setChildren] = useState([]);
 
   const [showMessenger, setShowMessenger] = useState(false);
     const [conversations, setConversations] = useState([]);
+  const [searchTerm, setSearchTerm] = useState("");
   
   const navigate = useNavigate();
 
@@ -429,6 +442,16 @@ const [children, setChildren] = useState([]);
     return () => document.body.classList.remove("sidebar-open");
   }, [selectedParent]);
 
+  const normalizedSearch = (searchTerm || "").trim().toLowerCase();
+  const filteredParents = useMemo(() => {
+    if (!normalizedSearch) return parents;
+    return parents.filter((p) => {
+      const childText = (p.children || []).map(c => `${c.name} ${c.studentId} ${c.grade} ${c.section}`).join(" ");
+      const hay = `${p.name || ""} ${p.userId || ""} ${p.email || ""} ${p.phone || ""} ${childText}`.toLowerCase();
+      return hay.includes(normalizedSearch);
+    });
+  }, [parents, normalizedSearch]);
+
   // Render
   return (
     <div className="dashboard-page">
@@ -439,46 +462,101 @@ const [children, setChildren] = useState([]);
          <div className="nav-right">
                   {/* Notification Bell & Popup (shows posts and unread messages) */}
                   <div className="icon-circle" style={{ position: "relative" }}>
-                    <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
+                    <div
+                      onClick={() => setShowNotifications(!showNotifications)}
+                      style={{ cursor: "pointer", position: "relative" }}
+                      aria-label="Show notifications"
+                      tabIndex={0}
+                      role="button"
+                      onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
+                    >
                       <FaBell size={24} />
-                      {notifications.length > 0 && (
+                      {(notifications.length + totalUnreadMessages) > 0 && (
                         <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {notifications.length}
+                          {notifications.length + totalUnreadMessages}
                         </span>
                       )}
                     </div>
 
                     {showNotifications && (
-                      <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                        {notifications.length > 0 ? notifications.map((notif, index) => (
-                          notif.type === "post" ? (
-                            <div key={notif.id || index} onClick={() => {
-                              navigate("/dashboard");
-                              setTimeout(() => {
-                                const postElement = postRefs?.current?.[notif.id];
-                                if (postElement) {
-                                  postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                                  setHighlightedPostId(notif.id);
-                                  setTimeout(() => setHighlightedPostId(null), 3000);
+                      <>
+                        {/* Overlay for closing notification list by clicking outside */}
+                        <div
+                          style={{
+                            position: 'fixed',
+                            inset: 0,
+                            background: 'rgba(0,0,0,0.08)',
+                            zIndex: 1999,
+                          }}
+                          onClick={() => setShowNotifications(false)}
+                        />
+                        <div
+                          className="notification-popup"
+                          style={
+                            typeof window !== 'undefined' && window.innerWidth <= 600
+                              ? {
+                                  position: 'fixed',
+                                  left: '50%',
+                                  top: '8%',
+                                  transform: 'translate(-50%, 0)',
+                                  width: '90vw',
+                                  maxWidth: 340,
+                                  zIndex: 2000,
+                                  background: '#fff',
+                                  borderRadius: 12,
+                                  boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
+                                  maxHeight: '70vh',
+                                  overflowY: 'auto',
+                                  padding: 12,
                                 }
-                              }, 150);
-                              setNotifications(prev => prev.filter((_, i) => i !== index));
-                              setShowNotifications(false);
-                            }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                              <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                              <div><strong>{notif.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p></div>
-                            </div>
-                          ) : (
-                            <div key={notif.chatId || index} onClick={() => {
+                              : {
+                                  position: 'absolute',
+                                  top: 30,
+                                  right: 0,
+                                  width: 300,
+                                  maxHeight: 400,
+                                  overflowY: 'auto',
+                                  background: '#fff',
+                                  boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+                                  borderRadius: 8,
+                                  zIndex: 100,
+                                }
+                          }
+                        >
+                          {/* Show post notifications */}
+                          {notifications.length > 0 && notifications.map((notif, index) => (
+                            notif.type === "post" ? (
+                              <div key={notif.id || index} onClick={() => {
+                                navigate("/dashboard");
+                                setTimeout(() => {
+                                  const postElement = postRefs?.current?.[notif.id];
+                                  if (postElement) {
+                                    postElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                    setHighlightedPostId(notif.id);
+                                    setTimeout(() => setHighlightedPostId(null), 3000);
+                                  }
+                                }, 150);
+                                setNotifications(prev => prev.filter((_, i) => i !== index));
+                                setShowNotifications(false);
+                              }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                                <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                                <div><strong>{notif.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p></div>
+                              </div>
+                            ) : null
+                          ))}
+                          {/* Show unread message notifications */}
+                          {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
+                            <div key={conv.chatId || idx} onClick={() => {
                               setShowNotifications(false);
                               navigate("/all-chat");
                             }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                              <img src={notif.profile || "/default-profile.png"} alt={notif.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                              <div><strong>{notif.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
+                              <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                              <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
                             </div>
-                          )
-                        )) : <div style={{ padding: 15 }}>No notifications</div>}
-                      </div>
+                          ))}
+                          {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
+                        </div>
+                      </>
                     )}
                   </div>
         
@@ -501,69 +579,162 @@ const [children, setChildren] = useState([]);
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex" }}>
-        {/* Sidebar */}
-        <div className="google-sidebar">
-          {teacher && (
-            <div className="sidebar-profile">
-              <div className="sidebar-img-circle">
-                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" />
+        <Sidebar
+          active="parents"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
+
+        {/* MAIN CONTENT */}
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+          <div
+            className="parent-list-card-responsive"
+            style={{
+              width: "min(420px, 100%)",
+              position: "relative",
+              marginLeft: isPortrait ? 0 : "290px",
+              marginRight: isPortrait ? 0 : "30px",
+            }}
+          >
+            <style>{`
+              @media (max-width: 600px) {
+                .parent-list-card-responsive {
+                  margin-left: -16px !important;
+                  margin-right: auto !important;
+                  width: 70vw !important;
+                  max-width: 70vw !important;
+                }
+              }
+            `}</style>
+            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Parents</h2>
+
+            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
+              <div
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  background: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '10px',
+                  padding: '6px 10px',
+                  boxShadow: '0 4px 10px rgba(0,0,0,0.06)',
+                }}
+              >
+                <FaSearch style={{ color: '#6b7280', fontSize: 14 }} />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search parents..."
+                  style={{ width: '100%', border: 'none', outline: 'none', fontSize: 12, background: 'transparent' }}
+                />
               </div>
-              <h3>{teacher.name}</h3>
-              <p>{teacher.username}</p>
             </div>
-          )}
-
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
-            <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
-            <Link className="sidebar-btn" to="/parents" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Parents</Link>
-            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>
-            <Link className="sidebar-btn" to="/attendance"><FaUsers /> Attendance</Link>
-            <Link className="sidebar-btn" to="/schedule"><FaUsers /> Schedule</Link>
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt /> Logout</button>
-          </div>
-        </div>
-
-        {/* MAIN */}
-        <main style={{ flex: 1, padding: 30 }}>
-          <div style={{ maxWidth: 480, margin: "0 auto", display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
-            <section style={{ flex: "1 1 320px", minWidth: 280 }}>
-              <h2 style={{ textAlign: "center", marginBottom: 20, color: "#4b6cb7", fontWeight: 700 }}>Parents</h2>
 
               {loading ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#555" }}>Loading...</p>
-              ) : parents.length === 0 ? (
+              ) : (filteredParents.length === 0) ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#999" }}>No parents found.</p>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
-                  {parents.map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => setSelectedParent(p)}
-                      style={{
-                        display: "flex",
-                        gap: 15,
-                        width: "calc(100% - 50px)",
-                        padding: 16,
-                        marginLeft: 50,
-                        borderRadius: 12,
-                        boxShadow: "0 4px 15px rgba(0,0,0,0.08)",
-                        backgroundColor: selectedParent?.id === p.id ? "#f0f4ff" : "#fff",
-                        cursor: "pointer",
-                        alignItems: "center",
-                      }}
-                    >
-                      <img src={p.profileImage} alt={p.name} style={{ width: 60, height: 60, borderRadius: "50%", objectFit: "cover" }} />
-                      <div>
-                        <h3 style={{ margin: 0, fontSize: 18 }}>{p.name}</h3>
-                        <p style={{ margin: "6px 0 0 0", color: "#777" }}>{p.email}</p>
+                <>
+                  <style>{`
+                    .parent-list-responsive {
+                      display: flex;
+                      flex-direction: column;
+                      margin-top: 10px;
+                      gap: 10px;
+                      width: 100%;
+                      max-width: 100vw;
+                      margin-left: 0;
+                      margin-right: 0;
+                    }
+                    @media (max-width: 600px) {
+                      .parent-list-responsive {
+                        width: 100vw !important;
+                        max-width: 100vw !important;
+                        margin-left: 0 !important;
+                        margin-right: 0 !important;
+                        padding: 0 !important;
+                        align-items: flex-start !important;
+                      }
+                      .parent-list-responsive > div {
+                        margin-left: 10px !important;
+                        padding-left: 10px !important;
+                        width: 100vw !important;
+                        max-width: 100vw !important;
+                        min-width: 100vw !important;
+                        box-sizing: border-box !important;
+                      }
+                    }
+                    @media (min-width: 350px) {
+                      .parent-list-responsive {
+                        width: 400px;
+                        max-width: 90vw;
+                      }
+                    }
+                    @media (min-width: 1200px) {
+                      .parent-list-responsive {
+                        width: 420px;
+                        max-width: 520px;
+                        margin-left: 0;
+                      }
+                    }
+                    @media (min-width: 1500px) {
+                      .parent-list-responsive {
+                        width: 420px;
+                        max-width: 520px;
+                        margin-left: 0;
+                      }
+                    }
+                  `}</style>
+                  <div className="parent-list-responsive">
+                    {filteredParents.map((p, index) => (
+                      <div
+                        key={p.id}
+                        onClick={() => setSelectedParent(p)}
+                        className="parent-list-item-responsive"
+                        style={{
+                          width: '100%',
+                          borderRadius: '12px',
+                          padding: '10px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '12px',
+                          cursor: 'pointer',
+                          background: selectedParent?.id === p.id ? '#e0e7ff' : '#fff',
+                          border: selectedParent?.id === p.id ? '2px solid #4b6cb7' : '1px solid #ddd',
+                          boxShadow: selectedParent?.id === p.id ? '0 6px 15px rgba(75,108,183,0.3)' : '0 2px 6px rgba(0,0,0,0.06)',
+                          transition: 'all 0.3s ease',
+                        }}
+                      >
+                        <div style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: '50%',
+                          background: selectedParent?.id === p.id ? '#4b6cb7' : '#f1f5f9',
+                          color: selectedParent?.id === p.id ? '#fff' : '#374151',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 800,
+                          fontSize: 12,
+                          flexShrink: 0,
+                        }}>{index + 1}</div>
+
+                        <img src={p.profileImage} alt={p.name} style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #4b6cb7' : '3px solid #ddd' }} />
+                        <div>
+                          <h3 style={{ margin: 0, fontSize: 14 }}>{p.name}</h3>
+                          <p style={{ margin: '4px 0', color: '#555', fontSize: 11 }}>{p.email}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                </>
               )}
-            </section>
 
             {/* Responsive Right Sidebar */}
             {selectedParent && (
@@ -578,19 +749,21 @@ const [children, setChildren] = useState([]);
                 <aside
                   className="parent-sidebar"
                   style={{
-                    width: isPortrait ? "100%" : 420,
+                    width: isPortrait ? "100%" : "30%",
                     height: isPortrait ? "100vh" : "calc(100vh - 60px)",
                     position: "fixed",
                     right: 0,
                     top: isPortrait ? 0 : 60,
                     background: "#fff",
-                    boxShadow: isPortrait ? "none" : "0 0 20px rgba(0,0,0,0.06)",
+                    boxShadow: isPortrait ? "none" : "0 0 18px rgba(0,0,0,0.08)",
+                    borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
                     zIndex: 1000,
                     display: "flex",
                     flexDirection: "column",
                     overflowY: "auto",
                     padding: isPortrait ? 18 : 24,
                     transition: "all 0.32s ease",
+                    fontSize: 10,
                   }}
                   role="dialog"
                   aria-modal="true"
@@ -599,38 +772,47 @@ const [children, setChildren] = useState([]);
                   <button
                     onClick={() => setSelectedParent(null)}
                     style={{
-                      position: "absolute",
-                      top: isPortrait ? 8 : -11,
-                      right: 18,
-                      width: 40,
-                      height: 40,
-                      borderRadius: 10,
-                      border: "none",
-                      background: "#fff",
-                      boxShadow: "0 8px 18px rgba(2,6,23,0.08)",
-                      cursor: "pointer",
-                      display: "grid",
-                      placeItems: "center",
-                      zIndex: 1010,
-                      fontSize: 20,
+                      position: 'absolute',
+                      top: 6,
+                      left: 12,
+                      border: 'none',
+                      background: 'none',
+                      cursor: 'pointer',
+                      fontSize: 26,
+                      fontWeight: 700,
+                      color: '#3647b7',
+                      zIndex: 2000,
                     }}
-                    aria-label="Close details"
                   >
                     ×
                   </button>
 
-                  <div style={{ textAlign: "center", marginBottom: 12 }}>
-                    <div style={{ width: 100, height: 100, margin: "0 auto 12px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
-                      <img src={selectedParent.profileImage} alt={selectedParent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <div style={{ textAlign: 'center', margin: '-12px -12px 10px', padding: '14px 10px', background: '#e0e7ff' }}>
+                    <div style={{ width: 70, height: 70, margin: '0 auto 10px', borderRadius: '50%', overflow: 'hidden', border: '3px solid #4b6cb7' }}>
+                      <img src={selectedParent.profileImage} alt={selectedParent.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
                     <h3 style={{ margin: 0 }}>{selectedParent.name}</h3>
-                    <div style={{ color: "#666", marginTop: 6 }}>{selectedParent.email}</div>
+                    <div style={{ color: '#666', marginTop: 6 }}>{selectedParent.email}</div>
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
                     {["Details", "Children", "Status"].map((t) => (
-                      <button key={t} onClick={() => setActiveTab(t)} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: "none", cursor: "pointer", background: activeTab === t ? "#4b6cb7" : "#f0f0f0", color: activeTab === t ? "#fff" : "#333", fontWeight: 700 }}>
-                        {t}
+                      <button
+                        key={t}
+                        onClick={() => setActiveTab(t)}
+                        style={{
+                          flex: 1,
+                          padding: "6px",
+                          border: "none",
+                          background: "none",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          fontSize: 10,
+                          color: activeTab === t ? "#4b6cb7" : "#6b7280",
+                          borderBottom: activeTab === t ? "3px solid #4b6cb7" : "3px solid transparent",
+                        }}
+                      >
+                        {t.toUpperCase()}
                       </button>
                     ))}
                   </div>
@@ -641,13 +823,16 @@ const [children, setChildren] = useState([]);
     style={{
       display: "flex",
       flexDirection: "column",
-      gap: 28,
-      padding: isPortrait ? 50 : 50,
+      gap: 12,
+      padding: 12,
       marginLeft: 0,
       marginRight: 0,
-      borderRadius: 0,
-      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-      fontFamily: "Inter, system-ui",
+      borderRadius: 12,
+      background: "#ffffff",
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      margin: "0 auto",
+      maxWidth: 380,
     }}
   >
     {/* ================= LEFT COLUMN ================= */}
@@ -655,13 +840,10 @@ const [children, setChildren] = useState([]);
       {/* PARENT DETAILS */}
       <div
         style={{
-          fontSize: 24,
-          fontWeight: 900,
-          marginBottom: 18,
-          marginTop: -30,
-          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
+          fontSize: 12,
+          fontWeight: 800,
+          marginBottom: 6,
+          color: "#0f172a",
         }}
       >
         Parent Details
@@ -671,8 +853,8 @@ const [children, setChildren] = useState([]);
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          columnGap: 68,
-          rowGap: 14,
+          columnGap: 8,
+          rowGap: 8,
         }}
       >
         {[
@@ -689,31 +871,31 @@ const [children, setChildren] = useState([]);
           <div
             key={label}
             style={{
-              padding: 18,
-              borderRadius: 20,
+              padding: 8,
+              borderRadius: 10,
               background: "#ffffff",
-              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
-              marginLeft: -30,
-              marginRight: -30,
+              border: "1px solid #eef2f7",
+              boxShadow: "none",
               gridColumn: span ? "span 2" : "span 1",
             }}
           >
             <div
               style={{
-                fontSize: 12,
+                fontSize: 9,
                 fontWeight: 700,
-                color: "#000102",
+                color: "#64748b",
                 textTransform: "uppercase",
+                letterSpacing: "0.6px",
               }}
             >
               {label}
             </div>
             <div
               style={{
-                marginTop: 8,
-                fontSize: 16,
-                fontWeight: 400,
-                color: "#000102",
+                marginTop: 4,
+                fontSize: 10,
+                fontWeight: 600,
+                color: "#111827",
               }}
             >
               {value}
@@ -744,79 +926,40 @@ const [children, setChildren] = useState([]);
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 22,
+          gap: 12,
           background: "#fff",
-          borderRadius: 16,
-          padding: "22px 30px",
-          boxShadow: "0 4px 24px rgba(80,90,130,0.10)",
-          border: "1px solid #edeef2",
-          transition: "box-shadow 0.2s, transform 0.18s",
+          borderRadius: 12,
+          padding: "12px",
+          boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
+          border: "1px solid #e5e7eb",
+          transition: "box-shadow 0.15s, transform 0.12s",
           cursor: "pointer",
         }}
-        onMouseEnter={e =>
-          (e.currentTarget.style.boxShadow =
-            "0 8px 32px 0 rgba(60,72,120,0.17)")
-        }
-        onMouseLeave={e =>
-          (e.currentTarget.style.boxShadow =
-            "0 4px 24px rgba(80,90,130,0.10)")
-        }
+        onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 8px 28px rgba(0,0,0,0.08)")}
+        onMouseLeave={e => (e.currentTarget.style.boxShadow = "0 6px 18px rgba(0,0,0,0.05)")}
       >
         {/* Profile Image */}
         <img
           src={c.profileImage}
           alt={c.name}
           style={{
-            width: 66,
-            height: 66,
+            width: 48,
+            height: 48,
             borderRadius: "50%",
-            border: "3px solid #2868f1",
+            border: "3px solid #4b6cb7",
             objectFit: "cover",
-            background: "#f0f4fa",
+            background: "#fff",
             flexShrink: 0,
-            boxShadow: "0 2px 8px 0 rgba(60,72,120,0.07)",
           }}
         />
         {/* User Info */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
-          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2 }}>
-            {c.name}
-          </span>
-          
-          {/* Badges Row */}
-          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -19 }}>
-            <div
-              style={{
-             
-                color: "#050505",
-                fontWeight: 400,
-                fontSize: 14,
-                padding: "6px 18px",
-                borderRadius: 999,
-                letterSpacing: 0.5,
-                boxShadow: "0 2px 8px rgba(22,119,255,.09)",
-              }}
-            >
-              Grade:{c.grade}
-            </div>
-            <div
-              style={{
-              
-                color: "#000000",
-                fontWeight: 400,
-                fontSize: 14,
-                padding: "6px 1px",
-                borderRadius: 999,
-                letterSpacing: 0.5,
-                boxShadow: "0 2px 8px rgba(255,126,95,.09)",
-              }}
-            >
-              Section:{c.section}
-            </div>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{c.name}</span>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: "#374151", padding: "4px 10px", borderRadius: 999, background: "#f8fafc" }}>Grade: {c.grade}</div>
+            <div style={{ fontSize: 12, color: "#374151", padding: "4px 8px", borderRadius: 999, background: "#f8fafc" }}>Section: {c.section}</div>
           </div>
-          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px" }}>
-            {c.relationship && `Relation: ${c.relationship}`}
-          </span>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>{c.relationship && `Relation: ${c.relationship}`}</span>
         </div>
       </div>
     ))}
@@ -841,7 +984,7 @@ const [children, setChildren] = useState([]);
             right: "20px",
             width: "60px",
             height: "60px",
-            background: "linear-gradient(135deg, #3a6fb4, #2147f0, #457ffc)",
+            background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
             borderRadius: "50%",
             display: "flex",
             alignItems: "center",
@@ -894,9 +1037,11 @@ const [children, setChildren] = useState([]);
               <button
   onClick={() => {
     setChatOpen(false); // properly close popup
+    const chatId = getChatId(teacherId, selectedParent.userId);
     navigate("/all-chat", {
       state: {
         user: selectedParent, // user to auto-select
+        chatId,               // open the exact chat thread
         tab: "parent",        // tab type
       },
     });
@@ -1042,7 +1187,7 @@ const [children, setChildren] = useState([]);
               </>
             )}
           </div>
-        </main>
+        </div>
       </div>
     </div>
   );

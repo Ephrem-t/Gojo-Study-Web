@@ -17,8 +17,8 @@
     "react-icons": "^5.5.0",
     "react-router-dom": "^7.10.1",
     "xlsx": "^0.18.5",
-    "xlsx-style": "^0.8.13",
-    "cptable": "^1.4.0"
+    "xlsx-style": "^0.8.13"
+    
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",

@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
+import { FaChevronRight } from "react-icons/fa";
 import { Link, useNavigate } from "react-router-dom";
+import Sidebar from "./Sidebar";
 import {
   FaHome,
   FaChalkboardTeacher,
@@ -12,14 +14,17 @@ import {
   FaHeart,
   FaClipboardCheck,
   FaFacebookMessenger,
+   FaUserCheck,
+  FaCalendarAlt,
+  FaBookOpen
 } from "react-icons/fa";
 
 import axios from "axios";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 import { db } from "../firebase";
 import { ref, get } from "firebase/database";
 
-const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
 // === Defensive helper ===
@@ -36,6 +41,8 @@ function getSafeProfileImage(profileImage) {
 }
 
 export default function Dashboard() {
+  // Sidebar toggle state for mobile
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState(null);
   const [posts, setPosts] = useState([]);
@@ -257,7 +264,7 @@ export default function Dashboard() {
         return;
       }
       // ✅ Use full backend URL
-      const res = await axios.post(`http://127.0.0.1:5000/api/like_post`, {
+      const res = await axios.post(`${API_BASE}/like_post`, {
         postId,
         teacherId: teacherId, // or teacher.teacherId if your backend expects it
       });
@@ -438,13 +445,27 @@ export default function Dashboard() {
     0
   );
   const t = teacher || {};
+  // Close sidebar on overlay click (mobile)
+  const handleSidebarOverlay = () => setSidebarOpen(false);
+
+  // Hide sidebar by default on phone size, show on desktop
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth <= 600) {
+        setSidebarOpen(false);
+      } else {
+        setSidebarOpen(true);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   return (
     <div className="dashboard-page">
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
-
-        
-
         <div className="nav-right">
           {/* Notifications */}
          {/* Notifications */}
@@ -481,57 +502,90 @@ export default function Dashboard() {
   </div>
 
               {showNotifications && (
-    <div className="notification-popup">
-      {[...notifications, ...messageNotifs].length > 0 ? (
-        [...notifications, ...messageNotifs].map((n, i) => (
-          <div
-            key={n.id || i}
-            className="notification-item"
-            onClick={() => {
-              if (n.isMessage) {
-                navigate("/all-chat");
-                setShowNotifications(false);
-              } else {
-                            if (teacherId) saveSeenPost(teacherId, n.id); // mark as seen
-                setNotifications(prev => prev.filter(o => o.id !== n.id));
-                setShowNotifications(false);
-              }
-            }}
-            tabIndex={0}
-            role="button"
-            aria-label={n.isMessage ? "See message notification " + n.title : "See post notification " + n.title}
-            onKeyPress={e => {
-              if (e.key === 'Enter') {
-                if (n.isMessage) {
-                  navigate("/all-chat");
-                  setShowNotifications(false);
-                } else {
-                  if (teacherId) saveSeenPost(teacherId, n.id);
-                  setNotifications(prev => prev.filter(o => o.id !== n.id));
-                  setShowNotifications(false);
-                }
-              }
-            }}
-          >
-            <img
-              src={getSafeProfileImage(n.adminProfile)}
-              alt={n.adminName || "Admin"}
-              className="notification-profile"
-            />
-            <div>
-              <strong>{n.adminName}</strong>
-              <div className="notification-title">{n.title}</div>
-              {n.isMessage && (
-                <span style={{ color: '#0b78f6', fontSize: 12, fontWeight: 500 }}>[Message]</span>
+                <>
+                  {/* Overlay for closing notification list by clicking outside */}
+                  <div
+                    style={{
+                      position: 'fixed',
+                      inset: 0,
+                      background: 'rgba(0,0,0,0.08)',
+                      zIndex: 1999,
+                    }}
+                    onClick={() => setShowNotifications(false)}
+                  />
+                  <div
+                    className="notification-popup"
+                    style={
+                      typeof window !== 'undefined' && window.innerWidth <= 600
+                        ? {
+                            position: 'fixed',
+                            left: '50%',
+                            top: '8%',
+                            transform: 'translate(-50%, 0)',
+                            width: '90vw',
+                            maxWidth: 340,
+                            zIndex: 2000,
+                            background: '#fff',
+                            borderRadius: 12,
+                            boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
+                            maxHeight: '70vh',
+                            overflowY: 'auto',
+                            padding: 12,
+                          }
+                        : undefined
+                    }
+                  >
+                    {[...notifications, ...messageNotifs].length > 0 ? (
+                      [...notifications, ...messageNotifs].map((n, i) => (
+                        <div
+                          key={n.id || i}
+                          className="notification-item"
+                          onClick={() => {
+                            if (n.isMessage) {
+                              navigate("/all-chat");
+                              setShowNotifications(false);
+                            } else {
+                              if (teacherId) saveSeenPost(teacherId, n.id); // mark as seen
+                              setNotifications(prev => prev.filter(o => o.id !== n.id));
+                              setShowNotifications(false);
+                            }
+                          }}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={n.isMessage ? "See message notification " + n.title : "See post notification " + n.title}
+                          onKeyPress={e => {
+                            if (e.key === 'Enter') {
+                              if (n.isMessage) {
+                                navigate("/all-chat");
+                                setShowNotifications(false);
+                              } else {
+                                if (teacherId) saveSeenPost(teacherId, n.id);
+                                setNotifications(prev => prev.filter(o => o.id !== n.id));
+                                setShowNotifications(false);
+                              }
+                            }
+                          }}
+                        >
+                          <img
+                            src={getSafeProfileImage(n.adminProfile)}
+                            alt={n.adminName || "Admin"}
+                            className="notification-profile"
+                          />
+                          <div>
+                            <strong>{n.adminName}</strong>
+                            <div className="notification-title">{n.title}</div>
+                            {n.isMessage && (
+                              <span style={{ color: '#0b78f6', fontSize: 12, fontWeight: 500 }}>[Message]</span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="no-notifications">No notifications</div>
+                    )}
+                  </div>
+                </>
               )}
-            </div>
-          </div>
-        ))
-      ) : (
-        <div className="no-notifications">No notifications</div>
-      )}
-    </div>
-  )}
 </div>
 
           {/* Messenger */}
@@ -584,66 +638,22 @@ export default function Dashboard() {
       </nav>
 
       <div className="google-dashboard">
-        <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img
-                src={getSafeProfileImage(t.profileImage)}
-                alt="profile"
-                style={{ objectFit: "cover" }}
-              />
-            </div>
-            <h3>{t.name || "—"}</h3>
-            <p>{t.username || "—"}</p>
-          </div>
+        <Sidebar
+          active="dashboard"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
 
-          <div className="sidebar-menu">
-            <Link
-              className="sidebar-btn"
-              to="/dashboard"
-              style={{
-                backgroundColor: "#4b6cb7",
-                color: "#fff",
-              }}
-            >
-              <FaHome /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/students">
-              <FaUsers /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/admins">
-              <FaUsers /> Admins
-            </Link>
-            <Link className="sidebar-btn" to="/parents">
-              <FaChalkboardTeacher /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/marks">
-              <FaClipboardCheck /> Marks
-            </Link>
-            <Link className="sidebar-btn" to="/attendance">
-              <FaUsers /> Attendance
-            </Link>
-            <Link className="sidebar-btn" to="/schedule">
-              <FaUsers /> Schedule
-            </Link>
-             <Link className="sidebar-btn" to="/lesson-plan" ><FaClipboardCheck /> Lesson Plan</Link>
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={handleLogout}
-            >
-              <FaSignOutAlt /> Logout
-            </button>
-          </div>
-        </div>
-
-        <div className="google-main">
+        <div className="google-main posts-full-mobile">
           <div className="posts-container">
             {posts.length === 0 && <p>No posts available</p>}
             {posts.map((post) => (
               <div
                 key={post.postId}
                 ref={(el) => (postRefs.current[post.postId] = el)}
-                className="post-card"
+                className="post-box"
                 style={{
                   border:
                     highlightedPostId === post.postId
@@ -654,32 +664,16 @@ export default function Dashboard() {
                       ? "#fff9c4"
                       : "#fff",
                   transition: "background-color 0.4s, border 0.2s",
-                  padding: 12,
-                  marginBottom: 12,
+                  marginBottom: 18,
                 }}
               >
-                <div
-                  className="post-header"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <div className="img-circle">
-                    <img
-                      src={getSafeProfileImage(post.adminProfile)}
-                      alt={post.adminName || "Admin"}
-                      style={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: "50%",
-                        objectFit: "cover",
-                      }}
-                    />
-                  </div>
+                <div className="fb-post-top">
+                  <img
+                    src={getSafeProfileImage(post.adminProfile)}
+                    alt={post.adminName || "Admin"}
+                  />
                   <div className="post-info">
-                    <h4 style={{ margin: 0 }}>
+                    <h4 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>
                       {post.adminName || "Admin"}
                     </h4>
                     <div style={{ fontSize: 12, color: "#666" }}>
@@ -690,7 +684,9 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <p className="post-message" style={{ marginTop: 12 }}>{post.message}</p>
+                <div style={{ marginTop: 10, fontSize: 14, lineHeight: 1.5, color: '#222', wordBreak: 'break-word', paddingLeft:"6px" }}>
+                  {post.message}
+                </div>
 
                 {post.postUrl && (
                   <img
@@ -701,52 +697,80 @@ export default function Dashboard() {
                       width: "100%",
                       borderRadius: 8,
                       marginTop: 8,
+                      maxHeight: 400,
+                      objectFit: 'cover',
                     }}
                   />
                 )}
 
-                <div className="post-actions">
-                                    <div className="like-button">
-                                      <button
-                                        onClick={() => handleLike(post.postId)}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "center",
-                                          justifyContent: "space-between",
-                                          gap: "18px",
-                                          width: "120px",
-                                          padding: "8px 18px",
-                                          background: "transparent",
-                                          border: "none",
-                                          cursor: "pointer",
-                                          fontSize: "16px",
-                                          fontWeight: "500",
-                                          color: post.likes && teacherId && post.likes[teacherId] ? "#e0245e" : "#555",
-                                          transition: "all 0.2s ease",
-                                        }}
-                                      >
-                                        {/* LEFT: Heart + Text */}
-                                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                          {post.likes && teacherId && post.likes[teacherId] ? (
-                                            <FaHeart style={{ color: "#e0245e", fontSize: "16px" }} />
-                                          ) : (
-                                            <FaRegHeart style={{ fontSize: "16px" }} />
-                                          )}
-                
-                                          {post.likes && teacherId && post.likes[teacherId] ? "Liked" : "Like"}
-                                        </span>
-                
-                                        {/* RIGHT: Count */}
-                                        <span style={{ marginRight: "550px", fontSize: "15px", color: "#777" }}>
-                                          {post.likeCount || 0}
-                                        </span>
-                                      </button>
-                                    </div>
-                                  </div>
+                <div className="post-actions" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <button
+                    onClick={() => handleLike(post.postId)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "6px 12px",
+                      background: "#f0f2f5",
+                      border: "none",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      fontSize: "14px",
+                      fontWeight: "500",
+                      color: post.likes && teacherId && post.likes[teacherId] ? "#e0245e" : "#555",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    {post.likes && teacherId && post.likes[teacherId] ? (
+                      <FaHeart style={{ color: "#e0245e", fontSize: "14px" }} />
+                    ) : (
+                      <FaRegHeart style={{ fontSize: "14px" }} />
+                    )}
+                    {post.likes && teacherId && post.likes[teacherId] ? "Liked" : "Like"}
+                    <span style={{ marginLeft: 6, fontSize: "13px", color: "#777" }}>
+                      {post.likeCount || 0}
+                    </span>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
+        <style>{`
+          .posts-container {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: flex-start;
+            margin-left: 10px;
+          }
+          .post-box {
+            margin-left: 0;
+            margin-right: auto;
+            margin-top: 12px;
+          }
+          @media (max-width: 600px) {
+            .posts-container {
+              margin-left: 0 !important;
+            }
+            .post-box {
+              margin-top: 0 !important;
+            }
+          }
+          @media (max-width: 600px) {
+            .posts-full-mobile, .posts-container, .post-box {
+              width: 100vw !important;
+              max-width: 100vw !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              border-radius: 0 !important;
+              box-shadow: none !important;
+            }
+            .posts-container {
+              align-items: stretch;
+            }
+          }
+        `}</style>
       </div>
     </div>
   );

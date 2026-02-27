@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import "../styles/login.css";
+import { BACKEND_BASE } from "../config.js";
 
 function Register() {
   const [name, setName] = useState("");
@@ -28,7 +29,7 @@ function Register() {
       formData.append("title", title);
       if (profile) formData.append("profile", profile);
 
-      const res = await fetch("http://127.0.0.1:5000/api/register", {
+      const res = await fetch(`${BACKEND_BASE}/api/register`, {
         method: "POST",
         body: formData,
       });
@@ -65,7 +66,7 @@ function Register() {
           <select value={gender} onChange={e => setGender(e.target.value)} required style={{ marginBottom: "12px" }}>
             <option value="">Select gender</option>
             <option value="Male">Male</option><option value="Female">Female</option>
-            <option value="Other">Other</option><option value="Prefer not to say">Prefer not to say</option>
+            
           </select>
           <input type="tel" placeholder="Phone number" value={phone} onChange={e => setPhone(e.target.value)} required />
           <input type="text" placeholder="Title (e.g., Principal, ...)" value={title} onChange={e => setTitle(e.target.value)} />

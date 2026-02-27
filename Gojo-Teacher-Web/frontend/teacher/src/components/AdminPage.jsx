@@ -16,7 +16,11 @@ import {
   FaCommentDots,
   FaCheck,
   FaPaperPlane,
+   FaUserCheck,
+  FaCalendarAlt,
+  FaBookOpen
 } from "react-icons/fa";
+import Sidebar from "./Sidebar";
 import "../styles/global.css";
 
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
@@ -43,50 +47,67 @@ const formatDateLabel = (ts) => {
   return msgDate.toLocaleDateString();
 };
 
-const API_BASE = "http://127.0.0.1:5000/api";
+import { API_BASE } from "../api/apiConfig";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
 // Admin item component
-const AdminItem = ({ admin, selected, onClick }) => (
+const AdminItem = ({ admin, selected, onClick, number }) => (
   <div
     onClick={() => onClick(admin)}
     style={{
       width: "100%",
       borderRadius: "12px",
-      padding: "15px",
+      padding: "10px",
       display: "flex",
       alignItems: "center",
-      gap: "20px",
+      gap: "12px",
       cursor: "pointer",
       background: selected ? "#e0e7ff" : "#fff",
       border: selected ? "2px solid #4b6cb7" : "1px solid #ddd",
-      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
+      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
       transition: "all 0.3s ease",
     }}
   >
+    <div style={{
+      width: 36,
+      height: 36,
+      borderRadius: "50%",
+      background: selected ? "#4b6cb7" : "#f1f5f9",
+      color: selected ? "#fff" : "#374151",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: 800,
+      fontSize: 12,
+      flexShrink: 0,
+    }}>{number}</div>
+
     <img
       src={admin.profileImage || "/default-profile.png"}
       alt={admin.name}
       style={{
-        width: "50px",
-        height: "50px",
+        width: "48px",
+        height: "48px",
         borderRadius: "50%",
         objectFit: "cover",
-        border: selected ? "3px solid #4b6cb7" : "3px solid transparent",
+        border: selected ? "3px solid #4b6cb7" : "3px solid #ddd",
       }}
     />
     <div>
-      <h3 style={{ margin: 0 }}>{admin.name}</h3>
-      <p style={{ margin: "4px 0", color: "#555" }}>{admin.username || admin.email}</p>
+      <h3 style={{ margin: 0, fontSize: 14 }}>{admin.name}</h3>
+      <p style={{ margin: "4px 0", color: "#555", fontSize: 11 }}>{admin.username || admin.email}</p>
     </div>
   </div>
 );
 
 function AdminPage() {
+    // Sidebar open state for mobile
+    const [sidebarOpen, setSidebarOpen] = useState(false);
   // ---------------- State ----------------
   const [admins, setAdmins] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [selectedAdmin, setSelectedAdmin] = useState(null);
   const [adminTab, setAdminTab] = useState("details");
   const [adminChatOpen, setAdminChatOpen] = useState(false);
@@ -460,11 +481,28 @@ React.useEffect(() => {
 
 // compute admin list main column width: keep small-device default, expand on larger screens
 const mainListWidth = (() => {
-  if (screenWidth >= 1800) return "800px";
-  if (screenWidth >= 1500) return "600px";
-  if (screenWidth >= 1200) return "400px";
-  return "300px"; // default for small and medium screens (preserves existing look)
+  if (screenWidth >= 1800) return "1000px";
+  if (screenWidth >= 1500) return "800px";
+  if (screenWidth >= 1200) return "600px";
+  return "400px"; // default for small and medium screens (wider than before)
 })();
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredAdmins = admins.filter((a) => {
+    if (!normalizedSearch) return true;
+    const haystack = [
+      a.name,
+      a.username,
+      a.email,
+      a.adminId,
+      a.userId,
+      a.title,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalizedSearch);
+  });
 
 
 
@@ -479,7 +517,14 @@ const mainListWidth = (() => {
         <div className="nav-right">
           {/* Notification Bell & Popup (shows posts and unread messages) */}
           <div className="icon-circle" style={{ position: "relative" }}>
-            <div onClick={() => setShowNotifications(!showNotifications)} style={{ cursor: "pointer", position: "relative" }}>
+            <div
+              onClick={() => setShowNotifications(!showNotifications)}
+              style={{ cursor: "pointer", position: "relative" }}
+              aria-label="Show notifications"
+              tabIndex={0}
+              role="button"
+              onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
+            >
               <FaBell size={24} />
               {(notifications.length + totalUnreadMessages) > 0 && (
                 <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -489,38 +534,82 @@ const mainListWidth = (() => {
             </div>
 
             {showNotifications && (
-              <div style={{ position: "absolute", top: 30, right: 0, width: 300, maxHeight: 400, overflowY: "auto", background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.2)", borderRadius: 8, zIndex: 100 }}>
-                {/* Show post notifications */}
-                {notifications.length > 0 && notifications.map((post, index) => (
-                  <div key={post.id || index} onClick={() => {
-                    navigate("/dashboard");
-                    setTimeout(() => {
-                      const postElement = postRefs.current[post.id];
-                      if (postElement) {
-                        postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                        setHighlightedPostId(post.id);
-                        setTimeout(() => setHighlightedPostId(null), 3000);
-                      }
-                    }, 150);
-                    setNotifications(prev => prev.filter((_, i) => i !== index));
-                    setShowNotifications(false);
-                  }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                    <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
-                  </div>
-                ))}
-                {/* Show unread message notifications */}
-                {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                  <div key={conv.chatId || idx} onClick={() => {
-                    setShowNotifications(false);
-                    navigate("/all-chat");
-                  }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                    <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                    <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                  </div>
-                ))}
-                {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
-              </div>
+              <>
+                {/* Overlay for closing notification list by clicking outside */}
+                <div
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0,0,0,0.08)',
+                    zIndex: 1999,
+                  }}
+                  onClick={() => setShowNotifications(false)}
+                />
+                <div
+                  className="notification-popup"
+                  style={
+                    typeof window !== 'undefined' && window.innerWidth <= 600
+                      ? {
+                          position: 'fixed',
+                          left: '50%',
+                          top: '8%',
+                          transform: 'translate(-50%, 0)',
+                          width: '90vw',
+                          maxWidth: 340,
+                          zIndex: 2000,
+                          background: '#fff',
+                          borderRadius: 12,
+                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
+                          maxHeight: '70vh',
+                          overflowY: 'auto',
+                          padding: 12,
+                        }
+                      : {
+                          position: 'absolute',
+                          top: 30,
+                          right: 0,
+                          width: 300,
+                          maxHeight: 400,
+                          overflowY: 'auto',
+                          background: '#fff',
+                          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+                          borderRadius: 8,
+                          zIndex: 100,
+                        }
+                  }
+                >
+                  {/* Show post notifications */}
+                  {notifications.length > 0 && notifications.map((post, index) => (
+                    <div key={post.id || index} onClick={() => {
+                      navigate("/dashboard");
+                      setTimeout(() => {
+                        const postElement = postRefs.current[post.id];
+                        if (postElement) {
+                          postElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                          setHighlightedPostId(post.id);
+                          setTimeout(() => setHighlightedPostId(null), 3000);
+                        }
+                      }, 150);
+                      setNotifications(prev => prev.filter((_, i) => i !== index));
+                      setShowNotifications(false);
+                    }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                      <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                      <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
+                    </div>
+                  ))}
+                  {/* Show unread message notifications */}
+                  {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
+                    <div key={conv.chatId || idx} onClick={() => {
+                      setShowNotifications(false);
+                      navigate("/all-chat");
+                    }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
+                      <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
+                      <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
+                    </div>
+                  ))}
+                  {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
+                </div>
+              </>
             )}
           </div>
 
@@ -543,43 +632,78 @@ const mainListWidth = (() => {
       </nav>
 
       <div className="google-dashboard">
-        {/* Sidebar */}
-        <div className="google-sidebar">
-          {teacher && (
-            <div className="sidebar-profile">
-              <div className="sidebar-img-circle">
-                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" />
-              </div>
-              <h3>{teacher.name}</h3>
-              <p>{teacher.username}</p>
-            </div>
-          )}
-
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
-            <Link className="sidebar-btn" to="/admins" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaUsers /> Admins</Link>
-            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
-            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>
-            <Link className="sidebar-btn" to="/attendance"><FaUsers /> Attendance</Link>
-            <Link className="sidebar-btn" to="/schedule"><FaUsers /> Schedule</Link>
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt /> Logout</button>
-          </div>
-        </div>
+        <Sidebar
+          active="admins"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
 
         {/* MAIN */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
-          <div style={{ width: mainListWidth, marginLeft: "40px" }}>
-            <h2 style={{ textAlign: "center", marginBottom: "20px" }}>All Admins</h2>
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+          <div
+            className="admin-list-card-responsive"
+            style={{
+              width: "min(420px, 100%)",
+              position: "relative",
+              marginLeft: isPortrait ? 0 : "290px",
+              marginRight: isPortrait ? 0 : "30px",
+            }}
+          >
+            <style>{`
+              @media (max-width: 600px) {
+                .admin-list-card-responsive {
+                  margin-left: -16px !important;
+                  margin-right: auto !important;
+                  width: 70vw !important;
+                  max-width: 70vw !important;
+                }
+              }
+            `}</style>
+            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Admins</h2>
+
+            {/* Search */}
+            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
+              <div
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  background: "#fff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "10px",
+                  padding: "6px 10px",
+                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                }}
+              >
+                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search admins..."
+                  style={{
+                    width: "100%",
+                    border: "none",
+                    outline: "none",
+                    fontSize: 12,
+                    background: "transparent",
+                  }}
+                />
+              </div>
+            </div>
 
             {loading && <p>Loading admins...</p>}
             {error && <p style={{ color: "red" }}>{error}</p>}
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {admins.map((a) => (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {filteredAdmins.map((a, idx) => (
                 <AdminItem
                   key={a.adminId}
                   admin={a}
+                  number={idx + 1}
                   selected={selectedAdmin?.adminId === a.adminId}
                   onClick={(admin) => {
                     setSelectedAdmin(admin);
@@ -599,16 +723,16 @@ const mainListWidth = (() => {
       position: "fixed",
       right: 0,
       top: isPortrait ? 0 : "60px",
-      background: "#fff",
-      boxShadow: isPortrait
-        ? "0 0 0 rgba(0,0,0,0)"
-        : "0 0 15px rgba(0,0,0,0.05)",
-      zIndex: 1000,
+      background: "#ffffff",
+      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
+      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+      zIndex: 120,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
-      padding: isPortrait ? "18px" : "25px",
+      padding: "12px",
       transition: "all 0.35s ease",
+      fontSize: 10,
     }}
   >
 
@@ -618,39 +742,33 @@ const mainListWidth = (() => {
   aria-label="Close admin details"
   title="Close"
   style={{
-    position: "fixed",
-    top: 52,
-    right: 16,
-    width: 42,
-    height: 42,
-    borderRadius: "12px",
+    position: "absolute",
+    top: 6,
+    left: 12,
     border: "none",
-    background: "#fff",
-    boxShadow: "0 8px 18px rgba(2,6,23,0.15)",
+    background: "none",
     cursor: "pointer",
-    display: "grid",
-    placeItems: "center",
+    fontSize: 26,
+    fontWeight: 700,
+    color: "#3647b7",
     zIndex: 2000,
-    fontSize: 22,
-    fontWeight: 900,
-    color: "#0f172a",
   }}
 >
   ×
 </button>
 
 
-    <div style={{ textAlign: "center", marginBottom: "20px" }}>
-      <div style={{ width: "120px", height: "120px", margin: "0 auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
+    <div style={{ textAlign: "center", margin: "-12px -12px 10px", padding: "14px 10px", background: "#e0e7ff" }}>
+      <div style={{ width: "70px", height: "70px", margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid #4b6cb7" }}>
         <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
-      <h2>{selectedAdmin.name}</h2>
-      <p>{selectedAdmin.username}</p>
+      <h2 style={{ margin: 0, fontSize: 14, color: "#111827" }}>{selectedAdmin.name}</h2>
+      <p style={{ margin: "4px 0", color: "#6b7280", fontSize: 10 }}>{selectedAdmin.username}</p>
     </div>
 
-              <div style={{ display: "flex", marginBottom: "15px" }}>
+              <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
                 {["details", "Plan", "Report"].map((tab) => (
-                  <button key={tab} onClick={() => setAdminTab(tab)} style={{ flex: 1, padding: "10px", border: "none", background: "none", cursor: "pointer", fontWeight: "600", color: adminTab === tab ? "#4b6cb7" : "#777", borderBottom: adminTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>{tab.toUpperCase()}</button>
+                  <button key={tab} onClick={() => setAdminTab(tab)} style={{ flex: 1, padding: "6px", border: "none", background: "none", cursor: "pointer", fontWeight: 600, fontSize: 10, color: adminTab === tab ? "#4b6cb7" : "#6b7280", borderBottom: adminTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>{tab.toUpperCase()}</button>
                 ))}
               </div>
 
@@ -659,27 +777,25 @@ const mainListWidth = (() => {
     style={{
       display: "flex",
       flexDirection: "column",
-      gap: 28,
-      padding: isPortrait ? 50 : 50,
+      gap: 12,
+      padding: 12,
       marginLeft: 0,
       marginRight: 0,
-      borderRadius: 0,
-      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-      fontFamily: "Inter, system-ui",
+      borderRadius: 12,
+      background: "#ffffff",
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      margin: "0 auto",
+      maxWidth: 380,
     }}
   >
-    {/* ================= LEFT COLUMN ================= */}
     <div>
-      {/* ADMINISTRATOR DETAILS */}
       <div
         style={{
-          fontSize: 24,
-          fontWeight: 900,
-          marginBottom: 18,
-          marginTop: -30,
-          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
+          fontSize: 12,
+          fontWeight: 800,
+          marginBottom: 6,
+          color: "#0f172a",
         }}
       >
         Administrator Details
@@ -689,8 +805,8 @@ const mainListWidth = (() => {
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          columnGap: 68,
-          rowGap: 14,
+          columnGap: 8,
+          rowGap: 8,
         }}
       >
         {[
@@ -700,24 +816,21 @@ const mainListWidth = (() => {
           ["Gender", selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase() + selectedAdmin.gender.slice(1)) : null],
           ["Title", selectedAdmin.title],
           ["Status", selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : null],
-         
         ].map(([label, value]) => (
           <div
             key={label}
             style={{
-              padding: 18,
-              borderRadius: 20,
-              background: "#ffffff",
-              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
-              marginLeft: -30,
-              marginRight: -30,
+              padding: 8,
+              borderRadius: 10,
+              border: "1px solid #eef2f7",
+              boxShadow: "none",
             }}
           >
             <div
               style={{
-                fontSize: 12,
+                fontSize: 9,
                 fontWeight: 700,
-                color: "#000102",
+                color: "#64748b",
                 textTransform: "uppercase",
               }}
             >
@@ -725,10 +838,10 @@ const mainListWidth = (() => {
             </div>
             <div
               style={{
-                marginTop: 8,
-                fontSize: 16,
-                fontWeight: 400,
-                color: "#000102",
+                marginTop: 4,
+                fontSize: 10,
+                fontWeight: 600,
+                color: "#111827",
               }}
             >
               {value || "—"}
@@ -736,8 +849,6 @@ const mainListWidth = (() => {
           </div>
         ))}
       </div>
-
-      
     </div>
   </div>
 )}

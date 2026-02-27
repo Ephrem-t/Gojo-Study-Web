@@ -1,0 +1,436 @@
+/* Responsive styles for Schedule page */
+@media (max-width: 1100px) {
+	.schedule-right-sidebar-responsive {
+		position: static !important;
+		width: 100vw !important;
+		max-width: 100vw !important;
+		margin: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		top: unset !important;
+		right: unset !important;
+		height: auto !important;
+		min-width: 0 !important;
+		z-index: 10;
+	}
+	.schedule-main-content-responsive {
+		margin-left: 0 !important;
+		margin-right: 0 !important;
+		border-radius: 0 !important;
+		padding: 10px !important;
+		min-width: 0 !important;
+		width: 100vw !important;
+		max-width: 100vw !important;
+	}
+	.schedule-sidebar-responsive {
+		position: static !important;
+		width: 100vw !important;
+		min-width: 0 !important;
+		max-width: 100vw !important;
+		box-shadow: none !important;
+		border-radius: 0 !important;
+		z-index: 10;
+	}
+	.schedule-page-responsive {
+		flex-direction: column !important;
+		gap: 0 !important;
+		width: 100vw !important;
+		max-width: 100vw !important;
+		min-width: 0 !important;
+	}
+}
+@media (max-width: 700px) {
+	.schedule-table-responsive table {
+		min-width: 480px !important;
+		font-size: 13px !important;
+	}
+	.schedule-table-responsive th,
+	.schedule-table-responsive td {
+		padding: 8px 6px !important;
+	}
+	.schedule-main-content-responsive {
+		padding: 4vw !important;
+	}
+}
+@media (max-width: 480px) {
+	.schedule-table-responsive table {
+		min-width: 340px !important;
+		font-size: 12px !important;
+	}
+	.schedule-table-responsive th,
+	.schedule-table-responsive td {
+		padding: 6px 4px !important;
+	}
+}
+@media (max-width: 700px) {
+	.top-navbar {
+		position: fixed !important;
+		top: 0;
+		left: 0;
+		width: 100vw !important;
+		min-width: 0 !important;
+		z-index: 1000;
+	}
+	.google-sidebar {
+		position: fixed !important;
+		top: var(--topbar-height, 60px);
+		left: 0;
+		width: 60px !important;
+		min-width: 0 !important;
+		height: calc(100vh - var(--topbar-height, 60px));
+		z-index: 999;
+		padding: 8px 0 !important;
+		overflow-x: hidden;
+		box-shadow: 2px 0 8px rgba(0,0,0,0.07);
+	}
+	.attendance-main-content-responsive {
+		margin-left: 10px !important;
+		width: calc(100vw - 80px) !important;
+		min-width: 0 !important;
+		max-width: 100vw !important;
+		padding: 10px !important;
+		box-sizing: border-box;
+	}
+}
+@media (max-width: 700px) {
+	.attendance-main-content-responsive {
+		margin-left: 10px !important;
+		width: 98vw !important;
+		min-width: 0 !important;
+		max-width: 100vw !important;
+		padding: 10px !important;
+		box-sizing: border-box;
+	}
+}
+@media (max-width: 700px) {
+	.attendance-table-responsive-fix {
+		margin-left: 10px !important;
+	}
+}
+@media (max-width: 700px) {
+	.attendance-table-responsive {
+		margin-left: 10px !important;
+	}
+}
+@media (max-width: 700px) {
+	.main-content {
+		margin-left: 0 !important;
+		padding-left: 4vw !important;
+		padding-right: 4vw !important;
+	}
+}
+/* Responsive: Attendance table aligns left on small screens */
+@media (max-width: 700px) {
+	.attendance-table-responsive {
+		justify-content: flex-start !important;
+		text-align: left !important;
+	}
+	.attendance-table-responsive table {
+		margin-left: 0 !important;
+	}
+}
+/* Responsive Attendance Table */
+.attendance-table-responsive {
+	width: 100%;
+	overflow-x: auto;
+}
+
+.attendance-table-responsive table {
+	min-width: 600px;
+	width: 100%;
+}
+
+@media (max-width: 700px) {
+	.attendance-table-responsive table {
+		min-width: 480px;
+		font-size: 13px;
+	}
+	.attendance-table-responsive th,
+	.attendance-table-responsive td {
+		padding: 8px 6px;
+	}
+}
+
+@media (max-width: 480px) {
+	.attendance-table-responsive table {
+		min-width: 340px;
+		font-size: 12px;
+	}
+	.attendance-table-responsive th,
+	.attendance-table-responsive td {
+		padding: 6px 4px;
+	}
+}
+/* ---------------- RESET ---------------- */
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+	font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* ---------------- THEME VARS ---------------- */
+:root {
+	--sidebar-width: 220px;  /* default sidebar width */
+	--sidebar-gap: 40px;     /* spacing between sidebar and main content */
+	--topbar-height: 60px;
+}
+
+/* ---------------- TOP NAVIGATION BAR ---------------- */
+.top-navbar {
+	width: 100%;
+	height: var(--topbar-height);
+	background: hsl(0, 0%, 100%);
+	color: rgb(14, 13, 13);
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 0 18px;
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 50;
+	box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.top-navbar h2 {
+	font-size: 24px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Search area (if used) */
+.nav-search {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+
+.nav-search input {
+	width: 250px;
+	padding: 8px 12px 8px 35px;
+	border: 1px solid #ffffff;
+	border-radius: 18px;
+	outline: none;
+	background: #dae0e9;
+}
+
+.search-icon {
+	position: absolute;
+	left: 12px;
+	font-size: 16px;
+	color: #606770;
+}
+
+/* Right side icons of top navbar */
+.nav-right {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.nav-right img {
+	width: 45px;
+	height: 45px;
+	border-radius: 50%;
+	object-fit: cover;
+	border: 2px solid white;
+}
+
+/* icon circle common */
+.icon-circle {
+	width: 40px;
+	height: 40px;
+	background-color: #e0e0e4;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.icon-circle svg {
+	font-size: 22px;
+	color: #000000;
+}
+
+.icon-circle:hover {
+	background-color: #cfd5e5;
+}
+
+/* ---------------- DASHBOARD LAYOUT ---------------- */
+.google-dashboard {
+	display: flex;
+	min-height: 100vh;
+	background: hsl(228, 15%, 94%);
+	gap: 20px;
+	margin-top: var(--topbar-height);
+}
+
+/* ---------------- LEFT SIDEBAR ---------------- */
+.google-sidebar {
+	width: var(--sidebar-width);
+	height: calc(100vh - var(--topbar-height));
+	padding: 24px 20px;
+	background: #fff;
+	box-shadow: 0 0.6px 2px rgba(204, 201, 201, 0.795);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	position: fixed;
+	top: var(--topbar-height);
+	left: 20px;
+	z-index: 40;
+	border-radius: 10px;
+}
+
+/* Sidebar profile */
+.sidebar-profile {
+	text-align: center;
+	margin-bottom: 8px;
+}
+
+.sidebar-img-circle {
+	width: 84px;
+	height: 84px;
+	border-radius: 50%;
+	overflow: hidden;
+	margin: 0 auto 8px auto;
+	border: 3px solid #4b6cb7;
+	transition: transform 0.18s ease;
+}
+
+.sidebar-img-circle img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.sidebar-img-circle:hover {
+	transform: scale(1.08);
+}
+
+.sidebar-profile h3 {
+	margin-top: -4px;
+	font-size: 17px;
+	color: #333;
+}
+
+.sidebar-profile p {
+	margin-top: 2px;
+	font-size: 12px;
+	color: #777;
+}
+
+/* Sidebar menu */
+.sidebar-menu {
+	display: flex;
+	flex-direction: column;
+	margin-top: 10px;
+	width: 100%;
+	flex: 1;
+	justify-content: flex-start;
+}
+
+.sidebar-btn {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 12px;
+	margin: 6px 0;
+	text-decoration: none;
+	width: 100%;
+	border: none;
+	border-radius: 8px;
+	cursor: pointer;
+	font-size: 15px;
+	background: #f0f0f0;
+	color: #333;
+	transition: all 0.14s ease;
+}
+
+.sidebar-btn:hover {
+	color: #070707;
+	transform: translateX(3px);
+}
+
+/* Sidebar week card styling and hover */
+.sidebar-week-card {
+	transition: transform 180ms ease, box-shadow 180ms ease;
+	cursor: pointer;
+	box-shadow: 0 4px 12px rgba(11,20,30,0.06);
+	background-clip: padding-box;
+}
+.sidebar-week-card:hover {
+	transform: translateY(-6px) scale(1.01);
+	box-shadow: 0 14px 40px rgba(11,20,30,0.14);
+}
+
+/* Container for weekly day cards to control spacing */
+.sidebar-week-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Daily card styling */
+.sidebar-day-card {
+	transition: transform 160ms ease, box-shadow 160ms ease;
+}
+.sidebar-day-card:hover {
+	transform: translateY(-6px);
+	box-shadow: 0 12px 28px rgba(11,20,30,0.12);
+}
+
+/* Right sidebar subtle separation */
+.right-sidebar {
+	border-radius: 12px;
+	box-shadow: 0 8px 30px rgba(11,20,30,0.06);
+}
+
+/* Logout */
+.logout-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	padding: 12px 25px;
+	width: 100%;
+	border: none;
+	border-radius: 12px;
+	background: #dad9d9;
+	color: #242323;
+	font-size: 16px;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+/* ---------------- CENTER CONTENT 50% ---------------- */
+.google-main {
+	width: calc(100% - (var(--sidebar-width) + var(--sidebar-gap)));
+	margin-left: calc(var(--sidebar-width) + var(--sidebar-gap));
+	padding: 30px;
+	overflow-y: auto;
+}
+.main-header {
+	font-size: 32px;
+	color: #333;
+	margin-bottom: 20px;
+	text-align: center;
+}
+
+/* Main inner container for content that should be responsive */
+.main-inner {
+	width: 55%;
+	max-width: 1100px;
+	margin: 0 auto;
+}
+
+/* Responsive adjustments only for the main content area */
+@media (max-width: 1200px) {
+	.main-inner {
+		width: 75%;
+	}
+}

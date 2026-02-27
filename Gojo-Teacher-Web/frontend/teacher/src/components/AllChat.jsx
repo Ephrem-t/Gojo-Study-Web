@@ -1,10 +1,38 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck } from "react-icons/fa";
-import { getDatabase, ref, onValue, push, update } from "firebase/database";
+import { ref, onValue, push, runTransaction, update } from "firebase/database";
 import { db } from "../firebase";
 
-const getChatId = (id1, id2) => [String(id1), String(id2)].sort().join("_");
+// NOTE: This codebase uses two chat-key conventions:
+// - Students/Parents: teacherUserId_otherUserId (teacher first)
+// - Admins: [id1,id2].sort().join('_')
+const teacherFirstChatId = (teacherUserId, otherUserId) => {
+  const t = String(teacherUserId || "").trim();
+  const o = String(otherUserId || "").trim();
+  return `${t}_${o}`;
+};
+
+const sortedChatId = (id1, id2) => {
+  const a = String(id1 || "").trim();
+  const b = String(id2 || "").trim();
+  return [a, b].sort().join("_");
+};
+
+const normalizeTab = (tab) => {
+  const t = String(tab || "").toLowerCase();
+  if (t === "student" || t === "students") return "student";
+  if (t === "parent" || t === "parents") return "parent";
+  if (t === "admin" || t === "admins") return "admin";
+  return null;
+};
+
+const getChatIdForTab = (tab, teacherUserId, otherUserId) => {
+  const normalized = normalizeTab(tab) || "student";
+  return normalized === "admin"
+    ? sortedChatId(teacherUserId, otherUserId)
+    : teacherFirstChatId(teacherUserId, otherUserId);
+};
 
 /* ================= FIREBASE ================= */
 
@@ -23,6 +51,8 @@ export default function TeacherAllChat() {
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [presence, setPresence] = useState({}); // userId -> presence info (bool or object)
+  const [isMobile, setIsMobile] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState({}); // userId -> number
 
   // incoming navigation state (support both { contact } and { user })
   const locationState = location.state || {};
@@ -30,13 +60,13 @@ export default function TeacherAllChat() {
   const incomingChatId = locationState.chatId || null;
   const incomingTab = locationState.tab || null;
 
-  const [selectedTab, setSelectedTab] = useState(incomingTab || "student");
+  const [selectedTab, setSelectedTab] = useState(normalizeTab(incomingTab) || "student");
   const [selectedChatUser, setSelectedChatUser] = useState(incomingContact || null);
-  const [currentChatKey, setCurrentChatKey] = useState(incomingChatId || null);
+  // Always compute chat key from teacher + selected receiver.
+  const [currentChatKey, setCurrentChatKey] = useState(null);
 
   const [clickedMessageId, setClickedMessageId] = useState(null);
   const [editingMessages, setEditingMessages] = useState({}); // { messageId: true/false }
-  const [editTexts, setEditTexts] = useState({}); // { messageId: text }
 
   const getProfileImage = (user = {}) =>
     user.profileImage || user.profile || user.avatar || "/default-profile.png";
@@ -80,29 +110,66 @@ export default function TeacherAllChat() {
     fetchUsers();
   }, []);
 
+  /* ================= UNREAD COUNTS LISTENERS ================= */
+  useEffect(() => {
+    if (!teacherUserId) return;
+
+    const unsubscribers = [];
+
+    const attachUnreadListener = (tab, u) => {
+      if (!u || !u.userId) return;
+      const chatKey = getChatIdForTab(tab, teacherUserId, u.userId);
+      const unreadRef = ref(db, `Chats/${chatKey}/unread/${teacherUserId}`);
+      const unsub = onValue(unreadRef, (snap) => {
+        const val = snap.val();
+        setUnreadCounts((prev) => ({ ...prev, [u.userId]: Number(val) || 0 }));
+      });
+      unsubscribers.push(unsub);
+    };
+
+    students.forEach((s) => attachUnreadListener("student", s));
+    parents.forEach((p) => attachUnreadListener("parent", p));
+    admins.forEach((a) => attachUnreadListener("admin", a));
+
+    return () => unsubscribers.forEach((u) => u());
+  }, [students, parents, admins, teacherUserId]);
+
+  // responsive: detect mobile and auto-collapse sidebar
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = typeof window !== "undefined" && window.innerWidth < 640;
+      setIsMobile(mobile);
+      if (mobile) setSidebarOpen(false);
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   /* ================= AUTO SELECT ================= */
   // If navigation provided a contact, prefer it (incomingContact)
   useEffect(() => {
     if (incomingContact) {
       setSelectedChatUser(incomingContact);
     }
-    if (incomingChatId) {
-      setCurrentChatKey(incomingChatId);
-    }
     if (incomingTab) {
-      setSelectedTab(incomingTab);
+      setSelectedTab(normalizeTab(incomingTab) || "student");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingContact, incomingChatId, incomingTab]);
+    if (incomingChatId) {
+      setCurrentChatKey(String(incomingChatId));
+      return;
+    }
+    if (teacherUserId && incomingContact?.userId) {
+      const tabForNav = normalizeTab(incomingTab) || "student";
+      setCurrentChatKey(getChatIdForTab(tabForNav, teacherUserId, incomingContact.userId));
+    } else {
+      setCurrentChatKey(null);
+    }
+  }, [incomingContact, incomingChatId, incomingTab, teacherUserId]);
 
   // When lists load and no explicit selectedChatUser, auto-pick first item for tab
-  useEffect(() => {
-    if (!selectedChatUser) {
-      if (selectedTab === "student" && students.length) setSelectedChatUser(students[0]);
-      if (selectedTab === "parent" && parents.length) setSelectedChatUser(parents[0]);
-      if (selectedTab === "admin" && admins.length) setSelectedChatUser(admins[0]);
-    }
-  }, [selectedTab, students, parents, admins, selectedChatUser]);
+  // Remove auto-select: user must manually choose who to chat with
 
   // If navigation gave a user and lists are ready, find the matching entry and select it
   useEffect(() => {
@@ -127,7 +194,9 @@ export default function TeacherAllChat() {
   useEffect(() => {
     if (!selectedChatUser || !teacherUserId) return;
 
-    const chatKey = currentChatKey || getChatId(teacherUserId, selectedChatUser.userId);
+    const chatKey =
+      currentChatKey ||
+      getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId);
     setCurrentChatKey(chatKey); // ensure state is in sync
 
     const chatRef = ref(db, `Chats/${chatKey}/messages`);
@@ -158,6 +227,14 @@ export default function TeacherAllChat() {
     return () => unsubscribe();
   }, [selectedChatUser, teacherUserId, currentChatKey]);
 
+  const getActiveChatKey = () => {
+    if (!selectedChatUser || !teacherUserId) return null;
+    return (
+      currentChatKey ||
+      getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId)
+    );
+  };
+
   /* ================= PRESENCE LISTENER ================= */
   useEffect(() => {
     // Listen to presence node in RTDB. If your backend uses a different path, change it.
@@ -180,7 +257,8 @@ export default function TeacherAllChat() {
     if (!input.trim() || !selectedChatUser) return;
 
     const editingId = Object.keys(editingMessages).find((id) => editingMessages[id]);
-    const chatKey = currentChatKey || getChatId(teacherUserId, selectedChatUser.userId);
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
 
     if (editingId) {
       // Update existing message
@@ -221,13 +299,11 @@ export default function TeacherAllChat() {
 
       // increment unread for receiver
       try {
-        // first read current unread count
-        const unreadRef = ref(db, `Chats/${chatKey}/unread/${selectedChatUser.userId}`);
-        // we don't have a simple get here; update with increment is okay for most cases.
-        await update(ref(db, `Chats/${chatKey}/unread`), {
-          [teacherUserId]: 0,
-          [selectedChatUser.userId]: (/* best-effort */ 1),
-        });
+        await update(ref(db, `Chats/${chatKey}/unread`), { [teacherUserId]: 0 });
+        await runTransaction(
+          ref(db, `Chats/${chatKey}/unread/${selectedChatUser.userId}`),
+          (current) => (Number(current) || 0) + 1
+        );
       } catch (e) {
         // ignore
       }
@@ -238,7 +314,8 @@ export default function TeacherAllChat() {
 
   /* ================= EDIT / DELETE ================= */
   const handleEditMessage = (id, newText) => {
-    const chatKey = currentChatKey || getChatId(teacherUserId, selectedChatUser.userId);
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
     update(ref(db, `Chats/${chatKey}/messages/${id}`), {
       text: newText,
       edited: true,
@@ -247,7 +324,8 @@ export default function TeacherAllChat() {
   };
 
   const handleDeleteMessage = (id) => {
-    const chatKey = currentChatKey || getChatId(teacherUserId, selectedChatUser.userId);
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
     update(ref(db, `Chats/${chatKey}/messages/${id}`), { deleted: true }).catch(console.error);
   };
 
@@ -343,25 +421,43 @@ export default function TeacherAllChat() {
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: "#eef2f7", fontFamily: "sans-serif" }}>
-      {/* ===== SIDEBAR ===== */}
-      <div style={{ display: 'flex', alignItems: 'stretch' }}>
-        <div style={{
-          width: sidebarOpen ? 280 : 0,
-          background: "#fff",
-          padding: sidebarOpen ? 16 : 0,
-          boxShadow: sidebarOpen ? "2px 0 10px rgba(0,0,0,0.1)" : 'none',
-          display: sidebarOpen ? 'flex' : 'none',
-          flexDirection: "column",
-          transition: 'width 180ms ease'
-        }}>
+    <div style={{ display: 'flex', height: '100vh', background: '#eef2f7', fontFamily: 'sans-serif', position: 'relative' }}>
+      {/* ===== SIDEBAR / USER LIST ===== */}
+      <div
+        style={{
+          display:
+            isMobile && !selectedChatUser
+              ? 'flex'
+              : isMobile && selectedChatUser
+              ? 'none'
+              : 'flex',
+          alignItems: 'stretch',
+          position: isMobile && !selectedChatUser ? 'fixed' : 'static',
+          top: 0,
+          left: 0,
+          width: isMobile && !selectedChatUser ? '100vw' : undefined,
+          height: isMobile && !selectedChatUser ? '100vh' : undefined,
+          background: isMobile && !selectedChatUser ? '#fff' : undefined,
+          zIndex: isMobile && !selectedChatUser ? 100 : undefined,
+        }}
+      >
+        <div
+          style={{
+            width: isMobile && !selectedChatUser ? '100vw' : sidebarOpen ? (isMobile ? 220 : 280) : 0,
+            height: isMobile && !selectedChatUser ? '100vh' : 'auto',
+            background: '#fff',
+            padding: sidebarOpen || (isMobile && !selectedChatUser) ? 16 : 0,
+            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? '2px 0 10px rgba(0,0,0,0.1)' : 'none',
+            display: sidebarOpen || (isMobile && !selectedChatUser) ? 'flex' : 'none',
+            flexDirection: 'column',
+            transition: 'width 180ms ease',
+            overflowY: isMobile && !selectedChatUser ? 'auto' : 'visible',
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <button onClick={() => navigate(-1)} style={{ border: "none", background: "none", padding: 4, cursor: "pointer" }}>
               <FaArrowLeft size={18} />
             </button>
-            
-          </div>
-
           <div style={{ display: "flex", gap: 6, margin: "12px 0", alignItems: "center" }}>
             {["student", "parent", "admin"].map((t) => (
               <button
@@ -385,6 +481,7 @@ export default function TeacherAllChat() {
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </button>
             ))}
+            </div>
           </div>
 
           <div style={{ marginTop: 8, overflowY: "auto", flex: 1 }}>
@@ -394,39 +491,53 @@ export default function TeacherAllChat() {
                 onClick={() => {
                   setSelectedChatUser(u);
                   setCurrentChatKey(null); // compute chat key automatically for selected pair
+                  if (isMobile) setSidebarOpen(false);
                 }}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
                   gap: 10,
-                  padding: 10,
+                  padding: isMobile ? 18 : 10,
                   borderRadius: 14,
-                  cursor: "pointer",
+                  cursor: 'pointer',
                   marginBottom: 8,
-                  background: selectedChatUser?.userId === u.userId ? "#dbeafe" : "#f9fafb",
-                  boxShadow: selectedChatUser?.userId === u.userId ? "0 2px 10px rgba(0,0,0,0.1)" : "none",
+                  background: selectedChatUser?.userId === u.userId ? '#dbeafe' : '#f9fafb',
+                  boxShadow: selectedChatUser?.userId === u.userId ? '0 2px 10px rgba(0,0,0,0.1)' : 'none',
+                  fontSize: isMobile ? 18 : 15,
                 }}
               >
-                <div style={{ position: 'relative' }}>
-                  <img
-                    src={u.profileImage}
-                    alt={u.name}
-                    onError={(e) => (e.target.src = "/default-profile.png")}
-                    style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover" }}
-                  />
-                  {/* online dot */}
-                  <span style={{
-                    position: 'absolute',
-                    right: -2,
-                    bottom: -2,
-                    width: 12,
-                    height: 12,
-                    borderRadius: 12,
-                    border: '2px solid #fff',
-                    background: isUserOnline(u.userId) ? '#34D399' : '#cbd5e1'
-                  }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ position: 'relative' }}>
+                    <img
+                      src={u.profileImage}
+                      alt={u.name}
+                      onError={(e) => (e.target.src = "/default-profile.png")}
+                      style={{ width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: "50%", objectFit: "cover" }}
+                    />
+                    {/* online dot */}
+                    <span style={{
+                      position: 'absolute',
+                      right: -2,
+                      bottom: -2,
+                      width: 12,
+                      height: 12,
+                      borderRadius: 12,
+                      border: '2px solid #fff',
+                      background: isUserOnline(u.userId) ? '#34D399' : '#cbd5e1'
+                    }} />
+                  </div>
+                  <span style={{ fontWeight: 500, marginLeft: 0 }}>{u.name}</span>
                 </div>
-                <span style={{ fontWeight: 500, marginLeft: 8 }}>{u.name}</span>
+
+                {/* unread badge */}
+                {unreadCounts[u.userId] > 0 ? (
+                  <div style={{ minWidth: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#ef4444', color: '#fff', borderRadius: 14, padding: '0 6px', fontSize: 12, fontWeight: 600 }}>
+                    {unreadCounts[u.userId] > 99 ? '99+' : unreadCounts[u.userId]}
+                  </div>
+                ) : (
+                  <div style={{ width: 26 }} />
+                )}
               </div>
             ))}
           </div>
@@ -458,11 +569,27 @@ export default function TeacherAllChat() {
                 marginBottom: 8,
               }}
             >
+              {isMobile && (
+                <button
+                  onClick={() => setSelectedChatUser(null)}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    padding: 4,
+                    marginRight: 8,
+                    cursor: 'pointer',
+                    fontSize: 20,
+                  }}
+                  aria-label="Back to user list"
+                >
+                  <FaArrowLeft size={22} />
+                </button>
+              )}
               <img
                 src={selectedChatUser.profileImage}
                 alt={selectedChatUser.name}
                 onError={(e) => (e.target.src = "/default-profile.png")}
-                style={{ width: 50, height: 50, borderRadius: "50%", objectFit: "cover" }}
+                style={{ width: isMobile ? 40 : 50, height: isMobile ? 40 : 50, borderRadius: "50%", objectFit: "cover" }}
               />
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <span style={{ fontWeight: 600, fontSize: 16 }}>{selectedChatUser.name}</span>
@@ -484,7 +611,7 @@ export default function TeacherAllChat() {
                     <div
                       onClick={() => setClickedMessageId(m.id)}
                       style={{
-                        maxWidth: "70%",
+                        maxWidth: isMobile ? "85%" : "70%",
                         background: isTeacher ? "#4facfe" : "#fff",
                         color: isTeacher ? "#fff" : "#000",
                         padding: "10px 14px",
@@ -531,9 +658,9 @@ export default function TeacherAllChat() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && sendMessage()}
                 placeholder="Type a message..."
-                style={{ flex: 1, padding: 12, borderRadius: 25, border: "1px solid #ccc", outline: "none" }}
+                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 25, border: "1px solid #ccc", outline: "none" }}
               />
-              <button onClick={sendMessage} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center" }}>
+              <button onClick={sendMessage} style={{ width: isMobile ? 40 : 45, height: isMobile ? 40 : 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center" }}>
                 <FaPaperPlane />
               </button>
             </div>

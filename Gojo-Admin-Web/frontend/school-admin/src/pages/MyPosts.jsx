@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
+import { AiFillPicture } from "react-icons/ai";
 import {
   FaHome,
   FaFileAlt,
@@ -12,13 +13,16 @@ import {
   FaCalendarAlt,
 } from "react-icons/fa";
 import "../styles/global.css";
+import { BACKEND_BASE } from "../config.js";
 
 function MyPosts() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   const [posts, setPosts] = useState([]);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editedContent, setEditedContent] = useState("");
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const fileInputRef = useRef(null);
   const [teachers, setTeachers] = useState([]);
   const [unreadTeachers, setUnreadTeachers] = useState({});
   const [popupMessages, setPopupMessages] = useState([]);
@@ -101,9 +105,7 @@ function MyPosts() {
   const fetchPostNotifications = async () => {
     if (!adminId) return;
     try {
-      const res = await axios.get(
-        `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-      );
+      const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
       let notifications = Array.isArray(res.data)
         ? res.data
         : Object.values(res.data || {});
@@ -239,13 +241,10 @@ function MyPosts() {
 
   const handleNotificationClick = async (notification) => {
     try {
-      await axios.post(
-        "http://127.0.0.1:5000/api/mark_post_notification_read",
-        {
-          notificationId: notification.notificationId,
-          adminId: admin.userId,
-        }
-      );
+      await axios.post(`${API_BASE}/mark_post_notification_read`, {
+        notificationId: notification.notificationId,
+        adminId: admin.userId,
+      });
     } catch (err) {
       console.warn("Failed to delete notification:", err);
     }
@@ -264,9 +263,7 @@ function MyPosts() {
   const fetchMyPosts = async () => {
     if (!adminId) return;
     try {
-      const res = await axios.get(
-        `http://127.0.0.1:5000/api/get_my_posts/${adminId}`
-      );
+      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`);
       const postsArray = Array.isArray(res.data)
         ? res.data
         : Object.entries(res.data || {}).map(([key, post]) => ({
@@ -313,12 +310,13 @@ function MyPosts() {
       formData.append("postText", postText);
       if (postMedia) formData.append("postMedia", postMedia);
 
-      await axios.post("http://127.0.0.1:5000/api/create_post", formData, {
+      await axios.post(`${API_BASE}/create_post`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
       setPostText("");
       setPostMedia(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       fetchMyPosts();
     } catch (err) {
       console.error("Error creating post:", err.response?.data || err);
@@ -365,7 +363,7 @@ function MyPosts() {
     }
 
     try {
-      const url = `http://127.0.0.1:5000/api/edit_post/${postId}`;
+      const url = `${API_BASE}/edit_post/${postId}`;
       const payload = { adminId, postText: trimmed, message: trimmed };
       const headers = {};
       if (token) {
@@ -408,7 +406,7 @@ function MyPosts() {
     }
 
     try {
-      const url = `http://127.0.0.1:5000/api/delete_post/${postId}`;
+      const url = `${API_BASE}/delete_post/${postId}`;
       const headers = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
@@ -448,7 +446,7 @@ function MyPosts() {
 
   const handleLike = async (postId) => {
     try {
-      const res = await axios.post("http://127.0.0.1:5000/api/like_post", {
+      const res = await axios.post(`${API_BASE}/like_post`, {
         adminId,
         postId,
       });
@@ -539,7 +537,7 @@ function MyPosts() {
                             className="notification-row"
                             onClick={async () => {
                               try {
-                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                await axios.post(`${API_BASE}/mark_post_notification_read`, {
                                   notificationId: n.notificationId,
                                 });
                               } catch (err) {
@@ -635,83 +633,194 @@ function MyPosts() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
-        <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle"><img src={admin?.profileImage || "/default-profile.png"} alt="profile" /></div>
-            <h3>{admin?.name || "Admin Name"}</h3>
-            <p>{admin?.adminId || "username"}</p>
+      <div className="google-dashboard" style={{ display: "flex" }}>
+        {/* ---------------- SIDEBAR ---------------- */}
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin?.name || "Admin Name"}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn active" to="/my-posts" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaFileAlt /> My Posts</Link>
-            <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-            <Link className="sidebar-btn" to="/students"><FaChalkboardTeacher /> Students</Link>
-            <Link className="sidebar-btn" to="/schedule"><FaCalendarAlt /> Schedule</Link>
-            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
-             <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-                          </Link>
-            <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}><FaSignOutAlt /> Logout</button>
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
+            </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
+
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => {
+                localStorage.removeItem("admin");
+                window.location.href = "/login";
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
+            >
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
+            </button>
           </div>
         </div>
 
-        <main className="google-main">
-          <h2 className="page-title">My Posts</h2>
+        {/* ---------------- MAIN CONTENT ---------------- */}
+        <div
+          className="main-content google-main"
+          style={{
+            padding: "10px 20px 20px",
+            flex: 1,
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        >
+          {/* Post input box (same look as Dashboard) */}
+          <div className="post-box">
+            <div className="fb-post-top" style={{ display: "flex", gap: 12 }}>
+              <img src={admin.profileImage || "/default-profile.png"} alt="me" />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                <textarea
+                  placeholder="What's on your mind?"
+                  value={postText}
+                  onChange={(e) => setPostText(e.target.value)}
+                />
+                <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <AiFillPicture className="fb-icon" />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={(e) => {
+                        const file = e.target.files && e.target.files[0];
+                        setPostMedia(file || null);
+                      }}
+                      accept="image/*,video/*"
+                    />
+                  </label>
 
-          {posts.length === 0 && <p className="muted center">You have no posts yet.</p>}
+                  {postMedia && (
+                    <div
+                      style={{
+                        width: "20%",
+                        minWidth: 140,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "6px 10px",
+                        background: "#f3f4f6",
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                        boxSizing: "border-box",
+                      }}
+                    >
+                      <span style={{ fontSize: 13, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {postMedia.name}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setPostMedia(null);
+                          if (fileInputRef.current) fileInputRef.current.value = "";
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#6b7280",
+                          cursor: "pointer",
+                          fontSize: 16,
+                          lineHeight: 1,
+                        }}
+                        aria-label="Remove selected media"
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
 
-          <section className="posts-list">
-            {posts.map((post) => (
-              <article key={post.postId} id={`post-${post.postId}`} className="post-card">
-                <header className="post-card-header">
-                  <div className="fb-post-top">
-                    <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+                  <div style={{ marginLeft: "auto" }}>
+                    <button className="telegram-send-icon" onClick={handlePost}>
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" width="35" height="35" fill="#0088cc">
+                        <path d="M2.01 21L23 12 2.01 3v7l15 2-15 2z" />
+                      </svg>
+                    </button>
                   </div>
-                  <div className="post-meta">
-                    <h4 className="post-author">{admin.name}</h4>
-                    <small className="post-time">{post.time}</small>
-                  </div>
-                </header>
+                </div>
+              </div>
+            </div>
+          </div>
 
-                <div className="post-card-body">
+          {/* Posts container */}
+          {posts.length === 0 ? (
+            <p className="muted" style={{ textAlign: "center", padding: 10 }}>You have no posts yet.</p>
+          ) : (
+            <div className="posts-container">
+              {posts.map((post) => (
+                <div className="post-card" id={`post-${post.postId}`} key={post.postId}>
+                  <div className="post-header">
+                    <div className="img-circle">
+                      <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+                    </div>
+                    <div className="post-info">
+                      <h4>{admin.name || "Admin"}</h4>
+                      <span>
+                        {post.time}
+                        {post.edited ? " (edited)" : ""}
+                      </span>
+                    </div>
+                  </div>
+
                   {editingPostId === post.postId ? (
-                    <div className="edit-area">
-                      <textarea
-                        value={editedContent}
-                        onChange={(e) => setEditedContent(e.target.value)}
-                        className="edit-textarea"
-                      />
-                      <div className="edit-actions">
-                        <button onClick={() => saveEdit(post.postId)} disabled={savingId === post.postId} className="btn primary">
-                          {savingId === post.postId ? "Saving..." : "Save"}
-                        </button>
-                        <button onClick={() => setEditingPostId(null)} className="btn muted">Cancel</button>
+                    <div className="post-card-body">
+                      <div className="edit-area">
+                        <textarea
+                          value={editedContent}
+                          onChange={(e) => setEditedContent(e.target.value)}
+                          className="edit-textarea"
+                        />
+                        <div className="edit-actions">
+                          <button onClick={() => saveEdit(post.postId)} disabled={savingId === post.postId} className="btn primary">
+                            {savingId === post.postId ? "Saving..." : "Save"}
+                          </button>
+                          <button onClick={() => setEditingPostId(null)} className="btn muted">Cancel</button>
+                        </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="post-content">
+                    <>
                       <p>{post.message}</p>
-                      {post.edited && <small className="muted">(edited)</small>}
-                      {post.postUrl && (
-                        <img src={post.postUrl} alt="post media" className="post-media" />
-                      )}
-                    </div>
+                      {post.postUrl && <img src={post.postUrl} alt="post media" />}
+
+                      <div className="post-card-actions">
+                        <button onClick={() => handleEdit(post.postId, post.message)} className="btn warning">Edit</button>
+                        <button onClick={() => handleDelete(post.postId)} disabled={deletingId === post.postId} className="btn danger">
+                          {deletingId === post.postId ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
-
-                {editingPostId !== post.postId && (
-                  <footer className="post-card-actions">
-                    <button onClick={() => handleEdit(post.postId, post.message)} className="btn warning">Edit</button>
-                    <button onClick={() => handleDelete(post.postId)} disabled={deletingId === post.postId} className="btn danger">
-                      {deletingId === post.postId ? "Deleting..." : "Delete"}
-                    </button>
-                  </footer>
-                )}
-              </article>
-            ))}
-          </section>
-        </main>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

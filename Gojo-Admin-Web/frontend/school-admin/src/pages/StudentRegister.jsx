@@ -108,7 +108,7 @@ export default function StudentRegister() {
             <option value="">Select gender</option>
             <option value="Male">Male</option>
             <option value="Female">Female</option>
-            <option value="Other">Other</option>
+          
           </select>
 
           <label style={{ marginTop: 6, display: 'block', fontWeight: 700 }}>Profile photo (optional)</label>

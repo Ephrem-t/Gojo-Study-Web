@@ -13,7 +13,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # ---------------- FIREBASE ----------------
-firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json"
+firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-c1cfe56112.json"
 if not os.path.exists(firebase_json):
     print("Firebase JSON missing")
     sys.exit()

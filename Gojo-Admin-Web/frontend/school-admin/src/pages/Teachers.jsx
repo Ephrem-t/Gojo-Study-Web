@@ -22,16 +22,22 @@ import axios from "axios";
 import { getDatabase, ref, onValue } from "firebase/database";
 import app from "../firebase";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+import { BACKEND_BASE } from "../config.js";
 
 
 
 
 function TeachersPage() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   const [teachers, setTeachers] = useState([]);
+  const [loadingTeachers, setLoadingTeachers] = useState(true);
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const [searchTerm, setSearchTerm] = useState("");
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
   const messagesEndRef = useRef(null);
@@ -74,6 +80,7 @@ function TeachersPage() {
   const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
   const [isPortrait, setIsPortrait] = useState(typeof window !== "undefined" ? window.innerWidth < window.innerHeight : false);
   const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" ? window.innerWidth < 900 : false);
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const navigate = useNavigate();
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
@@ -81,7 +88,135 @@ function TeachersPage() {
   const adminId = admin.userId;
   const dbRT = getDatabase(app);
   const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const nowDate = new Date(nowTick);
+  const currentDayName = nowDate.toLocaleDateString("en-US", { weekday: "long" });
+  const currentMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
   const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+
+  useEffect(() => {
+    const tick = () => setNowTick(Date.now());
+    const intervalId = setInterval(tick, 60 * 1000);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  const getPeriodRangeMinutes = (label) => {
+    if (!label) return null;
+    const text = String(label);
+    const match = text.match(/(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})/);
+    if (!match) return null;
+    const toMinutes = (hStr, mStr) => {
+      let h = parseInt(hStr, 10);
+      const m = parseInt(mStr, 10);
+      if (Number.isNaN(h) || Number.isNaN(m)) return null;
+      if (h < 8) h += 12; // afternoon/evening schedule without AM/PM
+      return h * 60 + m;
+    };
+    const start = toMinutes(match[1], match[2]);
+    const end = toMinutes(match[3], match[4]);
+    if (start === null || end === null) return null;
+    return { start, end };
+  };
+
+  const downloadTeacherTimetablePdf = () => {
+    try {
+      if (!selectedTeacher) return;
+      if (!teacherSchedule || Object.keys(teacherSchedule).length === 0) return;
+
+      const teacherName = (selectedTeacher?.name || "Teacher").toString().trim();
+      const safeName = teacherName.replace(/[<>:"/\\|?*]+/g, "").trim() || "Teacher";
+      const fileName = `${safeName}_Weekly_Timetable.pdf`;
+
+      const days = weekOrder.filter((d) => teacherSchedule[d]);
+      const periodKeySet = new Set();
+      days.forEach((day) => {
+        const periods = teacherSchedule?.[day] || {};
+        Object.keys(periods).forEach((p) => periodKeySet.add(p));
+      });
+
+      const sortPeriodKeys = (keys) => {
+        return [...keys].sort((a, b) => {
+          const sa = String(a || "");
+          const sb = String(b || "");
+          const na = (sa.match(/\d+/) || [null])[0];
+          const nb = (sb.match(/\d+/) || [null])[0];
+          if (na !== null && nb !== null) {
+            const ia = parseInt(na, 10);
+            const ib = parseInt(nb, 10);
+            if (!Number.isNaN(ia) && !Number.isNaN(ib) && ia !== ib) return ia - ib;
+          }
+          return sa.localeCompare(sb);
+        });
+      };
+
+      const periodKeys = sortPeriodKeys(Array.from(periodKeySet));
+
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      const marginX = 40;
+      const titleY = 40;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text("Weekly Teaching Timetable", marginX, titleY);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      const metaStartY = titleY + 18;
+      const emailText = (selectedTeacherUser?.email || selectedTeacher?.email || "").toString();
+      const subjectsText = (selectedTeacher?.subjectsUnique || []).join(", ");
+      doc.text(`Teacher: ${teacherName}`, marginX, metaStartY);
+      doc.text(`Email: ${emailText}`, marginX, metaStartY + 14);
+      doc.text(`Subjects: ${subjectsText}`, marginX, metaStartY + 28);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, marginX, metaStartY + 42);
+
+      const tableHead = [["Period", ...days]];
+      const tableBody = periodKeys.map((periodKey) => {
+        return [
+          periodKey,
+          ...days.map((day) => {
+            const entries = teacherSchedule?.[day]?.[periodKey] || [];
+            if (!Array.isArray(entries) || entries.length === 0) return "";
+            const labels = entries
+              .map((e) => {
+                const subject = (e?.subject || "").toString().trim();
+                const cls = (e?.class || "").toString().trim();
+                if (subject && cls) return `${subject} (${cls})`;
+                return subject || cls;
+              })
+              .filter(Boolean);
+            return Array.from(new Set(labels)).join("\n");
+          }),
+        ];
+      });
+
+      autoTable(doc, {
+        startY: metaStartY + 60,
+        head: tableHead,
+        body: tableBody,
+        theme: "grid",
+        styles: {
+          font: "helvetica",
+          fontSize: 9,
+          cellPadding: 4,
+          valign: "top",
+        },
+        headStyles: {
+          fillColor: [30, 64, 175],
+          textColor: 255,
+          fontStyle: "bold",
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252],
+        },
+        columnStyles: {
+          0: { cellWidth: 90 },
+        },
+      });
+
+      doc.save(fileName);
+    } catch (e) {
+      console.error("Failed to export teacher timetable:", e);
+    }
+  };
 
   const dayOrder = {
     sunday: 0,
@@ -112,6 +247,7 @@ useEffect(() => {
   // ---------------- FETCH TEACHERS ----------------
   useEffect(() => {
     const fetchTeachers = async () => {
+      setLoadingTeachers(true);
       try {
         const [teachersRes, assignmentsRes, coursesRes, usersRes] = await Promise.all([
           axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
@@ -129,19 +265,44 @@ useEffect(() => {
           const teacher = teachersData[teacherId];
           const user = usersData[teacher.userId] || {};
 
-          const gradesSubjects = Object.values(assignmentsData)
+          const gradesSubjectsRaw = Object.values(assignmentsData)
             .filter(a => a.teacherId === teacherId)
             .map(a => {
               const course = coursesData[a.courseId];
-              return course ? { grade: course.grade, subject: course.subject, section: course.section } : null;
+              return course
+                ? { courseId: a.courseId, grade: course.grade, subject: course.subject, section: course.section }
+                : null;
             })
             .filter(Boolean);
+
+          // Deduplicate: show each course only once (prevents repeated subjects)
+          const seenCourseKeys = new Set();
+          const gradesSubjects = [];
+          gradesSubjectsRaw.forEach((gs) => {
+            const key = gs.courseId || `${gs.grade}-${gs.section}-${gs.subject}`;
+            if (seenCourseKeys.has(key)) return;
+            seenCourseKeys.add(key);
+            gradesSubjects.push(gs);
+          });
+
+          // Deduplicate subjects for display (one subject name only once)
+          const seenSubjects = new Set();
+          const subjectsUnique = [];
+          gradesSubjects.forEach((gs) => {
+            const rawSubject = (gs?.subject ?? "").toString().trim();
+            if (!rawSubject) return;
+            const normalized = rawSubject.toLowerCase().replace(/\s+/g, " ");
+            if (seenSubjects.has(normalized)) return;
+            seenSubjects.add(normalized);
+            subjectsUnique.push(rawSubject);
+          });
 
           return {
             teacherId,
             name: user.name || "No Name",
             profileImage: user.profileImage || "/default-profile.png",
             gradesSubjects,
+            subjectsUnique,
             email: user.email || null,
             userId: teacher.userId
           };
@@ -150,17 +311,51 @@ useEffect(() => {
         setTeachers(teacherList);
       } catch (err) {
         console.error("Error fetching teachers:", err);
+      } finally {
+        setLoadingTeachers(false);
       }
     };
 
     fetchTeachers();
   }, []);
 
+  // ---------------- FETCH TEACHER USER INFO ----------------
+  useEffect(() => {
+    if (!selectedTeacher) {
+      setSelectedTeacherUser(null);
+      return;
+    }
+    // Fetch user info from Users table in Firebase
+    const fetchUser = async () => {
+      try {
+        const res = await fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
+        const users = await res.json();
+        const user = Object.values(users || {}).find(u => String(u.userId) === String(selectedTeacher.userId));
+        setSelectedTeacherUser(user || null);
+      } catch (err) {
+        setSelectedTeacherUser(null);
+      }
+    };
+    fetchUser();
+  }, [selectedTeacher]);
+
   // ---------------- FILTER TEACHERS ----------------
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const matchesSearch = (teacher) => {
+    if (!normalizedSearch) return true;
+    const name = (teacher?.name || "").toLowerCase();
+    const subjects = (teacher?.subjectsUnique || []).join(" ").toLowerCase();
+    const grades = (teacher?.gradesSubjects || [])
+      .map((gs) => `${gs.grade ?? ""}${gs.section ?? ""} ${gs.subject ?? ""}`)
+      .join(" ")
+      .toLowerCase();
+    return name.includes(normalizedSearch) || subjects.includes(normalizedSearch) || grades.includes(normalizedSearch);
+  };
+
   const filteredTeachers =
     selectedGrade === "All"
-      ? teachers
-      : teachers.filter(t => t.gradesSubjects.some(gs => gs.grade === selectedGrade));
+      ? teachers.filter(matchesSearch)
+      : teachers.filter(t => t.gradesSubjects.some(gs => gs.grade === selectedGrade)).filter(matchesSearch);
 
 
 
@@ -251,7 +446,6 @@ useEffect(() => {
         setPlanCurrentWeekIndex(null);
         return;
       }
-
       const today = new Date();
       const todayISO = today.toISOString().slice(0, 10);
       const todayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
@@ -1049,9 +1243,7 @@ useEffect(() => {
 
   try {
     // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-    );
+    const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
 
     let notifications = Array.isArray(res.data)
       ? res.data
@@ -1122,13 +1314,10 @@ useEffect(() => {
 
  const handleNotificationClick = async (notification) => {
   try {
-    await axios.post(
-      "http://127.0.0.1:5000/api/mark_post_notification_read",
-      {
-        notificationId: notification.notificationId,
-        adminId: admin.userId,
-      }
-    );
+    await axios.post(`${API_BASE}/mark_post_notification_read`, {
+      notificationId: notification.notificationId,
+      adminId: admin.userId,
+    });
   } catch (err) {
     console.warn("Failed to delete notification:", err);
   }
@@ -1474,63 +1663,120 @@ useEffect(() => {
 
       <div className="google-dashboard" style={{ display: "flex" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
-            <h3>{admin.name}</h3>
-             <p>{admin?.adminId || "username"}</p>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin.name}</h3>
+             <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
-          <div className="sidebar-menu">
-                              <Link className="sidebar-btn" to="/dashboard"
-                               
-                               > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
-                                <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
-                                <Link className="sidebar-btn" to="/teachers" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Teachers</Link>
-                                  <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students</Link>
-                                   <Link
-                                                className="sidebar-btn"
-                                                to="/schedule"
-                                                
-                                              >
-                                                <FaCalendarAlt /> Schedule
-                                              </Link>
-                                   <Link className="sidebar-btn" to="/parents" ><FaChalkboardTeacher /> Parents
-                                              </Link>
-                                    <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-                                                            </Link>                      
-                                 
-                                <button
-                                  className="sidebar-btn logout-btn"
-                                  onClick={() => {
-                                    localStorage.removeItem("admin");
-                                    window.location.href = "/login";
-                                  }}
-                                >
-                                  <FaSignOutAlt /> Logout
-                                </button>
-                              </div>
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
+            </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
+
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => {
+                localStorage.removeItem("admin");
+                window.location.href = "/login";
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
+            >
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
+            </button>
+          </div>
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
-        <div className="main-content" style={{ padding: "20px", width: isNarrow ? "100%" : "100%", marginLeft: selectedTeacher && !isPortrait ? "-100px" : 0, boxSizing: "border-box" }}>
-          <h2 style={{ marginBottom: "10px", textAlign: "center" }}>Teachers</h2>
+        <div
+          className="main-content"
+          style={{
+            padding: "10px 20px 20px",
+            flex: 1,
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        >
+          <h2 style={{ marginBottom: "6px", textAlign: isNarrow ? "center" : "left", marginTop: "-8px", fontSize: "20px", marginLeft: isNarrow ? 0 : 64 }}>Teachers</h2>
+
+          {/* Search */}
+          <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "8px", paddingLeft: isNarrow ? 0 : 64 }}>
+            <div
+              style={{
+                width: "min(580px, 100%)",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                background: "#fff",
+                borderRadius: "10px",
+                padding: "6px 10px",
+                border: "1px solid #e5e7eb",
+                boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+              }}
+            >
+              <FaSearch style={{ color: "#64748b", fontSize: "12px" }} />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search teachers by name, subject, or grade"
+                style={{
+                  border: "none",
+                  outline: "none",
+                  width: "100%",
+                  fontSize: "12px",
+                  color: "#111827",
+                  background: "transparent",
+                }}
+              />
+            </div>
+          </div>
 
           {/* Grade Filter */}
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px" }}>
-            <div style={{ display: "flex", gap: "12px" }}>
-              {["All", "7", "8", "9", "10", "11", "12"].map(g => (
+          <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: isNarrow ? 0 : 64 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: "6px",
+                flexWrap: "wrap",
+                justifyContent: "center",
+                maxWidth: "100%",
+                overflowX: "auto",
+                paddingBottom: 1,
+              }}
+            >
+              {["All", "1", "2", "3", "4", "5", "6", "7", "8"].map(g => (
                 <button
                   key={g}
                   onClick={() => setSelectedGrade(g)}
                   style={{
-                    padding: "10px 20px",
+                    padding: "4px 10px",
                     borderRadius: "8px",
                     background: selectedGrade === g ? "#4b6cb7" : "#ddd",
                     color: selectedGrade === g ? "#fff" : "#000",
                     cursor: "pointer",
-                    border: "none"
+                    border: "none",
+                    fontSize: "11px"
                   }}
                 >
                   {g === "All" ? "All Teachers" : `Grade ${g}`}
@@ -1540,59 +1786,83 @@ useEffect(() => {
           </div>
 
           {/* Teachers List */}
-          {filteredTeachers.length === 0 ? (
+          {loadingTeachers ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", marginLeft: isNarrow ? 0 : '165px' }}>
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <div key={idx} style={{ width: isNarrow ? "92%" : "400px", borderRadius: "12px", padding: "10px", background: "#fff", border: "1px solid #eee", boxShadow: "0 2px 6px rgba(0,0,0,0.04)", display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 10, background: '#f0f2f5' }} />
+                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#e6e6e6' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ height: 12, width: '40%', background: '#e6e6e6', borderRadius: 6, marginBottom: 8 }} />
+                    <div style={{ height: 10, width: '60%', background: '#f0f0f0', borderRadius: 6 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : filteredTeachers.length === 0 ? (
             <p style={{ textAlign: "center", color: "#555" }}>No teachers found for this grade.</p>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-              {filteredTeachers.map(t => (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", marginLeft: isNarrow ? 0 : '165px' }}>
+              {filteredTeachers.map((t, i) => (
                 <div
                   key={t.teacherId}
                   onClick={() => setSelectedTeacher(t)}
                   style={{
-                    width: isNarrow ? "90%" : "500px",
-                    height: "100px",
+                    width: isNarrow ? "92%" : "400px",
                     borderRadius: "12px",
-                    padding: "15px",
+                    padding: "10px",
                     background: selectedTeacher?.teacherId === t.teacherId ? "#e0e7ff" : "#fff",
                     border: selectedTeacher?.teacherId === t.teacherId ? "2px solid #4b6cb7" : "1px solid #ddd",
                     boxShadow: selectedTeacher?.teacherId === t.teacherId ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
                     cursor: "pointer",
-                    transition: "all 0.3s ease"
+                    transition: "all 0.3s ease",
+                    display: 'flex',
+                    alignItems: 'center',
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flex: '0 0 auto' }}>
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: "#eef2ff",
+                        color: "#2563eb",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontWeight: 800,
+                        fontSize: 13,
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      {i + 1}
+                    </div>
                     <img
                       src={t.profileImage}
                       alt={t.name}
                       style={{
-                        width: "65px",
-                        height: "65px",
+                        width: 48,
+                        height: 48,
                         borderRadius: "50%",
-                        border: selectedTeacher?.teacherId === t.teacherId ? "3px solid #4b6cb7" : "3px solid red",
+                        border: selectedTeacher?.teacherId === t.teacherId ? "3px solid #4b6cb7" : "3px solid #ddd",
                         objectFit: "cover",
-                        transition: "all 0.3s ease"
+                        transition: "all 0.3s ease",
+                        flex: '0 0 auto'
                       }}
                     />
-                    <h3 style={{marginTop: "-35px" }}>{t.name}</h3>
+                  </div>
 
-
-                      {/* ---------- UNREAD BADGE ---------- */}
-  {unreadTeachers[t.userId] > 0 && (
-  <span style={{
-    margin: "10px 10px 10px 200px",
-    background: "red",
-    color: "#fff",
-    borderRadius: "50%",
-    padding: "4px 8px",
-    fontSize: "12px"
-  }}>
-    {unreadTeachers[t.userId]}
-  </span>
-)}
-    
-</div>
-                  <div style={{ marginLeft: "70px", marginTop: "-25px", color: "#555" }}>
-                    {t.gradesSubjects.length > 0 ? t.gradesSubjects.map(gs => gs.subject).join(", ") : "No assigned courses"}
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', marginLeft: 12, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <h3 style={{ margin: 0, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
+                      {unreadTeachers[t.userId] > 0 && (
+                        <span style={{ background: 'red', color: '#fff', borderRadius: 12, padding: '2px 6px', fontSize: 11, fontWeight: 700, marginLeft: 8 }}>{unreadTeachers[t.userId]}</span>
+                      )}
+                    </div>
+                    <div style={{ color: '#555', fontSize: 11, marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.subjectsUnique?.length > 0 ? t.subjectsUnique.join(', ') : 'No assigned courses'}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1609,18 +1879,19 @@ useEffect(() => {
       position: "fixed",
       left: isPortrait ? 0 : "auto",
       right: 0,
-      top: isPortrait ? 0 : "70px",
-      height: isPortrait ? "100vh" : "calc(100vh - 70px)",
+      top: isPortrait ? 0 : "55px",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
       background: "#ffffff",
       boxShadow: "0 0 18px rgba(0,0,0,0.08)",
       borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
       zIndex: 120,
       display: "flex",
-      flexDirection: "column"
+      flexDirection: "column",
+      fontSize: "10px"
     }}
   >
     {/* CLOSE BUTTON at the top right */}
-    <div style={{ position: "absolute", top: 15, right: 22, zIndex: 999 }}>
+    <div style={{ position: "absolute", top: 0, left: 22, zIndex: 999 }}>
       <button
         onClick={() => setSelectedTeacher(null)}
         aria-label="Close sidebar"
@@ -1643,26 +1914,26 @@ useEffect(() => {
       style={{
         flex: 1,
         overflowY: "auto",
-        padding: "25px"
+        padding: "12px"
       }}
     >
       {/* ================= HEADER ================= */}
       <div
         style={{
           background: "#e0e7ff",
-          margin: "-25px -25px 20px",
-          padding: "30px 20px",
+          margin: "-12px -12px 10px",
+          padding: "14px 10px",
           textAlign: "center"
         }}
       >
         <div
           style={{
-            width: "110px",
-            height: "110px",
-            margin: "0 auto 15px",
+            width: "70px",
+            height: "70px",
+            margin: "0 auto 10px",
             borderRadius: "50%",
             overflow: "hidden",
-            border: "4px solid #4b6cb7"
+            border: "3px solid #4b6cb7"
           }}
         >
           <img
@@ -1672,11 +1943,11 @@ useEffect(() => {
           />
         </div>
 
-        <h2 style={{ margin: 0, color: "#111827" }}>
+        <h2 style={{ margin: 0, color: "#111827", fontSize: 14 }}>
           {selectedTeacher.name}
         </h2>
 
-        <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "14px" }}>
+        <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "10px" }}>
           {selectedTeacherUser?.email || selectedTeacher.email || "teacher@example.com"}
         </p>
       </div>
@@ -1686,7 +1957,7 @@ useEffect(() => {
         style={{
           display: "flex",
           borderBottom: "1px solid #e5e7eb",
-          marginBottom: "15px"
+          marginBottom: "10px"
         }}
       >
         {["details", "schedule", "plan"].map(tab => (
@@ -1695,12 +1966,13 @@ useEffect(() => {
             onClick={() => setActiveTab(tab)}
             style={{
               flex: 1,
-              padding: "12px",
+              padding: "6px",
               background: "none",
               border: "none",
               cursor: "pointer",
               fontWeight: 600,
               color: activeTab === tab ? "#4b6cb7" : "#6b7280",
+              fontSize: "10px",
               borderBottom:
                 activeTab === tab
                   ? "3px solid #4b6cb7"
@@ -1720,22 +1992,28 @@ useEffect(() => {
 {activeTab === "details" && selectedTeacher && (
   <div
     style={{
-      padding: "30px 18px",
-      background: "linear-gradient(180deg,#eef2ff 75%,#f8fafc 100%)",
-      borderRadius: 24,
-      boxShadow: "0 10px 30px rgba(75,108,183,0.08)",
-      fontFamily: "Inter, system-ui,sans-serif",
+      padding: "12px",
+      background: "#ffffff",
+      borderRadius: 12,
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
       margin: "0 auto",
-      maxWidth: 450
+      maxWidth: 380
     }}
   >
     <h3 style={{
-      margin: 0, marginBottom: 10, color: "#1e40af", fontWeight: 900, letterSpacing: ".2px", fontSize: 22, textAlign: "center"
+      margin: 0,
+      marginBottom: 6,
+      color: "#0f172a",
+      fontWeight: 800,
+      letterSpacing: "0.1px",
+      fontSize: 12,
+      textAlign: "left"
     }}>
-      👩‍🏫 Teacher Profile
+      Teacher Profile
     </h3>
-    <div style={{ color: "#64748b", fontSize: 13, textAlign: "center", marginBottom: 22 }}>
-      ID: <b style={{ color: "#4b6cb7" }}>{selectedTeacher.teacherId}</b>
+    <div style={{ color: "#64748b", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
+      ID: <b style={{ color: "#111827" }}>{selectedTeacher.teacherId}</b>
     </div>
 
     {/* Info GRID */}
@@ -1743,16 +2021,30 @@ useEffect(() => {
       style={{
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
-        gap: 18,
-        marginBottom: 16,
+        gap: 8,
+        marginBottom: 10,
       }}
     >
       {[
-        { label: "Email", icon: "📧", value: selectedTeacherUser?.email || selectedTeacher.email },
+        { label: "Email", icon: "📧", value: selectedTeacherUser?.email || selectedTeacher.email || "N/A" },
         { label: "Gender", icon: (selectedTeacherUser?.gender || selectedTeacher.gender) === "male" ? "♂️" : (selectedTeacherUser?.gender || selectedTeacher.gender) === "female" ? "♀️" : "⚧", value: selectedTeacherUser?.gender || selectedTeacher.gender || "N/A" },
         { label: "Phone", icon: "📱", value: selectedTeacherUser?.phone || selectedTeacher.phone || selectedTeacher.phoneNumber || "N/A" },
         { label: "Status", icon: "✅", value: selectedTeacher.status || "Active" },
-        { label: "Subject(s)", icon: "📚", value: selectedTeacher.gradesSubjects?.map(gs => gs.subject).filter(Boolean).join(", ") },
+        {
+          label: "Class(es)",
+          icon: "🏫",
+          value: (() => {
+            const buckets = new Set();
+            (selectedTeacher?.gradesSubjects || []).forEach((gs) => {
+              const grade = (gs?.grade ?? "").toString().trim();
+              const section = (gs?.section ?? "").toString().trim();
+              if (grade && section) buckets.add(`Grade ${grade}${section}`);
+              else if (grade) buckets.add(`Grade ${grade}`);
+            });
+            return Array.from(buckets).join(", ");
+          })()
+        },
+        { label: "Subject(s)", icon: "📚", value: selectedTeacher.subjectsUnique?.join(", ") },
         { label: "Teacher ID", icon: "🆔", value: selectedTeacher.teacherId },
       ].map((item, i) => (
         <div
@@ -1761,33 +2053,34 @@ useEffect(() => {
             alignItems: "center",
             justifyContent: "flex-start",
             display: "flex",
-            background: "#fff",
-            padding: "14px",
-            borderRadius: 14,
-            boxShadow: "0 2px 12px rgba(75,108,183,0.04)",
-            minHeight: 50,
+            background: "#ffffff",
+            padding: "8px",
+            borderRadius: 10,
+            border: "1px solid #eef2f7",
+            boxShadow: "none",
+            minHeight: 36,
           }}
         >
           <span style={{
-            fontSize: 24,
-            marginRight: 14,
+            fontSize: 14,
+            marginRight: 8,
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            color: "#4b6cb7"
+            color: "#64748b"
           }}>{item.icon}</span>
           <div>
             <div style={{
-              fontSize: "12px",
+              fontSize: "9px",
               fontWeight: 700,
-              letterSpacing: ".6px",
+              letterSpacing: "0.4px",
               color: "#64748b",
               textTransform: "uppercase"
             }}>
               {item.label}
             </div>
             <div style={{
-              fontSize: 14,
+              fontSize: 10,
               fontWeight: 600,
               color: item.label === "Status"
                 ? (item.value && String(item.value).toLowerCase() === "active" ? "#16a34a" : "#991b1b")
@@ -1801,6 +2094,49 @@ useEffect(() => {
         </div>
       ))}
     </div>
+
+    {/* Teaching by class */}
+    {(() => {
+      const byClass = new Map();
+      (selectedTeacher?.gradesSubjects || []).forEach((gs) => {
+        const grade = (gs?.grade ?? "").toString().trim();
+        const section = (gs?.section ?? "").toString().trim();
+        const subject = (gs?.subject ?? "").toString().trim();
+        if (!grade || !section || !subject) return;
+        const classKey = `Grade ${grade}${section}`;
+        if (!byClass.has(classKey)) byClass.set(classKey, new Set());
+        byClass.get(classKey).add(subject);
+      });
+
+      const classKeys = Array.from(byClass.keys()).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      if (!classKeys.length) return null;
+
+      return (
+        <div
+          style={{
+            background: "#ffffff",
+            borderRadius: 12,
+            padding: 10,
+            border: "1px solid #eef2f7",
+            boxShadow: "none",
+          }}
+        >
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.4px", color: "#64748b", textTransform: "uppercase", marginBottom: 8 }}>
+            Teaching by class
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {classKeys.map((ck) => (
+              <div key={ck} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ minWidth: 110, fontWeight: 800, color: "#0f172a" }}>{ck}</div>
+                <div style={{ color: "#111827", fontWeight: 600, lineHeight: 1.35, wordBreak: "break-word" }}>
+                  {Array.from(byClass.get(ck) || []).sort((a, b) => a.localeCompare(b)).join(", ")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    })()}
   </div>
 )}
 
@@ -1808,69 +2144,81 @@ useEffect(() => {
 {/* ================= SCHEDULE TAB ================= */}
 {/* ================= SCHEDULE TAB ================= */}
 {activeTab === "schedule" && (
-  <div style={{ padding: "20px" }}>
-    {/* Title */}
-    <h4
-      style={{
-        fontSize: "22px",
-        fontWeight: "700",
-        textAlign: "center",
-        marginBottom: "25px",
-        color: "#1e3a8a",
-        letterSpacing: "0.5px"
-      }}
-    >
-      Weekly Teaching Schedule
-    </h4>
+  <div style={{ padding: "8px" }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+      <h4
+        style={{
+          fontSize: "12px",
+          fontWeight: "800",
+          color: "#111827",
+          letterSpacing: "0.1px",
+          margin: 0
+        }}
+      >
+        Weekly Teaching Schedule
+      </h4>
+
+      <button
+        type="button"
+        className="btn btn-sm"
+        style={{
+          background: "#4b6cb7",
+          color: "#ffffff",
+          border: "none",
+          padding: "5px 8px",
+          borderRadius: "10px",
+          fontWeight: 800,
+          fontSize: "9px",
+          letterSpacing: "0.2px",
+          boxShadow: "none",
+          textTransform: "none"
+        }}
+        onClick={downloadTeacherTimetablePdf}
+        disabled={!teacherSchedule || Object.keys(teacherSchedule).length === 0}
+      >
+        Download PDF
+      </button>
+    </div>
 
     {/* Empty State */}
     {Object.keys(teacherSchedule).length === 0 ? (
       <div
         style={{
           textAlign: "center",
-          padding: "40px",
-          borderRadius: "16px",
-          background: "#f3f4f6",
-          color: "#6b7280",
-          fontSize: "15px",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
+          padding: "12px",
+          borderRadius: "12px",
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          color: "#475569",
+          fontSize: "10px",
+          boxShadow: "none"
         }}
       >
-        📭 No schedule assigned yet
+        No schedule assigned yet
       </div>
     ) : (
       <div
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(2, 1fr)", // TWO COLUMNS
-          gap: "24px"
+          gap: "6px"
         }}
       >
         {weekOrder
           .filter(day => teacherSchedule[day])
           .map(day => {
             const periods = teacherSchedule[day];
+            const isToday = currentDayName === day;
 
             return (
               <div
                 key={day}
                 style={{
-                  borderRadius: "16px",
-                  padding: "18px",
+                  borderRadius: "12px",
+                  padding: "7px",
                   background: "#ffffff",
-                  boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
-                  border: "1px solid #e5e7eb",
-                  transition: "transform 0.2s ease, box-shadow 0.2s ease"
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.transform = "translateY(-3px)";
-                  e.currentTarget.style.boxShadow =
-                    "0 12px 30px rgba(0,0,0,0.12)";
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.transform = "translateY(0)";
-                  e.currentTarget.style.boxShadow =
-                    "0 6px 20px rgba(0,0,0,0.08)";
+                  boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
+                  border: isToday ? "1px solid #4b6cb7" : "1px solid #e5e7eb"
                 }}
               >
                 {/* Day Header */}
@@ -1879,27 +2227,27 @@ useEffect(() => {
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    marginBottom: "16px"
+                    marginBottom: "6px"
                   }}
                 >
                   <h5
                     style={{
-                      fontSize: "18px",
-                      fontWeight: "600",
-                      color: "#1e3a8a"
+                      fontSize: "12px",
+                      fontWeight: "800",
+                      color: "#0f172a"
                     }}
                   >
-                    📆 {day}
+                    {day}
                   </h5>
 
                   <span
                     style={{
-                      fontSize: "12px",
-                      padding: "5px 12px",
+                      fontSize: "10px",
+                      padding: "4px 6px",
                       borderRadius: "999px",
-                      background: "#eef2ff",
-                      color: "#1e40af",
-                      fontWeight: "500"
+                      background: "#f1f5f9",
+                      color: "#334155",
+                      fontWeight: "700"
                     }}
                   >
                     {Object.keys(periods).length} periods
@@ -1907,35 +2255,46 @@ useEffect(() => {
                 </div>
 
                 {/* Periods */}
-                {Object.entries(periods).map(([period, entries]) => (
+                {Object.entries(periods).map(([period, entries]) => {
+                  const range = getPeriodRangeMinutes(period);
+                  const isCurrentPeriod = isToday && range && currentMinutes >= range.start && currentMinutes < range.end;
+
+                  return (
                   <div
                     key={period}
                     style={{
-                      marginBottom: "14px",
+                      marginBottom: "6px",
                       borderRadius: "12px",
-                      padding: "12px",
-                      background: "#f9fafb",
-                      border: "1px solid #e5e7eb",
-                      transition: "transform 0.2s ease",
-                      cursor: "pointer"
+                      padding: "8px",
+                      background: isCurrentPeriod ? "#eef2ff" : "#f8fafc",
+                      border: isCurrentPeriod ? "1px solid #4b6cb7" : "1px solid #e2e8f0"
                     }}
-                    onMouseEnter={e =>
-                      (e.currentTarget.style.transform = "translateY(-2px)")
-                    }
-                    onMouseLeave={e =>
-                      (e.currentTarget.style.transform = "translateY(0)")
-                    }
                   >
                     {/* Period Header */}
                     <div
                       style={{
-                        fontSize: "14px",
-                        fontWeight: "600",
-                        color: "#374151",
-                        marginBottom: "10px"
+                        fontSize: "9px",
+                        fontWeight: "800",
+                        color: "#1f2937",
+                        marginBottom: "4px"
                       }}
                     >
-                      ⏰ {period}
+                      <span>{period}</span>
+                      {isCurrentPeriod && (
+                        <span
+                          style={{
+                            marginLeft: "8px",
+                            fontSize: "8px",
+                            padding: "1px 4px",
+                            borderRadius: "999px",
+                            background: "#4b6cb7",
+                            color: "#ffffff",
+                            fontWeight: "700"
+                          }}
+                        >
+                          NOW
+                        </span>
+                      )}
                     </div>
 
                     {/* Subjects */}
@@ -1946,25 +2305,26 @@ useEffect(() => {
                           display: "flex",
                           justifyContent: "space-between",
                           alignItems: "center",
-                          padding: "8px 10px",
-                          borderRadius: "10px",
+                          padding: "4px 6px",
+                          borderRadius: "8px",
                           background: "#ffffff",
-                          marginBottom: "6px",
-                          boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
-                          fontSize: "13px"
+                          marginBottom: "4px",
+                          border: "1px solid #eef2f7",
+                          boxShadow: "none",
+                          fontSize: "10px"
                         }}
                       >
-                        <span style={{ fontWeight: "500", color: "#111827" }}>
-                          📘 {e.subject}
+                        <span style={{ fontWeight: "600", color: "#111827" }}>
+                          {e.subject}
                         </span>
                         <span
                           style={{
-                            fontSize: "12px",
+                            fontSize: "8px",
                             fontWeight: "500",
-                            padding: "3px 8px",
+                            padding: "1px 4px",
                             borderRadius: "999px",
-                            background: "#e0e7ff",
-                            color: "#3730a3"
+                            background: "#f1f5f9",
+                            color: "#334155"
                           }}
                         >
                           {e.class}
@@ -1972,7 +2332,8 @@ useEffect(() => {
                       </div>
                     ))}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })}
@@ -2356,74 +2717,74 @@ useEffect(() => {
 
             return (
               <div className="space-y-3">
-                <div style={{ background: '#fff', borderRadius: 12, padding: 12, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
+                <div style={{ background: '#fff', borderRadius: 8, padding: 6, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 className="font-semibold" style={{ margin: 0 }}>Submitted Daily Plans</h3>
+                    <h3 className="font-semibold" style={{ margin: 0, fontSize: 11 }}>Submitted Daily Plans</h3>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 12, color: '#666' }}>Total</div>
+                      <div style={{ fontSize: 9, color: '#666' }}>Total</div>
                       <div style={{ fontWeight: 800, color: '#16a34a' }}>{submittedDailyPlans.length}</div>
                     </div>
                   </div>
 
                   {submittedDailyPlans.length ? (
-                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5 }}>
                       {submittedDailyPlans.slice(0, 10).map((p, idx) => (
-                        <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 10, background: '#ecfdf5', border: '1px solid #bbf7d0', alignItems: 'center' }}>
-                          <div style={{ width: 8, height: 48, borderRadius: 6, background: '#16a34a' }} />
+                        <div key={p?.key || idx} style={{ display: 'flex', gap: 6, padding: 6, borderRadius: 8, background: '#ecfdf5', border: '1px solid #bbf7d0', alignItems: 'center' }}>
+                          <div style={{ width: 5, height: 30, borderRadius: 6, background: '#16a34a' }} />
                           <div style={{ flex: 1 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontWeight: 800 }}>{p.dayName || `Submitted ${idx + 1}`}</div>
-                              <div style={{ fontSize: 12, color: '#166534' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}{p?.date ? ` • ${String(p.date).slice(0, 10)}` : ''}</div>
+                              <div style={{ fontWeight: 800, fontSize: 10 }}>{p.dayName || `Submitted ${idx + 1}`}</div>
+                              <div style={{ fontSize: 9, color: '#166534' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}{p?.date ? ` • ${String(p.date).slice(0, 10)}` : ''}</div>
                             </div>
-                            <div style={{ fontSize: 13, color: '#14532d', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
-                            <div style={{ fontSize: 12, color: '#166534', marginTop: 6 }}>
+                            <div style={{ fontSize: 10, color: '#14532d', marginTop: 3 }}>{p.topic || 'No topic provided'}</div>
+                            <div style={{ fontSize: 9, color: '#166534', marginTop: 3 }}>
                               {p.method ? `Method: ${p.method}` : p.aids ? `Material: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
                             </div>
                           </div>
-                          <div style={{ background: '#16a34a', color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 800 }}>
+                          <div style={{ background: '#16a34a', color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 800 }}>
                             Submitted
                           </div>
                         </div>
                       ))}
                       {submittedDailyPlans.length > 10 && (
-                        <div style={{ fontSize: 12, color: '#166534', textAlign: 'center' }}>
+                        <div style={{ fontSize: 9, color: '#166534', textAlign: 'center' }}>
                           Showing latest 10 submitted daily plans.
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div style={{ marginTop: 10, textAlign: 'center', color: '#666' }}>No submitted daily plans yet.</div>
+                    <div style={{ marginTop: 6, textAlign: 'center', color: '#666', fontSize: 9 }}>No submitted daily plans yet.</div>
                   )}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h3 className="font-semibold">Today's Plan</h3>
+                  <h3 className="font-semibold" style={{ fontSize: 11 }}>Today's Plan</h3>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 12, color: '#666' }}>Today</div>
+                    <div style={{ fontSize: 9, color: '#666' }}>Today</div>
                     <div style={{ fontWeight: 700 }}>{(visibleDailyPlans || []).length}</div>
                   </div>
                 </div>
 
                 {(visibleDailyPlans && visibleDailyPlans.length > 0) ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                     {visibleDailyPlans.map((p, idx) => {
                       const status = p?.status || 'pending';
                       const color = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
                       return (
-                        <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 4px 10px rgba(11,20,30,0.04)', alignItems: 'center' }}>
-                          <div style={{ width: 8, height: 48, borderRadius: 6, background: color }} />
+                        <div key={p?.key || idx} style={{ display: 'flex', gap: 6, padding: 6, borderRadius: 8, background: '#fff', boxShadow: '0 4px 10px rgba(11,20,30,0.04)', alignItems: 'center' }}>
+                          <div style={{ width: 5, height: 30, borderRadius: 6, background: color }} />
                           <div style={{ flex: 1 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontWeight: 700 }}>{p.dayName || `Plan ${idx + 1}`}</div>
-                              <div style={{ fontSize: 12, color: '#666' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}</div>
+                              <div style={{ fontWeight: 700, fontSize: 10 }}>{p.dayName || `Plan ${idx + 1}`}</div>
+                              <div style={{ fontSize: 9, color: '#666' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}</div>
                             </div>
-                            <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
-                            <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+                            <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>{p.topic || 'No topic provided'}</div>
+                            <div style={{ fontSize: 9, color: '#666', marginTop: 3 }}>
                               {p.method ? `Method: ${p.method}` : p.aids ? `Aids: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
                             </div>
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                            <div style={{ background: color, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
+                            <div style={{ background: color, color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 700 }}>
                               {status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}
                             </div>
                           </div>
@@ -2432,7 +2793,7 @@ useEffect(() => {
                     })}
                   </div>
                 ) : (
-                  <div style={{ textAlign: 'center', color: '#666' }}>No plans for today.</div>
+                  <div style={{ textAlign: 'center', color: '#666', fontSize: 9 }}>No plans for today.</div>
                 )}
               </div>
             );
@@ -2443,36 +2804,36 @@ useEffect(() => {
             if (!blocks.length) return (<div style={{ textAlign: 'center', color: '#666' }}>No weekly plan found.</div>);
 
             return (
-              <div className="sidebar-week-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <h3 className="font-semibold">Week Plan</h3>
+              <div className="sidebar-week-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <h3 className="font-semibold" style={{ fontSize: 11 }}>Week Plan</h3>
                 {blocks.map((wk, bi) => {
                   const days = wk?.weekDays || [];
                   if (!days.length) return null;
                   return (
-                    <div key={bi} style={{ background: '#fff', padding: 10, borderRadius: 10, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <div key={bi} style={{ background: '#fff', padding: 6, borderRadius: 8, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
                         <div style={{ fontWeight: 800 }}>{wk.courseId || 'Course'}</div>
-                        <div style={{ fontSize: 12, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
+                        <div style={{ fontSize: 9, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                         {days.map((d, i) => {
                           const ds = getDayStatus(wk.courseId, wk.week, d);
                           const status = ds.status;
                           const statusColor = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
                           const cardBg = status === 'submitted' ? '#d9f8d5' : status === 'missed' ? '#ffe4e4' : '#ffffff';
                           return (
-                            <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 22, color: '#333', padding: 12, borderRadius: 10, background: cardBg, alignItems: 'center', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
-                              <div style={{ width: 10, height: 46, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,#9ae6b4,#2f855a)' : status === 'missed' ? 'linear-gradient(180deg,#feb2b2,#c53030)' : 'linear-gradient(180deg,#e2e8f0,#4a5568)' }} />
+                            <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 10, color: '#333', padding: 6, borderRadius: 8, background: cardBg, alignItems: 'center', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
+                              <div style={{ width: 6, height: 30, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,#9ae6b4,#2f855a)' : status === 'missed' ? 'linear-gradient(180deg,#feb2b2,#c53030)' : 'linear-gradient(180deg,#e2e8f0,#4a5568)' }} />
                               <div style={{ flex: 1 }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <div style={{ fontWeight: 700 }}>{d.dayName || `Day ${i + 1}`}</div>
-                                  <div style={{ fontSize: 12, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
+                                  <div style={{ fontWeight: 700, fontSize: 10 }}>{d.dayName || `Day ${i + 1}`}</div>
+                                  <div style={{ fontSize: 9, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
                                 </div>
-                                <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{d.topic || wk.topic || 'No topic set'}</div>
-                                {d?.date ? (<div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>Date: {d.date}</div>) : null}
+                                <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>{d.topic || wk.topic || 'No topic set'}</div>
+                                {d?.date ? (<div style={{ fontSize: 9, color: '#666', marginTop: 3 }}>Date: {d.date}</div>) : null}
                               </div>
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                                <div style={{ background: statusColor, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
+                                <div style={{ background: statusColor, color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
                               </div>
                             </div>
                           );
@@ -2488,39 +2849,39 @@ useEffect(() => {
           // monthly
           return (
             <div className="space-y-2">
-              <h3 className="font-semibold">This Month</h3>
-              {!currentMonthWeeks.length && <div className="text-xs text-gray-500" style={{ color: '#666' }}>No plans for this month.</div>}
+              <h3 className="font-semibold" style={{ fontSize: 11 }}>This Month</h3>
+              {!currentMonthWeeks.length && <div className="text-xs text-gray-500" style={{ color: '#666', fontSize: 9 }}>No plans for this month.</div>}
 
               {!!currentMonthWeeks.length && (
-                <div style={{ padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 8 }}>
+                <div style={{ padding: 6, borderRadius: 8, background: '#fff', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 6 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <div style={{ fontWeight: 800 }}>{currentMonthName}</div>
-                      <div style={{ fontSize: 12, color: '#666' }}>{currentMonthWeeks.length} week(s) • {monthStats.total} day(s)</div>
+                      <div style={{ fontWeight: 800, fontSize: 10 }}>{currentMonthName}</div>
+                      <div style={{ fontSize: 9, color: '#666' }}>{currentMonthWeeks.length} week(s) • {monthStats.total} day(s)</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 12, color: '#666' }}>Completed</div>
+                      <div style={{ fontSize: 9, color: '#666' }}>Completed</div>
                       <div style={{ fontWeight: 700 }}>{monthPct}%</div>
                     </div>
                   </div>
 
-                  <div style={{ height: 8, background: '#edf2f7', borderRadius: 999, marginTop: 10, overflow: 'hidden' }}>
+                  <div style={{ height: 5, background: '#edf2f7', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}>
                     <div style={{ width: `${monthPct}%`, height: '100%', background: 'linear-gradient(90deg,#67e8f9,#4b6cb7)' }} />
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#2f855a' }}>Submitted: <strong>{monthStats.submitted}</strong></div>
-                      <div style={{ fontSize: 12, color: '#c53030' }}>Missed: <strong>{monthStats.missed}</strong></div>
-                      <div style={{ fontSize: 12, color: '#4a5568' }}>Pending: <strong>{monthStats.pending}</strong></div>
+                      <div style={{ fontSize: 9, color: '#2f855a' }}>Submitted: <strong>{monthStats.submitted}</strong></div>
+                      <div style={{ fontSize: 9, color: '#c53030' }}>Missed: <strong>{monthStats.missed}</strong></div>
+                      <div style={{ fontSize: 9, color: '#4a5568' }}>Pending: <strong>{monthStats.pending}</strong></div>
                     </div>
                   </div>
 
                   {monthStats.topics && monthStats.topics.length > 0 && (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Topics this month</div>
+                    <div style={{ marginTop: 6 }}>
+                      <div style={{ fontSize: 9, color: '#666', marginBottom: 3 }}>Topics this month</div>
                       <ul style={{ margin: 0, paddingLeft: 16 }}>
-                        {monthStats.topics.slice(0, 3).map((t, i) => (<li key={i} style={{ fontSize: 13, color: '#333' }}>{t}</li>))}
+                        {monthStats.topics.slice(0, 3).map((t, i) => (<li key={i} style={{ fontSize: 10, color: '#333' }}>{t}</li>))}
                       </ul>
                     </div>
                   )}
@@ -2566,33 +2927,33 @@ useEffect(() => {
                       zIndex: 1,
                       background: '#ffffff',
                       borderBottom: '1px solid #e5e7eb',
-                      padding: 14,
+                      padding: 8,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      gap: 12,
+                      gap: 10,
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 900, fontSize: 16, color: '#0f172a' }}>Annual Lesson Plan</div>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>
+                      <div style={{ fontWeight: 900, fontSize: 12, color: '#0f172a' }}>Annual Lesson Plan</div>
+                      <div style={{ fontSize: 9, color: '#64748b' }}>
                         Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, justifyContent: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'center' }}>
+                      <div style={{ fontSize: 9, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
                       <select
                         value={planSelectedCourseId}
                         onChange={(e) => setPlanSelectedCourseId(e.target.value)}
                         style={{
                           width: 'min(520px, 100%)',
-                          padding: '8px 10px',
+                          padding: '5px 6px',
                           borderRadius: 10,
                           border: '1px solid #e5e7eb',
                           background: '#f8fafc',
                           outline: 'none',
-                          fontSize: 13,
+                          fontSize: 10,
                           color: '#111827',
                         }}
                       >
@@ -2611,7 +2972,8 @@ useEffect(() => {
                           borderRadius: 12,
                           background: annualWeeks.length ? 'linear-gradient(135deg,#16a34a,#22c55e)' : '#e5e7eb',
                           color: annualWeeks.length ? '#fff' : '#94a3b8',
-                          padding: '10px 14px',
+                          padding: '6px 8px',
+                          fontSize: 10,
                           fontWeight: 900,
                           cursor: annualWeeks.length ? 'pointer' : 'not-allowed',
                         }}
@@ -2626,7 +2988,8 @@ useEffect(() => {
                           borderRadius: 12,
                           background: '#0f172a',
                           color: '#fff',
-                          padding: '10px 14px',
+                          padding: '6px 8px',
+                          fontSize: 10,
                         }}
                       >
                         Close
@@ -2634,9 +2997,9 @@ useEffect(() => {
                     </div>
                   </div>
 
-                  <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
+                  <div style={{ padding: 10, overflowY: 'auto', flex: 1 }}>
                     {!annualWeeks.length && (
-                      <div style={{ padding: 14, borderRadius: 12, background: '#fff', border: '1px solid #e5e7eb', color: '#64748b' }}>
+                      <div style={{ padding: 8, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', color: '#64748b', fontSize: 10 }}>
                         No annual lesson plan found for this selection.
                       </div>
                     )}
@@ -2657,15 +3020,15 @@ useEffect(() => {
                           };
 
                           return (
-                            <div key={mKey} style={{ background: '#fff', borderRadius: 16, border: '1px solid #e5e7eb', boxShadow: '0 10px 28px rgba(14,30,37,0.06)' }}>
-                              <div style={{ padding: 14, borderBottom: '1px solid #eef2f7', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-                                <div style={{ fontWeight: 900, fontSize: 16, color: '#0f172a' }}>{mKey}</div>
-                                <div style={{ fontSize: 12, color: '#64748b' }}>{monthWeeks.length} week(s)</div>
+                            <div key={mKey} style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', boxShadow: '0 10px 28px rgba(14,30,37,0.06)' }}>
+                              <div style={{ padding: 8, borderBottom: '1px solid #eef2f7', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                                <div style={{ fontWeight: 900, fontSize: 12, color: '#0f172a' }}>{mKey}</div>
+                                <div style={{ fontSize: 9, color: '#64748b' }}>{monthWeeks.length} week(s)</div>
                               </div>
 
-                              <div style={{ padding: 14 }}>
-                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 12, border: '1px solid #e5e7eb' }}>
-                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 880, background: '#fff' }}>
+                              <div style={{ padding: 8 }}>
+                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 10, border: '1px solid #e5e7eb' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 700, background: '#fff' }}>
                                     <thead>
                                       <tr style={{ background: '#f8fafc' }}>
                                         {['Week', 'Topic', 'Objective', 'Method', 'Material', 'Assessment'].map((h) => (
@@ -2673,8 +3036,8 @@ useEffect(() => {
                                             key={h}
                                             style={{
                                               textAlign: 'left',
-                                              padding: '10px 12px',
-                                              fontSize: 12,
+                                              padding: '6px 8px',
+                                              fontSize: 9,
                                               color: '#475569',
                                               fontWeight: 900,
                                               borderBottom: '1px solid #e5e7eb',
@@ -2734,14 +3097,14 @@ useEffect(() => {
 
                                         return (
                                           <tr key={`${wk?.courseId || 'c'}-${wk?.week || 'w'}-${wi}`} style={{ background: rowBg }}>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#0f172a', borderBottom: '1px solid #eef2f7', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#0f172a', borderBottom: '1px solid #eef2f7', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
                                               {weekLabel}
                                             </td>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{topic || '-'}</td>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{objective || '-'}</td>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{method || '-'}</td>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{material || '-'}</td>
-                                            <td style={{ padding: '10px 12px', fontSize: 13, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{assessment || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{topic || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{objective || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{method || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{material || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{assessment || '-'}</td>
                                           </tr>
                                         );
                                       })}
@@ -2759,44 +3122,47 @@ useEffect(() => {
               </div>
             )}
 
-            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 16 : 6, background: '#f7fafc', display: 'flex', flexDirection: 'column', gap: 12, transition: 'all 220ms ease', borderRadius: 12 }}>
+            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 12 : 6, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 8px 20px rgba(15,23,42,0.06)', display: 'flex', flexDirection: 'column', gap: 8, transition: 'all 220ms ease', borderRadius: 12, fontSize: 12 }}>
               
 
               {planSidebarOpen && (
                 <>
-                <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.06)' }}>
+                <div style={{ position: 'sticky', top: 8, zIndex: 250, display: 'flex', justifyContent: 'flex-end', paddingBottom: 6 }}>
+                  <button
+                    onClick={() => setPlanAnnualOpen(true)}
+                    style={{
+                      borderRadius: 10,
+                      padding: '8px 12px',
+                      background: '#4b6cb7',
+                      color: '#ffffff',
+                      border: 'none',
+                      fontWeight: 800,
+                      fontSize: 12,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Annual Lesson Plan
+                  </button>
+                </div>
+                <div style={{ background: '#ffffff', padding: 12, borderRadius: 12, border: '1px solid #eef2f7', boxShadow: 'none' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ background: '#eef2ff', padding: 8, borderRadius: 8 }}><FaCalendarAlt color="#4b6cb7" /></div>
+                      <div style={{ background: '#f1f5f9', padding: 8, borderRadius: 10, border: '1px solid #e2e8f0' }}><FaCalendarAlt color="#4b6cb7" /></div>
                       <div>
-                        <div style={{ fontWeight: 700 }}>Lesson Overview</div>
-                        <div style={{ fontSize: 12, color: '#666' }}>{today.toLocaleDateString()}</div>
+                        <div style={{ fontWeight: 800, color: '#0f172a' }}>Lesson Overview</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>{today.toLocaleDateString()}</div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <button
-                        className="btn btn-ghost"
-                        onClick={() => setPlanAnnualOpen(true)}
-                        style={{
-                          borderRadius: 12,
-                          background: '#eef2ff',
-                          color: '#1e40af',
-                          fontWeight: 800,
-                          padding: '8px 10px',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        Annual Lesson Plan
-                      </button>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 12, color: '#666' }}>This Week</div>
-                        <div style={{ fontWeight: 700 }}>{weekStats.total}</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>This Week</div>
+                        <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.total}</div>
                       </div>
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <div style={{ fontSize: 12, color: '#666', fontWeight: 700, whiteSpace: 'nowrap' }}>Subject</div>
+                  <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
                     <select
                       value={planSelectedCourseId}
                       onChange={(e) => setPlanSelectedCourseId(e.target.value)}
@@ -2805,9 +3171,9 @@ useEffect(() => {
                         padding: '8px 10px',
                         borderRadius: 10,
                         border: '1px solid #e5e7eb',
-                        background: '#f7fafc',
+                        background: '#f8fafc',
                         outline: 'none',
-                        fontSize: 13,
+                        fontSize: 12,
                         color: '#111827',
                       }}
                     >
@@ -2817,25 +3183,25 @@ useEffect(() => {
                     </select>
                   </div>
 
-                  <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
                     Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                    <div style={{ flex: 1, background: '#f0fff4', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#2f855a' }}><FaCheckCircle /></div>
-                      <div style={{ fontWeight: 700 }}>{weekStats.submitted}</div>
-                      <div style={{ fontSize: 11, color: '#555' }}>Submitted</div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
+                      <div style={{ fontSize: 12, color: '#16a34a' }}><FaCheckCircle /></div>
+                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.submitted}</div>
+                      <div style={{ fontSize: 10, color: '#64748b' }}>Submitted</div>
                     </div>
-                    <div style={{ flex: 1, background: '#fff7f7', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#c53030' }}><FaClock /></div>
-                      <div style={{ fontWeight: 700 }}>{weekStats.missed}</div>
-                      <div style={{ fontSize: 11, color: '#555' }}>Missed</div>
+                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
+                      <div style={{ fontSize: 12, color: '#dc2626' }}><FaClock /></div>
+                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.missed}</div>
+                      <div style={{ fontSize: 10, color: '#64748b' }}>Missed</div>
                     </div>
-                    <div style={{ flex: 1, background: '#f7fafc', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#4a5568' }}>•</div>
-                      <div style={{ fontWeight: 700 }}>{weekStats.pending}</div>
-                      <div style={{ fontSize: 11, color: '#555' }}>Pending</div>
+                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
+                      <div style={{ fontSize: 12, color: '#64748b' }}>•</div>
+                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.pending}</div>
+                      <div style={{ fontSize: 10, color: '#64748b' }}>Pending</div>
                     </div>
                   </div>
 
@@ -2853,17 +3219,62 @@ useEffect(() => {
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button onClick={() => setPlanSidebarTab('daily')} className={"btn " + (planSidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Daily</button>
-                  <button onClick={() => setPlanSidebarTab('weekly')} className={"btn " + (planSidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Weekly</button>
-                  <button onClick={() => setPlanSidebarTab('monthly')} className={"btn " + (planSidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Monthly</button>
+                  <button
+                    onClick={() => setPlanSidebarTab('daily')}
+                    className={"btn " + (planSidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')}
+                    style={{
+                      flex: 1,
+                      borderRadius: 10,
+                      padding: '8px 10px',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      background: planSidebarTab === 'daily' ? '#4b6cb7' : '#ffffff',
+                      color: planSidebarTab === 'daily' ? '#ffffff' : '#0f172a',
+                      border: '1px solid ' + (planSidebarTab === 'daily' ? '#4b6cb7' : '#e5e7eb'),
+                    }}
+                  >
+                    Daily
+                  </button>
+                  <button
+                    onClick={() => setPlanSidebarTab('weekly')}
+                    className={"btn " + (planSidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')}
+                    style={{
+                      flex: 1,
+                      borderRadius: 10,
+                      padding: '8px 10px',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      background: planSidebarTab === 'weekly' ? '#4b6cb7' : '#ffffff',
+                      color: planSidebarTab === 'weekly' ? '#ffffff' : '#0f172a',
+                      border: '1px solid ' + (planSidebarTab === 'weekly' ? '#4b6cb7' : '#e5e7eb'),
+                    }}
+                  >
+                    Weekly
+                  </button>
+                  <button
+                    onClick={() => setPlanSidebarTab('monthly')}
+                    className={"btn " + (planSidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')}
+                    style={{
+                      flex: 1,
+                      borderRadius: 10,
+                      padding: '8px 10px',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      background: planSidebarTab === 'monthly' ? '#4b6cb7' : '#ffffff',
+                      color: planSidebarTab === 'monthly' ? '#ffffff' : '#0f172a',
+                      border: '1px solid ' + (planSidebarTab === 'monthly' ? '#4b6cb7' : '#e5e7eb'),
+                    }}
+                  >
+                    Monthly
+                  </button>
                 </div>
 
-                <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.04)', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
+                <div style={{ background: '#ffffff', padding: 12, borderRadius: 12, border: '1px solid #eef2f7', boxShadow: 'none', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
                   {renderPlanSidebarContent()}
                 </div>
 
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: 12, color: '#666' }}>Monthly entries: <strong>{monthlyCount}</strong></div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>Monthly entries: <strong style={{ color: '#0f172a' }}>{monthlyCount}</strong></div>
                   <div>
                     <button className="btn btn-ghost" onClick={() => setPlanRefreshKey((k) => k + 1)}>Refresh</button>
                   </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import {
   FaHome,
@@ -16,12 +16,16 @@ import {
 } from "react-icons/fa";
 import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
+import { BACKEND_BASE } from "../config.js";
 
 const DB = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
 
 function Parent() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   const [parents, setParents] = useState([]);
+  const [loadingParents, setLoadingParents] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
   const [parentTab, setParentTab] = useState("Details");
   const [parentChatOpen, setParentChatOpen] = useState(false);
   const [newMessageText, setNewMessageText] = useState("");
@@ -71,6 +75,8 @@ function Parent() {
   };
   const [windowW, setWindowW] = useState(window.innerWidth);
 
+  const isNarrow = windowW < 900;
+
   // Portrait detection helper used in sidebar layout
   const isPortrait = windowW <= 600;
 
@@ -89,27 +95,100 @@ function Parent() {
   // Fetch parents
   useEffect(() => {
     const fetchParents = async () => {
+      setLoadingParents(true);
       try {
-        const res = await axios.get(`${DB}/Users.json`);
-        const users = res.data || {};
+        const [usersRes, parentsRes, studentsRes] = await Promise.all([
+          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const users = usersRes.data || {};
+        const parentsData = parentsRes.data || {};
+        const studentsData = studentsRes.data || {};
+
+        const getUserByKeyOrUserId = (maybeUserId) => {
+          if (!maybeUserId) return null;
+          return (
+            users[maybeUserId] ||
+            Object.values(users).find((u) => String(u?.userId) === String(maybeUserId)) ||
+            null
+          );
+        };
+
+        const findParentRecordByUserId = (canonicalUserId) => {
+          if (!canonicalUserId) return null;
+          return (
+            parentsData?.[canonicalUserId] ||
+            Object.entries(parentsData || {}).find(
+              ([parentKey, p]) =>
+                String(parentKey) === String(canonicalUserId) ||
+                String(p?.userId) === String(canonicalUserId)
+            )?.[1] ||
+            null
+          );
+        };
+
+        const findStudentRecordById = (maybeStudentId) => {
+          if (!maybeStudentId) return null;
+          return (
+            studentsData?.[maybeStudentId] ||
+            Object.entries(studentsData || {}).find(
+              ([studentKey, s]) =>
+                String(studentKey) === String(maybeStudentId) ||
+                String(s?.studentId || s?.id || "") === String(maybeStudentId)
+            )?.[1] ||
+            null
+          );
+        };
+
+        const resolveFirstChildPreview = (canonicalUserId) => {
+          const parentRecord = findParentRecordByUserId(canonicalUserId);
+          const childLinks = Object.values(parentRecord?.children || {});
+          if (!childLinks.length) return null;
+
+          const firstLink = childLinks[0] || {};
+          const studentRecord = findStudentRecordById(firstLink.studentId);
+          if (!studentRecord) return null;
+          const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
+          const studentUser = getUserByKeyOrUserId(studentUserId);
+          const name =
+            studentUser?.name ||
+            studentUser?.username ||
+            studentRecord?.name ||
+            studentRecord?.username ||
+            null;
+          const relationship = firstLink.relationship || null;
+          return { name, relationship };
+        };
+
         const parentList = Object.keys(users)
           .filter((uid) => users[uid].role === "parent")
-          .map((uid) => ({
-            userId: uid,
-            name: users[uid].name || users[uid].username || "No Name",
-            email: users[uid].email || "N/A",
-            profileImage: users[uid].profileImage || "/default-profile.png",
-            phone: users[uid].phone || users[uid].phoneNumber || "N/A",
-            age: users[uid].age || null,
-            city: users[uid].city || (users[uid].address && users[uid].address.city) || null,
-            citizenship: users[uid].citizenship || null,
-            job: users[uid].job || null,
-            address: users[uid].address || null,
-          }));
+          .map((uid) => {
+            const u = users[uid] || {};
+            const canonicalUserId = u.userId || uid;
+            const firstChild = resolveFirstChildPreview(canonicalUserId);
+            return {
+              userId: canonicalUserId,
+              name: u.name || u.username || "No Name",
+              email: u.email || "N/A",
+              childName: firstChild?.name || "N/A",
+              childRelationship: firstChild?.relationship || "N/A",
+              profileImage: u.profileImage || "/default-profile.png",
+              phone: u.phone || u.phoneNumber || "N/A",
+              age: u.age || null,
+              city: u.city || (u.address && u.address.city) || null,
+              citizenship: u.citizenship || null,
+              job: u.job || null,
+              address: u.address || null,
+            };
+          });
         setParents(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
         setParents([]);
+      } finally {
+        setLoadingParents(false);
       }
     };
     fetchParents();
@@ -119,9 +198,7 @@ function Parent() {
   const fetchPostNotifications = async () => {
     if (!adminId) return;
     try {
-      const res = await axios.get(
-        `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-      );
+      const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
       let notifications = Array.isArray(res.data)
         ? res.data
         : Object.values(res.data || {});
@@ -166,7 +243,7 @@ function Parent() {
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
     try {
-      await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+      await axios.post(`${API_BASE}/mark_post_notification_read`, {
         notificationId: notification.notificationId,
         adminId: admin.userId,
       });
@@ -284,10 +361,26 @@ function Parent() {
       try {
         const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
         const parentsData = parentsRes.data || {};
-        const parentRecord = Object.values(parentsData).find((p) => p.userId === selectedParent.userId);
+        const parentRecord = (
+          Object.entries(parentsData).find(
+            ([parentKey, p]) =>
+              String(p?.userId) === String(selectedParent.userId) ||
+              String(parentKey) === String(selectedParent.userId)
+          ) ||
+          []
+        )[1];
         const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
         const usersData = usersRes.data || {};
-        const userInfo = usersData[selectedParent.userId] || {};
+        const getUserByKeyOrUserId = (maybeUserId) => {
+          if (!maybeUserId) return null;
+          return (
+            usersData[maybeUserId] ||
+            Object.values(usersData).find((u) => String(u?.userId) === String(maybeUserId)) ||
+            null
+          );
+        };
+
+        const userInfo = getUserByKeyOrUserId(selectedParent.userId) || {};
 
         // compute age from possible DOB fields or explicit age field
         const dobRaw = userInfo?.dob || userInfo?.birthDate || parentRecord?.dob || parentRecord?.birthDate || null;
@@ -334,19 +427,26 @@ function Parent() {
         const studentsData = studentsRes.data || {};
         const childrenList = Object.values(parentRecord?.children || {})
           .map((childLink) => {
-            const studentRecord = studentsData[childLink.studentId];
+            const studentRecord =
+              studentsData?.[childLink.studentId] ||
+              Object.entries(studentsData || {}).find(
+                ([studentKey, s]) =>
+                  String(studentKey) === String(childLink.studentId || "") ||
+                  String(s?.studentId || s?.id || "") === String(childLink.studentId || "") ||
+                  String(s?.use || s?.userId || "") === String(childLink.studentId || "")
+              )?.[1];
             if (!studentRecord) return null;
-            const studentUserId = studentRecord.use || studentRecord.userId;
-            const studentUser = usersData[studentUserId] || {};
+            const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
+            const studentUser = getUserByKeyOrUserId(studentUserId) || {};
             return {
               studentId: childLink.studentId,
-              name: studentUser.name || studentUser.username || "No Name",
+              name: studentUser.name || studentUser.username || studentRecord.name || studentRecord.username || "N/A",
               email: studentUser.email || "N/A",
               grade: studentRecord.grade || "N/A",
               section: studentRecord.section || "N/A",
               parentPhone: parentRecord.phone || "N/A",
               relationship: childLink.relationship || "N/A",
-              profileImage: studentUser.profileImage || "/default-profile.png",
+              profileImage: studentUser.profileImage || studentRecord.profileImage || "/default-profile.png",
             };
           })
           .filter(Boolean);
@@ -586,26 +686,40 @@ function Parent() {
 
   if (!admin?.userId) return null;
 
-  // MAIN CONTENT responsive & centered when sidebar closed
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredParents = useMemo(() => {
+    if (!normalizedSearch) return parents;
+    return (parents || []).filter((p) => {
+      const hay = [
+        p?.name,
+        p?.email,
+        p?.phone,
+        p?.city,
+        p?.job,
+        p?.citizenship,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(normalizedSearch);
+    });
+  }, [parents, normalizedSearch]);
+
+  // MAIN CONTENT (Teachers-like layout)
   const mainContentStyle = {
-    padding: windowW <= 600 ? "12px" : "30px",
-    width: "100%",
-    maxWidth: sidebarVisible && windowW > 900 ? 900 : 1100,
-    margin: "0 auto",
+    padding: "10px 20px 20px",
+    flex: 1,
+    minWidth: 0,
     boxSizing: "border-box",
   };
 
   const parentCardBase = {
-    height: "100px",
+    height: "72px",
     borderRadius: "12px",
-    padding: "15px",
-    display: "flex",
-    alignItems: "center",
-    gap: "20px",
+    padding: "10px",
     cursor: "pointer",
     transition: "all 0.3s ease",
     width: "100%",
-    maxWidth: 700,
     boxSizing: "border-box",
   };
 
@@ -659,7 +773,7 @@ function Parent() {
                             className="notification-row"
                             onClick={async () => {
                               try {
-                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                await axios.post(`${API_BASE}/mark_post_notification_read`, {
                                   notificationId: n.notificationId,
                                 });
                               } catch (err) {
@@ -759,311 +873,380 @@ function Parent() {
       </nav>
 
       <div className="google-dashboard">
-        <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle"><img src={admin?.profileImage || "/default-profile.png"} alt="profile" /></div>
-            <h3>{admin?.name || "Admin Name"}</h3>
-           <p>{admin?.adminId || "username"}</p>
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin?.name || "Admin Name"}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
 
-          <div className="sidebar-menu">
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
+            </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
 
-          <div className="sidebar-menu" style={{ marginTop: 12 }}>
-            <Link className="sidebar-btn" to="/dashboard" ><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/my-posts" ><FaFileAlt /> My Posts</Link>
-            <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-            <Link className="sidebar-btn" to="/students" ><FaChalkboardTeacher /> Students</Link>
-            <Link className="sidebar-btn" to="/schedule" ><FaCalendarAlt /> Schedule</Link>
-            <Link className="sidebar-btn" to="/parents" style={{ background: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Parents</Link>
-             <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-                          </Link>
-            <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}>
-              <FaSignOutAlt /> Logout
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
+            >
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
             </button>
-            </div>
           </div>
         </div>
 
         {/* MAIN CONTENT (centered & responsive) */}
         <main className="main-content" style={mainContentStyle}>
-          <h2 style={{ marginBottom: 20, textAlign: "center" }}>Parents</h2>
-          <div style={{ display: "flex", width: "500px", flexDirection: "column", alignItems: "center", gap: 20, marginLeft: "150px" }}>
-            {parents.length === 0 ? (
-              <p>No parents found.</p>
-            ) : (
-              parents.map((p) => (
+          <h2 style={{ marginBottom: "6px", textAlign: isNarrow ? "center" : "left", marginTop: "-8px", fontSize: "20px", marginLeft: isNarrow ? 0 : 64 }}>
+            Parents
+          </h2>
+
+          {/* Search */}
+          <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: isNarrow ? 0 : 64 }}>
+            <div
+              style={{
+                width: "min(580px, 100%)",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                background: "#fff",
+                borderRadius: "10px",
+                padding: "6px 10px",
+                border: "1px solid #e5e7eb",
+                boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+              }}
+            >
+              <FaSearch style={{ color: "#64748b", fontSize: "12px" }} />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search parents by name, email, phone"
+                style={{
+                  border: "none",
+                  outline: "none",
+                  width: "100%",
+                  fontSize: "12px",
+                  color: "#111827",
+                  background: "transparent",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Parents List */}
+          {loadingParents ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", marginLeft: isNarrow ? 0 : '165px' }}>
+              {Array.from({ length: 6 }).map((_, idx) => (
+                <div key={idx} style={{ width: isNarrow ? "92%" : "400px", height: "72px", borderRadius: "12px", padding: "10px", background: "#fff", border: "1px solid #eee", boxShadow: "0 4px 10px rgba(0,0,0,0.04)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 10, background: "#f1f5f9" }} />
+                    <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#f1f5f9" }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ width: "55%", height: 12, background: "#f1f5f9", borderRadius: 6, marginBottom: 8 }} />
+                      <div style={{ width: "45%", height: 10, background: "#f1f5f9", borderRadius: 6 }} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : filteredParents.length === 0 ? (
+            <p style={{ textAlign: "center", color: "#555" }}>No parents found.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", marginLeft: isNarrow ? 0 : '165px' }}>
+              {filteredParents.map((p, i) => (
                 <div
                   key={p.userId}
                   onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
                   style={{
                     ...parentCardBase,
+                    width: isNarrow ? "92%" : "400px",
                     background: selectedParent?.userId === p.userId ? "#e0e7ff" : "#fff",
                     border: selectedParent?.userId === p.userId ? "2px solid #4b6cb7" : "1px solid #ddd",
                     boxShadow: selectedParent?.userId === p.userId ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
                   }}
                 >
-                  <img src={p.profileImage} alt={p.name} style={{ width: 50, height: 50, borderRadius: 25, objectFit: "cover" }} />
-                  <div>
-                    <h3 style={{ margin: 0 }}>{p.name}</h3>
-                    <p style={{ margin: "4px 0", color: "#555" }}>{p.email}</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: "#eef2ff",
+                        color: "#2563eb",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontWeight: 800,
+                        fontSize: 13,
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      {i + 1}
+                    </div>
+                    <img
+                      src={p.profileImage}
+                      alt={p.name}
+                      style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: "50%",
+                        objectFit: "cover",
+                        border: selectedParent?.userId === p.userId ? "3px solid #4b6cb7" : "3px solid red",
+                        transition: "all 0.3s ease",
+                      }}
+                    />
+                    <h3 style={{ marginTop: "-24px", fontSize: "14px", marginBottom: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {p.name}
+                    </h3>
+                  </div>
+                  <div style={{ marginLeft: isNarrow ? "78px" : "104px", marginTop: "-16px", color: "#555", fontSize: "11px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {p.email && p.email !== "N/A"
+                      ? p.email
+                      : ` ${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
                   </div>
                 </div>
-              ))
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </main>
 
         {/* RIGHT SIDEBAR */}
         {selectedParent && sidebarVisible && (
-          <aside className="parent-info-sidebar" style={{
-            width: windowW <= 900 ? "100vw" : "32%",
-            maxWidth: 520,
-            padding: 25,
-            background: "#fff",
-            position: "fixed",
-            right: 0,
-            top: 60,
-            height: "calc(100vh - 60px)",
-            overflowY: "auto",
-            boxShadow: "0 0 15px rgba(0,0,0,0.05)",
-            zIndex: 300,
-          }}>
+          <aside
+            className="parent-info-sidebar"
+            style={{
+              width: isPortrait ? "100%" : "30%",
+              position: "fixed",
+              left: isPortrait ? 0 : "auto",
+              right: 0,
+              top: isPortrait ? 0 : "55px",
+              height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+              background: "#ffffff",
+              boxShadow: "0 0 18px rgba(0,0,0,0.08)",
+              borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+              zIndex: 300,
+              display: "flex",
+              flexDirection: "column",
+              fontSize: "10px",
+            }}
+          >
             {/* CLOSE BUTTON */}
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ position: "absolute", top: 0, left: 22, zIndex: 999 }}>
               <button
                 onClick={() => setSidebarVisible(false)}
                 aria-label="Close sidebar"
                 style={{
                   background: "none",
-                  marginTop: "-30px",
                   border: "none",
-                  fontSize: 26,
+                  fontSize: 28,
                   fontWeight: 700,
+                  color: "#3647b7",
                   cursor: "pointer",
-                  padding: 4,
+                  padding: 2,
                   lineHeight: 1,
-                 
                 }}
               >
                 ×
               </button>
             </div>
 
-            <div style={{ textAlign: "center" }}>
-              {/* Parent Profile */}
-              <div style={{ background: "rgb(206, 218, 248)", padding: "25px 10px", height: 250, margin: "-25px -25px 20px", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
-                <div style={{ width: 100, height: 100, margin: "20px auto 15px", borderRadius: "50%", overflow: "hidden", border: "4px solid #4b6cb7" }}>
-                  <img src={selectedParent.profileImage} alt={selectedParent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            {/* SCROLLABLE CONTENT */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px" }}>
+              {/* HEADER */}
+              <div
+                style={{
+                  background: "#e0e7ff",
+                  margin: "-12px -12px 10px",
+                  padding: "14px 10px",
+                  textAlign: "center",
+                }}
+              >
+                <div
+                  style={{
+                    width: "70px",
+                    height: "70px",
+                    margin: "0 auto 10px",
+                    borderRadius: "50%",
+                    overflow: "hidden",
+                    border: "3px solid #4b6cb7",
+                  }}
+                >
+                  <img
+                    src={selectedParent.profileImage}
+                    alt={selectedParent.name}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
                 </div>
-                <h2 style={{ margin: 0, fontSize: 22, marginTop: -10, color: "#333" }}>{selectedParent.name}</h2>
-                <h2 style={{ margin: 0, fontSize: 16, marginTop: 0, color: "#585656ff" }}>{selectedParent.email}</h2>
+                <h2 style={{ margin: 0, color: "#111827", fontSize: 14 }}>{selectedParent.name}</h2>
+                <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "10px" }}>{selectedParent.email}</p>
               </div>
 
-             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                    {["Details", "Children", "Status"].map((t) => (
-                      <button key={t} onClick={() => setParentTab(t)} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: "none", cursor: "pointer", background: parentTab === t ? "#4b6cb7" : "#f0f0f0", color: parentTab === t ? "#fff" : "#333", fontWeight: 700 }}>
-                        {t}
-                      </button>
-                    ))}
+              {/* TABS */}
+              <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", marginBottom: "10px" }}>
+                {[
+                  { key: "Details", label: "DETAILS" },
+                  { key: "Children", label: "CHILDREN" },
+                  { key: "Status", label: "STATUS" },
+                ].map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => setParentTab(t.key)}
+                    style={{
+                      flex: 1,
+                      padding: "6px",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                      color: parentTab === t.key ? "#4b6cb7" : "#6b7280",
+                      fontSize: "10px",
+                      borderBottom: parentTab === t.key ? "3px solid #4b6cb7" : "3px solid transparent",
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* TAB CONTENT */}
+              <div style={{ paddingBottom: 40 }}>
+                {parentTab === "Details" && selectedParent && (
+                  <div
+                    style={{
+                      padding: "12px",
+                      background: "#ffffff",
+                      borderRadius: 12,
+                      border: "1px solid #e5e7eb",
+                      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+                      margin: "0 auto",
+                      maxWidth: 380,
+                    }}
+                  >
+                    <h3 style={{ margin: 0, marginBottom: 6, color: "#0f172a", fontWeight: 800, letterSpacing: "0.1px", fontSize: 12, textAlign: "left" }}>
+                      Parent Profile
+                    </h3>
+                    <div style={{ color: "#64748b", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
+                      ID: <b style={{ color: "#111827" }}>{selectedParent.userId}</b>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {[
+                        { label: "Email", value: selectedParent.email || "N/A" },
+                        { label: "Phone", value: selectedParent.phone || "N/A" },
+                        { label: "Age", value: selectedParent.age || "—" },
+                        { label: "City", value: selectedParent.city || (selectedParent.address && typeof selectedParent.address === 'object' ? selectedParent.address.city : selectedParent.city) || "—" },
+                        { label: "Citizenship", value: selectedParent.citizenship || "—" },
+                        { label: "Job", value: selectedParent.job || "—" },
+                        { label: "Status", value: selectedParent.status ? (selectedParent.status.charAt(0).toUpperCase() + selectedParent.status.slice(1)) : "—" },
+                        { label: "Address", value: (typeof selectedParent.address === 'string' ? selectedParent.address : (selectedParent.address && (selectedParent.address.street || selectedParent.address.city || JSON.stringify(selectedParent.address))) ) || "—" },
+                      ].map((item) => (
+                        <div
+                          key={item.label}
+                          style={{
+                            alignItems: "center",
+                            justifyContent: "flex-start",
+                            display: "flex",
+                            background: "#ffffff",
+                            padding: "8px",
+                            borderRadius: 10,
+                            border: "1px solid #eef2f7",
+                            minHeight: 36,
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.4px", color: "#64748b", textTransform: "uppercase" }}>
+                              {item.label}
+                            </div>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: item.label === "Status" ? (item.value && String(item.value).toLowerCase() === "active" ? "#16a34a" : "#991b1b") : "#111", marginTop: 2, wordBreak: "break-word" }}>
+                              {item.value || <span style={{ color: "#d1d5db" }}>N/A</span>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
+                )}
 
-                  <div style={{ paddingBottom: 40 }}>
-                 {parentTab === "Details" && (
-  <div
-    style={{
-      display: "flex",
-      flexDirection: "column",
-      gap: 28,
-      padding: isPortrait ? 50 : 50,
-      marginLeft: 0,
-      marginRight: 0,
-      borderRadius: 0,
-      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-      fontFamily: "Inter, system-ui",
-    }}
-  >
-    {/* ================= LEFT COLUMN ================= */}
-    <div>
-      {/* PARENT DETAILS */}
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 900,
-          marginBottom: 18,
-          marginTop: -30,
-          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
-        }}
-      >
-        Parent Details
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          columnGap: 68,
-          rowGap: 14,
-        }}
-      >
-        {[
-      
-          ["Email", selectedParent.email || "N/A"],
-          ["Phone", selectedParent.phone || "N/A"],
-          ["Relationship(s)", (selectedParent.relationships && selectedParent.relationships.length) ? selectedParent.relationships.join(", ") : "—"],
-          ["Age", selectedParent.age || "—"],
-          ["City", selectedParent.city || (selectedParent.address && typeof selectedParent.address === 'object' ? selectedParent.address.city : selectedParent.city) || "—"],
-          ["Citizenship", selectedParent.citizenship || "—"],
-          ["Job", selectedParent.job || "—"],
-          ["Status", selectedParent.status ? (selectedParent.status.charAt(0).toUpperCase() + selectedParent.status.slice(1)) : "—"],
-          ["Address", (typeof selectedParent.address === 'string' ? selectedParent.address : (selectedParent.address && (selectedParent.address.street || selectedParent.address.city || JSON.stringify(selectedParent.address))) ) || "—", true],
-        ].map(([label, value, span]) => (
-          <div
-            key={label}
-            style={{
-              padding: 18,
-              borderRadius: 20,
-              background: "#ffffff",
-              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
-              marginLeft: -30,
-              marginRight: -30,
-              gridColumn: span ? "span 2" : "span 1",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "#000102",
-                textTransform: "uppercase",
-              }}
-            >
-              {label}
-            </div>
-            <div
-              style={{
-                marginTop: 8,
-                fontSize: 16,
-                fontWeight: 400,
-                color: "#000102",
-              }}
-            >
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-
-     
-    </div>
-  </div>
-)}
-
-       {parentTab === "Children" && (
-  <div
-    style={{
-      display: "flex",
-      flexDirection: "column",
-      gap: 20,
-      background: "#f5f7fa",
-      padding: 18,
-      borderRadius: 10,
-    }}
-  >
-    {children.map((c) => (
-      <div
-        key={c.studentId}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 22,
-          background: "#fff",
-          borderRadius: 16,
-          padding: "22px 30px",
-          boxShadow: "0 4px 24px rgba(80,90,130,0.10)",
-          border: "1px solid #edeef2",
-          transition: "box-shadow 0.2s, transform 0.18s",
-          cursor: "pointer",
-        }}
-        onMouseEnter={e =>
-          (e.currentTarget.style.boxShadow =
-            "0 8px 32px 0 rgba(60,72,120,0.17)")
-        }
-        onMouseLeave={e =>
-          (e.currentTarget.style.boxShadow =
-            "0 4px 24px rgba(80,90,130,0.10)")
-        }
-      >
-        {/* Profile Image */}
-        <img
-          src={c.profileImage}
-          alt={c.name}
-          style={{
-            width: 66,
-            height: 66,
-            borderRadius: "50%",
-            border: "3px solid #2868f1",
-            objectFit: "cover",
-            background: "#f0f4fa",
-            flexShrink: 0,
-            boxShadow: "0 2px 8px 0 rgba(60,72,120,0.07)",
-          }}
-        />
-        {/* User Info */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
-          <span style={{ fontWeight: 700, fontSize: 21, color: "#213052", marginBottom: 2, marginLeft: -159 }}>
-            {c.name}
-          </span>
-          
-          {/* Badges Row */}
-          <div style={{ display: "flex", columnGap: 1, marginTop: -12, marginLeft: -15 }}>
-            <div
-              style={{
-             
-                color: "#050505",
-                fontWeight: 400,
-                fontSize: 14,
-                padding: "6px 18px",
-                borderRadius: 999,
-                letterSpacing: 0.5,
-                boxShadow: "0 2px 8px rgba(22,119,255,.09)",
-              }}
-            >
-              Grade:{c.grade}
-            </div>
-            <div
-              style={{
-              
-                color: "#000000",
-                fontWeight: 400,
-                fontSize: 14,
-                padding: "6px 1px",
-                borderRadius: 999,
-                letterSpacing: 0.5,
-                boxShadow: "0 2px 8px rgba(255,126,95,.09)",
-              }}
-            >
-              Section:{c.section}
-            </div>
-          </div>
-          <span style={{ fontSize: 15, color: "#424242", marginTop: "-10px", marginLeft: -175 }}>
-            {c.relationship && `Relation: ${c.relationship}`}
-          </span>
-        </div>
-      </div>
-    ))}
-  </div>
-)}
-                    {parentTab === "Status" && (
-                      <div>
-                        <p><strong>Status:</strong> {selectedParent.status || "Active"}</p>
-                        <p><strong>Created:</strong> {selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—"}</p>
+                {parentTab === "Children" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {children.length === 0 ? (
+                      <div style={{ padding: 10, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", color: "#6b7280" }}>
+                        No children found.
                       </div>
+                    ) : (
+                      children.map((c) => (
+                        <div
+                          key={c.studentId}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            padding: "10px",
+                            borderRadius: 12,
+                            border: "1px solid #e5e7eb",
+                            background: "#fff",
+                            boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                          }}
+                        >
+                          <img
+                            src={c.profileImage}
+                            alt={c.name}
+                            style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid #4b6cb7" }}
+                          />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: "#111827", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {c.name}
+                            </div>
+                            <div style={{ fontSize: 10, color: "#6b7280" }}>
+                              Grade {c.grade}{c.section ? ` • ${c.section}` : ""}
+                              {` • Relation: ${c.relationship || "N/A"}`}
+                            </div>
+                          </div>
+                        </div>
+                      ))
                     )}
                   </div>
+                )}
 
-              {/* Chat button & Popup - matches Students UI */}
+                {parentTab === "Status" && (
+                  <div style={{ padding: "12px", borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {[
+                        { label: "Status", value: selectedParent.status || "Active" },
+                        { label: "Created", value: selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—" },
+                      ].map((item) => (
+                        <div key={item.label} style={{ padding: 8, borderRadius: 10, border: "1px solid #eef2f7", background: "#fff" }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.4px", color: "#64748b", textTransform: "uppercase" }}>{item.label}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "#111827", marginTop: 2, wordBreak: "break-word" }}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Chat button & Popup - matches Teachers styling */}
               {!parentChatOpen && (
                 <div
                   onClick={() => setParentChatOpen(true)}
@@ -1071,9 +1254,9 @@ function Parent() {
                     position: "fixed",
                     bottom: "20px",
                     right: "20px",
-                    width: "60px",
-                    height: "60px",
-                    background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
+                    width: "56px",
+                    height: "56px",
+                    background: "#4b6cb7",
                     borderRadius: "50%",
                     display: "flex",
                     alignItems: "center",
@@ -1081,7 +1264,7 @@ function Parent() {
                     color: "#fff",
                     cursor: "pointer",
                     zIndex: 1000,
-                    boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
+                    boxShadow: "0 8px 18px rgba(0,0,0,0.20)",
                     transition: "transform 0.2s ease",
                   }}
                 >
@@ -1107,7 +1290,7 @@ function Parent() {
                   }}
                 >
                   {/* HEADER */}
-                  <div style={{ padding: "14px", borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fafafa" }}>
+                  <div style={{ padding: "14px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#e0e7ff" }}>
                     <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
                       <strong>{selectedParent.name}</strong>
                       {typingUserId && String(typingUserId) === String(selectedParent.userId) && (
@@ -1129,7 +1312,7 @@ function Parent() {
                   </div>
 
                   {/* Messages */}
-                  <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "#f9f9f9" }}>
+                  <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "#f8fafc" }}>
                     {messages.length === 0 ? (
                       <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedParent.name}</p>
                     ) : (
@@ -1137,7 +1320,7 @@ function Parent() {
                         const isAdmin = String(m.senderId) === String(admin.userId);
                         return (
                           <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isAdmin ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                            <div style={{ maxWidth: "70%", background: isAdmin ? "#4facfe" : "#fff", color: isAdmin ? "#fff" : "#000", padding: "10px 14px", borderRadius: 18, borderTopRightRadius: isAdmin ? 0 : 18, borderTopLeftRadius: isAdmin ? 18 : 0, boxShadow: "0 1px 3px rgba(0,0,0,0.1)", wordBreak: "break-word", cursor: "default", position: "relative" }}>
+                            <div style={{ maxWidth: "70%", background: isAdmin ? "#4b6cb7" : "#fff", color: isAdmin ? "#fff" : "#111827", padding: "10px 14px", borderRadius: 18, borderTopRightRadius: isAdmin ? 0 : 18, borderTopLeftRadius: isAdmin ? 18 : 0, boxShadow: "0 1px 3px rgba(0,0,0,0.10)", wordBreak: "break-word", cursor: "default", position: "relative", border: isAdmin ? "none" : "1px solid #e5e7eb" }}>
                               {m.text} {m.edited && (<small style={{ fontSize: 10 }}> (edited)</small>)}
                               <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 11, color: isAdmin ? "#fff" : "#888" }}>
                                 <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
@@ -1158,9 +1341,9 @@ function Parent() {
                   </div>
 
                   {/* Input */}
-                  <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
+                  <div style={{ padding: "10px", borderTop: "1px solid #e5e7eb", display: "flex", gap: "8px", background: "#fff" }}>
                     <input value={newMessageText} onChange={(e) => { setNewMessageText(e.target.value); handleTyping(e.target.value); }} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "25px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(newMessageText); }} />
-                    <button onClick={() => sendMessage(newMessageText)} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
+                    <button onClick={() => sendMessage(newMessageText)} style={{ width: 45, height: 45, borderRadius: "50%", background: "#4b6cb7", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
                       <FaPaperPlane />
                     </button>
                   </div>

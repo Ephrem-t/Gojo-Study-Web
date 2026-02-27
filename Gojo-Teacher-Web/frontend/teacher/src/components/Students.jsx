@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useRef } from "react";
+import { FaChevronRight } from "react-icons/fa";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
+import Sidebar from "./Sidebar";
 import {
   FaHome,
+  FaSearch,
   FaFileAlt,
   FaChalkboardTeacher,
   FaCog,
   FaSignOutAlt,
-  FaSearch,
   FaBell,
   FaUsers,
   FaClipboardCheck,
@@ -17,9 +19,13 @@ import {
   FaTimesCircle,
   FaFacebookMessenger,
   FaCommentDots,
+   FaUserCheck,
+  FaCalendarAlt,
+  FaBookOpen,
   FaPaperPlane,
 } from "react-icons/fa";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 
 // NOTE: we alias `ref` to `dbRef` to avoid confusion with other `ref` variables
 import {
@@ -32,11 +38,13 @@ import {
 } from "firebase/database";
 import { db } from "../firebase";
 
-const getChatId = (id1, id2) => {
-  return [id1, id2].sort().join("_");
+// Chat thread key for teacher<->student must be: teacherUserId_studentUserId
+// (teacher first, no sorting) so the DB path is predictable.
+const getChatId = (teacherUserId, studentUserId) => {
+  const t = String(teacherUserId || "").trim();
+  const s = String(studentUserId || "").trim();
+  return `${t}_${s}`;
 };
-
-
 // helper: ISO week number for a Date
 const getWeekNumber = (d) => {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -66,7 +74,6 @@ const formatSubjectName = (courseId = "") => {
 
 };
 
-const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
 
 // compute age helper
@@ -110,37 +117,51 @@ const findUserByUserId = (usersObj, userId) => {
   return Object.values(usersObj).find((u) => String(u?.userId) === String(userId)) || null;
 };
 
-const StudentItem = ({ student, selected, onClick }) => (
+const StudentItem = ({ student, selected, onClick, number }) => (
   <div
     onClick={() => onClick(student)}
     style={{
       width: "100%",
       borderRadius: "12px",
-      padding: "15px",
+      padding: "10px",
       display: "flex",
       alignItems: "center",
-      gap: "20px",
+      gap: "12px",
       cursor: "pointer",
       background: selected ? "#e0e7ff" : "#fff",
       border: selected ? "2px solid #4b6cb7" : "1px solid #ddd",
-      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
+      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
       transition: "all 0.3s ease",
     }}
   >
+    <div style={{
+      width: 36,
+      height: 36,
+      borderRadius: "50%",
+      background: selected ? "#4b6cb7" : "#f1f5f9",
+      color: selected ? "#fff" : "#374151",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: 800,
+      fontSize: 12,
+      flexShrink: 0,
+    }}>{number}</div>
+
     <img
       src={student.profileImage || "/default-profile.png"}
       alt={student.name}
       style={{
-        width: "50px",
-        height: "50px",
+        width: "48px",
+        height: "48px",
         borderRadius: "50%",
         objectFit: "cover",
-        border: selected ? "3px solid #4b6cb7" : "3px solid red",
+        border: selected ? "3px solid #4b6cb7" : "3px solid #ddd",
       }}
     />
     <div>
-      <h3 style={{ margin: 0 }}>{student.name}</h3>
-      <p style={{ margin: "4px 0", color: "#555" }}>
+      <h3 style={{ margin: 0, fontSize: 14 }}>{student.name}</h3>
+      <p style={{ margin: "4px 0", color: "#555", fontSize: 11 }}>
         Grade {student.grade} - Section {student.section}
       </p>
     </div>
@@ -148,10 +169,26 @@ const StudentItem = ({ student, selected, onClick }) => (
 );
 
 function StudentsPage() {
+  // Responsive sidebar state for mobile
+  const [sidebarOpen, setSidebarOpen] = useState(typeof window !== 'undefined' ? window.innerWidth > 600 : true);
+  // Keep sidebar closed by default on phones and open on desktop
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth <= 600) {
+        setSidebarOpen(false);
+      } else {
+        setSidebarOpen(true);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
   const [students, setStudents] = useState([]);
   const [error, setError] = useState("");
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedSection, setSelectedSection] = useState("All");
+  const [searchTerm, setSearchTerm] = useState("");
   const [sections, setSections] = useState([]);
 
   const [studentTab, setStudentTab] = useState("details");
@@ -724,10 +761,25 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     }
   }, [selectedGrade, students]);
 
+  const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredStudents = students.filter((s) => {
     if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
     if (selectedSection !== "All" && s.section !== selectedSection) return false;
-    return true;
+    if (!normalizedSearch) return true;
+
+    const haystack = [
+      s.name,
+      s.studentId,
+      s.userId,
+      s.email,
+      s.grade,
+      s.section,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
   });
 
   const grades = [...new Set(students.map((s) => s.grade))].sort();
@@ -1216,6 +1268,10 @@ React.useEffect(() => {
             <div
               onClick={() => setShowNotifications(!showNotifications)}
               style={{ cursor: "pointer", position: "relative" }}
+              aria-label="Show notifications"
+              tabIndex={0}
+              role="button"
+              onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
             >
               <FaBell size={24} />
               {(notifications.length + totalUnreadMessages) > 0 && (
@@ -1241,112 +1297,133 @@ React.useEffect(() => {
             </div>
 
             {showNotifications && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 30,
-                  right: 0,
-                  width: 300,
-                  maxHeight: 400,
-                  overflowY: "auto",
-                  background: "#fff",
-                  boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
-                  borderRadius: 8,
-                  zIndex: 100,
-                }}
-              >
-                {/* Show post notifications */}
-                {notifications.length > 0 && notifications.map((post, index) => (
-                  <div
-                    key={post.id || index}
-                    onClick={() => {
-                      setNotifications(prev => prev.filter((_, i) => i !== index));
-                      setShowNotifications(false);
-                      navigate("/dashboard");
-                      setTimeout(() => {
-                        const postElement = postRefs.current[post.id];
-                        if (postElement) {
-                          postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                          setHighlightedPostId(post.id);
-                          setTimeout(() => setHighlightedPostId(null), 3000);
+              <>
+                {/* Overlay for closing notification list by clicking outside */}
+                <div
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0,0,0,0.08)',
+                    zIndex: 1999,
+                  }}
+                  onClick={() => setShowNotifications(false)}
+                />
+                <div
+                  className="notification-popup"
+                  style={
+                    typeof window !== 'undefined' && window.innerWidth <= 600
+                      ? {
+                          position: 'fixed',
+                          left: '50%',
+                          top: '8%',
+                          transform: 'translate(-50%, 0)',
+                          width: '90vw',
+                          maxWidth: 340,
+                          zIndex: 2000,
+                          background: '#fff',
+                          borderRadius: 12,
+                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
+                          maxHeight: '70vh',
+                          overflowY: 'auto',
+                          padding: 12,
                         }
-                      }, 150);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      padding: "10px 15px",
-                      borderBottom: "1px solid #eee",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <img
-                      src={post.adminProfile}
-                      alt={post.adminName}
-                      style={{
-                        width: 35,
-                        height: 35,
-                        borderRadius: "50%",
-                        marginRight: 10,
+                      : { zIndex: 2000, position: 'absolute', top: 30, right: 0, width: 300, maxHeight: 400, overflowY: 'auto', background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.2)', borderRadius: 8 }
+                  }
+                  onClick={e => e.stopPropagation()}
+                >
+                  {/* Show post notifications */}
+                  {notifications.length > 0 && notifications.map((post, index) => (
+                    <div
+                      key={post.id || index}
+                      onClick={() => {
+                        setNotifications(prev => prev.filter((_, i) => i !== index));
+                        setShowNotifications(false);
+                        navigate("/dashboard");
+                        setTimeout(() => {
+                          const postElement = postRefs.current[post.id];
+                          if (postElement) {
+                            postElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                            setHighlightedPostId(post.id);
+                            setTimeout(() => setHighlightedPostId(null), 3000);
+                          }
+                        }, 150);
                       }}
-                    />
-                    <div>
-                      <strong>{post.adminName}</strong>
-                      <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
-                    </div>
-                  </div>
-                ))}
-                {/* Show unread message notifications */}
-                {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                  <div
-                    key={conv.chatId || idx}
-                    onClick={() => {
-                      setShowNotifications(false);
-                      navigate("/all-chat");
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      padding: "10px 15px",
-                      borderBottom: "1px solid #eee",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <img
-                      src={conv.profile || "/default-profile.png"}
-                      alt={conv.displayName}
                       style={{
-                        width: 35,
-                        height: 35,
-                        borderRadius: "50%",
-                        marginRight: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "10px 15px",
+                        borderBottom: "1px solid #eee",
+                        cursor: "pointer",
                       }}
-                    />
-                    <div>
-                      <strong>{conv.displayName}</strong>
-                      <p style={{ margin: 0, fontSize: 12, color: '#0b78f6', display: 'flex', alignItems: 'center', gap: 8 }}>
-                        {/* show tick only if the last message was sent by me (teacher) */}
-                        {conv.lastMessageSenderId === teacherUserId ? (
-                          <span style={{ color: conv.lastMessageSeen ? '#0bda63' : '#cbd5e1' }}>
-                            {conv.lastMessageSeen ? '✓✓' : '✓'}
-                          </span>
-                        ) : null}
-                        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>
-                          {conv.lastMessageText || 'New message'}
-                        </span>
-                        {conv.lastMessageSeenAt && (
-                          <span style={{ marginLeft: 6, color: '#64748b', fontSize: 11 }}>
-                            {new Date(conv.lastMessageSeenAt).toLocaleTimeString()}
-                          </span>
-                        )}
-                      </p>
+                    >
+                      <img
+                        src={post.adminProfile}
+                        alt={post.adminName}
+                        style={{
+                          width: 35,
+                          height: 35,
+                          borderRadius: "50%",
+                          marginRight: 10,
+                        }}
+                      />
+                      <div>
+                        <strong>{post.adminName}</strong>
+                        <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-                {notifications.length === 0 && totalUnreadMessages === 0 && (
-                  <div style={{ padding: 15 }}>No notifications</div>
-                )}
-              </div>
+                  ))}
+                  {/* Show unread message notifications */}
+                  {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
+                    <div
+                      key={conv.chatId || idx}
+                      onClick={() => {
+                        setShowNotifications(false);
+                        navigate("/all-chat");
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "10px 15px",
+                        borderBottom: "1px solid #eee",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <img
+                        src={conv.profile || "/default-profile.png"}
+                        alt={conv.displayName}
+                        style={{
+                          width: 35,
+                          height: 35,
+                          borderRadius: "50%",
+                          marginRight: 10,
+                        }}
+                      />
+                      <div>
+                        <strong>{conv.displayName}</strong>
+                        <p style={{ margin: 0, fontSize: 12, color: '#0b78f6', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {/* show tick only if the last message was sent by me (teacher) */}
+                          {conv.lastMessageSenderId === teacherUserId ? (
+                            <span style={{ color: conv.lastMessageSeen ? '#0bda63' : '#cbd5e1' }}>
+                              {conv.lastMessageSeen ? '✓✓' : '✓'}
+                            </span>
+                          ) : null}
+                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>
+                            {conv.lastMessageText || 'New message'}
+                          </span>
+                          {conv.lastMessageSeenAt && (
+                            <span style={{ marginLeft: 6, color: '#64748b', fontSize: 11 }}>
+                              {new Date(conv.lastMessageSeenAt).toLocaleTimeString()}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  {notifications.length === 0 && totalUnreadMessages === 0 && (
+                    <div style={{ padding: 15 }}>No notifications</div>
+                  )}
+                </div>
+              </>
             )}
           </div>
 
@@ -1383,64 +1460,81 @@ React.useEffect(() => {
       </nav>
 
       <div className="google-dashboard">
-        {/* Sidebar */}
-        <div className="google-sidebar">
-          {teacher && (
-            <div className="sidebar-profile">
-              <div className="sidebar-img-circle">
-                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" />
-              </div>
-              <h3>{teacher.name}</h3>
-              <p>{teacher.username}</p>
-            </div>
-          )}
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard">
-              <FaHome /> Home
-            </Link>
-
-            <Link className="sidebar-btn" to="/students" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}>
-              <FaUsers /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/admins">
-              <FaUsers /> Admins
-            </Link>
-            <Link className="sidebar-btn" to="/parents">
-              <FaChalkboardTeacher /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/marks">
-              <FaClipboardCheck /> Marks
-            </Link>
-            <Link className="sidebar-btn" to="/attendance">
-              <FaUsers /> Attendance
-            </Link>
-            <Link className="sidebar-btn" to="/schedule" >
-              <FaUsers /> Schedule
-            </Link>
-            
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}>
-              <FaSignOutAlt /> Logout
-            </button>
-          </div>
-        </div>
+        <Sidebar
+          active="students"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
         {/* MAIN CONTENT */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "30px" }}>
-          <div style={{ width: "300px", position: "relative", marginLeft: "50px", marginRight: isPortrait ? 0 : "50px" }}>
-            <h2 style={{ textAlign: "center", marginBottom: "20px" }}>My Students</h2>
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+           <div
+             className="student-list-card-responsive"
+             style={{
+               width: "min(420px, 100%)",
+               position: "relative",
+               marginLeft: isPortrait ? 0 : "290px",
+               marginRight: isPortrait ? 0 : "30px",
+             }}
+           >
+             <style>{`
+               @media (max-width: 600px) {
+                 .student-list-card-responsive {
+                   margin-left: -16px !important;
+                   margin-right: auto !important;
+                   width: 70vw !important;
+                   max-width: 70vw !important;
+                 }
+               }
+             `}</style>
+            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Students</h2>
+
+            {/* Search */}
+            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
+              <div
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  background: "#fff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "10px",
+                  padding: "6px 10px",
+                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                }}
+              >
+                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search students..."
+                  style={{
+                    width: "100%",
+                    border: "none",
+                    outline: "none",
+                    fontSize: 12,
+                    background: "transparent",
+                  }}
+                />
+              </div>
+            </div>
 
             {/* Grades */}
-            <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
-              <button onClick={() => setSelectedGrade("All")} style={{ padding: "8px 15px", borderRadius: "8px", background: selectedGrade === "All" ? "#4b6cb7" : "#ddd", color: selectedGrade === "All" ? "#fff" : "#000", border: "none" }}>All Grades</button>
+            <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap" }}>
+              <button onClick={() => setSelectedGrade("All")} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedGrade === "All" ? "#4b6cb7" : "#ddd", color: selectedGrade === "All" ? "#fff" : "#000", border: "none", fontSize: 11 }}>All Grades</button>
               {grades.map(g => (
-                <button key={g} onClick={() => setSelectedGrade(g)} style={{ padding: "8px 15px", borderRadius: "8px", background: selectedGrade === g ? "#4b6cb7" : "#ddd", color: selectedGrade === g ? "#fff" : "#000", border: "none" }}>Grade {g}</button>
+                <button key={g} onClick={() => setSelectedGrade(g)} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedGrade === g ? "#4b6cb7" : "#ddd", color: selectedGrade === g ? "#fff" : "#000", border: "none", fontSize: 11 }}>Grade {g}</button>
               ))}
             </div>
             {/* Sections */}
             {selectedGrade !== "All" && (
-              <div style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap" }}>
-                <button onClick={() => setSelectedSection("All")} style={{ padding: "6px 12px", borderRadius: "8px", background: selectedSection === "All" ? "#4b6cb7" : "#ddd", color: selectedSection === "All" ? "#fff" : "#000", border: "none" }}>All Sections</button>
+              <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
+                <button onClick={() => setSelectedSection("All")} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedSection === "All" ? "#4b6cb7" : "#ddd", color: selectedSection === "All" ? "#fff" : "#000", border: "none", fontSize: 11 }}>All Sections</button>
                 {sections.map(sec => (
-                  <button key={sec} onClick={() => setSelectedSection(sec)} style={{ padding: "6px 12px", borderRadius: "8px", background: selectedSection === sec ? "#4b6cb7" : "#ddd", color: selectedSection === sec ? "#fff" : "#000", border: "none" }}>Section {sec}</button>
+                  <button key={sec} onClick={() => setSelectedSection(sec)} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedSection === sec ? "#4b6cb7" : "#ddd", color: selectedSection === sec ? "#fff" : "#000", border: "none", fontSize: 11 }}>Section {sec}</button>
                 ))}
               </div>
             )}
@@ -1452,45 +1546,61 @@ React.useEffect(() => {
               .student-list-responsive {
                 display: flex;
                 flex-direction: column;
-                margin-top: 30px;
-                gap: 12px;
-                width: 98vw;
-                max-width: 99vw;
+                margin-top: 10px;
+                gap: 10px;
+                width: 100%;
+                max-width: 100vw;
                 margin-left: 0;
-                margin-right: 200px;
+                margin-right: 0;
               }
-                @media (min-width: 350px) {
+              @media (max-width: 600px) {
                 .student-list-responsive {
-                  width: 350px;
-                  max-width: 70vw;
+                  width: 100vw !important;
+                  max-width: 100vw !important;
+                  margin-left: 0 !important;
+                  margin-right: 0 !important;
+                  padding: 0 !important;
+                  align-items: flex-start !important;
+                }
+                .student-list-responsive > div {
+                  margin-left: 10px !important;
+                  padding-left: 10px !important;
+                  width: 100vw !important;
+                  max-width: 100vw !important;
+                  min-width: 100vw !important;
+                  box-sizing: border-box !important;
                 }
               }
-              @media (min-width: 600px) {
+              @media (min-width: 350px) {
                 .student-list-responsive {
                   width: 400px;
                   max-width: 90vw;
                 }
               }
-              @media (min-width: 900px) {
-                .student-list-responsive {
+               @media (max-width: 600px) {
+                 .student-list-card-responsive {
+                   margin-left: -32px !important;
+                   margin-right: auto !important;
+                   width: 80vw !important;
+                   max-width: 80vw !important;
+                 }
+               }
                   width: 500px;
                   max-width: 80vw;
                 }
               }
               @media (min-width: 1200px) {
                 .student-list-responsive {
-                  width: 600px;
-                  max-width: 700px;
-                  margin-left: -100px;
-
+                  width: 420px;
+                  max-width: 520px;
+                  margin-left: 0;
                 }
               }
-                @media (min-width: 1500px) {
+              @media (min-width: 1500px) {
                 .student-list-responsive {
-                  width: 600px;
-                  max-width: 700px;
-                  margin-left: -250px;
-
+                  width: 420px;
+                  max-width: 520px;
+                  margin-left: 0;
                 }
               }
             `}</style>
@@ -1499,6 +1609,7 @@ React.useEffect(() => {
                 <StudentItem
                   key={s.userId || s.id || index}
                   student={s}
+                  number={index + 1}
                   selected={selectedStudent?.userId === s.userId}
                   onClick={() => setSelectedStudent(s)}
                 />
@@ -1518,15 +1629,16 @@ React.useEffect(() => {
       position: "fixed",
       right: 0,
       top: isPortrait ? 0 : "60px",
-      background: "#fff",
-      zIndex: 1000,
+      background: "#ffffff",
+      zIndex: 120,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
-      boxShadow: isPortrait
-        ? "0 0 0 rgba(0,0,0,0)"
-        : "0 0 15px rgba(0,0,0,0.08)",
+      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
+      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
       transition: "all 0.35s ease",
+      fontSize: 10,
+      padding: "12px",
     }}
   >
 
@@ -1534,18 +1646,15 @@ React.useEffect(() => {
    <button
   onClick={() => setSelectedStudent(null)}
   style={{
-    position: "fixed",
-    top: 56,
-    right: 16,
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    position: "absolute",
+    top: 6,
+    left: 12,
     border: "none",
-    background: "#ffffff",
-    boxShadow: "0 6px 18px rgba(2,6,23,0.15)",
+    background: "none",
     cursor: "pointer",
-    fontSize: 22,
-    fontWeight: 900,
+    fontSize: 26,
+    fontWeight: 700,
+    color: "#3647b7",
     zIndex: 2000,
   }}
 >
@@ -1554,15 +1663,15 @@ React.useEffect(() => {
 
 
     {/* Student Info */}
-    <div style={{ textAlign: "center", marginBottom: "20px", paddingTop: 20 }}>
+    <div style={{ textAlign: "center", margin: "-12px -12px 10px", padding: "14px 10px", background: "#e0e7ff" }}>
       <div
         style={{
-          width: "120px",
-          height: "120px",
-          margin: "0 auto 15px",
+          width: "70px",
+          height: "70px",
+          margin: "0 auto 10px",
           borderRadius: "50%",
           overflow: "hidden",
-          border: "4px solid #4b6cb7",
+          border: "3px solid #4b6cb7",
         }}
       >
         <img
@@ -1571,28 +1680,29 @@ React.useEffect(() => {
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       </div>
-      <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
-      <p style={{ color: "#555", margin: "5px 0" }}>{selectedStudent.studentId}</p>
-      <p style={{ color: "#555", margin: "5px 0" }}>
+      <h2 style={{ margin: 0, fontSize: 14, color: "#111827" }}>{selectedStudent.name}</h2>
+      <p style={{ color: "#6b7280", margin: "4px 0", fontSize: 10 }}>{selectedStudent.studentId}</p>
+      <p style={{ color: "#6b7280", margin: "4px 0", fontSize: 10 }}>
         <strong>Grade:</strong> {selectedStudent.grade}{selectedStudent.section}
       </p>
       
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", marginBottom: "15px" }}>
+    <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
       {["details", "attendance", "performance"].map((tab) => (
         <button
           key={tab}
           onClick={() => setStudentTab(tab)}
           style={{
             flex: 1,
-            padding: "10px",
+            padding: "6px",
             border: "none",
             background: "none",
             cursor: "pointer",
-            fontWeight: "600",
-            color: studentTab === tab ? "#4b6cb7" : "#777",
+            fontWeight: 600,
+            fontSize: 10,
+            color: studentTab === tab ? "#4b6cb7" : "#6b7280",
             borderBottom:
               studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
           }}
@@ -1611,15 +1721,16 @@ React.useEffect(() => {
     style={{
       display: "flex",
       flexDirection: "column",
-      gap: 28,
-      padding: isPortrait ? 50 : 50,
+      gap: 12,
+      padding: 12,
 marginLeft: 0,
 marginRight: 0,
-
-      borderRadius: 0,
-      background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-     
-      fontFamily: "Inter, system-ui",
+      borderRadius: 12,
+      background: "#ffffff",
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      margin: "0 auto",
+      maxWidth: 380,
     }}
   >
     {/* ================= LEFT COLUMN ================= */}
@@ -1627,13 +1738,10 @@ marginRight: 0,
       {/* STUDENT DETAILS */}
       <div
         style={{
-          fontSize: 24,
-          fontWeight: 900,
-          marginBottom: 18,
-          marginTop: -30,
-          background: "linear-gradient(90deg,#2563eb,#7c3aed)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
+          fontSize: 12,
+          fontWeight: 800,
+          marginBottom: 6,
+          color: "#0f172a",
         }}
       >
         Student Details
@@ -1643,8 +1751,8 @@ marginRight: 0,
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          columnGap: 68,
-          rowGap: 14,
+          columnGap: 8,
+          rowGap: 8,
           
         }}
       >
@@ -1662,20 +1770,17 @@ marginRight: 0,
           <div
             key={label}
             style={{
-              padding: 18,
-              borderRadius: 20,
-              background: "#ffffff",
-              boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
-              marginLeft: -30,
-              marginRight: -30,
-            
+              padding: 8,
+              borderRadius: 10,
+              border: "1px solid #eef2f7",
+              boxShadow: "none",
             }}
           >
             <div
               style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "#000102",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: "#64748b",
                 textTransform: "uppercase",
               }}
             >
@@ -1683,10 +1788,10 @@ marginRight: 0,
             </div>
             <div
               style={{
-                marginTop: 8,
-                fontSize: 16,
-                fontWeight: 400,
-                color: "#000102",
+                  marginTop: 4,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: "#111827",
               }}
             >
               {value || "—"}
@@ -1699,10 +1804,10 @@ marginRight: 0,
       <div style={{ marginTop: 36 }}>
         <div
           style={{
-            fontSize: 22,
-            fontWeight: 900,
-            marginBottom: 14,
-            color: "#1e293b",
+            fontSize: 12,
+            fontWeight: 800,
+            marginBottom: 6,
+            color: "#0f172a",
           }}
         >
           Teacher Comments
@@ -1712,10 +1817,10 @@ marginRight: 0,
         <div
           style={{
             background: "#ffffff",
-            padding: 18,
-            borderRadius: 22,
-           
-            boxShadow: "0 14px 40px rgba(0,0,0,0.1)",
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
+            boxShadow: "none",
           }}
         >
           <textarea
@@ -1728,8 +1833,8 @@ marginRight: 0,
               border: "none",
               outline: "none",
               resize: "vertical",
-              fontSize: 15,
-              lineHeight: 1.6,
+              fontSize: 11,
+              lineHeight: 1.4,
             }}
           />
 
@@ -1738,14 +1843,15 @@ marginRight: 0,
               onClick={saveTeacherNote}
               disabled={savingNote}
               style={{
-                padding: "10px 22px",
-                borderRadius: 999,
+                padding: "6px 10px",
+                borderRadius: 10,
                 border: "none",
-                background: "linear-gradient(135deg,#2563eb,#7c3aed)",
+                background: "#4b6cb7",
                 color: "#fff",
-                fontWeight: 900,
+                fontWeight: 800,
+                fontSize: 10,
                 cursor: "pointer",
-                boxShadow: "0 12px 30px rgba(37,99,235,0.45)",
+                boxShadow: "none",
               }}
             >
               {savingNote ? "Saving..." : "Add Comment"}
@@ -1756,20 +1862,21 @@ marginRight: 0,
         {/* NOTES LIST */}
         <div
           style={{
-            marginTop: 18,
+            marginTop: 10,
             display: "flex",
             flexDirection: "column",
-            gap: 14,
+            gap: 10,
           }}
         >
           {teacherNotes.length === 0 ? (
             <div
               style={{
                 textAlign: "center",
-                padding: 18,
+                padding: 12,
                 color: "#64748b",
                 background: "#ffffff",
-                borderRadius: 18,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
               }}
             >
               No teacher comments yet
@@ -1780,15 +1887,16 @@ marginRight: 0,
                 {/* Avatar */}
                 <div
                   style={{
-                    width: 44,
-                    height: 44,
+                    width: 36,
+                    height: 36,
                     borderRadius: "50%",
-                    background: "linear-gradient(135deg,#60a5fa,#2563eb)",
+                    background: "#4b6cb7",
                     color: "#fff",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     fontWeight: 900,
+                    fontSize: 12,
                   }}
                 >
                   {n.teacherName
@@ -1804,19 +1912,20 @@ marginRight: 0,
                   style={{
                     flex: 1,
                     background: "#ffffff",
-                    padding: 14,
-                    borderRadius: 18,
-                    boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+                    padding: 10,
+                    borderRadius: 12,
+                    border: "1px solid #eef2f7",
+                    boxShadow: "none",
                   }}
                 >
-                  <div style={{ fontWeight: 800, color: "#1e293b" }}>
+                  <div style={{ fontWeight: 800, color: "#1e293b", fontSize: 11 }}>
                     {n.teacherName}
                   </div>
-                  <div style={{ marginTop: 6 }}>{n.note}</div>
+                  <div style={{ marginTop: 4, fontSize: 11 }}>{n.note}</div>
                   <div
                     style={{
-                      marginTop: 6,
-                      fontSize: 12,
+                      marginTop: 4,
+                      fontSize: 10,
                       color: "#64748b",
                       textAlign: "right",
                     }}
@@ -1840,10 +1949,11 @@ marginRight: 0,
 {studentTab === "attendance" && selectedStudent && (
   <div
     style={{
-      padding: 30,
-      background: "radial-gradient(circle at top,#eef2ff,#f8fafc)",
-      borderRadius: 26,
-      fontFamily: "Inter, system-ui",
+      padding: 12,
+      background: "#ffffff",
+      borderRadius: 12,
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
     }}
   >
     {/* ===== VIEW SWITCH ===== */}
@@ -1851,8 +1961,8 @@ marginRight: 0,
       style={{
         display: "flex",
         justifyContent: "center",
-        gap: 16,
-        marginBottom: 32,
+        gap: 8,
+        marginBottom: 12,
       }}
     >
       {["daily", "weekly", "monthly"].map((v) => (
@@ -1860,22 +1970,15 @@ marginRight: 0,
           key={v}
           onClick={() => setAttendanceView(v)}
           style={{
-            padding: "12px 28px",
-            borderRadius: 999,
+            padding: "6px 10px",
+            borderRadius: 10,
             border: "none",
-            fontWeight: 800,
-            fontSize: 13,
-            letterSpacing: 1,
+            fontWeight: 700,
+            fontSize: 10,
             cursor: "pointer",
-            background:
-              attendanceView === v
-                ? "linear-gradient(135deg,#4f46e5,#2563eb)"
-                : "rgba(255,255,255,.8)",
-            color: attendanceView === v ? "#fff" : "#1f2937",
-            boxShadow:
-              attendanceView === v
-                ? "0 5px 5px rgba(79,70,229,.45)"
-                : "0 5px 5px rgba(0,0,0,.08)",
+            background: attendanceView === v ? "#4b6cb7" : "#e5e7eb",
+            color: attendanceView === v ? "#fff" : "#111827",
+            boxShadow: "none",
             transition: "all .3s ease",
           }}
         >
@@ -1915,13 +2018,12 @@ marginRight: 0,
             onClick={() => toggleExpand(expandKey)}
             style={{
               cursor: "pointer",
-              background:
-                "linear-gradient(180deg,rgba(255,255,255,.95),rgba(255,255,255,.85))",
-              backdropFilter: "blur(14px)",
-              borderRadius: 26,
-              padding: 26,
-              marginBottom: 26,
-              boxShadow: "0 10px 10px rgba(0,0,0,.12)",
+              background: "#ffffff",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 12,
+              border: "1px solid #e5e7eb",
+              boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
               position: "relative",
               overflow: "hidden",
             }}
@@ -1931,8 +2033,7 @@ marginRight: 0,
               style={{
                 position: "absolute",
                 inset: 0,
-                background:
-                  "radial-gradient(circle at top left,rgba(99,102,241,.15),transparent 60%)",
+                background: "transparent",
                 pointerEvents: "none",
               }}
             />
@@ -1943,16 +2044,16 @@ marginRight: 0,
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                marginBottom: 18,
+                marginBottom: 8,
               }}
             >
               <div>
                 <h3
                   style={{
                     margin: 0,
-                    fontSize: 20,
-                    fontWeight: 900,
-                    color: "#1e3a8a",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    color: "#0f172a",
                   }}
                 >
                   📚 {formatSubjectName(course)}
@@ -1960,7 +2061,7 @@ marginRight: 0,
                 <p
                   style={{
                     margin: "6px 0 0",
-                    fontSize: 13,
+                    fontSize: 10,
                     color: "#64748b",
                   }}
                 >
@@ -1970,18 +2071,13 @@ marginRight: 0,
 
               <div
                 style={{
-                  padding: "8px 16px",
+                  padding: "4px 8px",
                   borderRadius: 999,
-                  fontSize: 13,
-                  fontWeight: 900,
-                  background:
-                    progress >= 75
-                      ? "linear-gradient(135deg,#22c55e,#16a34a)"
-                      : progress >= 50
-                      ? "linear-gradient(135deg,#facc15,#eab308)"
-                      : "linear-gradient(135deg,#ef4444,#dc2626)",
-                  color: "#fff",
-                  boxShadow: "0 10px 25px rgba(0,0,0,.25)",
+                  fontSize: 10,
+                  fontWeight: 800,
+                  background: "#e0e7ff",
+                  color: "#1e40af",
+                  border: "1px solid #c7d2fe",
                 }}
               >
                 {progress}%
@@ -1992,49 +2088,44 @@ marginRight: 0,
             <div
               onClick={() => toggleExpand(expandKey)}
               style={{
-                height: 16,
+                height: 8,
                 background: "#e5e7eb",
                 borderRadius: 999,
                 cursor: "pointer",
                 overflow: "hidden",
-                marginBottom: 10,
+                marginBottom: 8,
               }}
             >
               <div
                 style={{
                   height: "100%",
                   width: `${progress}%`,
-                  background:
-                    progress >= 75
-                      ? "linear-gradient(90deg,#22c55e,#16a34a)"
-                      : progress >= 50
-                      ? "linear-gradient(90deg,#facc15,#eab308)"
-                      : "linear-gradient(90deg,#ef4444,#dc2626)",
-                  transition: "width .5s cubic-bezier(.4,0,.2,1)",
+                  background: "#4b6cb7",
+                  transition: "width .3s ease",
                 }}
               />
             </div>
 
             <div
               style={{
-                fontSize: 12,
+                fontSize: 9,
                 fontWeight: 700,
                 color: "#475569",
-                marginBottom: 12,
-                letterSpacing: 0.6,
+                marginBottom: 8,
+                letterSpacing: 0.3,
               }}
             >
-              CLICK BAR TO VIEW {attendanceView.toUpperCase()} DETAILS
+              Click to view {attendanceView.toUpperCase()} details
             </div>
 
             {/* EXPANDED DAYS */}
             {expandedCards[expandKey] && (
               <div
                 style={{
-                  marginTop: 14,
-                  background: "#f1f5f9",
-                  borderRadius: 18,
-                  padding: 14,
+                  marginTop: 8,
+                  background: "#f8fafc",
+                  borderRadius: 12,
+                  padding: 10,
                 }}
               >
                 {displayRecords.map((r, i) => (
@@ -2044,7 +2135,7 @@ marginRight: 0,
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
-                      padding: "12px 8px",
+                      padding: "8px 6px",
                       borderBottom:
                         i !== displayRecords.length - 1
                           ? "1px solid #e5e7eb"
@@ -2052,7 +2143,7 @@ marginRight: 0,
                     }}
                   >
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      <span style={{ fontSize: 13, color: "#1f2937" }}>
+                      <span style={{ fontSize: 10, color: "#1f2937" }}>
                         📅 {new Date(r.date).toDateString()}
                       </span>
                      
@@ -2060,10 +2151,10 @@ marginRight: 0,
 
                     <span
                       style={{
-                        padding: "6px 14px",
+                        padding: "4px 8px",
                         borderRadius: 999,
-                        fontSize: 12,
-                        fontWeight: 900,
+                        fontSize: 10,
+                        fontWeight: 800,
                         background:
                           r.status === "present"
                             ? "#dcfce7"
@@ -2093,17 +2184,17 @@ marginRight: 0,
                   {/* PERFORMANCE TAB */}
              {/* PERFORMANCE TAB */}
                 {studentTab === "performance" && (
-                  <div style={{ position: "relative", paddingBottom: "70px", background: "#f8fafc" }}>
+                  <div style={{ position: "relative", paddingBottom: "30px", background: "#ffffff", borderRadius: 12, border: "1px solid #e5e7eb", boxShadow: "0 8px 20px rgba(15,23,42,0.06)", padding: 12 }}>
 
                     {/* Semester Tabs */}
                     <div
                       style={{
                         display: "flex",
                         justifyContent: "center",
-                        gap: "40px",
-                        marginBottom: "25px",
-                        borderBottom: "2px solid #e5e7eb",
-                        paddingBottom: "8px",
+                        gap: "12px",
+                        marginBottom: "12px",
+                        borderBottom: "1px solid #e5e7eb",
+                        paddingBottom: "6px",
                       }}
                     >
                       {["semester1", "semester2"].map((sem) => {
@@ -2116,27 +2207,14 @@ marginRight: 0,
                               background: "none",
                               border: "none",
                               cursor: "pointer",
-                              fontSize: "16px",
-                              fontWeight: "800",
-                              color: isActive ? "#2563eb" : "#64748b",
-                              paddingBottom: "10px",
-                              position: "relative",
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              color: isActive ? "#4b6cb7" : "#64748b",
+                              padding: "6px 8px",
+                              borderBottom: isActive ? "2px solid #4b6cb7" : "2px solid transparent",
                             }}
                           >
                             {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                            {isActive && (
-                              <span
-                                style={{
-                                  position: "absolute",
-                                  bottom: "-2px",
-                                  left: 0,
-                                  width: "100%",
-                                  height: "4px",
-                                  background: "linear-gradient(135deg,#4b6cb7,#1e40af)",
-                                  borderRadius: "6px",
-                                }}
-                              />
-                            )}
                           </button>
                         );
                       })}
@@ -2146,30 +2224,30 @@ marginRight: 0,
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(2, 1fr)",
-                        gap: "20px",
-                        padding: "20px",
+                        gridTemplateColumns: "1fr",
+                        gap: "10px",
+                        padding: "10px",
                       }}
                     >
                       {loading ? (
-                        <div style={{ textAlign: "center", gridColumn: "1 / -1", padding: "30px" }}>
+                        <div style={{ textAlign: "center", gridColumn: "1 / -1", padding: 12, color: "#64748b", fontSize: 11 }}>
                           Loading performance...
                         </div>
                       ) : Object.keys(studentMarksFlattened || {}).length === 0 ? (
                         <div
                           style={{
                             textAlign: "center",
-                            padding: "30px",
-                            borderRadius: "18px",
+                            padding: 12,
+                            borderRadius: 12,
                             background: "#ffffff",
                             color: "#475569",
-                            fontSize: "16px",
-                            fontWeight: "600",
-                            boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            border: "1px solid #e5e7eb",
                             gridColumn: "1 / -1",
                           }}
                         >
-                          🚫 No Performance Records
+                          No performance records
                         </div>
                       ) : (
                         Object.entries(studentMarksFlattened).map(([courseKey, studentCourseData], idx) => {
@@ -2206,118 +2284,99 @@ marginRight: 0,
                             <div
                               key={`${courseKey}-${idx}`}
                               style={{
-                                padding: "18px",
-                                borderRadius: "20px",
+                                padding: 12,
+                                borderRadius: 12,
                                 background: "#ffffff",
-                                boxShadow: "0 12px 30px rgba(0,0,0,0.08)",
+                                border: "1px solid #e5e7eb",
+                                boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
                               }}
                             >
                               {/* Course Name */}
                               <div
                                 style={{
-                                  fontSize: "16px",
-                                  fontWeight: "800",
-                                  marginBottom: "14px",
-                                  color: "#2563eb",
-                                  textAlign: "center",
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  marginBottom: 10,
+                                  color: "#0f172a",
+                                  textAlign: "left",
                                 }}
                               >
                                 {courseName}
                               </div>
 
-                              {/* Score Circle */}
-                              <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
-                                <div
-                                  style={{
-                                    width: "90px",
-                                    height: "90px",
-                                    borderRadius: "50%",
-                                    background: `conic-gradient(${statusClr} ${percentage * 3.6}deg, #e5e7eb 0deg)`,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                  }}
-                                >
-                                  <div
-                                    style={{
-                                      width: "66px",
-                                      height: "66px",
-                                      borderRadius: "50%",
-                                      background: "#fff",
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                  >
-                                    <strong style={{ color: statusClr }}>{total}</strong>
-                                    <span style={{ fontSize: "11px" }}>/ {maxTotal}</span>
-                                  </div>
-                                </div>
-                              </div>
+                              {/* If quarter data exists, render Quarter 1 & Quarter 2; otherwise fall back to semester assessments */}
+                              {(() => {
+                                const q1 = data.q1 || data.quarter1 || data.q_1 || null;
+                                const q2 = data.q2 || data.quarter2 || data.q_2 || null;
 
-                              {/* Assessment Bars */}
-                              {Object.entries(assessments).map(([key, a]) => (
-                                <div key={key} style={{ marginBottom: "10px" }}>
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      justifyContent: "space-between",
-                                      fontSize: "13px",
-                                      fontWeight: "600",
-                                    }}
-                                  >
-                                    <span>{a.name}</span>
-                                    <span>
-                                      {a.score} / {a.max}
-                                    </span>
-                                  </div>
-                                  <div
-                                    style={{
-                                      height: "6px",
-                                      borderRadius: "999px",
-                                      background: "#e5e7eb",
-                                      marginTop: "5px",
-                                    }}
-                                  >
-                                    <div
-                                      style={{
-                                        width: `${(a.score / a.max) * 100}%`,
-                                        height: "100%",
-                                        background: statusClr,
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                              ))}
+                                const renderQuarterBlock = (label, qdata) => {
+                                  const qAss = qdata?.assessments || qdata || {};
+                                  const qTotal = Object.values(qAss).reduce((s, a) => s + (a.score || 0), 0);
+                                  const qMax = Object.values(qAss).reduce((s, a) => s + (a.max || 0), 0);
+                                  const qPct = qMax ? (qTotal / qMax) * 100 : 0;
+                                  const clr = qPct >= 75 ? '#16a34a' : qPct >= 50 ? '#f59e0b' : '#dc2626';
 
-                              {/* Status */}
-                              <div
-                                style={{
-                                  marginTop: "10px",
-                                  textAlign: "center",
-                                  fontWeight: "700",
-                                  color: statusClr,
-                                }}
-                              >
-                                {percentage >= 75
-                                  ? "Excellent"
-                                  : percentage >= 50
-                                    ? "Good"
-                                    : "Needs Improvement"}
-                              </div>
+                                  return (
+                                    <div style={{ flex: 1, padding: 8, borderRadius: 8, border: '1px solid #f1f5f9', background: '#fff' }}>
+                                      <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', marginBottom: 8 }}>{label}</div>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                        <div style={{ fontSize: 12, fontWeight: 700 }}>{qTotal} / {qMax}</div>
+                                        <div style={{ padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, color: clr, border: '1px solid #e5e7eb' }}>{Math.round(qPct)}%</div>
+                                      </div>
+                                      <div style={{ height: 6, borderRadius: 999, background: '#e5e7eb', overflow: 'hidden', marginBottom: 8 }}>
+                                        <div style={{ width: `${Math.max(0, Math.min(100, qPct))}%`, height: '100%', background: clr }} />
+                                      </div>
+                                      {Object.entries(qAss).length === 0 ? (
+                                        <div style={{ color: '#8b8f95', fontSize: 12 }}>No marks</div>
+                                      ) : (
+                                        Object.entries(qAss).map(([k, a]) => (
+                                          <div key={k} style={{ marginBottom: 8 }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontWeight: 600, color: '#111827' }}>
+                                                  <span>{a.name || k}</span>
+                                                  <span>{(a.score === '' || a.score === null || a.score === undefined || a.score === 0) ? '-' : a.score} / {a.max}</span>
+                                                </div>
+                                          </div>
+                                        ))
+                                      )}
+                                    </div>
+                                  );
+                                };
 
-                              {/* Teacher Name */}
-                              <div
-                                style={{
-                                  marginTop: "6px",
-                                  textAlign: "center",
-                                  fontSize: "12px",
-                                  color: "#64748b",
-                                }}
-                              >
-                                👨‍🏫 {studentCourseData.teacherName || data.teacherName || "N/A"}
-                              </div>
+                                if (q1 || q2) {
+                                  return (
+                                    <div style={{ display: 'flex', gap: 10 }}>
+                                      {renderQuarterBlock('Quarter 1', q1)}
+                                      {renderQuarterBlock('Quarter 2', q2)}
+                                    </div>
+                                  );
+                                }
+
+                                // fallback: semester-level summary and assessments
+                                return (
+                                  <>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                      <div style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>Total</div>
+                                      <div style={{ fontSize: 11, fontWeight: 800, color: '#111827' }}>{total} / {maxTotal}</div>
+                                      <div style={{ padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, border: '1px solid #e5e7eb', color: statusClr, background: '#ffffff' }}>{Math.round(percentage)}%</div>
+                                    </div>
+                                    <div style={{ height: 8, borderRadius: 999, background: '#e5e7eb', overflow: 'hidden', marginBottom: 12 }}>
+                                      <div style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, height: '100%', background: statusClr }} />
+                                    </div>
+                                    {Object.entries(assessments).map(([key, a]) => (
+                                      <div key={key} style={{ marginBottom: 8 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontWeight: 600, color: '#111827' }}>
+                                          <span>{a.name}</span>
+                                          <span>{(a.score === '' || a.score === null || a.score === undefined || a.score === 0) ? '-' : a.score} / {a.max}</span>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    <div style={{ marginTop: 8, textAlign: 'left', fontWeight: 700, fontSize: 10, color: statusClr }}>
+                                      {percentage >= 75 ? 'Excellent' : percentage >= 50 ? 'Good' : 'Needs Improvement'}
+                                    </div>
+                                    <div style={{ marginTop: 6, textAlign: 'left', fontSize: 10, color: '#64748b' }}>{studentCourseData.teacherName || data.teacherName || 'N/A'}</div>
+                                  </>
+                                );
+                              })()}
                             </div>
                           );
                         })
@@ -2387,9 +2446,11 @@ marginRight: 0,
                       <button
                         onClick={() => {
                           setChatOpen(false); // properly close popup
+                          const chatId = getChatId(teacherUserId, selectedStudent.userId);
                           navigate("/all-chat", {
                             state: {
                               user: selectedStudent, // user to auto-select
+                              chatId, // open the exact chat thread
                               tab: "student", // tab type
                             },
                           });

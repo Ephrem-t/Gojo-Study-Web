@@ -6,8 +6,10 @@ import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, Fa
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
+import { BACKEND_BASE } from "../config.js";
 
 function Dashboard() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   // ---------------- STATE ----------------
   const _storedAdmin = (() => {
     try {
@@ -124,7 +126,7 @@ function Dashboard() {
   // ---------------- FETCH POSTS ----------------
   const fetchPosts = async () => {
     try {
-      const res = await axios.get("http://127.0.0.1:5000/api/get_posts");
+      const res = await axios.get(`${API_BASE}/get_posts`);
       console.log(res.data); // check here
       const sortedPosts = res.data.sort(
         (a, b) => new Date(b.time) - new Date(a.time)
@@ -271,7 +273,7 @@ function Dashboard() {
 
     const fetchUnreadPosts = async () => {
       try {
-        const res = await axios.get("http://127.0.0.1:5000/api/get_posts");
+        const res = await axios.get(`${API_BASE}/get_posts`);
 
         const unread = res.data.filter(
           p => !p.seenBy || !p.seenBy[admin.userId]
@@ -342,11 +344,11 @@ function Dashboard() {
     setShowMessengerDropdown(false);
 
     // Fetch chat history
-    const res = await axios.get(`http://127.0.0.1:5000/api/chat/${admin.userId}/${userId}`);
+    const res = await axios.get(`${API_BASE}/chat/${admin.userId}/${userId}`);
     setCurrentChat(res.data); // You need a state `currentChat` to render the conversation
 
     // Mark messages as read
-    await axios.post("http://127.0.0.1:5000/api/mark_messages_read", {
+    await axios.post(`${API_BASE}/mark_messages_read`, {
       adminId: admin.userId,
       senderId: userId
     });
@@ -361,7 +363,7 @@ function Dashboard() {
 
     try {
       // 1️⃣ Mark as seen in backend
-      await axios.post("http://127.0.0.1:5000/api/mark_post_seen", {
+      await axios.post(`${API_BASE}/mark_post_seen`, {
         postId: post.postId,
         userId: admin.userId
       });
@@ -462,7 +464,7 @@ function Dashboard() {
 
     if (postMedia) formData.append("post_media", postMedia);
 
-    await axios.post("http://127.0.0.1:5000/api/create_post", formData);
+    await axios.post(`${API_BASE}/create_post`, formData);
 
     setPostText("");
     setPostMedia(null);
@@ -474,7 +476,7 @@ function Dashboard() {
   const handleLike = async (postId) => {
     try {
       // ✅ Use full backend URL
-      const res = await axios.post(`http://127.0.0.1:5000/api/like_post`, {
+      const res = await axios.post(`${API_BASE}/like_post`, {
         postId,
         adminId: admin.userId, // or admin.adminId if your backend expects it
       });
@@ -506,7 +508,7 @@ function Dashboard() {
   // ---------------- HANDLE DELETE ----------------
   const handleDelete = async (postId) => {
     try {
-      await axios.delete(`http://127.0.0.1:5000/api/delete_post/${postId}`, {
+      await axios.delete(`${API_BASE}/delete_post/${postId}`, {
        data: { adminId: admin.adminId },
       });
       fetchPosts();
@@ -520,7 +522,7 @@ function Dashboard() {
     const newText = prompt("Edit your post:", currentText);
     if (!newText) return;
     try {
-      await axios.post(`http://127.0.0.1:5000/api/edit_post/${postId}`, {
+      await axios.post(`${API_BASE}/edit_post/${postId}`, {
        adminId: admin.adminId,
         postText: newText,
       });
@@ -573,51 +575,57 @@ function Dashboard() {
         <h2>Gojo Dashboard</h2>
 
         <div className="nav-right">
-          {/* Notification */}
+          {/* Combined bell: posts + message senders */}
           <div
             className="icon-circle"
             style={{ position: "relative", cursor: "pointer" }}
-            onClick={() => setShowPostDropdown(p => !p)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowPostDropdown((prev) => !prev);
+            }}
           >
             <FaBell />
 
             {totalNotifications > 0 && (
-              <span style={{
-                position: "absolute",
-                top: "-5px",
-                right: "-5px",
-                background: "red",
-                color: "#fff",
-                borderRadius: "50%",
-                padding: "2px 6px",
-                fontSize: "10px",
-                fontWeight: "bold"
-              }}>
+              <span
+                style={{
+                  position: "absolute",
+                  top: "-5px",
+                  right: "-5px",
+                  background: "red",
+                  color: "#fff",
+                  borderRadius: "50%",
+                  padding: "2px 6px",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                }}
+              >
                 {totalNotifications}
               </span>
             )}
-
           </div>
 
           {/* ---------------- POST NOTIFICATION DROPDOWN ---------------- */}
           {showPostDropdown && (
             <div
               className="notification-dropdown"
+              onClick={(e) => e.stopPropagation()}
               style={{
                 position: "absolute",
-                top: "45px",
+                top: "40px",
                 right: "0",
-                width: "320px",
-                maxHeight: "400px",
+                width: "360px",
+                maxHeight: "420px",
                 overflowY: "auto",
                 background: "#fff",
-                borderRadius: "8px",
-                boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
-                zIndex: 1000
+                borderRadius: 10,
+                boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+                zIndex: 1000,
+                padding: 6,
               }}
             >
               {totalNotifications === 0 ? (
-                <p style={{ padding: "10px", textAlign: "center", color: "#777" }}>
+                <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
                   No new notifications
                 </p>
               ) : (
@@ -631,37 +639,49 @@ function Dashboard() {
                           key={post.postId}
                           onClick={() => openPostFromNotif(post)}
                           style={{
-                            padding: "10px",
-                            borderBottom: "1px solid #eee",
+                            padding: 10,
                             display: "flex",
                             alignItems: "center",
-                            cursor: "pointer"
+                            gap: 12,
+                            cursor: "pointer",
+                            borderBottom: "1px solid #f0f0f0",
+                            transition: "background 120ms ease",
                           }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                         >
                           <img
                             src={post.adminProfile || "/default-profile.png"}
                             alt=""
                             style={{
-                              width: "40px",
-                              height: "40px",
-                              borderRadius: "50%",
-                              marginRight: "10px"
+                              width: 46,
+                              height: 46,
+                              borderRadius: 8,
+                              objectFit: "cover",
                             }}
                           />
 
-                          <div style={{ flex: 1 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
                             <strong>{post.adminName}</strong>
-                            <p style={{ margin: 0, fontSize: "12px", color: "#555" }}>
-                              {post.message?.slice(0, 40) || "New post"}
+                            <p
+                              style={{
+                                margin: 0,
+                                fontSize: 13,
+                                color: "#555",
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {post.message || "New post"}
                             </p>
                           </div>
 
-                          <span style={{ fontSize: "10px", color: "#888" }}>
-                            {new Date(post.time).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit"
-                            })}
-                          </span>
+                          <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
+                            {new Date(post.time || post.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -670,18 +690,21 @@ function Dashboard() {
                   {/* Messages section */}
                   {messageCount > 0 && (
                     <div>
-                      <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Messages</div>
+                      <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
                       {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
                         <div
                           key={userId}
                           style={{
-                            padding: "12px",
+                            padding: 10,
                             display: "flex",
                             alignItems: "center",
-                            gap: "10px",
+                            gap: 12,
                             cursor: "pointer",
-                            borderBottom: "1px solid #eee"
+                            borderBottom: "1px solid #f0f0f0",
+                            transition: "background 120ms ease",
                           }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           onClick={async () => {
                             // mark messages seen, remove sender and navigate to all-chat
                             await markMessagesAsSeen(userId);
@@ -690,6 +713,7 @@ function Dashboard() {
                               delete copy[userId];
                               return copy;
                             });
+                            setShowPostDropdown(false);
                             navigate("/all-chat", {
                               state: {
                                 user: {
@@ -706,14 +730,15 @@ function Dashboard() {
                             src={sender.profileImage}
                             alt={sender.name}
                             style={{
-                              width: "42px",
-                              height: "42px",
-                              borderRadius: "50%"
+                              width: 46,
+                              height: 46,
+                              borderRadius: 8,
+                              objectFit: "cover",
                             }}
                           />
-                          <div>
-                            <strong>{sender.name}</strong>
-                            <p style={{ fontSize: "12px", margin: 0 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
+                            <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
                               {sender.count} new message{sender.count > 1 && "s"}
                             </p>
                           </div>
@@ -769,50 +794,63 @@ function Dashboard() {
         </div>
       </nav>
 
-      <div className="app-layout">
-        <div className="google-dashboard">
-          {/* LEFT SIDEBAR — 25% */}
-
-          <div className="google-sidebar">
-            <div className="sidebar-profile">
-              <div className="sidebar-img-circle">
-                <img src={admin?.profileImage || "/default-profile.png"} alt="profile" />
-              </div>
-              <h3>{admin?.name || "Admin Name"}</h3>
-              <p>{admin?.username || "username"}</p>
+      <div className="google-dashboard" style={{ display: "flex" }}>
+        {/* ---------------- SIDEBAR ---------------- */}
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
-
-            <div className="sidebar-menu">
-              <Link className="sidebar-btn" to="/dashboard"
-                style={{ backgroundColor: "#4b6cb7", color: "#fff" }}
-              > <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
-              <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
-              <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-              <Link className="sidebar-btn" to="/students" > <FaChalkboardTeacher /> Students</Link>
-              <Link
-                className="sidebar-btn"
-                to="/schedule"
-              >
-                <FaCalendarAlt /> Schedule
-              </Link>
-              <Link className="sidebar-btn" to="/parents" ><FaChalkboardTeacher /> Parents
-              </Link>
-              <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-              </Link>
-              <button
-                className="sidebar-btn logout-btn"
-                onClick={() => {
-                  localStorage.removeItem("admin");
-                  window.location.href = "/login";
-                }}
-              >
-                <FaSignOutAlt /> Logout
-              </button>
-            </div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin?.name || "Admin Name"}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
 
-          {/* MAIN CONTENT — 75% */}
-          <div className="google-main">
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
+            </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
+
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => {
+                localStorage.removeItem("admin");
+                window.location.href = "/login";
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
+            >
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
+            </button>
+          </div>
+        </div>
+
+        {/* ---------------- MAIN CONTENT ---------------- */}
+        <div
+          className="main-content google-main"
+          style={{
+            padding: "10px 20px 20px",
+            flex: 1,
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        >
 
             {/* Post input box */}
             <div className="post-box">
@@ -924,13 +962,13 @@ function Dashboard() {
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
-                          gap: "12px",
-                          width: "120px",
-                          padding: "6px 10px",
+                          gap: "8px",
+                          width: "104px",
+                          padding: "4px 8px",
                           background: "transparent",
                           border: "none",
                           cursor: "pointer",
-                          fontSize: "14px",
+                          fontSize: "12px",
                           fontWeight: "500",
                           color: post.likes && post.likes[admin.userId] ? "#e0245e" : "#555",
                           transition: "all 0.2s ease",
@@ -939,16 +977,16 @@ function Dashboard() {
                         {/* LEFT: Heart + Text */}
                         <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           {post.likes && post.likes[admin.userId] ? (
-                            <FaHeart style={{ color: "#e0245e", fontSize: "16px" }} />
+                            <FaHeart style={{ color: "#e0245e", fontSize: "14px" }} />
                           ) : (
-                            <FaRegHeart style={{ fontSize: "16px" }} />
+                            <FaRegHeart style={{ fontSize: "14px" }} />
                           )}
 
                           {post.likes && post.likes[admin.userId] ? "Liked" : "Like"}
                         </span>
 
                         {/* RIGHT: Count */}
-                        <span style={{ marginRight: "650px", fontSize: "15px", color: "#777" }}>
+                        <span style={{ fontSize: "12px", color: "#777" }}>
                           {post.likeCount || 0}
                         </span>
                       </button>
@@ -958,7 +996,6 @@ function Dashboard() {
               ))}
             </div>
 
-          </div>
         </div>
       </div>
     </div>

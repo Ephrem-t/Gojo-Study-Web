@@ -14,8 +14,10 @@ import {
 } from "react-icons/fa";
 import axios from "axios";
 import "../styles/login.css";
+import { BACKEND_BASE } from "../config.js";
 
 function SettingsPage() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   const [admin, setAdmin] = useState(
     JSON.parse(localStorage.getItem("admin")) || {}
   );
@@ -45,9 +47,7 @@ function SettingsPage() {
 
   try {
     // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-    );
+    const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
 
     let notifications = Array.isArray(res.data)
       ? res.data
@@ -118,13 +118,10 @@ function SettingsPage() {
 
  const handleNotificationClick = async (notification) => {
   try {
-    await axios.post(
-      "http://127.0.0.1:5000/api/mark_post_notification_read",
-      {
-        notificationId: notification.notificationId,
-        adminId: admin.userId,
-      }
-    );
+    await axios.post(`${API_BASE}/mark_post_notification_read`, {
+      notificationId: notification.notificationId,
+      adminId: admin.userId,
+    });
   } catch (err) {
     console.warn("Failed to delete notification:", err);
   }
@@ -362,9 +359,11 @@ useEffect(() => {
 	const container = {
 		minHeight: "80vh",
 		display: "flex",
-		alignItems: "center",
-		justifyContent: "center",
+    alignItems: "center",
+    justifyContent: "flex-start",
 		padding: 24,
+    width: "100%",
+    boxSizing: "border-box",
 		background: "linear-gradient(180deg,#f6f8ff 0%, #ffffff 60%)",
 	};
 
@@ -491,7 +490,7 @@ useEffect(() => {
                             className="notification-row"
                             onClick={async () => {
                               try {
-                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                await axios.post(`${API_BASE}/mark_post_notification_read`, {
                                   notificationId: n.notificationId,
                                 });
                               } catch (err) {
@@ -600,56 +599,57 @@ useEffect(() => {
         
       >
         {/* SIDEBAR */}
-        <div
-          className="google-sidebar"
-        
-        >
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
-            <h3>{admin.name}</h3>
-            <p>{admin?.adminId || "username"}</p>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin?.name || "Admin Name"}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard">
-              <FaHome style={{ width: "28px", height: "28px" }} /> Home
+
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
             </Link>
-            <Link className="sidebar-btn" to="/my-posts">
-              <FaFileAlt /> My Posts
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
             </Link>
-            <Link className="sidebar-btn" to="/teachers">
-              <FaChalkboardTeacher /> Teachers
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
             </Link>
-            <Link className="sidebar-btn" to="/students">
-              <FaChalkboardTeacher /> Students
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
             </Link>
-            <Link className="sidebar-btn" to="/schedule">
-              <FaCalendarAlt /> Schedule
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
             </Link>
-            <Link className="sidebar-btn" to="/parents">
-              <FaChalkboardTeacher /> Parents
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
             </Link>
- <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-              </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
+
             <button
               className="sidebar-btn logout-btn"
               onClick={() => {
                 localStorage.removeItem("admin");
                 window.location.href = "/login";
               }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
             >
-              <FaSignOutAlt /> Logout
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
             </button>
           </div>
         </div>
 
         {/* MAIN CONTENT */}
         <div style={container}>
-			<div style={{ marginLeft: 200}}>
-				<div style={{ marginLeft: 300, marginTop: -240, maxWidth: 1500 }}>
-					<h1 style={{ margin: 0, fontSize: 28, fontWeight: 900, letterSpacing: -0.5, textAlign: "center" }}>Registration Form</h1>
-					<p style={{ margin: 0, opacity: 0.92, fontSize: 14 }}>Select the registration path that fits you. Teacher accounts collect course assignments; Parent accounts allow linking children to your profile.</p>
+          <div style={{ marginLeft: 260, width: "100%" }}>
+            <div style={{ marginLeft: 0, marginTop: -240, maxWidth: 900 }}>
+              <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900, letterSpacing: -0.5, textAlign: "left" }}>Registration Form</h1>
+              <p style={{ margin: 0, opacity: 0.92, fontSize: 14, textAlign: "left" }}>Select the registration path that fits you. Teacher accounts collect course assignments; Parent accounts allow linking children to your profile.</p>
 
           <div className="reg-links" style={{ marginTop: 20 }}>
             <Link

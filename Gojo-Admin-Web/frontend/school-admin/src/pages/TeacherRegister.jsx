@@ -2,106 +2,134 @@ import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import "../styles/login.css";
 import { BACKEND_BASE } from "../config";
+import { ref as dbRef, get, push } from "firebase/database";
+import { db } from "../firebase";
 
 export default function Register() {
   const navigate = useNavigate();
 
-  const gradeOptions = ["7", "8", "9", "10", "11 Social", "11 Natural", "12 Social", "12 Natural"];
+  const gradeOptions = ["1","1AO", "2", "3", "4", "4AO", "5", "6", "7", "8"];
   const sectionOptions = ["A", "B", "C"];
   const subjectOptions = {
+     "1": [
+      "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",  
+    ],
+
+      "1AO": [
+      "Mathematics",
+      "Gadaaa",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",  
+      
+    ],
+     "2": [
+      "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",
+      
+    ],
+     "3": [
+      "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",
+      
+    ],
+     "4": [
+     "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",
+    ],
+
+      "4AO": [
+     "Mathematics",
+      "Gadaaa",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      "Afaan Oromoo",
+    ],
+     "5": [
+      "Afaan Oromoo",
+     "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+     
+      
+      
+    ],
+    "6": [
+      "Afaan Oromoo",
+     "Mathematics",
+      "Amharic",
+      "English",
+      "Safuu",
+      "Environmental Science",
+      "ART",
+      "HPE",
+      
+      
+    ],    
+
     "7": [
       "Mathematics",
       "Amharic",
       "English",
-      "Biology",
-      "Physics",
-      "Chemistry",
-      "Geography",
-      "History",
+      "General Science",
+      "ART",
+      "OT",
+      "HPE",
+      "Social Studies",
       "Civics",
       "ICT",
-      "Oromifa",
-      "Physical Education",
+      "Afaan Oromoo",
     ],
+      
     "8": [
      "Mathematics",
       "Amharic",
       "English",
-      "Biology",
-      "Physics",
-      "Chemistry",
-      "Geography",
-      "History",
+      "General Science",
+      "ART",
+      "OT",
+      "HPE",
+      "Social Studies",
       "Civics",
       "ICT",
-      "Oromifa",
-      "Physical Education",
-    ],
-    "9": [
-      "Mathematics",
-      "English",
-      "Biology",
-      "Physics",
-      "Chemistry",
-      "Geography",
-      "History",
-      "Civics",
-      "ICT",
-      "Physical Education",
-    ],
-    "10": [
-     "Mathematics",
-      "English",
-      "Biology",
-      "Physics",
-      "Chemistry",
-      "Geography",
-      "History",
-      "Civics",
-      "ICT",
-      "Physical Education",
-    ],
-    "11 Social": [
-      "Mathematics",
-      "English",
-      "Physics",
-      "Chemistry",
-      "Biology",
-      "Economics",
-      "Geography",
-      "History",
+      "Afaan Oromoo",
     ],
 
-    "11 Natural": [
-      "Mathematics",
-      "English",
-      "Physics",
-      "Chemistry",
-      "Biology",
-      "Economics",
-      "Geography",
-      "History",
-    ],
-    "12 Social": [
-      "Mathematics",
-      "English",
-      "Physics",
-      "Chemistry",
-      "Biology",
-      "Economics",
-      "Geography",
-      "History",
-    ],
-    "12 Natural": [
-      "Mathematics",
-      "English",
-      "Physics",
-      "Chemistry",
-      "Biology",
-      "Economics",
-      "Geography",
-      "History",
-    ],
   };
 
   const [formData, setFormData] = useState({
@@ -115,6 +143,11 @@ export default function Register() {
   const [profile, setProfile] = useState(null);
   const [message, setMessage] = useState("");
   const [assignedTeacherId, setAssignedTeacherId] = useState("");
+
+  // For adding subject to existing teacher
+  const [existingTeacherKey, setExistingTeacherKey] = useState("");
+  const [existingCourse, setExistingCourse] = useState({ grade: "", section: "", subject: "" });
+  const [addingMsg, setAddingMsg] = useState("");
 
   const handleChange = (e, index = null) => {
     const { name, value } = e.target;
@@ -133,6 +166,52 @@ export default function Register() {
       ...formData,
       courses: [...formData.courses, { grade: "", section: "", subject: "" }],
     });
+  };
+
+  const handleAddToExisting = async (e) => {
+    e.preventDefault();
+    setAddingMsg("");
+    const { grade, section, subject } = existingCourse;
+    if (!existingTeacherKey) { setAddingMsg("Enter teacher key"); return; }
+    if (!grade || !section || !subject) { setAddingMsg("Select grade, section and subject"); return; }
+
+    try {
+      // Verify teacher exists
+      const teacherSnap = await get(dbRef(db, `Teachers/${existingTeacherKey}`));
+      if (!teacherSnap.exists()) {
+        setAddingMsg("Teacher not found by that key.");
+        return;
+      }
+
+      // Find matching courseId in Courses node
+      const coursesSnap = await get(dbRef(db, "Courses"));
+      const courses = coursesSnap.exists() ? coursesSnap.val() : {};
+      let foundCourseId = null;
+      for (const [cid, c] of Object.entries(courses)) {
+        if ((c.grade == grade) && (String(c.section) == String(section)) && (c.subject == subject)) {
+          foundCourseId = cid;
+          break;
+        }
+      }
+
+      if (!foundCourseId) {
+        // Create the course automatically (mirror behavior from registration)
+        const newCourseRef = await push(dbRef(db, "Courses"), { grade, section, subject });
+        foundCourseId = newCourseRef.key;
+        // Informative message after assignment
+        setAddingMsg("Course did not exist — created new course and assigning...");
+      }
+
+      // Push to TeacherAssignments
+      await push(dbRef(db, "TeacherAssignments"), { teacherId: existingTeacherKey, courseId: foundCourseId });
+      setAddingMsg("Subject added to teacher successfully.");
+      // clear selection
+      setExistingCourse({ grade: "", section: "", subject: "" });
+      setExistingTeacherKey("");
+    } catch (err) {
+      console.error("Add to existing teacher failed:", err);
+      setAddingMsg("Failed to add subject. See console.");
+    }
   };
 
   const removeCourse = (index) => {
@@ -224,7 +303,7 @@ export default function Register() {
         setProfile(null);
         setMessage("Registration successful. Your teacherId (username) is shown below.");
         // Optionally auto-navigate to login after a short delay:
-        // setTimeout(() => navigate("/login"), 4000);
+        // setTimeout(() => navigate("/login"), 4000);i my 
       } else {
         setMessage(data.message || "Registration failed.");
       }
@@ -247,6 +326,27 @@ export default function Register() {
             ←
           </button>
           <h2 style={{ margin: 0 }}>Teacher Registration</h2>
+        </div>
+        {/* Add subject to existing teacher */}
+        <div style={{ marginBottom: 12, padding: 12, border: "1px solid #eee", borderRadius: 8, background: "#fafafa" }}>
+          <h3 style={{ marginTop: 0 }}>Add Subject To Existing Teacher</h3>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input placeholder="Teacher key (e.g. TCHR123)" value={existingTeacherKey} onChange={e => setExistingTeacherKey(e.target.value)} />
+            <select value={existingCourse.grade} onChange={e => setExistingCourse({ ...existingCourse, grade: e.target.value })}>
+              <option value="">Grade</option>
+              {gradeOptions.map(g => <option key={g} value={g}>{g}</option>)}
+            </select>
+            <select value={existingCourse.section} onChange={e => setExistingCourse({ ...existingCourse, section: e.target.value })}>
+              <option value="">Section</option>
+              {sectionOptions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select value={existingCourse.subject} onChange={e => setExistingCourse({ ...existingCourse, subject: e.target.value })} disabled={!existingCourse.grade}>
+              <option value="">Subject</option>
+              {existingCourse.grade && subjectOptions[existingCourse.grade].map(subj => <option key={subj} value={subj}>{subj}</option>)}
+            </select>
+            <button className="add-btn" onClick={handleAddToExisting} style={{ whiteSpace: "nowrap" }}>Add Subject</button>
+          </div>
+          {addingMsg && <div style={{ marginTop: 8, color: addingMsg.startsWith("Failed") || addingMsg.includes("not found") ? "#b91c1c" : "#064e3b" }}>{addingMsg}</div>}
         </div>
         {message && <p className="auth-error">{message}</p>}
 
@@ -286,8 +386,6 @@ export default function Register() {
             <option value="">Select Gender</option>
             <option value="Male">Male</option>
             <option value="Female">Female</option>
-            <option value="Other">Other</option>
-            <option value="Prefer not to say">Prefer not to say</option>
           </select>
 
           <input

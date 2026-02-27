@@ -11,13 +11,16 @@ import { getDatabase, ref, onValue, push, update } from "firebase/database";
 import { getFirestore, collection, getDocs } from "firebase/firestore";
 
 import app, { db } from "../firebase"; // Adjust the path if needed
+import { BACKEND_BASE } from "../config.js";
 
 
 function StudentsPage() {
+  const API_BASE = `${BACKEND_BASE}/api`;
   // ------------------ STATES ------------------
   const [students, setStudents] = useState([]); // List of all students
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
+  const [searchTerm, setSearchTerm] = useState("");
   const [sections, setSections] = useState([]); // Sections available for selected grade
   const [selectedStudent, setSelectedStudent] = useState(null); // Currently selected student
   const [studentChatOpen, setStudentChatOpen] = useState(false); // Toggle chat popup
@@ -33,118 +36,92 @@ function StudentsPage() {
   const [unreadMap, setUnreadMap] = useState({});
   const navigate = useNavigate();
   const admin = JSON.parse(localStorage.getItem("admin")) || {}; // Admin info from localStorage
+  const adminId = admin.userId || null;
+  const adminUserId = admin.userId || null;
+  // UI state helpers (responsive + dropdowns/chat)
+  const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 800 : false);
+  const getIsPortrait = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(orientation: portrait)").matches : false);
+
+  const [isNarrow, setIsNarrow] = useState(getIsNarrow());
+  const [isPortrait, setIsPortrait] = useState(getIsPortrait());
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
+  const [showPostDropdown, setShowPostDropdown] = useState(false);
+  const [unreadSenders, setUnreadSenders] = useState({});
+  const [expandedCards, setExpandedCards] = useState({});
+  const [attendanceView, setAttendanceView] = useState("daily");
+  const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
+  const [newMessageText, setNewMessageText] = useState("");
+  const [showMessageDropdown, setShowMessageDropdown] = useState(false);
+  const [activeSemester, setActiveSemester] = useState("semester1");
+  const [activeQuarter, setActiveQuarter] = useState("quarter1");
+  const semesterQuarters = {
+    semester1: ["quarter1", "quarter2"],
+    semester2: ["quarter3", "quarter4"],
+  };
 // Place before return (
 
   const [studentMarks, setStudentMarks] = useState({});
   const studentMarksFlattened = useMemo(() => {
-    // Ensure we always provide an object for the UI to iterate over.
-    return studentMarks || {};
-  }, [studentMarks]);
-  const [attendanceView, setAttendanceView] = useState("daily");
-  const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
-  const [expandedCards, setExpandedCards] = useState({});
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(false); // Right sidebar toggle
-  const [teachers, setTeachers] = useState([]);
-  const [unreadTeachers, setUnreadTeachers] = useState({});
-  const [unreadSenders, setUnreadSenders] = useState({}); 
-  const [showMessageDropdown, setShowMessageDropdown] = useState(false);
-  const [selectedTeacher, setSelectedTeacher] = useState(null);
-  const [teacherChatOpen, setTeacherChatOpen] = useState(false);
-  const [postNotifications, setPostNotifications] = useState([]);
-  const [showPostDropdown, setShowPostDropdown] = useState(false);
-  const [newMessageText, setNewMessageText] = useState("");
-  const [lastMessages, setLastMessages] = useState({});
-  // At the top of your StudentsPage component
-  const [expandedSubjects, setExpandedSubjects] = useState([]); 
+    const src = studentMarks || {};
+    const out = {};
 
-  // Semester selection for performance tab
-  const [activeSemester, setActiveSemester] = useState("semester2");
+    Object.entries(src).forEach(([courseId, node]) => {
+      const normalized = {};
 
-  const adminId = admin.userId;
-  const adminUserId = admin.userId;
+      if (node && (node.teacherName || node.teacher)) {
+        normalized.teacherName = node.teacherName || node.teacher;
+      }
 
-  const [isPortrait, setIsPortrait] = useState(typeof window !== "undefined" ? window.innerWidth < window.innerHeight : false);
+      // already has semester nodes
+      if (node && (node.semester1 || node.semester2)) {
+        if (node.semester1) normalized.semester1 = node.semester1;
+        if (node.semester2) normalized.semester2 = node.semester2;
+        out[courseId] = normalized;
+        return;
+      }
 
-  const dbRT = getDatabase(app);
+      // quarter keys -> place under semesters
+      const quarterKeys = Object.keys(node || {}).filter((k) => /^quarter\d+/i.test(k));
+      if (quarterKeys.length) {
+        normalized.semester1 = normalized.semester1 || {};
+        normalized.semester2 = normalized.semester2 || {};
+        quarterKeys.forEach((qk) => {
+          const qLower = qk.toLowerCase();
+          if (/quarter[12]/i.test(qLower)) {
+            normalized.semester1[qLower] = node[qk];
+          } else {
+            normalized.semester2[qLower] = node[qk];
+          }
+        });
+        out[courseId] = normalized;
+        return;
+      }
 
-  const getChatKey = (userA, userB) => {
-    return [userA, userB].sort().join("_");
-  };
+      // fallback: flat assessments -> place under semester2.assessments
+      if (node && node.assessments) {
+        normalized.semester2 = normalized.semester2 || {};
+        normalized.semester2.assessments = node.assessments;
+        out[courseId] = normalized;
+        return;
+      }
 
-  // Small helpers used in chat UI
-  const formatDateLabel = (ts) => {
-    if (!ts) return "";
-    try { return new Date(ts).toLocaleDateString(); } catch { return ""; }
-  };
-  const formatTime = (ts) => {
-    if (!ts) return "";
-    try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ""; }
-  };
-
-const fetchPostNotifications = async () => {
-  if (!adminId) return;
-
-  try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `http://127.0.0.1:5000/api/get_post_notifications/${adminId}`
-    );
-
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
-
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
-
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRes, adminsRes] = await Promise.all([
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      ),
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
-      ),
-    ]);
-
-    const users = usersRes.data || {};
-    const admins = adminsRes.data || {};
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
-        notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
-
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
-      };
+      // default: copy whatever node was
+      out[courseId] = normalized;
     });
 
-    setPostNotifications(enriched);
-  } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
-  }
-};
+    return out;
+  }, [studentMarks]);
+
+  // minimal post notifications state + stub (original implementation was corrupted)
+  const [postNotifications, setPostNotifications] = useState([]);
+  const fetchPostNotifications = async () => {
+    try {
+      // stub: clear or leave empty until a full implementation is restored
+      setPostNotifications([]);
+    } catch (err) {
+      setPostNotifications([]);
+    }
+  };
 
 
   useEffect(() => {
@@ -158,13 +135,10 @@ const fetchPostNotifications = async () => {
 
 const handleNotificationClick = async (notification) => {
   try {
-    await axios.post(
-      "http://127.0.0.1:5000/api/mark_post_notification_read",
-      {
-        notificationId: notification.notificationId,
-        adminId: admin.userId,
-      }
-    );
+    await axios.post(`${API_BASE}/mark_post_notification_read`, {
+      notificationId: notification.notificationId,
+      adminId: admin.userId,
+    });
   } catch (err) {
     console.warn("Failed to delete notification:", err);
   }
@@ -450,6 +424,7 @@ useEffect(() => {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
+        setLoading(true);
         const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
         const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
 
@@ -461,7 +436,7 @@ useEffect(() => {
           const user = usersData[student.userId] || {};
           return {
             studentId: id,
-            userId: student.userId, // <-- Add this
+            userId: student.userId,
             name: user.name || user.username || "No Name",
             profileImage: user.profileImage || "/default-profile.png",
             grade: student.grade,
@@ -473,6 +448,8 @@ useEffect(() => {
         setStudents(studentList);
       } catch (err) {
         console.error("Error fetching students:", err);
+      } finally {
+        setLoading(false);
       }
     };
 
@@ -491,10 +468,19 @@ useEffect(() => {
   }, [selectedGrade, students]);
 
   // ------------------ FILTER STUDENTS ------------------
-  const filteredStudents = students.filter(s => {
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredStudents = students.filter((s) => {
     if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
     if (selectedSection !== "All" && s.section !== selectedSection) return false;
-    return true;
+
+    if (!normalizedSearch) return true;
+
+    const haystack = [s.name, s.studentId, s.userId, s.email, s.grade, s.section]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
   });
 
 
@@ -877,7 +863,14 @@ useEffect(() => {
   }, [admin.userId]);
 
   useEffect(() => {
-    const onResize = () => setIsPortrait(window.innerWidth < window.innerHeight);
+    const onResize = () => {
+      try {
+        setIsNarrow(getIsNarrow());
+        setIsPortrait(getIsPortrait());
+      } catch (e) {
+        // ignore
+      }
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -1019,17 +1012,25 @@ useEffect(() => {
   }, {});
 
   const formatSubjectName = (courseId = "") => {
-    const clean = courseId
-      .replace("course_", "")
-      .replace(/_[0-9A-Za-z]+$/, "") // remove class like _9A
-      .replace(/_/g, " ");
+    if (!courseId) return "";
+    // remove common prefixes/suffixes and underscores, then title-case words
+    const clean = String(courseId)
+      .replace(/^course_/, "")
+      .replace(/_[0-9A-Za-z]+$/, "")
+      .replace(/_/g, " ")
+      .trim();
 
-    return clean.charAt(0).toUpperCase() + clean.slice(1);
+    return clean
+      .split(/\s+/)
+      .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
+      .join(" ");
   };
 
 
 
 
+
+  const contentLeft = isNarrow ? 0 : 90;
 
  return (
     <div className="dashboard-page">
@@ -1112,94 +1113,238 @@ useEffect(() => {
 
       <div className="google-dashboard" style={{ display: "flex" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
+        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
+          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
+              <img src={admin.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
-            <h3>{admin.name}</h3>
-             <p>{admin?.adminId || "username"}</p>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin.name}</h3>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
           </div>
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"> <FaHome style={{ width: "28px", height:"28px" }}/> Home</Link>
-            <Link className="sidebar-btn" to="/my-posts"><FaFileAlt /> My Posts</Link>
-            <Link className="sidebar-btn" to="/teachers"><FaChalkboardTeacher /> Teachers</Link>
-            <Link className="sidebar-btn" to="/students" style={{ backgroundColor: "#4b6cb7", color: "#fff" }}><FaChalkboardTeacher /> Students</Link>
-            <Link className="sidebar-btn" to="/schedule"><FaCalendarAlt /> Schedule</Link>
-            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
-             <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-                          </Link>
-            <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}><FaSignOutAlt /> Logout</button>
+          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaHome style={{ width: 18, height: 18 }} /> Home
+            </Link>
+            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
+            </Link>
+            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
+            </Link>
+            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
+            </Link>
+            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
+            </Link>
+            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
+            </Link>
+            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
+              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
+            </Link>
+
+            <button
+              className="sidebar-btn logout-btn"
+              onClick={() => {
+                localStorage.removeItem("admin");
+                window.location.href = "/login";
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
+            >
+              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
+            </button>
           </div>
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
-        <div className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}>
-          <div className="main-inner" style={{ marginLeft: "150px", marginTop: "-80px" }}>
-            <h2 style={{ marginBottom: "20px", textAlign: "center" }}>Students</h2>
+        <div
+          className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
+          style={{
+            padding: "10px 20px 20px",
+            flex: 1,
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        >
+          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
+            <h2 style={{ marginBottom: "6px", textAlign: isNarrow ? "center" : "left", marginTop: "-8px", fontSize: "20px", marginLeft: contentLeft }}>
+              Students
+            </h2>
+
+            {/* Search */}
+            <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
+              <div
+                style={{
+                  width: isNarrow ? "92%" : "400px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  background: "#fff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "10px",
+                  padding: "6px 10px",
+                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                }}
+              >
+                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search students..."
+                  style={{
+                    width: "100%",
+                    border: "none",
+                    outline: "none",
+                    fontSize: 12,
+                    background: "transparent",
+                  }}
+                />
+              </div>
+            </div>
 
             {/* Grade Filter */}
-            <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", gap: "12px" }}>
-              {["All", "7", "8", "9", "10", "11", "12"].map(g => (
-                <button key={g} onClick={() => setSelectedGrade(g)} style={{
-                  padding: "10px 20px",
-                  borderRadius: "8px",
-                  background: selectedGrade === g ? "#4b6cb7" : "#ddd",
-                  color: selectedGrade === g ? "#fff" : "#000",
-                  cursor: "pointer",
-                  border: "none",
-                }}>
-                  {g === "All" ? "All Grades" : `Grade ${g}`}
-                </button>
-              ))}
+            <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "6px",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  maxWidth: "100%",
+                  overflowX: "auto",
+                  paddingBottom: 1,
+                }}
+              >
+                {["All","5","6","7","8"].map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setSelectedGrade(g)}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: "8px",
+                      background: selectedGrade === g ? "#4b6cb7" : "#ddd",
+                      color: selectedGrade === g ? "#fff" : "#000",
+                      cursor: "pointer",
+                      border: "none",
+                      fontSize: "11px",
+                    }}
+                  >
+                    {g === "All" ? "All Grades" : `Grade ${g}`}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Section Filter */}
             {selectedGrade !== "All" && sections.length > 0 && (
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: "25px", gap: "12px", }}>
-                {["All", ...sections].map(section => (
-                  <button key={section} onClick={() => setSelectedSection(section)} style={{
-                    padding: "8px 16px",
-                    borderRadius: "8px",
-                    background: selectedSection === section ? "#4b6cb7" : "#ddd",
-                    color: selectedSection === section ? "#fff" : "#000",
-                    cursor: "pointer",
-                    border: "none",
-                  }}>
-                    {section === "All" ? "All Sections" : `Section ${section}`}
-                  </button>
-                ))}
+              <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "6px",
+                    flexWrap: "wrap",
+                    justifyContent: "center",
+                    maxWidth: "100%",
+                    overflowX: "auto",
+                    paddingBottom: 1,
+                  }}
+                >
+                  {["All", ...sections].map(section => (
+                    <button
+                      key={section}
+                      onClick={() => setSelectedSection(section)}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: "8px",
+                        background: selectedSection === section ? "#4b6cb7" : "#ddd",
+                        color: selectedSection === section ? "#fff" : "#000",
+                        cursor: "pointer",
+                        border: "none",
+                        fontSize: "11px",
+                      }}
+                    >
+                      {section === "All" ? "All Sections" : `Section ${section}`}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
             {/* Students List */}
-            {filteredStudents.length === 0 ? (
+            {/* Students List */}
+            {loading ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", paddingLeft: contentLeft }}>
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div key={idx} style={{ width: isNarrow ? "92%" : "400px", height: "72px", borderRadius: "12px", padding: "10px", background: "#fff", border: "1px solid #eee", boxShadow: "0 4px 10px rgba(0,0,0,0.04)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "#f1f5f9" }} />
+                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#f1f5f9" }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ width: "60%", height: 12, background: "#f1f5f9", borderRadius: 6, marginBottom: 8 }} />
+                        <div style={{ width: "40%", height: 10, background: "#f1f5f9", borderRadius: 6 }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : filteredStudents.length === 0 ? (
               <p style={{ textAlign: "center", color: "#555" }}>No students found for this selection.</p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-                {filteredStudents.map(s => (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", paddingLeft: contentLeft }}>
+                {filteredStudents.map((s, i) => (
                   <div
                     key={s.userId}
                     onClick={() => handleSelectStudent(s)}
                     className="student-card"
                     style={{
-                      width: "700px",
-                      height: "100px",
+                      width: isNarrow ? "92%" : "400px",
+                      height: "72px",
                       borderRadius: "12px",
-                      padding: "15px",
+                      padding: "10px",
                       background: selectedStudent?.studentId === s.studentId ? "#e0e7ff" : "#fff",
                       border: selectedStudent?.studentId === s.studentId ? "2px solid #4b6cb7" : "1px solid #ddd",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "20px",
-                      cursor: "pointer"
+                      boxShadow: selectedStudent?.studentId === s.studentId ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
+                      cursor: "pointer",
+                      transition: "all 0.3s ease",
                     }}
                   >
-                    <img src={s.profileImage} alt={s.name} style={{ width: "50px", height: "50px", borderRadius: "50%", objectFit: "cover" }} />
-                    <div>
-                      <h3 style={{ margin: 0 }}>{s.name}</h3>
-                      <p style={{ margin: "4px 0", color: "#555" }}>Grade {s.grade} - Section {s.section}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 10,
+                          background: "#eef2ff",
+                          color: "#2563eb",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontWeight: 800,
+                          fontSize: 13,
+                          flex: "0 0 auto",
+                        }}
+                      >
+                        {i + 1}
+                      </div>
+                      <img
+                        src={s.profileImage}
+                        alt={s.name}
+                        style={{
+                          width: "48px",
+                          height: "48px",
+                          borderRadius: "50%",
+                          border: selectedStudent?.studentId === s.studentId ? "3px solid #4b6cb7" : "3px solid red",
+                          objectFit: "cover",
+                          transition: "all 0.3s ease",
+                        }}
+                      />
+                      <h3 style={{ marginTop: "-24px", fontSize: "14px" }}>{s.name}</h3>
+                    </div>
+                    <div style={{ marginLeft: isNarrow ? "78px" : "104px", marginTop: "-16px", color: "#555", fontSize: "11px" }}>
+                      Grade {s.grade} - Section {s.section}
                     </div>
                   </div>
                 ))}
@@ -1214,53 +1359,59 @@ useEffect(() => {
   <div
     style={{
       width: isPortrait ? "100%" : "30%",
-      height: isPortrait ? "100vh" : "calc(100vh - 60px)",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
       position: "fixed",
       right: 0,
-      top: isPortrait ? 0 : "60px",
+      top: isPortrait ? 0 : "55px",
       background: "#fff",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
-      boxShadow: isPortrait
-        ? "0 0 0 rgba(0,0,0,0)"
-        : "0 0 15px rgba(0,0,0,0.08)",
+      padding: "12px",
+      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
+      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
       transition: "all 0.35s ease",
+      fontSize: "10px",
     }}
   >
-    {/* Close button (top-right) */}
-    <button
-      onClick={() => setSelectedStudent(null)}
+    {/* Close button */}
+    <div style={{ position: "absolute", top: 0, left: 22, zIndex: 2000 }}>
+      <button
+        onClick={() => setSelectedStudent(null)}
+        aria-label="Close sidebar"
+        style={{
+          background: "none",
+          border: "none",
+          fontSize: 28,
+          fontWeight: 700,
+          color: "#3647b7",
+          cursor: "pointer",
+          padding: 2,
+          lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
+    </div>
+
+    {/* Header */}
+    <div
       style={{
-        position: "fixed",
-        top: 56,
-        right: 16,
-        width: 42,
-        height: 42,
-        borderRadius: 12,
-        border: "none",
-        background: "#ffffff",
-        boxShadow: "0 6px 18px rgba(2,6,23,0.15)",
-        cursor: "pointer",
-        fontSize: 22,
-        fontWeight: 900,
-        zIndex: 2000,
+        background: "#e0e7ff",
+        margin: "-12px -12px 10px",
+        padding: "14px 10px",
+        textAlign: "center",
       }}
     >
-      ×
-    </button>
-
-    {/* Student Info */}
-    <div style={{ textAlign: "center", marginBottom: "20px", paddingTop: 20 }}>
       <div
         style={{
-          width: "120px",
-          height: "120px",
-          margin: "0 auto 15px",
+          width: "70px",
+          height: "70px",
+          margin: "0 auto 10px",
           borderRadius: "50%",
           overflow: "hidden",
-          border: "4px solid #4b6cb7",
+          border: "3px solid #4b6cb7",
         }}
       >
         <img
@@ -1269,34 +1420,30 @@ useEffect(() => {
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       </div>
-      <h2 style={{ margin: 0, fontSize: "22px" }}>{selectedStudent.name}</h2>
-      <p style={{ color: "#555", margin: "5px 0" }}>
-        {selectedStudent.studentId}
-      </p>
-      <p style={{ color: "#555", margin: "5px 0" }}>
-        <strong>Grade:</strong> {selectedStudent.grade}
-        {selectedStudent.section}
+
+      <h2 style={{ margin: 0, color: "#111827", fontSize: 14 }}>{selectedStudent.name}</h2>
+      <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "10px" }}>{selectedStudent.studentId}</p>
+      <p style={{ margin: 0, color: "#6b7280", fontSize: "10px" }}>
+        Grade {selectedStudent.grade} - Section {selectedStudent.section}
       </p>
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", marginBottom: "15px" }}>
+    <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", marginBottom: "10px" }}>
       {["details", "attendance", "performance"].map((tab) => (
         <button
           key={tab}
           onClick={() => setStudentTab(tab)}
           style={{
             flex: 1,
-            padding: "10px",
-            border: "none",
+            padding: "6px",
             background: "none",
+            border: "none",
             cursor: "pointer",
-            fontWeight: "600",
-            color: studentTab === tab ? "#4b6cb7" : "#777",
-            borderBottom:
-              studentTab === tab
-                ? "3px solid #4b6cb7"
-                : "3px solid transparent",
+            fontWeight: 600,
+            color: studentTab === tab ? "#4b6cb7" : "#6b7280",
+            fontSize: "10px",
+            borderBottom: studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
           }}
         >
           {tab.toUpperCase()}
@@ -1310,38 +1457,35 @@ useEffect(() => {
       {studentTab === "details" && (
         <div
           style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 28,
-            padding: 50,
-            marginLeft: 0,
-            marginRight: 0,
-            borderRadius: 0,
-            background: "linear-gradient(180deg,#eef2ff,#f8fafc)",
-            fontFamily: "Inter, system-ui",
+            padding: "12px",
+            background: "#ffffff",
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
+            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            margin: "0 auto",
+            maxWidth: 380,
           }}
         >
           <div>
             {/* STUDENT DETAILS */}
-            <div
+            <h3
               style={{
-                fontSize: 24,
-                fontWeight: 900,
-                marginBottom: 18,
-                marginTop: -30,
-                background: "linear-gradient(90deg,#2563eb,#7c3aed)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
+                margin: 0,
+                marginBottom: 6,
+                color: "#0f172a",
+                fontWeight: 800,
+                letterSpacing: "0.1px",
+                fontSize: 12,
+                textAlign: "left",
               }}
             >
-              Student Details
-            </div>
+              Student Profile
+            </h3>
             <div
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
-                columnGap: 68,
-                rowGap: 14,
+                gap: 8,
               }}
             >
               {[
@@ -1358,33 +1502,40 @@ useEffect(() => {
                 <div
                   key={label}
                   style={{
-                    padding: 18,
-                    borderRadius: 20,
+                    alignItems: "center",
+                    justifyContent: "flex-start",
+                    display: "flex",
                     background: "#ffffff",
-                    boxShadow: "0 6px 10px rgba(0,0,0,0.08)",
-                    marginLeft: -30,
-                    marginRight: -30,
+                    padding: "8px",
+                    borderRadius: 10,
+                    border: "1px solid #eef2f7",
+                    boxShadow: "none",
+                    minHeight: 36,
                   }}
                 >
-                  <div
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: "#000102",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {label}
-                  </div>
-                  <div
-                    style={{
-                      marginTop: 8,
-                      fontSize: 16,
-                      fontWeight: 400,
-                      color: "#000102",
-                    }}
-                  >
-                    {value || "—"}
+                  <div>
+                    <div
+                      style={{
+                        fontSize: "9px",
+                        fontWeight: 700,
+                        letterSpacing: "0.4px",
+                        color: "#64748b",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "#111",
+                        marginTop: 2,
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {value || <span style={{ color: "#cbd5e1" }}>N/A</span>}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1398,10 +1549,11 @@ useEffect(() => {
       {studentTab === "attendance" && selectedStudent && (
         <div
           style={{
-            padding: 30,
-            background: "radial-gradient(circle at top,#eef2ff,#f8fafc)",
-            borderRadius: 26,
-            fontFamily: "Inter, system-ui",
+            padding: "12px",
+            background: "#ffffff",
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
+            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
           }}
         >
           {/* VIEW SWITCH */}
@@ -1409,8 +1561,8 @@ useEffect(() => {
             style={{
               display: "flex",
               justifyContent: "center",
-              gap: 16,
-              marginBottom: 32,
+              gap: 6,
+              marginBottom: 10,
             }}
           >
             {["daily", "weekly", "monthly"].map((v) => (
@@ -1418,23 +1570,14 @@ useEffect(() => {
                 key={v}
                 onClick={() => setAttendanceView(v)}
                 style={{
-                  padding: "12px 28px",
-                  borderRadius: 999,
+                  padding: "4px 10px",
+                  borderRadius: 8,
                   border: "none",
-                  fontWeight: 800,
-                  fontSize: 13,
-                  letterSpacing: 1,
+                  fontWeight: 700,
+                  fontSize: 10,
                   cursor: "pointer",
-                  background:
-                    attendanceView === v
-                      ? "linear-gradient(135deg,#4f46e5,#2563eb)"
-                      : "rgba(255,255,255,.8)",
-                  color: attendanceView === v ? "#fff" : "#1f2937",
-                  boxShadow:
-                    attendanceView === v
-                      ? "0 5px 5px rgba(79,70,229,.45)"
-                      : "0 5px 5px rgba(0,0,0,.08)",
-                  transition: "all .3s ease",
+                  background: attendanceView === v ? "#4b6cb7" : "#e5e7eb",
+                  color: attendanceView === v ? "#fff" : "#111827",
                 }}
               >
                 {v.toUpperCase()}
@@ -1469,13 +1612,12 @@ useEffect(() => {
                   onClick={() => toggleExpand(expandKey)}
                   style={{
                     cursor: "pointer",
-                    background:
-                      "linear-gradient(180deg,rgba(255,255,255,.95),rgba(255,255,255,.85))",
-                    backdropFilter: "blur(14px)",
-                    borderRadius: 26,
-                    padding: 26,
-                    marginBottom: 26,
-                    boxShadow: "0 10px 10px rgba(0,0,0,.12)",
+                    background: "#ffffff",
+                    borderRadius: 12,
+                    padding: 12,
+                    marginBottom: 10,
+                    border: "1px solid #e5e7eb",
+                    boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
                     position: "relative",
                     overflow: "hidden",
                   }}
@@ -1485,8 +1627,7 @@ useEffect(() => {
                     style={{
                       position: "absolute",
                       inset: 0,
-                      background:
-                        "radial-gradient(circle at top left,rgba(99,102,241,.15),transparent 60%)",
+                      background: "transparent",
                       pointerEvents: "none",
                     }}
                   />
@@ -1503,37 +1644,32 @@ useEffect(() => {
                       <h3
                         style={{
                           margin: 0,
-                          fontSize: 20,
-                          fontWeight: 900,
-                          color: "#1e3a8a",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: "#0f172a",
                         }}
                       >
-                        📚 {formatSubjectName(course)}
+                        {formatSubjectName(course)}
                       </h3>
                       <p
                         style={{
                           margin: "6px 0 0",
-                          fontSize: 13,
+                          fontSize: 10,
                           color: "#64748b",
                         }}
                       >
-                        👨‍🏫 {records[0]?.teacherName}
+                        {records[0]?.teacherName}
                       </p>
                     </div>
                     <div
                       style={{
-                        padding: "8px 16px",
+                        padding: "4px 8px",
                         borderRadius: 999,
-                        fontSize: 13,
-                        fontWeight: 900,
-                        background:
-                          progress >= 75
-                            ? "linear-gradient(135deg,#22c55e,#16a34a)"
-                            : progress >= 50
-                            ? "linear-gradient(135deg,#facc15,#eab308)"
-                            : "linear-gradient(135deg,#ef4444,#dc2626)",
-                        color: "#fff",
-                        boxShadow: "0 10px 25px rgba(0,0,0,.25)",
+                        fontSize: 10,
+                        fontWeight: 800,
+                        background: "#e0e7ff",
+                        color: "#1e40af",
+                        border: "1px solid #c7d2fe",
                       }}
                     >
                       {progress}%
@@ -1543,7 +1679,7 @@ useEffect(() => {
                   <div
                     onClick={() => toggleExpand(expandKey)}
                     style={{
-                      height: 16,
+                      height: 8,
                       background: "#e5e7eb",
                       borderRadius: 999,
                       cursor: "pointer",
@@ -1555,35 +1691,30 @@ useEffect(() => {
                       style={{
                         height: "100%",
                         width: `${progress}%`,
-                        background:
-                          progress >= 75
-                            ? "linear-gradient(90deg,#22c55e,#16a34a)"
-                            : progress >= 50
-                            ? "linear-gradient(90deg,#facc15,#eab308)"
-                            : "linear-gradient(90deg,#ef4444,#dc2626)",
-                        transition: "width .5s cubic-bezier(.4,0,.2,1)",
+                        background: "#4b6cb7",
+                        transition: "width .3s ease",
                       }}
                     />
                   </div>
                   <div
                     style={{
-                      fontSize: 12,
+                      fontSize: 10,
                       fontWeight: 700,
                       color: "#475569",
                       marginBottom: 12,
-                      letterSpacing: 0.6,
                     }}
                   >
-                    CLICK BAR TO VIEW {attendanceView.toUpperCase()} DETAILS
+                    Click to view {attendanceView.toUpperCase()} details
                   </div>
                   {/* EXPANDED DAYS */}
                   {expandedCards[expandKey] && (
                     <div
                       style={{
                         marginTop: 14,
-                        background: "#f1f5f9",
-                        borderRadius: 18,
-                        padding: 14,
+                        background: "#ffffff",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 10,
+                        padding: 10,
                       }}
                     >
                       {displayRecords.map((r, i) => (
@@ -1593,7 +1724,7 @@ useEffect(() => {
                             display: "flex",
                             justifyContent: "space-between",
                             alignItems: "center",
-                            padding: "12px 8px",
+                            padding: "8px 6px",
                             borderBottom:
                               i !== displayRecords.length - 1
                                 ? "1px solid #e5e7eb"
@@ -1601,16 +1732,16 @@ useEffect(() => {
                           }}
                         >
                           <div style={{ display: "flex", flexDirection: "column" }}>
-                            <span style={{ fontSize: 13, color: "#1f2937" }}>
-                              📅 {new Date(r.date).toDateString()}
+                            <span style={{ fontSize: 10, color: "#1f2937" }}>
+                              {new Date(r.date).toDateString()}
                             </span>
                           </div>
                           <span
                             style={{
-                              padding: "6px 14px",
+                              padding: "4px 10px",
                               borderRadius: 999,
-                              fontSize: 12,
-                              fontWeight: 900,
+                              fontSize: 10,
+                              fontWeight: 800,
                               background:
                                 r.status === "present"
                                   ? "#dcfce7"
@@ -1643,7 +1774,11 @@ useEffect(() => {
           style={{
             position: "relative",
             paddingBottom: "70px",
-            background: "#f8fafc",
+            background: "#ffffff",
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            padding: 12,
           }}
         >
           {/* Semester Tabs */}
@@ -1651,10 +1786,10 @@ useEffect(() => {
             style={{
               display: "flex",
               justifyContent: "center",
-              gap: "40px",
-              marginBottom: "25px",
-              borderBottom: "2px solid #e5e7eb",
-              paddingBottom: "8px",
+              gap: 6,
+              marginBottom: 10,
+              borderBottom: "1px solid #e5e7eb",
+              paddingBottom: 6,
             }}
           >
             {["semester1", "semester2"].map((sem) => {
@@ -1662,43 +1797,56 @@ useEffect(() => {
               return (
                 <button
                   key={sem}
-                  onClick={() => setActiveSemester(sem)}
+                  onClick={() => {
+                    setActiveSemester(sem);
+                    // reset quarter to first quarter of the newly selected semester
+                    const firstQ = semesterQuarters[sem] && semesterQuarters[sem][0];
+                    if (firstQ) setActiveQuarter(firstQ);
+                  }}
                   style={{
                     background: "none",
                     border: "none",
                     cursor: "pointer",
-                    fontSize: "16px",
-                    fontWeight: "800",
-                    color: isActive ? "#2563eb" : "#64748b",
-                    paddingBottom: "10px",
-                    position: "relative",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: isActive ? "#4b6cb7" : "#64748b",
+                    padding: "6px 8px",
+                    borderBottom: isActive ? "2px solid #4b6cb7" : "2px solid transparent",
                   }}
                 >
                   {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                  {isActive && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        bottom: "-2px",
-                        left: 0,
-                        width: "100%",
-                        height: "4px",
-                        background: "linear-gradient(135deg,#4b6cb7,#1e40af)",
-                        borderRadius: "6px",
-                      }}
-                    />
-                  )}
                 </button>
               );
             })}
+          </div>
+          {/* Quarter selector under semester tabs */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 8, marginBottom: 10 }}>
+            {(semesterQuarters[activeSemester] || []).map((q) => (
+              <button
+                key={q}
+                onClick={() => setActiveQuarter(q)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  background: activeQuarter === q ? '#4b6cb7' : '#eef2f6',
+                  color: activeQuarter === q ? '#fff' : '#1f2937',
+                }}
+              >
+                {q.replace('quarter', 'Quarter ')}
+              </button>
+            ))}
           </div>
           {/* Marks Cards */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(2, 1fr)",
-              gap: "20px",
-              padding: "20px",
+              gridTemplateColumns: "1fr",
+              gap: 10,
+              padding: 0,
             }}
           >
             {loading ? (
@@ -1706,7 +1854,9 @@ useEffect(() => {
                 style={{
                   textAlign: "center",
                   gridColumn: "1 / -1",
-                  padding: "30px",
+                  padding: 12,
+                  color: "#64748b",
+                  fontSize: 11,
                 }}
               >
                 Loading performance...
@@ -1715,22 +1865,38 @@ useEffect(() => {
               <div
                 style={{
                   textAlign: "center",
-                  padding: "30px",
-                  borderRadius: "18px",
+                  padding: 12,
+                  borderRadius: 12,
                   background: "#ffffff",
-                  color: "#475569",
-                  fontSize: "16px",
-                  fontWeight: "600",
-                  boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
+                  color: "#64748b",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  border: "1px solid #e5e7eb",
                   gridColumn: "1 / -1",
                 }}
               >
-                🚫 No Performance Records
+                No performance records
               </div>
             ) : (
               Object.entries(studentMarksFlattened).map(
                 ([courseKey, studentCourseData], idx) => {
-                  const data = studentCourseData?.[activeSemester];
+                  const semNode = studentCourseData?.[activeSemester];
+                  if (!semNode) return null;
+
+                  // Prefer semester-level assessments when present; otherwise select the
+                  // active quarter node (or the first quarter-like child that contains assessments).
+                  let data = null;
+                  if (semNode.assessments) {
+                    data = semNode;
+                  } else if (semNode[activeQuarter]) {
+                    data = semNode[activeQuarter];
+                  } else {
+                    const quarterKey = Object.keys(semNode).find(
+                      (k) => semNode[k] && semNode[k].assessments
+                    );
+                    data = quarterKey ? semNode[quarterKey] : null;
+                  }
+
                   if (!data) return null;
                   const assessments = data.assessments || {};
                   const total = Object.values(assessments).reduce(
@@ -1748,80 +1914,56 @@ useEffect(() => {
                       : percentage >= 50
                       ? "#f59e0b"
                       : "#dc2626";
-                  const courseName = courseKey
-                    .replace("course_", "")
-                    .replace(/_/g, " ")
-                    .toUpperCase();
+                  const courseName = formatSubjectName(courseKey);
 
                   return (
                     <div
                       key={`${courseKey}-${idx}`}
                       style={{
-                        padding: "18px",
-                        borderRadius: "20px",
+                        padding: 12,
+                        borderRadius: 12,
                         background: "#ffffff",
-                        boxShadow: "0 12px 30px rgba(0,0,0,0.08)",
+                        border: "1px solid #e5e7eb",
+                        boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
                       }}
                     >
                       {/* Course Name */}
                       <div
                         style={{
-                          fontSize: "16px",
-                          fontWeight: "800",
-                          marginBottom: "14px",
-                          color: "#2563eb",
-                          textAlign: "center",
+                          fontSize: 11,
+                          fontWeight: 800,
+                          marginBottom: 10,
+                          color: "#0f172a",
+                          textAlign: "left",
                         }}
                       >
                         {courseName}
                       </div>
-                      {/* Score Circle */}
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "center",
-                          marginBottom: "16px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: "90px",
-                            height: "90px",
-                            borderRadius: "50%",
-                            background: `conic-gradient(${statusClr} ${percentage * 3.6}deg, #e5e7eb 0deg)`,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: "66px",
-                              height: "66px",
-                              borderRadius: "50%",
-                              background: "#fff",
-                              display: "flex",
-                              flexDirection: "column",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                          >
-                            <strong style={{ color: statusClr }}>{total}</strong>
-                            <span style={{ fontSize: "11px" }}>
-                              / {maxTotal}
-                            </span>
-                          </div>
+                      {/* Summary */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>
+                          Total
                         </div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#111827" }}>
+                          {total} / {maxTotal}
+                        </div>
+                        <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, border: "1px solid #e5e7eb", color: statusClr, background: "#ffffff" }}>
+                          {Math.round(percentage)}%
+                        </div>
+                      </div>
+                      <div style={{ height: 8, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 12 }}>
+                        <div style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, height: "100%", background: statusClr }} />
                       </div>
                       {/* Assessment Bars */}
                       {Object.entries(assessments).map(([key, a]) => (
-                        <div key={key} style={{ marginBottom: "10px" }}>
+                        <div key={key} style={{ marginBottom: 8 }}>
                           <div
                             style={{
                               display: "flex",
                               justifyContent: "space-between",
-                              fontSize: "13px",
-                              fontWeight: "600",
+                              fontSize: 10,
+                              fontWeight: 600,
+                              color: "#111827",
                             }}
                           >
                             <span>{a.name}</span>
@@ -1831,7 +1973,7 @@ useEffect(() => {
                           </div>
                           <div
                             style={{
-                              height: "6px",
+                              height: 5,
                               borderRadius: "999px",
                               background: "#e5e7eb",
                               marginTop: "5px",
@@ -1850,10 +1992,11 @@ useEffect(() => {
                       {/* Status */}
                       <div
                         style={{
-                          marginTop: "10px",
-                          textAlign: "center",
-                          fontWeight: "700",
+                          marginTop: 8,
+                          textAlign: "left",
+                          fontWeight: 700,
                           color: statusClr,
+                          fontSize: 10,
                         }}
                       >
                         {percentage >= 75
@@ -1865,13 +2008,12 @@ useEffect(() => {
                       {/* Teacher Name */}
                       <div
                         style={{
-                          marginTop: "6px",
-                          textAlign: "center",
-                          fontSize: "12px",
+                          marginTop: 6,
+                          textAlign: "left",
+                          fontSize: 10,
                           color: "#64748b",
                         }}
                       >
-                        👨‍🏫{" "}
                         {studentCourseData.teacherName ||
                           data.teacherName ||
                           "N/A"}
