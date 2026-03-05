@@ -1,0 +1,140 @@
+FIREBASE RTDB STRUCTURE (CURRENT RECOMMENDED)
+
+Platform1
+└─ Schools
+	└─ {schoolCode}
+		├─ schoolInfo
+		│  ├─ shortName: "GMI"
+		│  ├─ currentAcademicYear: "2026_2027"
+		│  └─ ...
+		│
+		├─ AcademicYears
+		│  ├─ 2025_2026
+		│  │  ├─ yearKey: "2025_2026"
+		│  │  ├─ label: "2025/2026"
+		│  │  ├─ status: "archived" | "inactive" | "active"
+		│  │  ├─ isCurrent: false
+		│  │  ├─ createdAt: "ISO"
+		│  │  └─ archivedAt: "ISO"
+		│  └─ 2026_2027
+		│     ├─ yearKey: "2026_2027"
+		│     ├─ label: "2026/2027"
+		│     ├─ status: "active"
+		│     ├─ isCurrent: true
+		│     ├─ createdAt: "ISO"
+		│     └─ activatedAt: "ISO"
+		│
+		├─ Users
+		│  └─ {userId}
+		│     ├─ userId: "-Oabc..."
+		│     ├─ username: "GMIS_0001_26"
+		│     ├─ name: "Student Full Name"
+		│     ├─ password: "..."
+		│     ├─ role: "student" | "teacher" | "parent" | "registerer" | "finance"
+		│     ├─ isActive: true
+		│     ├─ profileImage: "url"
+		│     ├─ schoolCode: "..."
+		│     ├─ createdAt: "ISO"
+		│     ├─ studentId: "GMIS_0001_26"   (when student)
+		│     ├─ parentId: "GPR_0001_26"     (when parent)
+		│     └─ teacherId/registererId/...   (by role)
+		│
+		├─ Students
+		│  └─ {studentId}
+		│     ├─ studentId: "GMIS_0001_26"
+		│     ├─ userId: "{userId}"
+		│     ├─ grade: "7"
+		│     ├─ section: "A"
+		│     ├─ status: "active" | "graduated" | "inactive"
+		│     ├─ academicYear: "2026_2027"
+		│     ├─ previousAcademicYear: "2025_2026"
+		│     ├─ createdAt: "ISO"
+		│     ├─ registeredAt: "ISO"
+		│     ├─ rolledOverAt: "ISO"
+		│     ├─ profileImage: "url"
+		│     ├─ nationalIdNumber: "..."
+		│     ├─ nationalIdImage: "url"
+		│     ├─ basicStudentInformation: {...}
+		│     ├─ parentGuardianInformation: { parents: [...] }
+		│     ├─ addressInformation: {...}
+		│     ├─ financeInformation: {...}
+		│     ├─ healthEmergency: {...}
+		│     ├─ academicSetup: {...}
+		│     ├─ systemAccountInformation: {...}
+		│     └─ parents
+		│        └─ {parentId}
+		│           ├─ relationship: "Father"
+		│           ├─ userId: "{parentUserId}"
+		│           ├─ parentId: "GPR_0001_26"
+		│           └─ linkedAt: "ISO"
+		│
+		├─ Parents
+		│  └─ {parentId}
+		│     ├─ parentId: "GPR_0001_26"
+		│     ├─ userId: "{userId}"
+		│     ├─ name: "Parent Name"
+		│     ├─ phone: "..."
+		│     ├─ email: "..."
+		│     ├─ status: "active"
+		│     ├─ nationalIdNumber: "..."
+		│     ├─ nationalIdImage: "url"
+		│     ├─ schoolCode: "..."
+		│     └─ createdAt: "ISO"
+		│
+		├─ Teachers
+		│  └─ {teacherId}
+		│     ├─ teacherId: "GET_0001_26"
+		│     ├─ userId: "{userId}"
+		│     ├─ courses: [...]
+		│     ├─ status: "active"
+		│     └─ createdAt: "ISO"
+		│
+		├─ Registerers
+		│  └─ {registererId}
+		│     ├─ registererId: "GSR_0001_26"
+		│     ├─ userId: "{userId}"
+		│     ├─ status: "active"
+		│     └─ createdAt: "ISO"
+		│
+		├─ Finance
+		│  └─ {financeId}
+		│     ├─ financeId: "finance_001"
+		│     └─ userId: "{userId}"
+		│
+		├─ Posts
+		│  └─ {postId}
+		│     ├─ postId: "-Opost..."
+		│     ├─ financeId/adminId/userId: "..."
+		│     ├─ adminName: "..."
+		│     ├─ adminProfile: "url"
+		│     ├─ postUrl: "url"
+		│     ├─ message: "..."
+		│     ├─ likeCount: 0
+		│     ├─ likes: {...}
+		│     ├─ seenBy: { userId: true }
+		│     ├─ time: "ISO"
+		│     └─ schoolCode: "..."
+		│
+		├─ Attendance
+		│  └─ {courseId}
+		│     └─ {date}
+		│        └─ {studentId}: "present" | "absent" | "late"
+		│
+		├─ ClassMarks
+		│  └─ {courseId}
+		│     └─ {studentId}
+		│        ├─ semester1/semester2 ...
+		│        └─ teacherName: "..."
+		│
+		├─ Chats
+		│  └─ {userA_userB}
+		│     ├─ participants: { userId: true }
+		│     ├─ messages
+		│     │  └─ {messageId}: {...}
+		│     ├─ unread: { userId: number }
+		│     └─ lastMessage: {...}
+		│
+		└─ YearHistory
+			└─ {yearKey}
+				└─ Students
+					└─ {studentId}: {snapshot of previous year data}
