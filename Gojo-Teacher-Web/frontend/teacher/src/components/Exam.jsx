@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { db } from "../firebase";
+import { db, schoolPath } from "../firebase";
 import { ref, set, get, child, update } from "firebase/database";
 // --- Curriculum creation initial state ---
 const initialChapter = { id: "", title: "", contentUrl: "", hasExam: false, order: 1 };
@@ -54,7 +54,7 @@ const Exam = () => {
   // Fetch grades from Curriculum
   const fetchCurriculum = async () => {
     try {
-      const snapshot = await get(ref(db, "Curriculum"));
+      const snapshot = await get(ref(db, schoolPath("Curriculum")));
       const data = snapshot.val() || {};
       setCurriculumOptions(Object.keys(data));
     } catch {
@@ -79,7 +79,7 @@ const Exam = () => {
           order: i + 1,
         };
       });
-      await update(ref(db, `Curriculum/${gradeKey}/${newSubject}`), {
+      await update(ref(db, schoolPath(`Curriculum/${gradeKey}/${newSubject}`)), {
         subjectName: newSubject,
         totalChapters: newChapters.length,
         chapters: chaptersObj,
@@ -158,7 +158,7 @@ const Exam = () => {
       questions.forEach((q, i) => {
         questionsObj[`q_${String(i + 1).padStart(3, "0")}`] = q;
       });
-      await set(ref(db, `Exams/${examKey}/${chapterId}`), {
+      await set(ref(db, schoolPath(`Exams/${examKey}/${chapterId}`)), {
         durationMinutes: Number(durationMinutes),
         totalQuestions: Number(totalQuestions),
         passScore: Number(passScore),
@@ -446,3 +446,5 @@ const Exam = () => {
 }
 
 export default Exam;
+
+

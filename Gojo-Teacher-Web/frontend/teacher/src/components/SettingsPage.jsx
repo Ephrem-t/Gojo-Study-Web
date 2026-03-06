@@ -16,7 +16,7 @@ import {
 import "../styles/global.css";
 
 const API_BASE = "http://127.0.0.1:5000/api";
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 function SettingsPage() {
   const [teacher, setTeacher] = useState(null);

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck } from "react-icons/fa";
 import { ref, onValue, push, runTransaction, update } from "firebase/database";
-import { db } from "../firebase";
+import { db, schoolPath } from "../firebase";
 
 // NOTE: This codebase uses two chat-key conventions:
 // - Students/Parents: teacherUserId_otherUserId (teacher first)
@@ -76,10 +76,10 @@ export default function TeacherAllChat() {
     const fetchUsers = async () => {
       try {
         const [studentsRes, parentsRes, adminsRes, usersRes] = await Promise.all([
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json").then((r) => r.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json").then((r) => r.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json").then((r) => r.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json").then((r) => r.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json").then((r) => r.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json").then((r) => r.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/School_Admins.json").then((r) => r.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json").then((r) => r.json()),
         ]);
 
         const users = usersRes || {};
@@ -119,7 +119,7 @@ export default function TeacherAllChat() {
     const attachUnreadListener = (tab, u) => {
       if (!u || !u.userId) return;
       const chatKey = getChatIdForTab(tab, teacherUserId, u.userId);
-      const unreadRef = ref(db, `Chats/${chatKey}/unread/${teacherUserId}`);
+      const unreadRef = ref(db, schoolPath(`Chats/${chatKey}/unread/${teacherUserId}`));
       const unsub = onValue(unreadRef, (snap) => {
         const val = snap.val();
         setUnreadCounts((prev) => ({ ...prev, [u.userId]: Number(val) || 0 }));
@@ -199,7 +199,7 @@ export default function TeacherAllChat() {
       getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId);
     setCurrentChatKey(chatKey); // ensure state is in sync
 
-    const chatRef = ref(db, `Chats/${chatKey}/messages`);
+    const chatRef = ref(db, schoolPath(`Chats/${chatKey}/messages`));
     const unsubscribe = onValue(chatRef, (snap) => {
       const data = snap.val() || {};
       const list = Object.entries(data)
@@ -216,12 +216,12 @@ export default function TeacherAllChat() {
       // mark as seen where teacher is receiver
       Object.entries(data).forEach(([id, m]) => {
         if (m && !m.seen && m.receiverId === teacherUserId) {
-          update(ref(db, `Chats/${chatKey}/messages/${id}`), { seen: true }).catch(console.error);
+          update(ref(db, schoolPath(`Chats/${chatKey}/messages/${id}`)), { seen: true }).catch(console.error);
         }
       });
 
       // reset unread count for this teacher
-      update(ref(db, `Chats/${chatKey}/unread`), { [teacherUserId]: 0 }).catch(console.error);
+      update(ref(db, schoolPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 }).catch(console.error);
     });
 
     return () => unsubscribe();
@@ -239,7 +239,7 @@ export default function TeacherAllChat() {
   useEffect(() => {
     // Listen to presence node in RTDB. If your backend uses a different path, change it.
     try {
-      const presenceRef = ref(db, `Presence`);
+      const presenceRef = ref(db, schoolPath(`Presence`));
       const unsub = onValue(presenceRef, (snap) => {
         const data = snap.val() || {};
         setPresence(data);
@@ -262,7 +262,7 @@ export default function TeacherAllChat() {
 
     if (editingId) {
       // Update existing message
-      await update(ref(db, `Chats/${chatKey}/messages/${editingId}`), {
+      await update(ref(db, schoolPath(`Chats/${chatKey}/messages/${editingId}`)), {
         text: input,
         edited: true,
       });
@@ -271,7 +271,7 @@ export default function TeacherAllChat() {
       setInput("");
     } else {
       // Send new message
-      const messagesRef = ref(db, `Chats/${chatKey}/messages`);
+      const messagesRef = ref(db, schoolPath(`Chats/${chatKey}/messages`));
       const messageData = {
         senderId: teacherUserId,
         receiverId: selectedChatUser.userId,
@@ -285,12 +285,12 @@ export default function TeacherAllChat() {
 
       await push(messagesRef, messageData);
 
-      await update(ref(db, `Chats/${chatKey}/participants`), {
+      await update(ref(db, schoolPath(`Chats/${chatKey}/participants`)), {
         [teacherUserId]: true,
         [selectedChatUser.userId]: true,
       });
 
-      await update(ref(db, `Chats/${chatKey}/lastMessage`), {
+      await update(ref(db, schoolPath(`Chats/${chatKey}/lastMessage`)), {
         text: input,
         senderId: teacherUserId,
         seen: false,
@@ -299,9 +299,9 @@ export default function TeacherAllChat() {
 
       // increment unread for receiver
       try {
-        await update(ref(db, `Chats/${chatKey}/unread`), { [teacherUserId]: 0 });
+        await update(ref(db, schoolPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 });
         await runTransaction(
-          ref(db, `Chats/${chatKey}/unread/${selectedChatUser.userId}`),
+          ref(db, schoolPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)),
           (current) => (Number(current) || 0) + 1
         );
       } catch (e) {
@@ -316,7 +316,7 @@ export default function TeacherAllChat() {
   const handleEditMessage = (id, newText) => {
     const chatKey = getActiveChatKey();
     if (!chatKey) return;
-    update(ref(db, `Chats/${chatKey}/messages/${id}`), {
+    update(ref(db, schoolPath(`Chats/${chatKey}/messages/${id}`)), {
       text: newText,
       edited: true,
     }).catch(console.error);
@@ -326,7 +326,7 @@ export default function TeacherAllChat() {
   const handleDeleteMessage = (id) => {
     const chatKey = getActiveChatKey();
     if (!chatKey) return;
-    update(ref(db, `Chats/${chatKey}/messages/${id}`), { deleted: true }).catch(console.error);
+    update(ref(db, schoolPath(`Chats/${chatKey}/messages/${id}`)), { deleted: true }).catch(console.error);
   };
 
   const startEditing = (id, text) => {
@@ -672,3 +672,4 @@ export default function TeacherAllChat() {
     </div>
   );
 }
+

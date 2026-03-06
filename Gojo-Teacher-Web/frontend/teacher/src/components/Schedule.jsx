@@ -21,7 +21,7 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 
 // --- API and RTDB endpoints ---
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 // --- Used to sort chat ids for message threading (helper) ---
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
@@ -147,12 +147,10 @@ function Schedule() {
         let postsData = res.data || [];
         if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
 
-        const [adminsRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
+        const [usersRes, chatsRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/Users.json`),
           axios.get(`${RTDB_BASE}/Chats.json`),
         ]);
-        const schoolAdmins = adminsRes.data || {};
         const users = usersRes.data || {};
         const chats = chatsRes.data || {};
 
@@ -160,19 +158,6 @@ function Schedule() {
         const teacher = JSON.parse(localStorage.getItem("teacher"));
 
         // --- Helper to resolve admin info ---
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const schoolAdminRec = schoolAdmins[adminId];
-            const userKey = schoolAdminRec.userId;
-            const userRec = users[userKey] || null;
-            const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
-            const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
-          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-        };
-
         // --- Post notifications (latest 5, regardless of seen) ---
         const postNotifs = postsData
           .slice()
@@ -183,17 +168,14 @@ function Schedule() {
           })
           .filter((post) => post.postId)
           .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              id: post.postId,
-              type: "post",
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile,
-              time: post.time ? new Date(post.time).getTime() : 0,
-            };
-          });
+          .map((post) => ({
+            id: post.postId,
+            type: "post",
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: post.adminName || "Admin",
+            adminProfile: post.adminProfile || "/default-profile.png",
+            time: post.time ? new Date(post.time).getTime() : 0,
+          }));
 
         // --- Message notifications (unread only, for this teacher) ---
         let messageNotifs = [];

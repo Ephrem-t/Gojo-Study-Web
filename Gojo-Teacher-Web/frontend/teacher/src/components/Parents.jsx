@@ -19,7 +19,7 @@ import Sidebar from "./Sidebar";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import { ref, onValue, off } from "firebase/database";
-import { db } from "../firebase"; // adjust path if needed
+import { db, schoolPath } from "../firebase"; // adjust path if needed
 import "../styles/global.css";
 
 /**
@@ -40,7 +40,7 @@ const getChatId = (teacherUserId, parentUserId) => {
   return `${t}_${p}`;
 };
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 const formatTime = (ts) => {
   if (!ts) return "";
@@ -127,14 +127,29 @@ const [children, setChildren] = useState([]);
         const users = usersRes.data || {};
         const parentsData = parentsRes.data || {};
 
-        const teacherId = teacher.userId;
+        const teacherIdentifiers = new Set([
+          String(teacher.teacherId || "").trim(),
+          String(teacher.teacherKey || "").trim(),
+          String(teacher.userId || "").trim(),
+        ].filter(Boolean));
 
-        // teacher's courses (you can re-enable filtering if you want)
         const teacherCourseIds = Object.values(assignments)
-          .filter((a) => a.teacherId === teacherId)
-          .map((a) => a.courseId);
+          .filter((a) => teacherIdentifiers.has(String(a.teacherId || "").trim()))
+          .map((a) => a.courseId)
+          .filter(Boolean);
 
-        // Build student->parent map including relationship
+        const allowedStudentIds = new Set(
+          Object.entries(students)
+            .filter(([, student]) =>
+              teacherCourseIds.some((courseId) => {
+                const course = courses[courseId];
+                return course && course.grade === student.grade && course.section === student.section;
+              })
+            )
+            .map(([studentId]) => studentId)
+        );
+
+        // Build student->parent map from both legacy Parents.children and current Students.parents.
         const studentToParentMap = {};
         Object.entries(parentsData).forEach(([parentId, parent]) => {
           if (!parent.children) return;
@@ -146,9 +161,22 @@ const [children, setChildren] = useState([]);
           });
         });
 
+        Object.entries(students).forEach(([studentId, student]) => {
+          Object.entries(student.parents || {}).forEach(([parentId, link]) => {
+            if (!studentToParentMap[studentId]) studentToParentMap[studentId] = [];
+            studentToParentMap[studentId].push({
+              parentId,
+              relationship: link?.relationship || null,
+              userId: link?.userId || null,
+            });
+          });
+        });
+
         // Build parent->children map with relationship data
         const parentChildrenMap = {};
         Object.entries(students).forEach(([studentId, student]) => {
+          if (allowedStudentIds.size && !allowedStudentIds.has(studentId)) return;
+
           const studentUser = Object.values(users).find((u) => String(u.userId) === String(student.userId));
           const studentName = studentUser?.name || "No Name";
           const studentProfileImage = studentUser?.profileImage || "/default-profile.png";
@@ -195,7 +223,7 @@ const [children, setChildren] = useState([]);
             address: parent.address || parentUser.address || null,
             extra: parent.extra,
           };
-        });
+        }).filter((parent) => Array.isArray(parent.children) && parent.children.length > 0);
 
         if (!cancelled) setParents(finalParents);
       } catch (err) {
@@ -220,7 +248,7 @@ const [children, setChildren] = useState([]);
   useEffect(() => {
     if (!selectedParent || !teacher || !chatOpen) return;
     const chatId = getChatId(teacherId, selectedParent.userId);
-    const messagesRef = ref(db, `Chats/${chatId}/messages`);
+    const messagesRef = ref(db, schoolPath(`Chats/${chatId}/messages`));
     const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
       const msgs = Object.entries(data).map(([id, msg]) => ({ messageId: id, ...msg }));
@@ -1194,3 +1222,4 @@ const [children, setChildren] = useState([]);
 }
 
 export default TeacherParent;
+

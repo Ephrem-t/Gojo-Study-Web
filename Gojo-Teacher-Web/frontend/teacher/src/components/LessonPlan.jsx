@@ -8,7 +8,8 @@ import { Link, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = 'https://ethiostore-17d9f-default-rtdb.firebaseio.com';
+import { getRtdbRoot, getSchoolCode } from "../api/rtdbScope";
+const RTDB_BASE = 'https://bale-house-rental-default-rtdb.firebaseio.com';
 
 const ALL_MONTHS = [
   'January',
@@ -30,6 +31,7 @@ const ALL_MONTHS = [
 function TeacherNotesPage() {
   const [teacher, setTeacher] = useState(null); // single state for teacher
   const [teacherKey, setTeacherKey] = useState(null); // Teachers node key (teacherId)
+  const [academicYear, setAcademicYear] = useState("");
   const [courses, setCourses] = useState([]);
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [noteText, setNoteText] = useState("");
@@ -68,6 +70,7 @@ const [annualRows, setAnnualRows] = useState([
   );
   const [sidebarWeekIndex, setSidebarWeekIndex] = useState(0);
   const selectedCourse = courses.find(c => c.id === selectedCourseId) || null;
+  const activeAcademicYear = academicYear || "default";
 
   const fetchedSidebarWeekDetailsRef = useRef(new Set());
 
@@ -176,7 +179,7 @@ const [annualRows, setAnnualRows] = useState([
     }
 
     const isoWeek = getISOWeekNumber(new Date());
-    const storageKey = `lpWeekPointer::${teacher.userId}::${selectedCourseId}::2025/26`;
+    const storageKey = `lpWeekPointer::${teacher.userId}::${selectedCourseId}::${activeAcademicYear}`;
 
     let stored = null;
     try {
@@ -209,7 +212,33 @@ const [annualRows, setAnnualRows] = useState([
     }
 
     setSidebarWeekIndex(pointerIndex);
-  }, [teacher?.userId, selectedCourseId, annualRows]);
+  }, [teacher?.userId, selectedCourseId, annualRows, activeAcademicYear]);
+
+  useEffect(() => {
+    const schoolCode = getSchoolCode();
+    if (!schoolCode) return;
+
+    const loadAcademicYear = async () => {
+      try {
+        const currentYearRes = await axios.get(`${getRtdbRoot()}/schoolInfo/currentAcademicYear.json`);
+        if (typeof currentYearRes.data === "string" && currentYearRes.data.trim()) {
+          setAcademicYear(currentYearRes.data.trim());
+          return;
+        }
+
+        const yearsRes = await axios.get(`${getRtdbRoot()}/AcademicYears.json`);
+        const years = yearsRes.data || {};
+        const currentEntry = Object.entries(years).find(([, value]) => value?.isCurrent);
+        if (currentEntry) {
+          setAcademicYear(String(currentEntry[0]).trim());
+        }
+      } catch (err) {
+        console.error("Failed to load academic year:", err);
+      }
+    };
+
+    loadAcademicYear();
+  }, []);
 
   useEffect(() => {
     if (!teacher) return setDailyPlans([]);
@@ -351,7 +380,7 @@ const [annualRows, setAnnualRows] = useState([
     if (!teacherSubmissionId || !selectedCourseId) return;
     try {
       const res = await axios.get(`${API_BASE}/lesson-plans/submissions`, {
-        params: { teacherId: teacherSubmissionId, courseId: selectedCourseId, academicYear: '2025/26' }
+        params: { teacherId: teacherSubmissionId, courseId: selectedCourseId, academicYear: activeAcademicYear }
       });
       if (res.data && res.data.success && Array.isArray(res.data.data)) {
         const keys = res.data.data.map(s => s.key).filter(Boolean);
@@ -400,7 +429,7 @@ const [annualRows, setAnnualRows] = useState([
       const payload = {
         teacherId: teacherSubmissionId,
         courseId: selectedCourseId,
-        academicYear: '2025/26',
+        academicYear: activeAcademicYear,
         week: plan.week,
         dayName: plan.dayName,
         key: plan.key,
@@ -468,7 +497,7 @@ const postRefs = useRef({});
       setAnnualRows([]);
       try {
         const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, {
-          params: { academicYear: '2025/26', courseId: selectedCourseId }
+          params: { academicYear: activeAcademicYear, courseId: selectedCourseId }
         });
 
         if (res.data && res.data.success) {
@@ -509,7 +538,7 @@ const postRefs = useRef({});
 
     const fetchCourses = async () => {
       try {
-        const base = 'https://ethiostore-17d9f-default-rtdb.firebaseio.com';
+        const base = 'https://bale-house-rental-default-rtdb.firebaseio.com';
         const [coursesRes, assignmentsRes, teachersRes] = await Promise.all([
           axios.get(`${base}/Courses.json`),
           axios.get(`${base}/TeacherAssignments.json`),
@@ -584,7 +613,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
       const payload = {
         teacherId: teacherSubmissionId,
         courseId: selectedCourseId,
-        academicYear: "2025/26",
+        academicYear: activeAcademicYear,
         week: weekVal,
         weekTopic,
         days,
@@ -758,7 +787,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
     (async () => {
       try {
         const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, {
-          params: { academicYear: '2025/26', courseId: selectedCourseId }
+          params: { academicYear: activeAcademicYear, courseId: selectedCourseId }
         });
 
         if (!res.data || !res.data.success) return;
@@ -1105,7 +1134,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
       const payload = {
         teacherId: teacherSubmissionId,
         courseId: selectedCourseId,
-        academicYear: "2025/26",
+        academicYear: activeAcademicYear,
         annualRows,
       };
 
@@ -1197,7 +1226,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
       (async () => {
         try {
           if (!teacherSubmissionId) return applyDays([]);
-          const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, { params: { academicYear: '2025/26', courseId: selectedCourseId } });
+          const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, { params: { academicYear: activeAcademicYear, courseId: selectedCourseId } });
           if (res.data && res.data.success) {
             const data = res.data.data || {};
             const weekKey = `week_${row.week || row.weekNumber || row.weekId || rowIndex}`;
@@ -1662,7 +1691,7 @@ function saveSeenPost(teacherId, postId) {
           {selectedCourse.grade && <span className="meta-badge">Grade {selectedCourse.grade}</span>}
           {selectedCourse.section && <span className="meta-badge">Section {selectedCourse.section}</span>}
           {selectedCourse.subject && <span className="meta-badge">{selectedCourse.subject}</span>}
-          <span className="meta-badge">Academic Year: 2025/26</span>
+          <span className="meta-badge">Academic Year: {activeAcademicYear}</span>
         </div>
       </div>
     ) : (

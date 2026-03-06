@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger, FaPlus, FaSyncAlt, FaUsers } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger, FaPlus, FaSyncAlt, FaUsers, FaSearch } from "react-icons/fa";
 import { BACKEND_BASE } from "../config";
 import axios from "axios";
 
@@ -41,22 +41,17 @@ export default function AcademicYearManagement() {
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [startYear, setStartYear] = useState(String(new Date().getFullYear()));
   const [targetRolloverYear, setTargetRolloverYear] = useState("");
-  const [maxGrade, setMaxGrade] = useState("12");
   const [feedback, setFeedback] = useState({ type: "", text: "" });
   const [loading, setLoading] = useState(false);
   const [working, setWorking] = useState(false);
   const [showRolloverConfirm, setShowRolloverConfirm] = useState(false);
-  const [rolloverConfirmText, setRolloverConfirmText] = useState("");
-  const [openStudentMenuYear, setOpenStudentMenuYear] = useState("");
   const [selectedHistoryYear, setSelectedHistoryYear] = useState("");
   const [historyStudentsLoading, setHistoryStudentsLoading] = useState(false);
   const [historyStudents, setHistoryStudents] = useState([]);
-  const [historyParentsMap, setHistoryParentsMap] = useState({});
-  const [targetYearByStudent, setTargetYearByStudent] = useState({});
-  const [passWorking, setPassWorking] = useState(false);
-  const [showStudentPassModal, setShowStudentPassModal] = useState(false);
-  const [passStudentDraft, setPassStudentDraft] = useState(null);
-  const [passStudentTargetYear, setPassStudentTargetYear] = useState("");
+  const [historySearch, setHistorySearch] = useState("");
+  const [historySelectedGrade, setHistorySelectedGrade] = useState("All");
+  const [historySelectedSection, setHistorySelectedSection] = useState("All");
+  const [selectedHistoryStudent, setSelectedHistoryStudent] = useState(null);
 
   const yearRows = useMemo(() => {
     return Object.entries(academicYears || {}).sort((a, b) => b[0].localeCompare(a[0]));
@@ -83,6 +78,53 @@ export default function AcademicYearManagement() {
     };
   }, [yearRows, historyStudents]);
 
+  const rolloverYearOptions = useMemo(() => {
+    return yearRows
+      .map(([key]) => key)
+      .filter((key) => key !== currentAcademicYear);
+  }, [yearRows, currentAcademicYear]);
+
+  const historyGradeOptions = useMemo(() => {
+    const set = new Set(
+      historyStudents
+        .map((row) => String(row?.grade || "").trim())
+        .filter(Boolean)
+    );
+    return ["All", ...Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))];
+  }, [historyStudents]);
+
+  const historySectionOptions = useMemo(() => {
+    const filteredByGrade = historyStudents.filter((row) => {
+      if (historySelectedGrade === "All") return true;
+      return String(row?.grade || "").trim() === historySelectedGrade;
+    });
+
+    const set = new Set(
+      filteredByGrade
+        .map((row) => String(row?.section || "").trim())
+        .filter(Boolean)
+    );
+
+    return ["All", ...Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))];
+  }, [historyStudents, historySelectedGrade]);
+
+  const visibleHistoryStudents = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    return historyStudents.filter((row) => {
+      const grade = String(row?.grade || "").trim();
+      const section = String(row?.section || "").trim();
+      const name = String(row?.name || "").toLowerCase();
+      const studentId = String(row?.studentId || "").toLowerCase();
+
+      if (historySelectedGrade !== "All" && grade !== historySelectedGrade) return false;
+      if (historySelectedSection !== "All" && section !== historySelectedSection) return false;
+
+      if (!q) return true;
+
+      return name.includes(q) || studentId.includes(q) || grade.toLowerCase().includes(q) || section.toLowerCase().includes(q);
+    });
+  }, [historyStudents, historySearch, historySelectedGrade, historySelectedSection]);
+
   const setError = (err, fallback) => {
     const msg = err?.response?.data?.message || err?.message || fallback;
     setFeedback({ type: "error", text: msg });
@@ -90,6 +132,41 @@ export default function AcademicYearManagement() {
 
   const setSuccess = (msg) => setFeedback({ type: "success", text: msg });
   const setWarning = (msg) => setFeedback({ type: "warning", text: msg });
+
+  const chipStyle = (active) => ({
+    padding: "6px 12px",
+    borderRadius: "999px",
+    background: active ? "#1d4ed8" : "#eef2ff",
+    color: active ? "#fff" : "#1e3a8a",
+    cursor: "pointer",
+    border: active ? "1px solid #1d4ed8" : "1px solid #dbeafe",
+    fontSize: "11px",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    transition: "all 0.2s ease",
+  });
+
+  const formatFieldLabel = (key) => {
+    return String(key || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^./, (s) => s.toUpperCase());
+  };
+
+  const formatFieldValue = (value) => {
+    if (value === null || value === undefined) return "-";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    if (Array.isArray(value)) {
+      if (value.length === 0) return "-";
+      const allPrimitive = value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item));
+      return allPrimitive ? value.join(", ") : `${value.length} item(s)`;
+    }
+    if (typeof value === "object") return "Available";
+    const text = String(value).trim();
+    return text || "-";
+  };
 
   const fetchAcademicYears = async () => {
     if (!schoolCode) {
@@ -181,23 +258,15 @@ export default function AcademicYearManagement() {
   };
 
   const handleRollover = async () => {
-    const maxGradeNum = Number(maxGrade || 12);
-    if (!Number.isInteger(maxGradeNum) || maxGradeNum < 1) {
-      setWarning("Max grade must be a positive integer.");
-      return;
-    }
-
     setWorking(true);
     try {
       const res = await axios.post(`${BACKEND_BASE}/api/academic-years/rollover`, {
         schoolCode,
         targetYearKey: targetRolloverYear.trim() || undefined,
-        maxGrade: maxGradeNum,
       });
       const data = res.data || {};
       setSuccess(`${data.message || "Rollover completed."} Promoted: ${data.promoted || 0}, Graduated: ${data.graduated || 0}, Skipped: ${data.skipped || 0}`);
       setShowRolloverConfirm(false);
-      setRolloverConfirmText("");
       await fetchAcademicYears();
     } catch (err) {
       setError(err, "Failed to run rollover.");
@@ -207,20 +276,42 @@ export default function AcademicYearManagement() {
   };
 
   const openRolloverConfirm = () => {
+    if (!targetRolloverYear) {
+      setWarning("Please select target rollover year.");
+      return;
+    }
+
+    if (targetRolloverYear === currentAcademicYear) {
+      setWarning("Target year cannot be the same as current year.");
+      return;
+    }
+
     setFeedback({ type: "", text: "" });
     setShowRolloverConfirm(true);
   };
 
-  const yearOptions = useMemo(() => yearRows.map(([key]) => key), [yearRows]);
-
   const fetchYearHistoryStudents = async (yearKey) => {
     if (!yearKey) return;
+
+    if (selectedHistoryYear === yearKey) {
+      setSelectedHistoryYear("");
+      setHistoryStudents([]);
+      setHistorySearch("");
+      setHistorySelectedGrade("All");
+      setHistorySelectedSection("All");
+      setSelectedHistoryStudent(null);
+      return;
+    }
+
     setSelectedHistoryYear(yearKey);
+    setHistorySearch("");
+    setHistorySelectedGrade("All");
+    setHistorySelectedSection("All");
+    setSelectedHistoryStudent(null);
     setHistoryStudentsLoading(true);
     try {
-      const [studentsRes, parentsRes, usersRes] = await Promise.all([
+      const [studentsRes, usersRes] = await Promise.all([
         axios.get(`${DB_URL}/YearHistory/${yearKey}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/YearHistory/${yearKey}/Parents.json`).catch(() => ({ data: {} })),
         axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
       ]);
 
@@ -239,125 +330,10 @@ export default function AcademicYearManagement() {
       });
 
       setHistoryStudents(list);
-      setHistoryParentsMap(parentsRes.data || {});
-
-      const defaults = {};
-      list.forEach((student) => {
-        defaults[student.studentId] = currentAcademicYear || targetRolloverYear || "";
-      });
-      setTargetYearByStudent(defaults);
     } catch (err) {
       setError(err, "Failed to load YearHistory students.");
     } finally {
       setHistoryStudentsLoading(false);
-    }
-  };
-
-  const openPassStudentModal = (student) => {
-    const chosenYear = targetYearByStudent[student.studentId] || currentAcademicYear || "";
-    const draft = {
-      ...student,
-      grade: String(student.grade || ""),
-      section: String(student.section || ""),
-      status: String(student.status || "active"),
-      name: String(student.name || ""),
-      admissionDate: String(student.admissionDate || ""),
-      previousSchool: String(student.previousSchool || ""),
-    };
-
-    setPassStudentDraft(draft);
-    setPassStudentTargetYear(chosenYear);
-    setShowStudentPassModal(true);
-  };
-
-  const collectParentIds = (studentNode) => {
-    const out = new Set();
-    const fromMap = studentNode?.parents || {};
-    Object.keys(fromMap || {}).forEach((pid) => {
-      if (String(pid || "").trim()) out.add(String(pid).trim());
-    });
-    const fromSection = studentNode?.parentGuardianInformation?.parents || [];
-    if (Array.isArray(fromSection)) {
-      fromSection.forEach((row) => {
-        const pid = String(row?.parentId || "").trim();
-        if (pid) out.add(pid);
-      });
-    }
-    return Array.from(out);
-  };
-
-  const handlePassStudentSave = async () => {
-    if (!passStudentDraft?.studentId) {
-      setWarning("Student information is missing.");
-      return;
-    }
-    if (!passStudentTargetYear) {
-      setWarning("Please choose target year.");
-      return;
-    }
-
-    setPassWorking(true);
-    try {
-      const existingStudentRes = await axios
-        .get(`${DB_URL}/Students/${passStudentDraft.studentId}.json`)
-        .catch(() => ({ data: null }));
-
-      if (existingStudentRes?.data) {
-        setWarning(`Student ${passStudentDraft.studentId} is already registered.`);
-        setPassWorking(false);
-        return;
-      }
-
-      const merged = {
-        ...passStudentDraft,
-        studentId: passStudentDraft.studentId,
-        academicYear: passStudentTargetYear,
-        previousAcademicYear: selectedHistoryYear || passStudentDraft.previousAcademicYear || "",
-        reRegisteredAt: new Date().toISOString(),
-      };
-
-      merged.basicStudentInformation = {
-        ...(merged.basicStudentInformation || {}),
-        grade: String(passStudentDraft.grade || merged.basicStudentInformation?.grade || ""),
-        section: String(passStudentDraft.section || merged.basicStudentInformation?.section || ""),
-        academicYear: passStudentTargetYear,
-        name: passStudentDraft.name || merged.basicStudentInformation?.name || merged.name,
-      };
-
-      merged.grade = String(passStudentDraft.grade || merged.grade || "");
-      merged.section = String(passStudentDraft.section || merged.section || "");
-      merged.status = String(passStudentDraft.status || merged.status || "active");
-      merged.name = passStudentDraft.name || merged.name || "Student";
-      merged.admissionDate = passStudentDraft.admissionDate || merged.admissionDate || "";
-      merged.previousSchool = passStudentDraft.previousSchool || merged.previousSchool || "";
-
-      await axios.put(`${DB_URL}/Students/${passStudentDraft.studentId}.json`, merged);
-
-      if (merged.userId) {
-        await axios.patch(`${DB_URL}/Users/${merged.userId}.json`, {
-          name: merged.name,
-          studentId: merged.studentId,
-        });
-      }
-
-      const parentIds = collectParentIds(merged);
-      await Promise.all(
-        parentIds.map(async (parentId) => {
-          const rootParent = await axios.get(`${DB_URL}/Parents/${parentId}.json`).catch(() => ({ data: null }));
-          if (!rootParent.data && historyParentsMap[parentId]) {
-            await axios.put(`${DB_URL}/Parents/${parentId}.json`, historyParentsMap[parentId]);
-          }
-        })
-      );
-
-      setHistoryStudents((prev) => prev.filter((row) => row.studentId !== passStudentDraft.studentId));
-      setSuccess(`Student ${merged.studentId} re-registered to ${passStudentTargetYear.replace("_", "/")}.`);
-      setShowStudentPassModal(false);
-      setPassStudentDraft(null);
-    } catch (err) {
-      setError(err, "Failed to pass student to selected year.");
-    } finally {
-      setPassWorking(false);
     }
   };
 
@@ -396,6 +372,58 @@ export default function AcademicYearManagement() {
           @media (max-width: 640px) {
             .ay-stats {
               grid-template-columns: 1fr;
+            }
+          }
+          .ay-student-fullscreen {
+            width: 100vw;
+            height: 100vh;
+            max-width: 100vw;
+            max-height: 100vh;
+            overflow-y: auto;
+            background: linear-gradient(165deg, #f8fbff 0%, #eef4ff 45%, #ffffff 100%);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+          }
+          .ay-student-header {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.92);
+            backdrop-filter: blur(6px);
+            border: 1px solid #dbe7ff;
+            border-radius: 12px;
+            padding: 10px 12px;
+          }
+          .ay-student-panel {
+            border: 1px solid #dbe7ff;
+            border-radius: 12px;
+            background: #ffffff;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+            padding: 12px;
+          }
+          .ay-student-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+          }
+          .ay-student-item {
+            background: #f8fbff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 9px 10px;
+          }
+          @media (max-width: 900px) {
+            .ay-student-grid {
+              grid-template-columns: 1fr;
+            }
+            .ay-student-fullscreen {
+              padding: 12px;
             }
           }
         `}
@@ -603,19 +631,19 @@ export default function AcademicYearManagement() {
 
               <div style={{ ...cardStyle, padding: 14 }}>
                 <div style={{ fontSize: 15, fontWeight: 900, color: "#0f172a", marginBottom: 10 }}>Rollover to Next Year</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 120px auto", gap: 8 }}>
-                  <input
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+                  <select
                     value={targetRolloverYear}
                     onChange={(e) => setTargetRolloverYear(e.target.value)}
-                    placeholder="2027_2028 (optional)"
                     style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
-                  />
-                  <input
-                    value={maxGrade}
-                    onChange={(e) => setMaxGrade(e.target.value.replace(/[^0-9]/g, ""))}
-                    placeholder="Max Grade"
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
-                  />
+                  >
+                    <option value="">Select target year</option>
+                    {rolloverYearOptions.map((yearKey) => (
+                      <option key={yearKey} value={yearKey}>
+                        {yearKey.replace("_", "/")}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     onClick={openRolloverConfirm}
                     disabled={working}
@@ -660,108 +688,190 @@ export default function AcademicYearManagement() {
                 yearRows.map(([yearKey, row]) => {
                   const status = String(row?.status || "inactive");
                   const isCurrent = !!row?.isCurrent;
+                  const isExpanded = selectedHistoryYear === yearKey;
                   return (
-                    <div key={yearKey} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", borderTop: "1px solid #f1f5f9", alignItems: "center" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{row?.label || yearKey.replace("_", "/")}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: status === "active" ? "#166534" : status === "archived" ? "#9a3412" : "#475569" }}>{status}</div>
-                      <div style={{ fontSize: 13 }}>{isCurrent ? "✅" : "—"}</div>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <div key={yearKey} style={{ borderTop: "1px solid #f1f5f9" }}>
+                      <div
+                        onClick={() => fetchYearHistoryStudents(yearKey)}
+                        style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", alignItems: "center", cursor: "pointer", background: isExpanded ? "#f8fbff" : "transparent" }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                          <span
+                            aria-hidden="true"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 22,
+                              height: 22,
+                              borderRadius: 999,
+                              border: "1px solid #cbd5e1",
+                              background: "#fff",
+                              color: "#0f766e",
+                              transition: "transform .2s ease",
+                              transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <FaChevronDown style={{ width: 12, height: 12 }} />
+                          </span>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {row?.label || yearKey.replace("_", "/")}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: status === "active" ? "#166534" : status === "archived" ? "#9a3412" : "#475569" }}>{status}</div>
+                        <div style={{ fontSize: 13 }}>{isCurrent ? "✅" : "—"}</div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <button
-                          onClick={() => handleActivateYear(yearKey)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleActivateYear(yearKey);
+                          }}
                           disabled={working || isCurrent}
                           style={{ border: "1px solid #2563eb", background: "#2563eb", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || isCurrent ? "not-allowed" : "pointer", opacity: working || isCurrent ? 0.6 : 1 }}
                         >
                           Activate
                         </button>
                         <button
-                          onClick={() => handleArchiveYear(yearKey)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleArchiveYear(yearKey);
+                          }}
                           disabled={working || status === "archived"}
                           style={{ border: "1px solid #b45309", background: "#b45309", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || status === "archived" ? "not-allowed" : "pointer", opacity: working || status === "archived" ? 0.6 : 1 }}
                         >
                           Archive
                         </button>
 
-                        <div style={{ position: "relative" }}>
-                          <button
-                            onClick={() => setOpenStudentMenuYear((prev) => (prev === yearKey ? "" : yearKey))}
-                            style={{ border: "1px solid #0f766e", background: "#0f766e", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            Student
-                          </button>
-
-                          {openStudentMenuYear === yearKey ? (
-                            <div style={{ position: "absolute", top: 34, right: 0, zIndex: 30, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, boxShadow: "0 10px 18px rgba(15,23,42,0.14)", minWidth: 120 }}>
-                              <button
-                                onClick={() => {
-                                  fetchYearHistoryStudents(yearKey);
-                                  setOpenStudentMenuYear("");
-                                }}
-                                style={{ width: "100%", border: "none", background: "transparent", textAlign: "left", padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#0f172a" }}
-                              >
-                                All
-                              </button>
-                            </div>
-                          ) : null}
                         </div>
                       </div>
+
+                      {isExpanded ? (
+                        <div style={{ padding: "0 14px 12px", background: "#f8fbff", borderTop: "1px dashed #dbeafe" }}>
+                          {historyStudentsLoading ? (
+                            <div style={{ paddingTop: 10, fontSize: 13, color: "#64748b" }}>Loading students...</div>
+                          ) : historyStudents.length === 0 ? (
+                            <div style={{ paddingTop: 10, fontSize: 13, color: "#64748b" }}>No students found for this year.</div>
+                          ) : (
+                            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "8px",
+                                  background: "#fff",
+                                  border: "1px solid #e5e7eb",
+                                  borderRadius: "12px",
+                                  padding: "10px 12px",
+                                  boxShadow: "0 6px 18px rgba(15,23,42,0.07)",
+                                }}
+                              >
+                                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                                <input
+                                  value={historySearch}
+                                  onChange={(e) => setHistorySearch(e.target.value)}
+                                  placeholder="Search student by name or ID"
+                                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent" }}
+                                />
+                              </div>
+
+                              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", maxWidth: "100%", overflowX: "auto", paddingBottom: 1 }}>
+                                {historyGradeOptions.map((grade) => (
+                                  <button
+                                    key={grade}
+                                    onClick={() => {
+                                      setHistorySelectedGrade(grade);
+                                      setHistorySelectedSection("All");
+                                    }}
+                                    style={chipStyle(historySelectedGrade === grade)}
+                                  >
+                                    {grade === "All" ? "All Grades" : `Grade ${grade}`}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {historySelectedGrade !== "All" && historySectionOptions.length > 1 ? (
+                                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", maxWidth: "100%", overflowX: "auto", paddingBottom: 1 }}>
+                                  {historySectionOptions.map((section) => (
+                                    <button
+                                      key={section}
+                                      onClick={() => setHistorySelectedSection(section)}
+                                      style={chipStyle(historySelectedSection === section)}
+                                    >
+                                      {section === "All" ? "All Sections" : `Section ${section}`}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              <div style={{ marginTop: 2, fontSize: 12, color: "#475569", fontWeight: 700 }}>
+                                Showing {visibleHistoryStudents.length} of {historyStudents.length} students
+                              </div>
+
+                              {visibleHistoryStudents.length === 0 ? (
+                                <div style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>No students match your search/filter.</div>
+                              ) : (
+                                <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+                                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 800, color: "#475569" }}>
+                                    <div>Student</div>
+                                    <div>Grade</div>
+                                    <div>Section</div>
+                                    <div>Action</div>
+                                  </div>
+
+                                  {visibleHistoryStudents.map((student) => (
+                                    <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderTop: "1px solid #f1f5f9", alignItems: "center", gap: 8 }}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                          <img
+                                            src={student.profileImage || "/default-profile.png"}
+                                            alt={student.name || "Student"}
+                                            onError={(e) => {
+                                              e.currentTarget.onerror = null;
+                                              e.currentTarget.src = "/default-profile.png";
+                                            }}
+                                            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid #dbeafe", flexShrink: 0 }}
+                                          />
+                                          <div style={{ minWidth: 0 }}>
+                                            <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
+                                            <div style={{ fontSize: 11, color: "#64748b" }}>{student.studentId}</div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div style={{ fontSize: 12, fontWeight: 700 }}>{student.grade || "—"}</div>
+                                      <div style={{ fontSize: 12, fontWeight: 700 }}>{student.section || "—"}</div>
+                                      <div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSelectedHistoryStudent(student)}
+                                          style={{
+                                            border: "1px solid #1d4ed8",
+                                            background: "linear-gradient(180deg, #eff6ff, #dbeafe)",
+                                            color: "#1e3a8a",
+                                            borderRadius: 8,
+                                            padding: "5px 10px",
+                                            fontSize: 11,
+                                            fontWeight: 800,
+                                            cursor: "pointer",
+                                            boxShadow: "0 4px 10px rgba(37,99,235,0.22)",
+                                          }}
+                                        >
+                                          Show
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })
               )}
             </div>
-
-            {selectedHistoryYear ? (
-              <div style={{ ...cardStyle, overflow: "hidden" }}>
-                <div style={{ padding: "12px 14px", fontWeight: 800, color: "#0f172a", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>YearHistory Students • {selectedHistoryYear.replace("_", "/")}</span>
-                  <button onClick={() => { setSelectedHistoryYear(""); setHistoryStudents([]); }} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Close</button>
-                </div>
-
-                {historyStudentsLoading ? (
-                  <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>Loading students...</div>
-                ) : historyStudents.length === 0 ? (
-                  <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>No students found under this year in YearHistory.</div>
-                ) : (
-                  <>
-                    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.6fr 0.6fr 0.9fr 0.8fr", padding: "10px 14px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 800, color: "#475569" }}>
-                      <div>Student</div>
-                      <div>Grade</div>
-                      <div>Section</div>
-                      <div>Pass To Year</div>
-                      <div>Action</div>
-                    </div>
-
-                    {historyStudents.map((student) => (
-                      <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.6fr 0.6fr 0.9fr 0.8fr", padding: "10px 14px", borderTop: "1px solid #f1f5f9", alignItems: "center", gap: 8 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
-                          <div style={{ fontSize: 11, color: "#64748b" }}>{student.studentId}</div>
-                        </div>
-                        <div style={{ fontSize: 12, fontWeight: 700 }}>{student.grade || "—"}</div>
-                        <div style={{ fontSize: 12, fontWeight: 700 }}>{student.section || "—"}</div>
-                        <select
-                          value={targetYearByStudent[student.studentId] || ""}
-                          onChange={(e) => setTargetYearByStudent((prev) => ({ ...prev, [student.studentId]: e.target.value }))}
-                          style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
-                        >
-                          <option value="">Select year</option>
-                          {yearOptions.map((key) => (
-                            <option key={key} value={key}>{key.replace("_", "/")}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => openPassStudentModal(student)}
-                          disabled={!targetYearByStudent[student.studentId]}
-                          style={{ border: "1px solid #2563eb", background: "#2563eb", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: !targetYearByStudent[student.studentId] ? "not-allowed" : "pointer", opacity: !targetYearByStudent[student.studentId] ? 0.6 : 1 }}
-                        >
-                          Pass
-                        </button>
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-            ) : null}
           </div>
         </div>
       </div>
@@ -771,7 +881,6 @@ export default function AcademicYearManagement() {
           onClick={() => {
             if (!working) {
               setShowRolloverConfirm(false);
-              setRolloverConfirmText("");
             }
           }}
           style={{
@@ -809,28 +918,13 @@ export default function AcademicYearManagement() {
 
             <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 10, fontSize: 12, color: "#334155" }}>
               <div><strong>From Year:</strong> {currentAcademicYear ? currentAcademicYear.replace("_", "/") : "Current active year"}</div>
-              <div><strong>Target Year:</strong> {targetRolloverYear?.trim() ? targetRolloverYear.trim().replace("_", "/") : "Auto-generate next year"}</div>
-              <div><strong>Max Grade:</strong> {maxGrade || "12"}</div>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <label htmlFor="rollover-confirm-input" style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>
-                Type <strong>ROLLOVER</strong> to continue
-              </label>
-              <input
-                id="rollover-confirm-input"
-                value={rolloverConfirmText}
-                onChange={(e) => setRolloverConfirmText(e.target.value)}
-                placeholder="ROLLOVER"
-                style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
-              />
+              <div><strong>Target Year:</strong> {targetRolloverYear ? targetRolloverYear.replace("_", "/") : "Not selected"}</div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button
                 onClick={() => {
                   setShowRolloverConfirm(false);
-                  setRolloverConfirmText("");
                 }}
                 disabled={working}
                 style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
@@ -839,8 +933,8 @@ export default function AcademicYearManagement() {
               </button>
               <button
                 onClick={handleRollover}
-                disabled={working || rolloverConfirmText.trim().toUpperCase() !== "ROLLOVER"}
-                style={{ border: "1px solid #dc2626", background: "#dc2626", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working || rolloverConfirmText.trim().toUpperCase() !== "ROLLOVER" ? "not-allowed" : "pointer", opacity: working || rolloverConfirmText.trim().toUpperCase() !== "ROLLOVER" ? 0.6 : 1 }}
+                disabled={working || !targetRolloverYear}
+                style={{ border: "1px solid #dc2626", background: "#dc2626", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working || !targetRolloverYear ? "not-allowed" : "pointer", opacity: working || !targetRolloverYear ? 0.6 : 1 }}
               >
                 Confirm Rollover
               </button>
@@ -849,55 +943,116 @@ export default function AcademicYearManagement() {
         </div>
       ) : null}
 
-      {showStudentPassModal && passStudentDraft ? (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 10000, overflowY: "auto" }}>
-          <div style={{ maxWidth: 980, margin: "24px auto", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, boxShadow: "0 24px 38px rgba(15,23,42,0.22)", padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
-              <h3 style={{ margin: 0, fontSize: 20, color: "#0f172a", fontWeight: 800 }}>Re-Register Student (Old ID: {passStudentDraft.studentId})</h3>
-              <button onClick={() => setShowStudentPassModal(false)} disabled={passWorking} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: passWorking ? "not-allowed" : "pointer" }}>Close</button>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Name</label>
-                <input value={passStudentDraft.name || ""} onChange={(e) => setPassStudentDraft((prev) => ({ ...prev, name: e.target.value }))} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Grade</label>
-                <input value={passStudentDraft.grade || ""} onChange={(e) => setPassStudentDraft((prev) => ({ ...prev, grade: e.target.value }))} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Section</label>
-                <input value={passStudentDraft.section || ""} onChange={(e) => setPassStudentDraft((prev) => ({ ...prev, section: e.target.value }))} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Status</label>
-                <input value={passStudentDraft.status || "active"} onChange={(e) => setPassStudentDraft((prev) => ({ ...prev, status: e.target.value }))} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Admission Date</label>
-                <input value={passStudentDraft.admissionDate || ""} onChange={(e) => setPassStudentDraft((prev) => ({ ...prev, admissionDate: e.target.value }))} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#334155" }}>Target Year</label>
-                <select value={passStudentTargetYear} onChange={(e) => setPassStudentTargetYear(e.target.value)} style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
-                  <option value="">Select year</option>
-                  {yearOptions.map((key) => (
-                    <option key={key} value={key}>{key.replace("_", "/")}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => setShowStudentPassModal(false)} disabled={passWorking} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: passWorking ? "not-allowed" : "pointer" }}>Cancel</button>
-              <button onClick={handlePassStudentSave} disabled={passWorking || !passStudentTargetYear} style={{ border: "1px solid #1d4ed8", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: passWorking || !passStudentTargetYear ? "not-allowed" : "pointer", opacity: passWorking || !passStudentTargetYear ? 0.7 : 1 }}>
-                {passWorking ? "Saving..." : "Pass & Re-Register"}
+      {selectedHistoryStudent ? (
+        <div
+          onClick={() => setSelectedHistoryStudent(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: 0,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="ay-student-fullscreen"
+          >
+            <div className="ay-student-header">
+              <h3 style={{ margin: 0, fontSize: 18, color: "#0f172a", fontWeight: 900, letterSpacing: "0.2px" }}>Student Profile</h3>
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryStudent(null)}
+                style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+              >
+                Close
               </button>
+            </div>
+
+            <div className="ay-student-panel" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <img
+                src={selectedHistoryStudent.profileImage || "/default-profile.png"}
+                alt={selectedHistoryStudent.name || "Student"}
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "/default-profile.png";
+                }}
+                style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid #bfdbfe", flexShrink: 0 }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 17, fontWeight: 900, color: "#0f172a" }}>{selectedHistoryStudent.name || "Student"}</div>
+                <div style={{ marginTop: 2, fontSize: 12, color: "#64748b", fontWeight: 700 }}>{selectedHistoryStudent.studentId || "No student ID"}</div>
+              </div>
+            </div>
+
+            <div className="ay-student-panel ay-student-grid">
+              <div style={{ fontSize: 12, color: "#334155" }}><strong>Grade:</strong> {selectedHistoryStudent.grade || "—"}</div>
+              <div style={{ fontSize: 12, color: "#334155" }}><strong>Section:</strong> {selectedHistoryStudent.section || "—"}</div>
+              <div style={{ fontSize: 12, color: "#334155" }}><strong>Email:</strong> {selectedHistoryStudent.email || "—"}</div>
+              <div style={{ fontSize: 12, color: "#334155" }}><strong>User ID:</strong> {selectedHistoryStudent.userId || "—"}</div>
+            </div>
+
+            <div className="ay-student-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a" }}>Student Details</div>
+
+              <div className="ay-student-grid">
+                {Object.entries(selectedHistoryStudent.basicStudentInformation || {}).map(([key, value]) => (
+                  <div key={`basic-${key}`} className="ay-student-item">
+                    <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                    <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                  </div>
+                ))}
+              </div>
+
+              {selectedHistoryStudent.contactInformation ? (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Contact Information</div>
+                  <div className="ay-student-grid">
+                    {Object.entries(selectedHistoryStudent.contactInformation).map(([key, value]) => (
+                      <div key={`contact-${key}`} className="ay-student-item">
+                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation ? (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Guardian Information</div>
+                  <div className="ay-student-grid">
+                    {Object.entries(selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation || {}).map(([key, value]) => (
+                      <div key={`guardian-${key}`} className="ay-student-item">
+                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Other Information</div>
+                <div className="ay-student-grid">
+                  {Object.entries(selectedHistoryStudent)
+                    .filter(([key, value]) => !["basicStudentInformation", "contactInformation", "parentInformation", "guardianInformation", "profileImage", "name", "studentId"].includes(key) && (typeof value !== "object" || Array.isArray(value)))
+                    .map(([key, value]) => (
+                      <div key={`other-${key}`} className="ay-student-item">
+                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
       ) : null}
+
     </div>
   );
 }

@@ -14,3 +14,18 @@ export const loginTeacher = async (username, password) => {
     return { success: false, message: "Network error or server not reachable" };
   }
 };
+
+export const getTeacherContext = async ({ teacherId, userId }) => {
+  try {
+    const res = await axios.get(`${API_BASE}/teacher_context`, {
+      params: {
+        teacherId,
+        userId,
+      },
+    });
+    return res.data;
+  } catch (err) {
+    console.error("Teacher context error:", err.response ? err.response.data : err.message);
+    return { success: false, message: "Unable to resolve teacher context" };
+  }
+};

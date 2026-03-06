@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import { ref, onValue, off, update } from "firebase/database";
-import { db } from "../firebase";
+import { db, schoolPath } from "../firebase";
 import {
   FaHome,
   FaUsers,
@@ -48,7 +48,7 @@ const formatDateLabel = (ts) => {
 };
 
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 // Admin item component
 const AdminItem = ({ admin, selected, onClick, number }) => (
@@ -171,26 +171,48 @@ function AdminPage() {
         if (sa.userId) adminByUserId[sa.userId] = { ...sa, adminKey };
       });
 
-      // Get all users with admin role (as before), but merge schoolAdmin fields if available
-      const adminsArray = Object.entries(users)
-        .filter(([_, u]) => {
-          const role = (u.role || u.userType || "").toLowerCase();
-          return role === "admin" || role === "school_admin" || role === "school_admins";
-        })
-        .map(([key, u]) => {
-          const schoolAdminInfo = adminByUserId[u.userId];
-          return {
-            adminId: (schoolAdminInfo && schoolAdminInfo.adminKey) || key,
-            ...u,
-            ...(schoolAdminInfo
-              ? {
-                  title: schoolAdminInfo.title,
-                  status: schoolAdminInfo.status,
-                  schoolAdminKey: schoolAdminInfo.adminKey,
-                }
-              : {}),
-          };
+      const adminsMap = new Map();
+
+      Object.entries(schoolAdmins).forEach(([adminKey, schoolAdmin]) => {
+        const linkedUser = Object.values(users).find(
+          (user) => String(user.userId || "") === String(schoolAdmin.userId || "")
+        ) || {};
+
+        adminsMap.set(adminKey, {
+          adminId: adminKey,
+          userId: schoolAdmin.userId || linkedUser.userId || "",
+          username: linkedUser.username || schoolAdmin.username || "",
+          name: linkedUser.name || schoolAdmin.name || schoolAdmin.title || "Admin",
+          email: linkedUser.email || schoolAdmin.email || "",
+          phone: linkedUser.phone || schoolAdmin.phone || "",
+          profileImage: linkedUser.profileImage || schoolAdmin.profileImage || "/default-profile.png",
+          role: linkedUser.role || schoolAdmin.role || "school_admin",
+          status: schoolAdmin.status || linkedUser.status || "active",
+          title: schoolAdmin.title || "",
+          schoolAdminKey: adminKey,
         });
+      });
+
+      Object.entries(users).forEach(([key, user]) => {
+        const role = (user.role || user.userType || "").toLowerCase();
+        if (role !== "admin" && role !== "school_admin" && role !== "school_admins") {
+          return;
+        }
+
+        const schoolAdminInfo = adminByUserId[user.userId];
+        const mapKey = (schoolAdminInfo && schoolAdminInfo.adminKey) || key;
+        if (!adminsMap.has(mapKey)) {
+          adminsMap.set(mapKey, {
+            adminId: mapKey,
+            ...user,
+            status: (schoolAdminInfo && schoolAdminInfo.status) || user.status || "active",
+            title: (schoolAdminInfo && schoolAdminInfo.title) || "",
+            schoolAdminKey: schoolAdminInfo?.adminKey,
+          });
+        }
+      });
+
+      const adminsArray = Array.from(adminsMap.values());
       setAdmins(adminsArray);
       setError(adminsArray.length === 0 ? "No admins found" : "");
     } catch (err) {
@@ -211,7 +233,7 @@ function AdminPage() {
   useEffect(() => {
     if (!teacherUserId || !selectedChatUser) return;
     const chatKey = getChatId(teacherUserId, selectedChatUser.userId);
-    const messagesRef = ref(db, `Chats/${chatKey}/messages`);
+    const messagesRef = ref(db, schoolPath(`Chats/${chatKey}/messages`));
     const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
       const msgs = Object.entries(data)
@@ -227,12 +249,12 @@ function AdminPage() {
       Object.entries(data).forEach(([id, m]) => {
         if (m && !m.seen && m.receiverId === teacherUserId) {
           const ts = Date.now();
-          update(ref(db, `Chats/${chatKey}/messages/${id}`), { seen: true, seenAt: ts }).catch(() => {});
+          update(ref(db, schoolPath(`Chats/${chatKey}/messages/${id}`)), { seen: true, seenAt: ts }).catch(() => {});
         }
       });
 
       // reset unread count for this teacher in this chat
-      update(ref(db, `Chats/${chatKey}/unread`), { [teacherUserId]: 0 }).catch(() => {});
+      update(ref(db, schoolPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 }).catch(() => {});
     });
 
     return () => off(messagesRef);
@@ -904,3 +926,4 @@ const mainListWidth = (() => {
 }
 
 export default AdminPage;
+

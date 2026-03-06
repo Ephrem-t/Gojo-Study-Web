@@ -1,13 +1,12 @@
-import React, { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import "../styles/login.css";
-import { API_BASE, API_ORIGIN } from "../api/apiConfig";
+import { API_BASE } from "../api/apiConfig";
 
 export default function Register() {
   const navigate = useNavigate();
+  const loginLink = "/login";
 
-  const gradeOptions = ["7", "8", "9", "10", "11 Social", "11 Natural", "12 Social", "12 Natural"];
-  const sectionOptions = ["A", "B", "C"];
   const subjectOptions = {
     "7": [
       "Mathematics",
@@ -103,6 +102,9 @@ export default function Register() {
       "History",
     ],
   };
+  const allSubjects = Array.from(
+    new Set(Object.values(subjectOptions).flat())
+  );
 
   const [formData, setFormData] = useState({
     name: "",
@@ -115,13 +117,107 @@ export default function Register() {
   const [profile, setProfile] = useState(null);
   const [message, setMessage] = useState("");
   const [assignedTeacherId, setAssignedTeacherId] = useState("");
+  const [schoolCode, setSchoolCode] = useState("");
+  const [schools, setSchools] = useState([]);
+  const [loadingSchools, setLoadingSchools] = useState(true);
+  const [gradeOptions, setGradeOptions] = useState([]);
+  const [sectionsByGrade, setSectionsByGrade] = useState({});
+  const [loadingGrades, setLoadingGrades] = useState(false);
+
+  useEffect(() => {
+    const loadSchools = async () => {
+      setLoadingSchools(true);
+      try {
+        const registerBase = API_BASE.replace(/\/api$/, "");
+        const res = await fetch(`${registerBase}/api/schools`);
+        const data = await res.json();
+        const list = Array.isArray(data.schools) ? data.schools : [];
+        setSchools(list);
+
+        if (list.length === 1) {
+          setSchoolCode(list[0].schoolCode || "");
+        }
+      } catch (err) {
+        console.error("Failed to load schools:", err);
+        setSchools([]);
+        setMessage("Unable to load schools. Check backend/API.");
+      } finally {
+        setLoadingSchools(false);
+      }
+    };
+
+    loadSchools();
+  }, []);
+
+  useEffect(() => {
+    const loadGrades = async () => {
+      if (!schoolCode) {
+        setGradeOptions([]);
+        setSectionsByGrade({});
+        return;
+      }
+
+      setLoadingGrades(true);
+      try {
+        const registerBase = API_BASE.replace(/\/api$/, "");
+        const res = await fetch(`${registerBase}/api/schools/${encodeURIComponent(schoolCode)}/grades`);
+        const data = await res.json();
+        const rows = Array.isArray(data.grades) ? data.grades : [];
+
+        const grades = rows
+          .map((row) => String(row.grade || "").trim())
+          .filter(Boolean);
+
+        const sectionMap = {};
+        rows.forEach((row) => {
+          const grade = String(row.grade || "").trim();
+          if (!grade) return;
+          const sections = Array.isArray(row.sections)
+            ? row.sections.map((s) => String(s).trim()).filter(Boolean)
+            : [];
+          sectionMap[grade] = sections;
+        });
+
+        setGradeOptions(grades);
+        setSectionsByGrade(sectionMap);
+
+        // Reset existing course grade/section if they are not valid for selected school.
+        setFormData((prev) => ({
+          ...prev,
+          courses: prev.courses.map((course) => {
+            const gradeValid = grades.includes(course.grade);
+            const nextGrade = gradeValid ? course.grade : "";
+            const sections = nextGrade ? (sectionMap[nextGrade] || []) : [];
+            const sectionValid = sections.includes(course.section);
+            return {
+              ...course,
+              grade: nextGrade,
+              section: sectionValid ? course.section : "",
+              subject: gradeValid ? course.subject : "",
+            };
+          }),
+        }));
+      } catch (err) {
+        console.error("Failed to load grades:", err);
+        setGradeOptions([]);
+        setSectionsByGrade({});
+      } finally {
+        setLoadingGrades(false);
+      }
+    };
+
+    loadGrades();
+  }, [schoolCode]);
 
   const handleChange = (e, index = null) => {
     const { name, value } = e.target;
     if (index !== null) {
       const updatedCourses = [...formData.courses];
       updatedCourses[index][name] = value;
-      if (name === "grade") updatedCourses[index]["subject"] = "";
+      if (name === "grade") {
+        updatedCourses[index]["subject"] = "";
+        updatedCourses[index]["section"] = "";
+      }
       setFormData({ ...formData, courses: updatedCourses });
     } else {
       setFormData({ ...formData, [name]: value });
@@ -184,6 +280,14 @@ export default function Register() {
       setMessage("Name and password are required.");
       return;
     }
+    if (!schoolCode) {
+      setMessage("Please select school.");
+      return;
+    }
+    if (!formData.courses.every((c) => c.grade)) {
+      setMessage("Please select grade for each course.");
+      return;
+    }
     if (hasDuplicateCourse()) {
       setMessage(
         "Duplicate subject detected! A subject can only be taught once per grade and section."
@@ -200,9 +304,10 @@ export default function Register() {
       dataToSend.append("phone", formData.phone);
       dataToSend.append("gender", formData.gender);
       dataToSend.append("courses", JSON.stringify(formData.courses));
+      dataToSend.append("schoolCode", schoolCode);
       if (profile) dataToSend.append("profile", profile);
 
-      const registerBase = (API_ORIGIN || API_BASE.replace(/\/api$/, ""));
+      const registerBase = API_BASE.replace(/\/api$/, "");
       const res = await fetch(`${registerBase}/register/teacher`, {
         method: "POST",
         body: dataToSend,
@@ -212,7 +317,7 @@ export default function Register() {
 
       if (data.success) {
         // Backend returns teacherId in response (assigned username)
-        const tid = data.teacherKey || data.teacherId || data.teacherKey || data.teacherId || "";
+        const tid = data.teacherKey || data.teacherId || "";
         setAssignedTeacherId(tid);
         setFormData({
           name: "",
@@ -231,17 +336,32 @@ export default function Register() {
       }
     } catch (err) {
       console.error("Registration error:", err);
-      setMessage("Server error. Check console.");
+      if (err instanceof TypeError && /Failed to fetch/i.test(err.message || "")) {
+        setMessage("Backend is not running on 127.0.0.1:5000. Start app.py and try again.");
+      } else {
+        setMessage("Server error. Check console.");
+      }
     }
   };
 
   return (
     <div className="auth-container">
-      <div className="auth-box" style={{ maxWidth: "600px" }}>
-        <h2>Teacher Registration</h2>
+      <div className="auth-box" style={{ maxWidth: "820px", width: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label="Go back"
+            style={{ background: "none", border: "none", color: "black", cursor: "pointer", fontSize: 20, width: 10, padding: 0 }}
+          >
+            ←
+          </button>
+          <h2 style={{ margin: 0 }}>Teacher Registration</h2>
+        </div>
+        <p className="subtle">Create a teacher account for the selected school.</p>
         {message && <p className="auth-error">{message}</p>}
 
-        <form onSubmit={handleRegister}>
+        <form onSubmit={handleRegister} className="vertical-form">
           <input
             type="text"
             name="name"
@@ -250,6 +370,23 @@ export default function Register() {
             onChange={handleChange}
             required
           />
+
+          <select
+            name="schoolCode"
+            value={schoolCode}
+            onChange={(e) => setSchoolCode(e.target.value)}
+            required
+            disabled={loadingSchools}
+          >
+            <option value="">
+              {loadingSchools ? "Loading schools..." : "Select School"}
+            </option>
+            {schools.map((school) => (
+              <option key={school.schoolCode} value={school.schoolCode}>
+                {school.name} ({school.shortName || school.schoolCode})
+              </option>
+            ))}
+          </select>
 
           {/* Username removed from form - server will assign teacherId as username */}
 
@@ -277,8 +414,6 @@ export default function Register() {
             <option value="">Select Gender</option>
             <option value="Male">Male</option>
             <option value="Female">Female</option>
-            <option value="Other">Other</option>
-            <option value="Prefer not to say">Prefer not to say</option>
           </select>
 
           <input
@@ -305,7 +440,7 @@ export default function Register() {
             />
           </div>
 
-          <h3>Courses</h3>
+          <h3 style={{ textAlign: "left", marginBottom: 10, fontWeight: 700, color: "#334155", fontSize: 18 }}>Course Assignments</h3>
           {formData.courses.map((course, index) => (
             <div className="course-group" key={index}>
               <select
@@ -313,8 +448,9 @@ export default function Register() {
                 value={course.grade}
                 onChange={(e) => handleChange(e, index)}
                 required
+                disabled={loadingGrades || gradeOptions.length === 0}
               >
-                <option value="">Select Grade</option>
+                <option value="">{loadingGrades ? "Loading grades..." : "Select Grade"}</option>
                 {gradeOptions.map((g) => (
                   <option key={g} value={g}>
                     {g}
@@ -327,9 +463,10 @@ export default function Register() {
                 value={course.section}
                 onChange={(e) => handleChange(e, index)}
                 required
+                disabled={!course.grade}
               >
                 <option value="">Select Section</option>
-                {sectionOptions.map((s) => (
+                {(sectionsByGrade[course.grade] || []).map((s) => (
                   <option key={s} value={s}>
                     {s}
                   </option>
@@ -345,7 +482,7 @@ export default function Register() {
               >
                 <option value="">Select Subject</option>
                 {course.grade &&
-                  subjectOptions[course.grade].map((subj) => (
+                  (subjectOptions[course.grade] || allSubjects).map((subj) => (
                     <option key={subj} value={subj}>
                       {subj}
                     </option>
@@ -373,19 +510,19 @@ export default function Register() {
         </form>
 
         {assignedTeacherId && (
-          <div className="auth-success" style={{ marginTop: 12 }}>
+          <div className="auth-success" style={{ marginTop: 12, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: 14, textAlign: "left" }}>
             <p>
               Registration complete. Your teacherId (username) is:{" "}
               <strong>{assignedTeacherId}</strong>
             </p>
             <p>
-              Use this ID to log in: <Link to="/login">Go to Login</Link>
+              Use this ID to log in: <Link to={loginLink}>Go to Login</Link>
             </p>
           </div>
         )}
 
-        <p className="auth-link">
-          Already have an account? <Link to="/login">Go to Login</Link>
+        <p>
+          Already have an account? <Link to={loginLink}>Go to Login</Link>
         </p>
       </div>
     </div>

@@ -18,7 +18,7 @@ import {
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 export default function AttendancePage() {
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
@@ -65,8 +65,14 @@ export default function AttendancePage() {
           axios.get(`${RTDB_BASE}/Courses.json`),
           axios.get(`${RTDB_BASE}/Teachers.json`)
         ]);
-        const teacherEntry = Object.entries(teachersRes.data || {}).find(
-          ([, t]) => t.userId === teacher.userId
+        const teachers = teachersRes.data || {};
+        const teacherIdentifiers = new Set([
+          String(teacher.teacherId || "").trim(),
+          String(teacher.teacherKey || "").trim(),
+          String(teacher.userId || "").trim(),
+        ].filter(Boolean));
+        const teacherEntry = Object.entries(teachers).find(
+          ([key, t]) => teacherIdentifiers.has(String(key || "").trim()) || teacherIdentifiers.has(String(t.userId || "").trim())
         );
         if (!teacherEntry) return;
         const teacherKey = teacherEntry[0];

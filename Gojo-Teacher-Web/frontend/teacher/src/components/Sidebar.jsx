@@ -19,28 +19,18 @@ export default function Sidebar({
   handleLogout,
 }) {
   const isMobile = typeof window !== "undefined" && window.innerWidth <= 600;
-  const activeStyle = { backgroundColor: "#4b6cb7", color: "#fff" };
+  const activeStyle = {
+    background: "linear-gradient(135deg, #1d4ed8, #2563eb)",
+    color: "#fff",
+    boxShadow: "0 8px 18px rgba(29,78,216,0.25)",
+    border: "1px solid #1d4ed8",
+  };
 
   return (
     <>
       {typeof window !== "undefined" && window.innerWidth <= 600 && !sidebarOpen && (
         <button
           className="sidebar-arrow-btn"
-          style={{
-            position: "fixed",
-            left: 0,
-            top: 0,
-            zIndex: 1300,
-            background: "#fff",
-            border: "none",
-            borderRadius: "0 8px 8px 0",
-            boxShadow: "2px 0 8px rgba(0,0,0,0.12)",
-            padding: 8,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-          }}
           onClick={() => setSidebarOpen(true)}
           aria-label="Open sidebar menu"
         >
@@ -52,63 +42,42 @@ export default function Sidebar({
         <div
           className="sidebar-overlay visible"
           onClick={() => setSidebarOpen(false)}
-          style={{
-            display: "block",
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.35)",
-            zIndex: 1200,
-          }}
         />
       )}
 
       <div
         className={`google-sidebar${isMobile && sidebarOpen ? " open" : ""}`}
-        style={
-          isMobile
-            ? {
-                position: "fixed",
-                top: 64,
-                left: sidebarOpen ? 0 : "-220px",
-                width: 220,
-                height: "calc(100vh - 64px)",
-                background: "#fff",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.12)",
-                zIndex: 1200,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                paddingTop: 10,
-                overflowY: "auto",
-                borderRadius: 0,
-                transition: "left 0.25s cubic-bezier(.4,0,.2,1)",
-              }
-            : {
-                position: "fixed",
-                top: 64,
-                left: 0,
-                width: 220,
-                height: "calc(100vh - 64px)",
-                background: "#fff",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.04)",
-                zIndex: 900,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                paddingTop: 10,
-                overflowY: "auto",
-                borderRadius: 0,
-              }
-        }
       >
         <style>{`
+          .sidebar-arrow-btn {
+            position: fixed;
+            left: 0;
+            top: var(--topbar-height);
+            z-index: 1300;
+            background: #ffffff;
+            border: none;
+            border-radius: 0 10px 10px 0;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+            padding: 10px 8px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+          }
+          .sidebar-overlay {
+            display: none;
+          }
           @media (max-width: 600px) {
             .google-sidebar {
+              top: var(--topbar-height) !important;
               left: -220px !important;
               width: 220px !important;
               min-width: 220px !important;
+              height: calc(100vh - var(--topbar-height)) !important;
               transition: left 0.25s cubic-bezier(.4,0,.2,1);
               border-radius: 0 !important;
+              padding-top: 10px !important;
+              z-index: 1202 !important;
             }
             .google-sidebar.open {
               left: 0 !important;
@@ -133,17 +102,16 @@ export default function Sidebar({
           <div className="sidebar-profile">
             <div
               className="sidebar-img-circle"
-              style={{ width: 48, height: 48, borderWidth: 2, marginBottom: 6 }}
             >
               <img
                 src={teacher.profileImage || "/default-profile.png"}
                 alt="profile"
               />
             </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>
+            <h3 style={{ margin: 0, fontWeight: 700 }}>
               {teacher.name}
             </h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>
+            <p style={{ margin: 0 }}>
               {teacher.username}
             </p>
           </div>

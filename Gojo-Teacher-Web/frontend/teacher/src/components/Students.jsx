@@ -26,6 +26,7 @@ import {
 } from "react-icons/fa";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
+import { getTeacherContext } from "../api/teacherApi";
 
 // NOTE: we alias `ref` to `dbRef` to avoid confusion with other `ref` variables
 import {
@@ -36,7 +37,7 @@ import {
   off,
   update,
 } from "firebase/database";
-import { db } from "../firebase";
+import { db, schoolPath } from "../firebase";
 
 // Chat thread key for teacher<->student must be: teacherUserId_studentUserId
 // (teacher first, no sorting) so the DB path is predictable.
@@ -74,7 +75,7 @@ const formatSubjectName = (courseId = "") => {
 
 };
 
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 // compute age helper
 const computeAge = (rawDob) => {
@@ -248,9 +249,26 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       navigate("/login"); // redirect if not logged in
       return;
     }
-    setTeacher(storedTeacher);
-    // fetch messenger conversations for student page as Dashboard does
-    fetchConversations(storedTeacher);
+    const bootstrapTeacher = async () => {
+      let nextTeacher = storedTeacher;
+
+      if (!storedTeacher.schoolCode) {
+        const context = await getTeacherContext({
+          teacherId: storedTeacher.teacherId || storedTeacher.teacherKey || storedTeacher.username,
+          userId: storedTeacher.userId,
+        });
+
+        if (context.success && context.teacher) {
+          nextTeacher = { ...storedTeacher, ...context.teacher };
+          localStorage.setItem("teacher", JSON.stringify(nextTeacher));
+        }
+      }
+
+      setTeacher(nextTeacher);
+      fetchConversations(nextTeacher);
+    };
+
+    bootstrapTeacher();
   }, [navigate]);
 
   // ---------------- LOAD TEACHER INFO ----------------
@@ -260,7 +278,29 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       navigate("/login");
       return;
     }
-    setTeacherInfo(storedTeacher);
+    const bootstrapTeacherInfo = async () => {
+      if (storedTeacher.schoolCode) {
+        setTeacherInfo(storedTeacher);
+        return;
+      }
+
+      const context = await getTeacherContext({
+        teacherId: storedTeacher.teacherId || storedTeacher.teacherKey || storedTeacher.username,
+        userId: storedTeacher.userId,
+      });
+
+      if (context.success && context.teacher) {
+        const nextTeacher = { ...storedTeacher, ...context.teacher };
+        localStorage.setItem("teacher", JSON.stringify(nextTeacher));
+        setTeacherInfo(nextTeacher);
+        return;
+      }
+
+      setTeacherInfo(storedTeacher);
+      setError("Teacher school context is missing. Log in again if students stay empty.");
+    };
+
+    bootstrapTeacherInfo();
   }, [navigate]);
 
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
@@ -273,29 +313,9 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           postsData = Object.values(postsData);
         }
 
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
-
         // Get teacher from localStorage so we know who's seen what
         const teacher = JSON.parse(localStorage.getItem("teacher"));
         const seenPosts = getSeenPosts(teacher?.userId);
-
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const schoolAdminRec = schoolAdmins[adminId];
-            const userKey = schoolAdminRec.userId;
-            const userRec = users[userKey] || null;
-            const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
-            const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
-          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-        };
 
         const latest = postsData
           .slice()
@@ -306,15 +326,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           })
           .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              id: post.postId,
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile,
-            };
-          });
+          .map((post) => ({
+            id: post.postId,
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: post.adminName || "Admin",
+            adminProfile: post.adminProfile || "/default-profile.png",
+          }));
 
         setNotifications(latest);
       } catch (err) {
@@ -479,7 +496,14 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
         ]);
 
         const teachers = teachersRes.data || {};
-        const teacherEntry = Object.entries(teachers).find(([_, t]) => t.userId === teacherInfo.userId);
+        const teacherIdentifiers = new Set([
+          String(teacherInfo.teacherId || "").trim(),
+          String(teacherInfo.teacherKey || "").trim(),
+          String(teacherInfo.userId || "").trim(),
+        ].filter(Boolean));
+        const teacherEntry = Object.entries(teachers).find(
+          ([key, t]) => teacherIdentifiers.has(String(key || "").trim()) || teacherIdentifiers.has(String(t.userId || "").trim())
+        );
 
         if (!teacherEntry) {
           console.warn("Teacher not found in Teachers node");
@@ -1042,7 +1066,7 @@ const toggleExpand = (key) => {
     async function fetchTeacherNotes() {
       try {
         const res = await axios.get(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`
+          `https://bale-house-rental-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`
         );
 
         if (!res.data) {
@@ -1082,7 +1106,7 @@ const toggleExpand = (key) => {
 
     try {
       await axios.post(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`,
+        `https://bale-house-rental-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`,
         noteData
       );
 
@@ -1109,7 +1133,7 @@ const toggleExpand = (key) => {
     if (!teacherUserId || !selectedStudent) return;
 
     const chatKey = getChatId(teacherUserId, selectedStudent.userId);
-    const messagesRef = dbRef(db, `Chats/${chatKey}/messages`);
+    const messagesRef = dbRef(db, schoolPath(`Chats/${chatKey}/messages`));
 
     const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
@@ -1179,12 +1203,12 @@ const toggleExpand = (key) => {
     };
 
     await axios.post(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatId}/messages.json`,
+      `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatId}/messages.json`,
       message
     );
 
     await axios.patch(
-      `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatId}.json`,
+      `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatId}.json`,
       {
         participants: { [senderId]: true, [receiverId]: true },
         lastMessage: { text: newMessageText, senderId, seen: false, timeStamp },
@@ -2591,3 +2615,4 @@ marginRight: 0,
 }
 
 export default StudentsPage;
+

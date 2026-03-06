@@ -2,35 +2,275 @@ import json
 import os
 import sys
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, has_request_context
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
-from flask import Flask, request, jsonify
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # ---------------- FIREBASE ----------------
-firebase_json = "ethiostore-17d9f-firebase-adminsdk-5e87k-c1cfe56112.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+default_shared_cred = os.path.abspath(
+    os.path.join(BASE_DIR, "..", "Gojo-Register-Web", "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
+)
+default_local_cred = os.path.join(BASE_DIR, "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
+
+firebase_json = os.getenv("FIREBASE_CREDENTIALS") or default_shared_cred
+if not os.path.exists(firebase_json) and os.path.exists(default_local_cred):
+    firebase_json = default_local_cred
+
 if not os.path.exists(firebase_json):
     print("Firebase JSON missing")
     sys.exit()
 
 cred = credentials.Certificate(firebase_json)
 firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://ethiostore-17d9f-default-rtdb.firebaseio.com/",
-    "storageBucket": "ethiostore-17d9f.appspot.com"
+    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/",
+    "storageBucket": "bale-house-rental.appspot.com"
 })
+
+_raw_db_reference = db.reference
+
+SCOPED_ROOTS = {
+    "Users",
+    "Students",
+    "Parents",
+    "Teachers",
+    "School_Admins",
+    "TeacherAssignments",
+    "Courses",
+    "ClassMarks",
+    "Posts",
+    "TeacherPosts",
+    "Chats",
+    "StudentNotes",
+    "LessonPlans",
+    "LessonPlanSubmissions",
+    "Presence",
+    "Curriculum",
+    "Exams",
+    "counters",
+    "Users_counters",
+}
+
+
+def _read_school_code_from_request():
+    if not has_request_context():
+        return str(os.getenv("DEFAULT_SCHOOL_CODE", "")).strip()
+
+    school_code = (
+        request.args.get("schoolCode")
+        or request.headers.get("X-School-Code")
+        or request.headers.get("x-school-code")
+    )
+
+    if not school_code:
+        body = request.get_json(silent=True) or {}
+        school_code = body.get("schoolCode")
+
+    if not school_code:
+        school_code = request.form.get("schoolCode")
+
+    if not school_code:
+        school_code = os.getenv("DEFAULT_SCHOOL_CODE", "")
+
+    return str(school_code or "").strip()
+
+
+def school_reference(path, school_code=None):
+    normalized = str(path or "").strip().lstrip("/")
+    if not normalized:
+        return _raw_db_reference("")
+
+    if normalized.startswith("Platform1/Schools/"):
+        return _raw_db_reference(normalized)
+
+    root = normalized.split("/", 1)[0]
+    resolved_school = str(school_code or _read_school_code_from_request() or "").strip()
+
+    if root in SCOPED_ROOTS and resolved_school:
+        normalized = f"Platform1/Schools/{resolved_school}/{normalized}"
+
+    return _raw_db_reference(normalized)
+
+
+def _normalize_short_name(value):
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _extract_short_name_from_teacher_id(teacher_id):
+    normalized = str(teacher_id or "").strip().upper()
+    if "T_" not in normalized:
+        return ""
+    return _normalize_short_name(normalized.split("T_", 1)[0])
+
+
+def _resolve_school_code_by_short_name(short_name):
+    key = _normalize_short_name(short_name)
+    if not key:
+        return ""
+
+    mapped = _raw_db_reference(f"Platform1/schoolCodeIndex/{key}").get()
+    if mapped:
+        return str(mapped).strip()
+
+    schools = _raw_db_reference("Platform1/Schools").get() or {}
+    for school_code, school_data in schools.items():
+        school_info = (school_data or {}).get("schoolInfo") or {}
+        if _normalize_short_name(school_info.get("shortName")) == key:
+            return str(school_code).strip()
+
+    return ""
+
+
+def _list_school_codes():
+    schools = _raw_db_reference("Platform1/Schools").get() or {}
+    return [str(code).strip() for code in schools.keys()]
+
+
+def _list_school_options():
+    schools = _raw_db_reference("Platform1/Schools").get() or {}
+    options = []
+
+    for school_code, school_data in schools.items():
+        info = (school_data or {}).get("schoolInfo") or {}
+        code = str(school_code or "").strip()
+        name = str(info.get("name") or code).strip()
+        short_name = _normalize_short_name(info.get("shortName"))
+        is_active = bool(info.get("active", True))
+
+        options.append({
+            "schoolCode": code,
+            "name": name,
+            "shortName": short_name,
+            "active": is_active,
+        })
+
+    options.sort(key=lambda x: (not x.get("active", True), x.get("name", "")))
+    return options
+
+
+def _grade_sort_key(grade_label):
+    text = str(grade_label or "").strip()
+    if not text:
+        return (9999, "")
+
+    first = text.split(" ", 1)[0]
+    if first.isdigit():
+        return (int(first), text)
+
+    return (9999, text)
+
+
+def _get_grade_management_options(school_code):
+    grades_raw = _raw_db_reference(f"Platform1/Schools/{school_code}/GradeManagement/grades").get() or []
+
+    if isinstance(grades_raw, dict):
+        iterable = grades_raw.values()
+    elif isinstance(grades_raw, list):
+        iterable = grades_raw
+    else:
+        iterable = []
+
+    grades = []
+    for row in iterable:
+        if not isinstance(row, dict):
+            continue
+
+        grade_label = str(row.get("grade") or "").strip()
+        if not grade_label:
+            continue
+
+        sections_obj = row.get("sections") or {}
+        sections = []
+        if isinstance(sections_obj, dict):
+            sections = sorted(str(key).strip() for key in sections_obj.keys() if str(key).strip())
+
+        grades.append({
+            "grade": grade_label,
+            "sections": sections,
+        })
+
+    grades.sort(key=lambda item: _grade_sort_key(item.get("grade")))
+    return grades
+
+
+def _resolve_school_code_for_teacher_registration():
+    requested = _read_school_code_from_request()
+    if requested:
+        return requested
+
+    all_codes = _list_school_codes()
+    if len(all_codes) == 1:
+        return all_codes[0]
+
+    return ""
+
+
+def _resolve_school_short_name(school_code):
+    info = _raw_db_reference(f"Platform1/Schools/{school_code}/schoolInfo").get() or {}
+    short_name = _normalize_short_name(info.get("shortName"))
+    if short_name:
+        return short_name
+
+    fallback = _normalize_short_name(str(school_code or "").split("-")[-1])
+    return fallback or "SCH"
+
+
+def _get_default_academic_year(school_code=None):
+    resolved_school = str(school_code or _read_school_code_from_request() or "").strip()
+    if not resolved_school:
+        return "default"
+
+    school_info = _raw_db_reference(f"Platform1/Schools/{resolved_school}/schoolInfo").get() or {}
+    current_year = str(school_info.get("currentAcademicYear") or "").strip()
+    if current_year:
+        return current_year
+
+    years = _raw_db_reference(f"Platform1/Schools/{resolved_school}/AcademicYears").get() or {}
+    if isinstance(years, dict):
+        for year_key, year_data in years.items():
+            if isinstance(year_data, dict) and year_data.get("isCurrent"):
+                return str(year_key).strip()
+
+        sorted_keys = sorted(str(key).strip() for key in years.keys() if str(key).strip())
+        if sorted_keys:
+            return sorted_keys[-1]
+
+    return "default"
+
+
 bucket = storage.bucket()
-posts_ref = db.reference("/TeacherPosts")
 
 
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
     return render_template('student_register.html')
+
+
+@app.route('/api/schools', methods=['GET'])
+def get_schools():
+    try:
+        return jsonify({"success": True, "schools": _list_school_options()})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e), "schools": []}), 500
+
+
+@app.route('/api/schools/<school_code>/grades', methods=['GET'])
+def get_school_grades(school_code):
+    try:
+        cleaned = str(school_code or "").strip()
+        if not cleaned:
+            return jsonify({"success": False, "message": "schoolCode is required", "grades": []}), 400
+
+        grades = _get_grade_management_options(cleaned)
+        return jsonify({"success": True, "grades": grades})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e), "grades": []}), 500
 
 # New endpoint: reserve & return the next studentId
 @app.route("/generate/student_id", methods=["GET"])
@@ -41,8 +281,8 @@ def generate_student_id():
     This reserves that sequence number.
     """
     try:
-        counters_ref = db.reference("Users_counters/students")
-        students_ref = db.reference("Students")
+        counters_ref = school_reference("Users_counters/students")
+        students_ref = school_reference("Students")
 
         # Defensive: bring counter up to existing max (one-time migration)
         existing_students = students_ref.get() or {}
@@ -125,9 +365,9 @@ def register_student():
     if not all([name, password, grade, section]):
         return jsonify({'success': False, 'message': 'Name, password, grade and section are required.'}), 400
 
-    users_ref = db.reference('Users')
-    students_ref = db.reference('Students')
-    counters_ref = db.reference('counters/students')
+    users_ref = school_reference('Users')
+    students_ref = school_reference('Students')
+    counters_ref = school_reference('counters/students')
 
     # ---------- upload profile image (optional) ----------
     profile_url = "/default-profile.png"
@@ -276,6 +516,12 @@ def register_teacher():
     from datetime import datetime
     import json
 
+    school_code = _resolve_school_code_for_teacher_registration()
+    if not school_code:
+        return jsonify({'success': False, 'message': 'Unable to resolve school for registration.'}), 400
+
+    school_short_name = _resolve_school_short_name(school_code)
+
     name = request.form.get('name')
     provided_username = (request.form.get('username') or "").strip()
     password = request.form.get('password')
@@ -288,11 +534,11 @@ def register_teacher():
     if not all([name, password]):
         return jsonify({'success': False, 'message': 'Name and password are required.'}), 400
 
-    users_ref = db.reference('Users')
-    teachers_ref = db.reference('Teachers')
-    courses_ref = db.reference('Courses')
-    assignments_ref = db.reference('TeacherAssignments')
-    counters_ref = db.reference('counters/teachers')
+    users_ref = school_reference('Users', school_code)
+    teachers_ref = school_reference('Teachers', school_code)
+    courses_ref = school_reference('Courses', school_code)
+    assignments_ref = school_reference('TeacherAssignments', school_code)
+    counters_ref = school_reference('counters/teachers', school_code)
 
     # check username uniqueness if provided (we won't rely on frontend providing it)
     all_users = users_ref.get() or {}
@@ -326,9 +572,10 @@ def register_teacher():
         # compute max existing seq (defensive)
         existing_teachers = teachers_ref.get() or {}
         max_found = 0
+        id_prefix = f"{school_short_name}T_"
         for t in existing_teachers.values():
             tid = (t.get('teacherId') or "")
-            if tid and tid.startswith("GET_"):
+            if tid and tid.startswith(id_prefix):
                 parts = tid.split('_')
                 if len(parts) >= 3:
                     try:
@@ -354,22 +601,22 @@ def register_teacher():
         year = datetime.utcnow().year
         year_suffix = str(year)[-2:]
         seq_padded = str(new_seq).zfill(4)
-        teacher_id = f"GET_{seq_padded}_{year_suffix}"
+        teacher_id = f"{school_short_name}T_{seq_padded}_{year_suffix}"
 
         # ensure uniqueness for teacherId and username
         attempts = 0
         while teachers_ref.child(teacher_id).get() or any(u.get('username') == teacher_id for u in (users_ref.get() or {}).values()):
             new_seq += 1
             seq_padded = str(new_seq).zfill(4)
-            teacher_id = f"GET_{seq_padded}_{year_suffix}"
+            teacher_id = f"{school_short_name}T_{seq_padded}_{year_suffix}"
             attempts += 1
             if attempts > 1000:
-                teacher_id = f"GET_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                teacher_id = f"{school_short_name}T_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
                 break
     except Exception:
         year = datetime.utcnow().year
         year_suffix = str(year)[-2:]
-        teacher_id = f"GET_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+        teacher_id = f"{school_short_name}T_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
 
     # final username: either provided_username or teacher_id
     username = provided_username or teacher_id
@@ -387,6 +634,7 @@ def register_teacher():
         'email': email,
         'phone': phone,
         'gender': gender,
+        'schoolCode': school_code,
         'teacherId': teacher_id
     }
     new_user_ref.set(user_data)
@@ -395,6 +643,7 @@ def register_teacher():
     teacher_data = {
         'userId': new_user_ref.key,
         'teacherId': teacher_id,
+        'schoolCode': school_code,
         'status': 'active',
        
     }
@@ -422,36 +671,61 @@ def register_teacher():
         'success': True,
         'message': 'Teacher registered successfully!',
         'teacherKey': teacher_id,
+        'schoolCode': school_code,
         'profileImage': profile_url
     })
 
 # ===================== TEACHER LOGIN =====================
 @app.route("/api/teacher_login", methods=["POST"])
 def teacher_login():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     username = data.get("username")
     password = data.get("password")
 
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password required"}), 400
 
-    users_ref = db.reference("Users")
-    teachers_ref = db.reference("Teachers")
+    inferred_short_name = _extract_short_name_from_teacher_id(username)
+    inferred_school_code = _resolve_school_code_by_short_name(inferred_short_name)
 
-    all_users = users_ref.get() or {}
-    all_teachers = teachers_ref.get() or {}
+    search_codes = []
+    if inferred_school_code:
+        search_codes.append(inferred_school_code)
+    search_codes.extend(code for code in _list_school_codes() if code not in search_codes)
 
     teacher_user = None
     teacher_key = None
-    for key, user in all_users.items():
-        if user.get("username") == username and user.get("role") == "teacher":
-            teacher_user = user
-            # Match with Teachers node
-            for tkey, tdata in all_teachers.items():
-                if tdata.get("userId") == key:
-                    teacher_key = tkey
-                    break
+    school_code = ""
+    all_teachers = {}
+
+    for candidate_school_code in search_codes:
+        users_ref = school_reference("Users", candidate_school_code)
+        teachers_ref = school_reference("Teachers", candidate_school_code)
+
+        all_users = users_ref.get() or {}
+        candidate_teachers = teachers_ref.get() or {}
+
+        found_user_key = None
+        for user_key, user in all_users.items():
+            if user.get("username") == username and user.get("role") == "teacher":
+                teacher_user = user
+                found_user_key = user_key
+                break
+
+        if not teacher_user:
+            continue
+
+        for tkey, tdata in candidate_teachers.items():
+            if tdata.get("userId") == found_user_key:
+                teacher_key = tkey
+                break
+
+        if teacher_key:
+            school_code = candidate_school_code
+            all_teachers = candidate_teachers
             break
+
+        teacher_user = None
 
     if not teacher_user or not teacher_key:
         return jsonify({"success": False, "message": "Teacher not found"}), 404
@@ -468,16 +742,63 @@ def teacher_login():
             "userId": teacher_user["userId"],
             "name": teacher_user.get("name"),
             "username": teacher_user.get("username"),
-            "profileImage": profile_image
+            "profileImage": profile_image,
+            "schoolCode": school_code,
+            "teacherId": teacher_key,
         }
     })
+
+
+@app.route("/api/teacher_context", methods=["GET"])
+def teacher_context():
+    teacher_id = str(request.args.get("teacherId") or "").strip()
+    user_id = str(request.args.get("userId") or "").strip()
+
+    inferred_school_code = _resolve_school_code_by_short_name(_extract_short_name_from_teacher_id(teacher_id)) if teacher_id else ""
+    search_codes = []
+    if inferred_school_code:
+        search_codes.append(inferred_school_code)
+    search_codes.extend(code for code in _list_school_codes() if code not in search_codes)
+
+    for school_code in search_codes:
+        teachers = school_reference("Teachers", school_code).get() or {}
+        users = school_reference("Users", school_code).get() or {}
+
+        for teacher_key, teacher_data in teachers.items():
+            teacher_user_id = str(teacher_data.get("userId") or "").strip()
+            teacher_teacher_id = str(teacher_data.get("teacherId") or teacher_key or "").strip()
+
+            if teacher_id and teacher_teacher_id != teacher_id:
+                continue
+            if user_id and teacher_user_id != user_id:
+                continue
+
+            teacher_user = next(
+                (user for user in users.values() if str(user.get("userId") or "").strip() == teacher_user_id),
+                {},
+            )
+
+            return jsonify({
+                "success": True,
+                "teacher": {
+                    "teacherId": teacher_teacher_id,
+                    "teacherKey": teacher_key,
+                    "userId": teacher_user_id,
+                    "name": teacher_user.get("name") or teacher_data.get("name"),
+                    "username": teacher_user.get("username") or teacher_teacher_id,
+                    "profileImage": teacher_user.get("profileImage") or teacher_data.get("profileImage") or "/default-profile.png",
+                    "schoolCode": school_code,
+                }
+            })
+
+    return jsonify({"success": False, "message": "Teacher context not found"}), 404
 
 
 # ===================== GET TEACHER COURSES =====================
 @app.route('/api/teacher/<teacher_key>/courses', methods=['GET'])
 def get_teacher_courses(teacher_key):
-    assignments_ref = db.reference('TeacherAssignments')
-    courses_ref = db.reference('Courses')
+    assignments_ref = school_reference('TeacherAssignments')
+    courses_ref = school_reference('Courses')
 
     all_assignments = assignments_ref.get() or {}
     courses_list = []
@@ -500,12 +821,12 @@ def get_teacher_courses(teacher_key):
 # ===================== GET TEACHER STUDENTS =====================
 @app.route("/api/teacher/<user_id>/students", methods=["GET"])
 def get_teacher_students(user_id):
-    teachers_ref = db.reference("Teachers")
-    assignments_ref = db.reference("TeacherAssignments")
-    courses_ref = db.reference("Courses")
-    students_ref = db.reference("Students")
-    users_ref = db.reference("Users")
-    marks_ref = db.reference("ClassMarks")
+    teachers_ref = school_reference("Teachers")
+    assignments_ref = school_reference("TeacherAssignments")
+    courses_ref = school_reference("Courses")
+    students_ref = school_reference("Students")
+    users_ref = school_reference("Users")
+    marks_ref = school_reference("ClassMarks")
 
     # 1️⃣ Get the teacher key from Teachers node using user_id
     teacher_key = None
@@ -571,10 +892,10 @@ def get_teacher_students(user_id):
 # ===================== GET STUDENTS OF A COURSE =====================
 @app.route('/api/course/<course_id>/students', methods=['GET'])
 def get_course_students(course_id):
-    courses_ref = db.reference('Courses')
-    students_ref = db.reference('Students')
-    users_ref = db.reference('Users')
-    marks_ref = db.reference('ClassMarks')
+    courses_ref = school_reference('Courses')
+    students_ref = school_reference('Students')
+    users_ref = school_reference('Users')
+    marks_ref = school_reference('ClassMarks')
 
     course = courses_ref.child(course_id).get()
     if not course:
@@ -619,7 +940,7 @@ def get_course_students(course_id):
 def update_course_marks(course_id):
     data = request.json
     updates = data.get('updates', [])
-    marks_ref = db.reference('ClassMarks')
+    marks_ref = school_reference('ClassMarks')
 
     for update in updates:
         student_id = update.get('studentId')
@@ -636,24 +957,58 @@ def update_course_marks(course_id):
 # ===================== GET POSTS =====================
 @app.route("/api/get_posts", methods=["GET"])
 def get_posts():
-    posts_ref = db.reference("Posts")
-    users_ref = db.reference("Users")
+    posts_ref = school_reference("Posts")
+    users_ref = school_reference("Users")
+    school_admins_ref = school_reference("School_Admins")
 
     all_posts = posts_ref.get() or {}
     all_users = users_ref.get() or {}
+    all_school_admins = school_admins_ref.get() or {}
 
     result = []
 
     for post_id, post in all_posts.items():
-        user_id = post.get("adminId")  # ⚠️ THIS IS userId
+        raw_admin_id = post.get("adminId")
+        school_admin_key = None
+        school_admin_record = None
+        user = all_users.get(raw_admin_id, {}) if raw_admin_id in all_users else {}
 
-        user = all_users.get(user_id, {})
+        if not user and raw_admin_id:
+            user = next(
+                (candidate for candidate in all_users.values() if str(candidate.get("userId")) == str(raw_admin_id)),
+                {},
+            )
+
+        if raw_admin_id in all_school_admins:
+            school_admin_key = raw_admin_id
+            school_admin_record = all_school_admins.get(raw_admin_id) or {}
+            if not user and school_admin_record.get("userId"):
+                user = next(
+                    (
+                        candidate
+                        for candidate in all_users.values()
+                        if str(candidate.get("userId")) == str(school_admin_record.get("userId"))
+                    ),
+                    {},
+                )
+        else:
+            school_admin_key, school_admin_record = next(
+                (
+                    (candidate_key, candidate)
+                    for candidate_key, candidate in all_school_admins.items()
+                    if str(candidate.get("userId")) == str(raw_admin_id)
+                ),
+                (None, None),
+            )
+
+        admin_user_id = str(user.get("userId") or (school_admin_record or {}).get("userId") or raw_admin_id or "").strip()
 
         result.append({
             "postId": post_id,
-            "adminId": user_id,
-            "adminName": user.get("name", "Admin"),
-            "adminProfile": user.get("profileImage", "/default-profile.png"),
+            "adminId": school_admin_key or raw_admin_id,
+            "adminUserId": admin_user_id,
+            "adminName": user.get("name") or (school_admin_record or {}).get("name") or "Admin",
+            "adminProfile": user.get("profileImage") or (school_admin_record or {}).get("profileImage") or "/default-profile.png",
             "message": post.get("message", ""),
             "postUrl": post.get("postUrl"),
             "timestamp": post.get("time", ""),
@@ -671,6 +1026,7 @@ def mark_teacher_post_seen():
         data = request.get_json()
         post_id = data.get("postId")
         teacher_id = data.get("teacherId")
+        posts_ref = school_reference("TeacherPosts")
 
         if not post_id or not teacher_id:
             return jsonify({"success": False, "message": "Missing postId or teacherId"}), 400
@@ -718,9 +1074,9 @@ def register_parent():
             "message": "Each student must have a relationship"
         }), 400
 
-    users_ref = db.reference('Users')
-    parents_ref = db.reference('Parents')
-    students_ref = db.reference('Students')
+    users_ref = school_reference('Users')
+    parents_ref = school_reference('Parents')
+    students_ref = school_reference('Students')
 
     # Check username uniqueness
     all_users = users_ref.get() or {}
@@ -801,7 +1157,7 @@ def like_post():
     postId = data.get("postId")
     teacherId = data.get("teacherId")
 
-    posts_ref = db.reference("Posts")
+    posts_ref = school_reference("Posts")
     post = posts_ref.child(postId).get()
 
     if not post:
@@ -832,7 +1188,7 @@ def save_week_lesson_plan():
         data = request.get_json() or {}
         teacher_id = data.get('teacherId')
         course_id = data.get('courseId')
-        academic_year = data.get('academicYear') or 'default'
+        academic_year = data.get('academicYear') or _get_default_academic_year()
         week = data.get('week')
         week_topic = data.get('weekTopic')
         days = data.get('days') or []
@@ -847,7 +1203,7 @@ def save_week_lesson_plan():
         week_key = f"week_{str(week)}"
 
         # Save per-course under courses/<course_id>/<week_key>
-        lesson_ref = db.reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id).child(week_key)
+        lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id).child(week_key)
 
         # Structure to save
         obj = {
@@ -876,7 +1232,7 @@ def save_annual_lesson_plan():
         data = request.get_json() or {}
         teacher_id = data.get('teacherId')
         course_id = data.get('courseId')
-        academic_year = data.get('academicYear') or 'default'
+        academic_year = data.get('academicYear') or _get_default_academic_year()
         annual_rows = data.get('annualRows', [])
 
         if not teacher_id:
@@ -886,7 +1242,7 @@ def save_annual_lesson_plan():
             return jsonify({'success': False, 'message': 'courseId is required'}), 400
 
         # Save per-course annual under courses/<course_id>/annual
-        lesson_ref = db.reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id)
+        lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id)
 
         obj = {
             'teacherId': teacher_id,
@@ -908,9 +1264,9 @@ def save_annual_lesson_plan():
 @app.route('/api/lesson-plans/<teacher_id>', methods=['GET'])
 def get_lesson_plans(teacher_id):
     try:
-        academic_year = request.args.get('academicYear') or '2025/26'
+        academic_year = request.args.get('academicYear') or _get_default_academic_year()
 
-        lesson_ref = db.reference('LessonPlans').child(teacher_id).child(academic_year)
+        lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year)
 
         course_id = request.args.get('courseId')
         if course_id:
@@ -932,12 +1288,12 @@ def get_lesson_plan_submissions():
     try:
         teacher_id = request.args.get('teacherId')
         course_id = request.args.get('courseId')
-        academic_year = request.args.get('academicYear') or '2025/26'
+        academic_year = request.args.get('academicYear') or _get_default_academic_year()
 
         if not teacher_id or not course_id:
             return jsonify({'success': False, 'message': 'teacherId and courseId are required'}), 400
 
-        ref = db.reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
+        ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
         data = ref.get() or {}
 
         results = []
@@ -960,7 +1316,7 @@ def submit_daily_lesson_plan():
         data = request.get_json() or {}
         teacher_id = data.get('teacherId')
         course_id = data.get('courseId')
-        academic_year = data.get('academicYear') or '2025/26'
+        academic_year = data.get('academicYear') or _get_default_academic_year()
         key = data.get('key')
         week = data.get('week')
         day_name = data.get('dayName')
@@ -973,7 +1329,7 @@ def submit_daily_lesson_plan():
         import re
         child = re.sub(r'[^A-Za-z0-9_\-]', '_', str(key))
 
-        ref = db.reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id).child(child)
+        ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id).child(child)
 
         existing = ref.get()
         if existing:
@@ -1002,4 +1358,5 @@ def submit_daily_lesson_plan():
 
 # ===================== RUN APP =====================
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+

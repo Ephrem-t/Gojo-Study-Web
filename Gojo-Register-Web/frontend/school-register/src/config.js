@@ -1,6 +1,6 @@
 // Central backend base URL. Try Vite env, Node env, legacy React env, then default.
 // Default to local register backend during development.
-const DEFAULT_BACKEND = "http://127.0.0.1:5000";
+const DEFAULT_BACKEND = "http://127.0.0.1:5001";
 
 const viteEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_BASE;
 const nodeViteEnv = typeof process !== 'undefined' && process.env && process.env.VITE_BACKEND_BASE;
@@ -11,4 +11,4 @@ const rawBase = (viteEnv || nodeViteEnv || reactEnv || DEFAULT_BACKEND) || DEFAU
 export const BACKEND_BASE = String(rawBase).trim().replace(/\/$/, "");
 
 // Example override for local development (Vite): create .env with
-// VITE_BACKEND_BASE=http://127.0.0.1:5000
+// VITE_BACKEND_BASE=http://127.0.0.1:5001

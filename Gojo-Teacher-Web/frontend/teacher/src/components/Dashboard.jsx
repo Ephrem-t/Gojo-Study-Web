@@ -22,10 +22,10 @@ import {
 import axios from "axios";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
-import { db } from "../firebase";
+import { db, schoolPath } from "../firebase";
 import { ref, get } from "firebase/database";
 
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 // === Defensive helper ===
 function getSafeProfileImage(profileImage) {
@@ -68,7 +68,7 @@ export default function Dashboard() {
     // Fetch teacher profile from Users node in Firebase
     const fetchTeacherProfile = async () => {
       try {
-        const usersRef = ref(db, `Users`);
+        const usersRef = ref(db, schoolPath(`Users`));
         const snapshot = await get(usersRef);
         const usersData = snapshot.val() || {};
         // Find the user with matching userId
@@ -187,29 +187,8 @@ export default function Dashboard() {
       if (!Array.isArray(postsData) && typeof postsData === "object")
         postsData = Object.values(postsData);
 
-      const [adminsResp, usersResp] = await Promise.all([
-        axios.get(`${RTDB_BASE}/School_Admins.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-      ]);
-      const schoolAdmins = adminsResp.data || {};
-      const users = usersResp.data || {};
-
-      const resolveAdminInfo = (adminId) => {
-        if (!adminId)
-          return { name: "Admin", profile: "/default-profile.png" };
-        const adminRec = schoolAdmins[adminId];
-        if (!adminRec)
-          return { name: adminId, profile: "/default-profile.png" };
-        const userKey = adminRec.userId;
-        const userRec = userKey ? users[userKey] : null;
-        const name = userRec?.name || adminRec?.title || adminId;
-        const profile = getSafeProfileImage(userRec?.profileImage);
-        return { name, profile };
-      };
-
       const finalPosts = postsData.map((post) => {
         const postId = post.postId || post.id || post.key || "";
-        const { name, profile } = resolveAdminInfo(post.adminId);
         let likesArray = [];
         if (Array.isArray(post.likes)) likesArray = post.likes;
         else if (post.likes && typeof post.likes === "object")
@@ -221,8 +200,8 @@ export default function Dashboard() {
         return {
           ...post,
           postId,
-          adminName: name,
-          adminProfile: profile,
+          adminName: post.adminName || "Admin",
+          adminProfile: getSafeProfileImage(post.adminProfile),
           time: timeValue,
           likes: likesArray,
           likeCount: post.likeCount || likesArray.length || 0,
@@ -463,9 +442,9 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="dashboard-page">
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
+    <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid #e5e7eb", background: "#ffffff" }}>
+        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Teacher Portal</h2>
         <div className="nav-right">
           {/* Notifications */}
          {/* Notifications */}
@@ -637,7 +616,7 @@ export default function Dashboard() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
         <Sidebar
           active="dashboard"
           sidebarOpen={sidebarOpen}
@@ -646,7 +625,29 @@ export default function Dashboard() {
           handleLogout={handleLogout}
         />
 
-        <div className="google-main posts-full-mobile">
+        <div
+          className="google-main posts-full-mobile"
+          style={{
+            padding: "10px 20px 20px",
+            flex: 1,
+            minWidth: 0,
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 560,
+              margin: "0 auto 12px",
+              background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
+              color: "#fff",
+              borderRadius: 14,
+              padding: "12px 14px",
+              boxShadow: "0 14px 28px rgba(30,58,138,0.22)",
+            }}
+          >
+            <div style={{ fontSize: 17, fontWeight: 800 }}>School Updates Feed</div>
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Posts, notices, and classroom announcements from school admins.</div>
+          </div>
           <div className="posts-container">
             {posts.length === 0 && <p>No posts available</p>}
             {posts.map((post) => (
@@ -655,6 +656,7 @@ export default function Dashboard() {
                 ref={(el) => (postRefs.current[post.postId] = el)}
                 className="post-box"
                 style={{
+                  maxWidth: 560,
                   border:
                     highlightedPostId === post.postId
                       ? "2px solid #4b6cb7"
@@ -740,12 +742,13 @@ export default function Dashboard() {
           .posts-container {
             display: flex;
             flex-direction: column;
-            align-items: flex-start;
+            align-items: center;
             justify-content: flex-start;
-            margin-left: 10px;
+            margin-left: 0;
           }
           .post-box {
-            margin-left: 0;
+            width: 100%;
+            margin-left: auto;
             margin-right: auto;
             margin-top: 12px;
           }
@@ -786,3 +789,4 @@ export default function Dashboard() {
         }
       `}</style>
 }
+

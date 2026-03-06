@@ -92,9 +92,9 @@ const handleNotificationClick = (postId, index) => {
     async function fetchCourses() {
       try {
         const [coursesRes, assignmentsRes, teachersRes] = await Promise.all([
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Courses.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Courses.json"),
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/TeacherAssignments.json"),
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
         ]);
 
         const teacherKeyEntry = Object.entries(teachersRes.data || {}).find(
@@ -126,7 +126,7 @@ const handleNotificationClick = (postId, index) => {
     async function fetchPosts() {
       try {
         const res = await axios.get(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherPosts.json"
+          "https://bale-house-rental-default-rtdb.firebaseio.com/TeacherPosts.json"
         );
         setPosts(Object.entries(res.data || {}).map(([id, post]) => ({ id, ...post })));
       } catch (err) {
@@ -159,7 +159,7 @@ const handleNotificationClick = (postId, index) => {
 
     try {
       await axios.post(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/TeacherPosts.json",
+        "https://bale-house-rental-default-rtdb.firebaseio.com/TeacherPosts.json",
         postData
       );
       alert("Post submitted!");

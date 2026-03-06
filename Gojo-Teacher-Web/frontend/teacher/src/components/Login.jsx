@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { loginTeacher } from "../api/teacherapi";
+import { loginTeacher } from "../api/teacherApi";
 import "../styles/login.css";
 
 export default function Login() {
@@ -8,6 +8,7 @@ export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const registerLink = "/register";
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -28,9 +29,10 @@ export default function Login() {
     <div className="auth-container">
       <div className="auth-box">
         <h2>Teacher Login</h2>
-        {message && <p className="auth-error">{message}</p>}
+        <p className="subtle">Sign in to the teacher portal.</p>
+        {message ? <p style={{ color: "#dc2626", marginBottom: "10px" }}>{message}</p> : null}
 
-        <form onSubmit={handleLogin}>
+        <form onSubmit={handleLogin} className="vertical-form">
           <input
             type="text"
             placeholder="Username"
@@ -48,8 +50,8 @@ export default function Login() {
           <button type="submit" className="submit-btn">Login</button>
         </form>
 
-        <p className="auth-link">
-          Don't have an account? <Link to="/register">Register Here</Link>
+        <p>
+          I don’t have an account? <Link to={registerLink}>Register</Link>
         </p>
       </div>
     </div>

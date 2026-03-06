@@ -23,7 +23,7 @@ import Sidebar from "./Sidebar";
 import "../styles/global.css";
 
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 // Format student name: capitalize first letter of each word, rest lowercase
 const formatStudentName = (rawName) => {
@@ -97,7 +97,15 @@ export default function MarksPage() {
           axios.get(`${RTDB_BASE}/Courses.json`),
           axios.get(`${RTDB_BASE}/Teachers.json`),
         ]);
-        const teacherEntry = Object.entries(teachersRes.data || {}).find(([, t]) => t.userId === teacher.userId);
+        const teachers = teachersRes.data || {};
+        const teacherIdentifiers = new Set([
+          String(teacher.teacherId || "").trim(),
+          String(teacher.teacherKey || "").trim(),
+          String(teacher.userId || "").trim(),
+        ].filter(Boolean));
+        const teacherEntry = Object.entries(teachers).find(
+          ([key, t]) => teacherIdentifiers.has(String(key || "").trim()) || teacherIdentifiers.has(String(t.userId || "").trim())
+        );
         if (!teacherEntry) return;
         const teacherKey = teacherEntry[0];
         const assignedCourses = Object.values(assignmentsRes.data || {}).filter((a) => a.teacherId === teacherKey).map((a) => a.courseId);
@@ -112,8 +120,6 @@ export default function MarksPage() {
   }, [teacher]);
 
   // Load marks for course/semester is handled in the effect below
-
-  // Fetch teacher's assigned courses
   useEffect(() => {
     if (!selectedCourseId) return;
     const loadCourseData = async () => {
@@ -121,35 +127,38 @@ export default function MarksPage() {
         const marksRes = await axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`);
         const course = courses.find((c) => c.id === selectedCourseId);
         if (!course) return;
-        const filteredStudents = students.filter((s) => s.grade === course.grade && s.section === course.section);
+
+        const filteredStudents = students.filter(
+          (s) => s.grade === course.grade && s.section === course.section
+        );
         const initMarks = {};
         let assessmentListFromDB = [];
 
-        // Collect quarter keys present under this semester across students (only keys that start with 'q')
         const quarterSet = new Set();
         filteredStudents.forEach((s) => {
           const semData = marksRes.data?.[s.id]?.[activeSemester];
-          if (semData && typeof semData === 'object') {
+          if (semData && typeof semData === "object") {
             Object.keys(semData).forEach((k) => {
-              if (k && k.toLowerCase().startsWith('q')) quarterSet.add(k);
+              if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
             });
           }
         });
-        // Ensure at least q1 and q2 exist in the UI even if DB only has some quarters
+
         const quartersArrRaw = Array.from(quarterSet);
         const required = ["q1", "q2"];
-        required.forEach((rq) => { if (!quartersArrRaw.includes(rq)) quartersArrRaw.push(rq); });
-        // Always include an 'avg' pseudo-quarter for semester average display
-        if (!quartersArrRaw.includes('avg')) quartersArrRaw.push('avg');
-        // sort by numeric part (q1, q2, q3...) but keep 'avg' at the end
+        required.forEach((rq) => {
+          if (!quartersArrRaw.includes(rq)) quartersArrRaw.push(rq);
+        });
+        if (!quartersArrRaw.includes("avg")) quartersArrRaw.push("avg");
+
         const quartersArr = quartersArrRaw
-          .filter(q => q !== 'avg')
+          .filter((q) => q !== "avg")
           .sort((a, b) => {
             const na = parseInt(String(a).replace(/^q/i, ""), 10) || 0;
             const nb = parseInt(String(b).replace(/^q/i, ""), 10) || 0;
             return na - nb;
           });
-        if (!quartersArr.includes('avg')) quartersArr.push('avg');
+        if (!quartersArr.includes("avg")) quartersArr.push("avg");
         setQuartersBySem((p) => ({ ...p, [activeSemester]: quartersArr }));
 
         // Ensure selectedQuarter exists for this semester
