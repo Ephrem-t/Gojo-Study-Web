@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
 import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
 import axios from "axios";
-import { db } from "../firebase";
 import "../styles/global.css";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
@@ -13,26 +12,81 @@ function AllChat() {
   const navigate = useNavigate();
 
   const stored = (() => {
-    try {
-      return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin")) || {};
-    } catch {
-      return {};
-    }
+    const parse = (raw) => {
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    };
+
+    return parse(localStorage.getItem("registrar")) || parse(localStorage.getItem("admin")) || {};
   })();
 
   const financeUserId = stored.userId || "";
+  const financeAccountId = stored.financeId || stored.adminId || "";
   const schoolCode = stored.schoolCode || "";
   const DB_ROOT = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
   const DB_PATH = schoolCode ? `Platform1/Schools/${schoolCode}` : "";
 
-  const passedUser = location.state?.user || null;
+  const isSelfUser = (value) => {
+    const target = String(value || "");
+    if (!target) return false;
+    return [financeUserId, financeAccountId]
+      .map((v) => String(v || ""))
+      .filter(Boolean)
+      .includes(target);
+  };
+
+  const passedUser = useMemo(() => {
+    const normalize = (u, fallbackType = "student") => {
+      if (!u?.userId) return null;
+      if (isSelfUser(u.userId) || isSelfUser(u.id) || isSelfUser(u.financeId) || isSelfUser(u.adminId)) {
+        return null;
+      }
+      return {
+        ...u,
+        type: u?.type || fallbackType,
+        name: u?.name || u?.username || "User",
+        profileImage: u?.profileImage || "/default-profile.png",
+      };
+    };
+
+    if (location.state?.user) return normalize(location.state.user, location.state?.user?.type || "student");
+
+    if (location.state?.teacher) {
+      const t = location.state.teacher;
+      return normalize(
+        {
+          userId: t?.userId || "",
+          name: t?.name || t?.username || "Teacher",
+          profileImage: t?.profileImage || "/default-profile.png",
+          type: location.state?.userType || "teacher",
+        },
+        "teacher"
+      );
+    }
+
+    return null;
+  }, [location.state, financeUserId, financeAccountId]);
 
   const getChatKey = (a, b) => [String(a || ""), String(b || "")].sort().join("_");
 
+  const getChatKeyCandidates = (a, b) => {
+    const left = String(a || "");
+    const right = String(b || "");
+    const sorted = getChatKey(left, right);
+    const direct = `${left}_${right}`;
+    const reverse = `${right}_${left}`;
+    return [sorted, direct, reverse].filter((v, i, arr) => v && arr.indexOf(v) === i);
+  };
+
   const [students, setStudents] = useState([]);
   const [parents, setParents] = useState([]);
+  const [teachers, setTeachers] = useState([]);
   const [selectedTab, setSelectedTab] = useState(
-    passedUser?.type === "parent" ? "parent" : "student"
+    passedUser?.type === "parent" || passedUser?.type === "teacher" ? passedUser.type : "student"
   );
   const [selectedChatUser, setSelectedChatUser] = useState(passedUser);
 
@@ -47,14 +101,26 @@ function AllChat() {
   const chatEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
-  const chatKey = useMemo(() => {
+  const normalizedChatKey = useMemo(() => {
     if (!selectedChatUser?.userId || !financeUserId) return null;
     return getChatKey(financeUserId, selectedChatUser.userId);
   }, [selectedChatUser, financeUserId]);
+  const [activeChatKey, setActiveChatKey] = useState(null);
+
+  useEffect(() => {
+    if (!passedUser?.userId) return;
+    if (isSelfUser(passedUser.userId) || isSelfUser(passedUser.id)) return;
+    setSelectedChatUser((prev) =>
+      String(prev?.userId || "") === String(passedUser.userId) ? prev : passedUser
+    );
+    if (["student", "parent", "teacher"].includes(passedUser?.type)) {
+      setSelectedTab(passedUser.type);
+    }
+  }, [passedUser, financeUserId, financeAccountId]);
 
   const updateUnreadForSelected = async (userId) => {
     if (!financeUserId || !userId) return;
-    const key = getChatKey(financeUserId, userId);
+    const key = activeChatKey || getChatKey(financeUserId, userId);
     try {
       await axios.patch(`${DB_ROOT}/Chats/${key}/unread.json`, {
         [financeUserId]: 0,
@@ -69,27 +135,57 @@ function AllChat() {
       if (!financeUserId) return;
 
       try {
-        const [studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
+        const [studentsRes, parentsRes, teachersRes, usersRes, chatsRes] = await Promise.all([
           axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
           axios.get(`${DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_ROOT}/Teachers.json`).catch(() => ({ data: {} })),
           axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
           axios.get(`${DB_ROOT}/Chats.json`).catch(() => ({ data: {} })),
         ]);
 
         const studentsData = studentsRes.data || {};
         const parentsData = parentsRes.data || {};
+        const teachersData = teachersRes.data || {};
         const usersData = usersRes.data || {};
         const chatsData = chatsRes.data || {};
 
+        const findUserNode = (userId) => {
+          if (usersData[userId]) return usersData[userId];
+          return (
+            Object.values(usersData).find(
+              (u) => String(u?.userId || "") === String(userId || "")
+            ) || {}
+          );
+        };
+
+        const pickChatNode = (userId) => {
+          const candidates = getChatKeyCandidates(financeUserId, userId);
+          const found = candidates
+            .map((key) => ({ key, chat: chatsData[key] }))
+            .filter((x) => Boolean(x.chat));
+
+          if (found.length === 0) return { key: candidates[0], chat: {} };
+
+          found.sort(
+            (a, b) =>
+              Number(b?.chat?.lastMessage?.timeStamp || 0) -
+              Number(a?.chat?.lastMessage?.timeStamp || 0)
+          );
+
+          return found[0];
+        };
+
         const buildList = (sourceMap, type) => {
-          return Object.entries(sourceMap || {})
+          const rows = Object.entries(sourceMap || {})
             .map(([id, node]) => {
               const userId = node?.userId;
               if (!userId) return null;
+              if (isSelfUser(userId) || isSelfUser(id) || isSelfUser(node?.financeId) || isSelfUser(node?.adminId)) {
+                return null;
+              }
 
-              const user = usersData[userId] || {};
-              const key = getChatKey(financeUserId, userId);
-              const chat = chatsData[key] || {};
+              const user = findUserNode(userId);
+              const { chat } = pickChatNode(userId);
               const unread = Number(chat?.unread?.[financeUserId] || 0);
 
               return {
@@ -104,19 +200,65 @@ function AllChat() {
                 unread,
               };
             })
-            .filter(Boolean)
-            .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+            .filter(Boolean);
+
+          const uniqueByUserId = new Map();
+          for (const row of rows) {
+            const key = String(row.userId || "");
+            const existing = uniqueByUserId.get(key);
+            if (!existing) {
+              uniqueByUserId.set(key, row);
+              continue;
+            }
+
+            const shouldReplace = Number(row.lastMsgTime || 0) >= Number(existing.lastMsgTime || 0);
+            const merged = shouldReplace ? { ...existing, ...row } : { ...row, ...existing };
+            merged.unread = Math.max(Number(existing.unread || 0), Number(row.unread || 0));
+            merged.lastMsgTime = Math.max(
+              Number(existing.lastMsgTime || 0),
+              Number(row.lastMsgTime || 0)
+            );
+            uniqueByUserId.set(key, merged);
+          }
+
+          return Array.from(uniqueByUserId.values()).sort(
+            (a, b) => Number(b.lastMsgTime || 0) - Number(a.lastMsgTime || 0)
+          );
         };
 
         const studentList = buildList(studentsData, "student");
         const parentList = buildList(parentsData, "parent");
+        const teacherList = buildList(teachersData, "teacher");
 
         setStudents(studentList);
         setParents(parentList);
+        setTeachers(teacherList);
 
-        if (!selectedChatUser) {
-          const first = studentList[0] || parentList[0] || null;
-          setSelectedChatUser(first);
+        const allUsers = [...studentList, ...parentList, ...teacherList];
+        const selectedIsValid = allUsers.some(
+          (u) => String(u?.userId || "") === String(selectedChatUser?.userId || "")
+        );
+
+        const hasExplicitTarget = Boolean(passedUser?.userId || location.state?.studentId);
+
+        if (!selectedChatUser || !selectedIsValid) {
+          if (location.state?.studentId) {
+            const matchedStudent = studentList.find(
+              (s) => String(s.id) === String(location.state.studentId)
+            );
+            if (matchedStudent) {
+              setSelectedTab("student");
+              setSelectedChatUser(matchedStudent);
+              return;
+            }
+          }
+
+          if (hasExplicitTarget) {
+            const first = studentList[0] || parentList[0] || teacherList[0] || null;
+            setSelectedChatUser(first);
+          } else {
+            setSelectedChatUser(null);
+          }
         }
       } catch (err) {
         console.error("Failed to fetch chat users:", err);
@@ -124,13 +266,48 @@ function AllChat() {
     };
 
     fetchPeople();
-  }, [DB_ROOT, financeUserId]);
+  }, [DB_ROOT, financeUserId, financeAccountId, location.state?.studentId, passedUser?.userId, selectedChatUser]);
 
   useEffect(() => {
-    if (!chatKey || !selectedChatUser?.userId || !financeUserId) return;
+    if (!financeUserId || !selectedChatUser?.userId || !normalizedChatKey) {
+      setActiveChatKey(null);
+      return;
+    }
+
+    let mounted = true;
+
+    const resolveKey = async () => {
+      const dbInst = getDatabase();
+      const candidates = getChatKeyCandidates(financeUserId, selectedChatUser.userId);
+
+      for (const key of candidates) {
+        const basePath = DB_PATH ? `${DB_PATH}/Chats/${key}` : `Chats/${key}`;
+        try {
+          const snap = await get(ref(dbInst, basePath));
+          if (snap.exists()) {
+            if (mounted) setActiveChatKey(key);
+            return;
+          }
+        } catch {
+          // try next candidate
+        }
+      }
+
+      if (mounted) setActiveChatKey(normalizedChatKey);
+    };
+
+    resolveKey();
+
+    return () => {
+      mounted = false;
+    };
+  }, [DB_PATH, financeUserId, normalizedChatKey, selectedChatUser]);
+
+  useEffect(() => {
+    if (!activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
     const dbInst = getDatabase();
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatKey}` : `Chats/${chatKey}`;
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     const userPath = DB_PATH ? `${DB_PATH}/Users/${selectedChatUser.userId}/lastSeen` : `Users/${selectedChatUser.userId}/lastSeen`;
 
     const messagesRef = ref(dbInst, `${basePath}/messages`);
@@ -165,17 +342,23 @@ function AllChat() {
       unsubTyping();
       unsubLastSeen();
     };
-  }, [chatKey, selectedChatUser, financeUserId, DB_PATH]);
+  }, [activeChatKey, selectedChatUser, financeUserId, DB_PATH]);
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
   const sendMessage = async () => {
-    if (!messageInput.trim() || !chatKey || !selectedChatUser?.userId || !financeUserId) return;
+    if (!messageInput.trim() || !activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
     const dbInst = getDatabase();
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatKey}` : `Chats/${chatKey}`;
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     const messagesRef = ref(dbInst, `${basePath}/messages`);
     const chatRef = ref(dbInst, basePath);
 
@@ -233,9 +416,9 @@ function AllChat() {
   };
 
   const deleteMessage = async (msgId) => {
-    if (!chatKey || !msgId) return;
+    if (!activeChatKey || !msgId) return;
     const dbInst = getDatabase();
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatKey}` : `Chats/${chatKey}`;
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     await update(ref(dbInst, `${basePath}/messages/${msgId}`), { deleted: true });
   };
 
@@ -243,9 +426,9 @@ function AllChat() {
     const text = e.target.value;
     setMessageInput(text);
 
-    if (!chatKey || !financeUserId) return;
+    if (!activeChatKey || !financeUserId) return;
     const dbInst = getDatabase();
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatKey}` : `Chats/${chatKey}`;
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     const typingRef = ref(dbInst, `${basePath}/typing`);
 
     if (!text.trim()) {
@@ -270,7 +453,12 @@ function AllChat() {
     });
   };
 
-  const activeList = selectedTab === "student" ? students : parents;
+  const activeList =
+    selectedTab === "student"
+      ? students
+      : selectedTab === "parent"
+      ? parents
+      : teachers;
 
   const filteredList = activeList.filter((u) =>
     String(u.name || "").toLowerCase().includes(searchQuery.toLowerCase())
@@ -345,7 +533,7 @@ function AllChat() {
         </div>
 
         <div style={{ display: "flex", marginBottom: 15, gap: 5 }}>
-          {["student", "parent"].map((tab) => (
+          {["student", "parent", "teacher"].map((tab) => (
             <button
               key={tab}
               onClick={() => setSelectedTab(tab)}

@@ -16,8 +16,8 @@ function StudentChatPage() {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
+        const studentsRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json");
+        const usersRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json");
 
         const studentsData = studentsRes.data || {};
         const usersData = usersRes.data || {};
@@ -51,7 +51,7 @@ function StudentChatPage() {
     const fetchMessages = async () => {
       if (!selectedStudent) return;
       try {
-        const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json`);
+        const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages.json`);
         const allMessages = res.data || {};
         const chatMessages = Object.values(allMessages).filter(
           m =>
@@ -78,7 +78,7 @@ function StudentChatPage() {
     };
 
     try {
-      await axios.post(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json`, newMessage);
+      await axios.post(`https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages.json`, newMessage);
       setMessages(prev => [...prev, newMessage]);
       setMessageInput("");
     } catch (err) {

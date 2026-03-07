@@ -126,7 +126,7 @@ const loadAdminFromStorage = () => {
   if (storedAdmin) {
     const adminData = JSON.parse(storedAdmin);
     // Verify this admin exists in School_Admin node
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admin/${adminData.adminId}.json`)
+    axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/School_Admin/${adminData.adminId}.json`)
       .then(res => {
         if (res.data) {
           setAdmin(res.data);  // Load from School_Admin node

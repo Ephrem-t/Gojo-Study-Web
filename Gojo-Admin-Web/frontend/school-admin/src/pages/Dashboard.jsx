@@ -78,32 +78,28 @@ function Dashboard() {
     try {
       const adminData = JSON.parse(storedAdmin);
 
-      if (!adminData.adminId) {
+      const lookupId = adminData.userId || adminData.adminId;
+      if (!lookupId) {
         localStorage.removeItem("admin");
         setLoadingAdmin(false);
         return;
       }
 
-      const res = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins/${adminData.adminId}.json`
-      );
+      const profileRes = await axios.get(`${API_BASE}/admin/${lookupId}`);
+      const profile = profileRes.data?.admin;
 
-      if (!res.data) {
+      if (!profileRes.data?.success || !profile) {
         localStorage.removeItem("admin");
         setLoadingAdmin(false);
         return;
       }
-
-      const userRes = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${res.data.userId}.json`
-      );
 
       setAdmin({
-        adminId: adminData.adminId,
-        userId: res.data.userId,
-        name: userRes.data?.name || "Admin",
-        username: userRes.data?.username || "",
-        profileImage: userRes.data?.profileImage || "/default-profile.png",
+        adminId: profile.adminId || adminData.adminId,
+        userId: profile.userId || adminData.userId,
+        name: profile.name || "Admin",
+        username: profile.username || "",
+        profileImage: profile.profileImage || "/default-profile.png",
       });
 
     } catch (e) {
@@ -146,7 +142,7 @@ function Dashboard() {
     try {
       // 1️⃣ USERS (names & images)
       const usersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
       );
       const usersData = usersRes.data || {};
 
@@ -160,8 +156,8 @@ function Dashboard() {
         const key2 = `${userId}_${admin.userId}`;
 
         const [r1, r2] = await Promise.all([
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
+          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
+          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
         ]);
 
         const msgs = [
@@ -176,7 +172,7 @@ function Dashboard() {
 
       // 2️⃣ TEACHERS
       const teachersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"
       );
 
       for (const k in teachersRes.data || {}) {
@@ -197,7 +193,7 @@ function Dashboard() {
 
       // 3️⃣ STUDENTS
       const studentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Students.json"
       );
 
       for (const k in studentsRes.data || {}) {
@@ -218,7 +214,7 @@ function Dashboard() {
 
       // 4️⃣ PARENTS
       const parentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json"
       );
 
       for (const k in parentsRes.data || {}) {
@@ -292,8 +288,8 @@ function Dashboard() {
     const fetchTeachersAndUnread = async () => {
       try {
         const [teachersRes, usersRes] = await Promise.all([
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json")
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json")
         ]);
 
         const teachersData = teachersRes.data || {};
@@ -318,7 +314,7 @@ function Dashboard() {
 
         for (const t of teacherList) {
           const chatKey = `${adminUserId}_${t.userId}`;
-          const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
+          const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
           const msgs = Object.values(res.data || {}).map(m => ({
             ...m,
             sender: m.senderId === adminUserId ? "admin" : "teacher"
@@ -537,8 +533,8 @@ function Dashboard() {
     const key2 = `${userId}_${admin.userId}`;
 
     const [r1, r2] = await Promise.all([
-      axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-      axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
+      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
+      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
     ]);
 
     const updates = {};
@@ -556,7 +552,7 @@ function Dashboard() {
 
     if (Object.keys(updates).length > 0) {
       await axios.patch(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
+        "https://bale-house-rental-default-rtdb.firebaseio.com/.json",
         updates
       );
     }

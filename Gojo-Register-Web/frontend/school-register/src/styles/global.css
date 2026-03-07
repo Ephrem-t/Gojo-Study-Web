@@ -559,6 +559,26 @@ button.dark-mode {
   color: #fff;
 }
 
+/* Thin and invisible scrollbars for dashboard columns */
+.google-sidebar::-webkit-scrollbar,
+.google-main::-webkit-scrollbar,
+.dashboard-widgets::-webkit-scrollbar {
+  width: 4px;
+}
+
+.google-sidebar::-webkit-scrollbar-track,
+.google-main::-webkit-scrollbar-track,
+.dashboard-widgets::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.google-sidebar::-webkit-scrollbar-thumb,
+.google-main::-webkit-scrollbar-thumb,
+.dashboard-widgets::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
 button.dark-mode:hover {
   background-color: #5c5c80;
 }

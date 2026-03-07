@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
-import { AiFillPicture } from "react-icons/ai";
+import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
 import {
   FaHome,
   FaFileAlt,
@@ -13,6 +13,9 @@ import {
   FaCalendarAlt,
   FaChartLine,
   FaChevronDown,
+  FaVideo,
+  FaPhotoVideo,
+  FaPlayCircle,
 } from "react-icons/fa";
 import "../styles/global.css";
 import { BACKEND_BASE } from "../config.js";
@@ -25,14 +28,18 @@ function MyPosts() {
   const [editedContent, setEditedContent] = useState("");
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [targetRole, setTargetRole] = useState("all");
+  const [targetOptions, setTargetOptions] = useState(["all"]);
   const fileInputRef = useRef(null);
   const [teachers, setTeachers] = useState([]);
   const [unreadTeachers, setUnreadTeachers] = useState({});
   const [popupMessages, setPopupMessages] = useState([]);
+  const [recentContacts, setRecentContacts] = useState([]);
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
+  const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(false);
 
@@ -40,6 +47,7 @@ function MyPosts() {
   const [savingId, setSavingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const navigate = useNavigate();
+  const FEED_MAX_WIDTH = "min(700px, 100%)";
 
   // Read admin from localStorage
   // Read finance/admin from localStorage (compat)
@@ -296,7 +304,7 @@ function MyPosts() {
   }, []);
 
   const handlePost = async () => {
-    if (!postText && !postMedia) return;
+    if (!postText && !postMedia) return false;
     try {
       const formData = new FormData();
       // Use backend-compatible field names: `message`, `postUrl` (if uploading client-side), and include finance fields
@@ -314,6 +322,7 @@ function MyPosts() {
       // include userId if available
       formData.append("userId", finance.userId || admin.userId || "");
       formData.append("schoolCode", schoolCode || "");
+      formData.append("targetRole", targetRole || "all");
 
       await axios.post(`${API_BASE}/create_post`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -323,10 +332,18 @@ function MyPosts() {
       setPostMedia(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       fetchMyPosts();
+      return true;
     } catch (err) {
       console.error("Error creating post:", err.response?.data || err);
       alert("Create post failed: " + (err.response?.data?.message || err.message || "See console"));
+      return false;
     }
+  };
+
+  const handleSubmitCreatePost = async () => {
+    if (!postText && !postMedia) return;
+    const success = await handlePost();
+    if (success) setShowCreatePostModal(false);
   };
 
   const handleEdit = (postId, currentContent) => {
@@ -487,6 +504,207 @@ function MyPosts() {
   }, []);
 
   useEffect(() => {
+    const fetchTeachersAndRecent = async () => {
+      const financeUserId = finance.userId;
+      if (!financeUserId) {
+        setRecentContacts([]);
+        return;
+      }
+
+      try {
+        const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
+          axios.get(`${DB_URL}/Teachers.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/Parents.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/Chats.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const teachersData = teachersRes.data || {};
+        const studentsData = studentsRes.data || {};
+        const parentsData = parentsRes.data || {};
+        const usersData = usersRes.data || {};
+        const chatsData = chatsRes.data || {};
+        const userRecords = Object.values(usersData || {});
+
+        const findUserNode = (identifier) => {
+          const id = String(identifier || "");
+          if (!id) return null;
+          if (usersData[id]) return usersData[id];
+          return (
+            userRecords.find(
+              (u) =>
+                String(u?.userId || "") === id ||
+                String(u?.username || "") === id ||
+                String(u?.employeeId || "") === id ||
+                String(u?.teacherId || "") === id ||
+                String(u?.studentId || "") === id ||
+                String(u?.parentId || "") === id
+            ) || null
+          );
+        };
+
+        const resolveContactMeta = (identifier) => {
+          const id = String(identifier || "");
+          if (!id) return { name: "Unknown", profileImage: "/default-profile.png", type: "user", userId: "" };
+
+          const userNode = findUserNode(id);
+          if (userNode) {
+            return {
+              name: userNode.name || userNode.username || "Unknown",
+              profileImage: userNode.profileImage || "/default-profile.png",
+              type: userNode.role || userNode.userType || "user",
+              userId: userNode.userId || id,
+            };
+          }
+
+          const teacherNode =
+            teachersData[id] ||
+            Object.values(teachersData || {}).find(
+              (t) => String(t?.userId || "") === id || String(t?.teacherId || "") === id
+            );
+          if (teacherNode) {
+            const teacherUser = findUserNode(teacherNode?.userId) || {};
+            return {
+              name: teacherUser.name || teacherNode.name || teacherNode.teacherId || "Teacher",
+              profileImage: teacherUser.profileImage || teacherNode.profileImage || "/default-profile.png",
+              type: "teacher",
+              userId: teacherNode.userId || id,
+            };
+          }
+
+          const studentNode =
+            studentsData[id] ||
+            Object.values(studentsData || {}).find(
+              (s) => String(s?.userId || "") === id || String(s?.studentId || "") === id
+            );
+          if (studentNode) {
+            const studentUser = findUserNode(studentNode?.userId) || {};
+            return {
+              name: studentUser.name || studentNode.name || studentNode.studentId || "Student",
+              profileImage: studentUser.profileImage || studentNode.profileImage || "/default-profile.png",
+              type: "student",
+              userId: studentNode.userId || id,
+            };
+          }
+
+          const parentNode =
+            parentsData[id] ||
+            Object.values(parentsData || {}).find(
+              (p) => String(p?.userId || "") === id || String(p?.parentId || "") === id
+            );
+          if (parentNode) {
+            const parentUser = findUserNode(parentNode?.userId) || {};
+            return {
+              name: parentUser.name || parentNode.name || parentNode.parentId || "Parent",
+              profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
+              type: "parent",
+              userId: parentNode.userId || id,
+            };
+          }
+
+          return {
+            name: "Unknown",
+            profileImage: "/default-profile.png",
+            type: "user",
+            userId: id,
+          };
+        };
+
+        const roleSet = new Set(
+          Object.values(usersData || {})
+            .map((u) => String(u?.role || u?.userType || "").trim().toLowerCase())
+            .filter(Boolean)
+        );
+        const orderedRoles = ["student", "parent", "teacher", "registerer", "finance", "admin"].filter((r) => roleSet.has(r));
+        const extraRoles = Array.from(roleSet).filter((r) => !orderedRoles.includes(r)).sort();
+        const nextRoles = ["all", ...orderedRoles, ...extraRoles];
+        setTargetOptions(nextRoles);
+        setTargetRole((prev) => (nextRoles.includes(prev) ? prev : "all"));
+
+        // Debug: expose counts and sample keys
+        try {
+          console.log("MyPosts RecentContacts debug:", {
+            financeUserId,
+            schoolCode,
+            teachersCount: Object.keys(teachersData || {}).length,
+            usersCount: Object.keys(usersData || {}).length,
+            chatsCount: Object.keys(chatsData || {}).length,
+            chatSample: Object.keys(chatsData || {}).slice(0, 10),
+          });
+        } catch (e) {}
+
+        const getMessageTime = (message) => {
+          const raw =
+            message?.timeStamp ||
+            message?.timestamp ||
+            message?.time ||
+            message?.createdAt ||
+            message?.sentAt ||
+            0;
+          if (typeof raw === "number") return raw < 1e12 ? raw * 1000 : raw;
+          const parsed = new Date(raw).getTime();
+          return Number.isFinite(parsed) ? parsed : 0;
+        };
+
+        const myIds = new Set(
+          [financeUserId, admin.userId, admin.adminId, finance.financeId]
+            .map((v) => String(v || ""))
+            .filter(Boolean)
+        );
+
+        const recentByUser = {};
+        for (const [, chatNode] of Object.entries(chatsData || {})) {
+          const msgs = Object.values(chatNode?.messages || {});
+          if (!msgs.length) continue;
+
+          for (const m of msgs) {
+            const senderId = String(m?.senderId || "");
+            const receiverId = String(m?.receiverId || "");
+            if (!senderId || !receiverId) continue;
+
+            const isMineSender = myIds.has(senderId);
+            const isMineReceiver = myIds.has(receiverId);
+            if (!isMineSender && !isMineReceiver) continue;
+
+            const rawPartnerId = isMineSender ? receiverId : senderId;
+            if (!rawPartnerId || myIds.has(rawPartnerId)) continue;
+
+            const contactMeta = resolveContactMeta(rawPartnerId);
+            const stableContactId = String(contactMeta.userId || rawPartnerId);
+            if (!stableContactId || myIds.has(stableContactId)) continue;
+
+            const messageTime = getMessageTime(m);
+            if (!messageTime) continue;
+
+            const current = recentByUser[stableContactId];
+            if (!current || messageTime > current.lastTime) {
+              recentByUser[stableContactId] = {
+                userId: stableContactId,
+                name: contactMeta.name,
+                profileImage: contactMeta.profileImage,
+                lastMessage: m?.message || m?.text || m?.content || "",
+                lastTime: messageTime,
+                type: contactMeta.type,
+              };
+            }
+          }
+        }
+
+        const topRecent = Object.values(recentByUser)
+          .sort((a, b) => b.lastTime - a.lastTime)
+          .slice(0, 5);
+
+        setRecentContacts(topRecent);
+      } catch (err) {
+        console.error("Error fetching recent contacts in MyPosts:", err);
+      }
+    };
+
+    fetchTeachersAndRecent();
+  }, [finance.userId, schoolCode]);
+
+  useEffect(() => {
     const closeDropdown = (e) => {
       if (!e.target.closest(".icon-circle") && !e.target.closest(".notification-dropdown")) {
         setShowPostDropdown(false);
@@ -495,6 +713,23 @@ function MyPosts() {
     document.addEventListener("click", closeDropdown);
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
+
+  useEffect(() => {
+    if (!showCreatePostModal) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setShowCreatePostModal(false);
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showCreatePostModal]);
 
   return (
     <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
@@ -638,9 +873,9 @@ function MyPosts() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 16, padding: "18px 16px", minHeight: "100vh", background: "#f5f8ff", width: "100%", boxSizing: "border-box" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
+        <div className="google-sidebar" style={{ width: 'clamp(220px, 15vw, 280px)', minWidth: 220, padding: 12, borderRadius: 16, background: '#fff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'calc(100vh - 24px)', overflowY: 'auto', alignSelf: 'flex-start', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', opacity: showCreatePostModal ? 0.45 : 1, filter: showCreatePostModal ? 'blur(1px)' : 'none', pointerEvents: showCreatePostModal ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
             <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
               <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -741,6 +976,7 @@ function MyPosts() {
               className="sidebar-btn logout-btn"
               onClick={() => {
                 localStorage.removeItem("admin");
+                localStorage.removeItem("registrar");
                 window.location.href = "/login";
               }}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
@@ -751,158 +987,288 @@ function MyPosts() {
         </div>
 
         {/* ---------------- MAIN CONTENT ---------------- */}
-        <div
-          className="main-content google-main"
-          style={{
-            padding: "10px 20px 20px",
-            flex: 1,
-            minWidth: 0,
-            boxSizing: "border-box",
-          }}
-        >
+        <div className="main-content google-main" style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px' }}>
           <div
             style={{
-              maxWidth: 560,
-              margin: "0 auto 12px",
-              background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
-              color: "#fff",
-              borderRadius: 14,
-              padding: "12px 14px",
-              boxShadow: "0 14px 28px rgba(30,58,138,0.22)",
+              maxWidth: FEED_MAX_WIDTH,
+              margin: "0 auto 14px",
+              background: "#ffffff",
+              color: "#0f172a",
+              borderRadius: 16,
+              padding: "14px 16px",
+              border: "1px solid #dbe4ff",
+              boxShadow: "0 12px 26px rgba(15,23,42,0.08)",
+              position: "relative",
+              overflow: "hidden",
             }}
           >
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, #1d4ed8, #3b82f6, #38bdf8)" }} />
             <div style={{ fontSize: 17, fontWeight: 800 }}>My Posts</div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Manage your updates and announcements professionally.</div>
+            <div style={{ marginTop: 5, fontSize: 12, color: "#475569" }}>Manage, edit, and review your announcements.</div>
           </div>
+
           {/* Post input box */}
-          <div className="post-box" style={{ maxWidth: 560, margin: "0 auto 12px" }}>
+          <div className="post-box" style={{ maxWidth: FEED_MAX_WIDTH, margin: "0 auto 14px", borderRadius: 12, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.08)", border: "1px solid #dddfe2", background: "#fff", padding: "10px 12px" }}>
             <div
               className="fb-post-top"
               style={{
                 display: "flex",
                 gap: 10,
-                alignItems: "flex-start",
+                alignItems: "center",
                 background: "#fff",
-                borderRadius: 8,
-                border: "1px solid #dfe3e8",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
-                padding: 10,
+                border: "none",
+                boxShadow: "none",
+                padding: 0,
               }}
             >
               <img
                 src={admin.profileImage || "/default-profile.png"}
                 alt="me"
-                style={{ width: 34, height: 34, borderRadius: "50%", objectFit: "cover", border: "2px solid #e6eefc" }}
+                style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover", border: "1px solid #d8dadf", flexShrink: 0 }}
               />
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-                <textarea
-                  placeholder="What's on your mind?"
-                  value={postText}
-                  onChange={(e) => setPostText(e.target.value)}
-                  style={{
-                    minHeight: 56,
-                    resize: "vertical",
-                    border: "none",
-                    background: "#f0f2f5",
-                    borderRadius: 18,
-                    padding: "10px 12px",
-                    fontSize: 12,
-                    lineHeight: 1.4,
-                    outline: "none",
-                  }}
-                />
-                <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 8, borderTop: "1px solid #edf0f2" }}>
-                  <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 6, background: "transparent", border: "1px solid #d9dde3", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3f4752" }}>
-                    <AiFillPicture className="fb-icon" />
-                    <span>Photo/Video</span>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      onChange={(e) => {
-                        const file = e.target.files && e.target.files[0];
-                        setPostMedia(file || null);
-                      }}
-                      accept="image/*,video/*"
-                    />
-                  </label>
+              <button
+                type="button"
+                onClick={() => setShowCreatePostModal(true)}
+                style={{
+                  flex: 1,
+                  height: 42,
+                  border: "1px solid #d8dadf",
+                  background: "#f0f2f5",
+                  borderRadius: 999,
+                  padding: "0 16px",
+                  fontSize: 14,
+                  textAlign: "left",
+                  color: "#65676b",
+                  cursor: "pointer",
+                }}
+              >
+                What's on your mind?
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCreatePostModal(true)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 34,
+                  height: 34,
+                  border: "none",
+                  borderRadius: 8,
+                  background: "transparent",
+                  color: "#f02849",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+                title="Live video"
+              >
+                <AiFillVideoCamera className="fb-icon" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCreatePostModal(true)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 34,
+                  height: 34,
+                  border: "none",
+                  borderRadius: 8,
+                  background: "transparent",
+                  color: "#45bd62",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+                title="Photo"
+              >
+                <AiFillPicture className="fb-icon" />
+              </button>
+              {/* Reel button removed */}
+            </div>
+          </div>
 
-                  {postMedia && (
-                    <div style={{
-                      width: "20%",
-                      minWidth: 120,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      padding: "6px 10px",
-                      background: "#f5f6f7",
-                      borderRadius: 8,
-                      border: "1px solid #d9dde3",
-                      overflow: "hidden",
-                      whiteSpace: "nowrap",
-                      textOverflow: "ellipsis",
-                      boxSizing: "border-box",
-                    }}>
-                      <span style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {postMedia.name}
-                      </span>
+          {showCreatePostModal && (
+            <div
+              onClick={() => setShowCreatePostModal(false)}
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(15, 23, 42, 0.45)",
+                zIndex: 1200,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 12,
+              }}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  width: "min(620px, 100%)",
+                  maxHeight: "90vh",
+                  overflowY: "auto",
+                  background: "#fff",
+                  borderRadius: 16,
+                  border: "1px solid #e2e8f0",
+                  boxShadow: "0 20px 40px rgba(15,23,42,0.2)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid #edf0f2" }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a" }}>Create post</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreatePostModal(false)}
+                    style={{ border: "none", background: "#f1f5f9", width: 30, height: 30, borderRadius: "50%", fontSize: 18, color: "#475569", cursor: "pointer", lineHeight: 1 }}
+                    aria-label="Close create post modal"
+                    title="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <img
+                      src={admin.profileImage || "/default-profile.png"}
+                      alt="me"
+                      style={{ width: 34, height: 34, borderRadius: "50%", objectFit: "cover", border: "2px solid #e6eefc" }}
+                    />
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{admin.name || "Register Office"}</div>
+                  </div>
+
+                  <textarea
+                    placeholder="What's on your mind?"
+                    value={postText}
+                    onChange={(e) => setPostText(e.target.value)}
+                    style={{
+                      minHeight: 110,
+                      resize: "vertical",
+                      border: "1px solid #dbe3ef",
+                      background: "#f8fafc",
+                      borderRadius: 12,
+                      padding: "10px 12px",
+                      fontSize: 13,
+                      lineHeight: 1.4,
+                      outline: "none",
+                      color: "#0f172a",
+                    }}
+                  />
+
+                  <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 8, borderTop: "1px solid #edf0f2", flexWrap: "wrap" }}>
+                    <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "#f8fafc", border: "1px solid #d9dde3", cursor: "pointer", fontWeight: 700, fontSize: 12, color: "#1e293b" }}>
+                      <AiFillPicture className="fb-icon" />
+                      <span>Photo/Video</span>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        onChange={(e) => {
+                          const file = e.target.files && e.target.files[0];
+                          setPostMedia(file || null);
+                        }}
+                        accept="image/*,video/*"
+                      />
+                    </label>
+
+                    <select
+                      value={targetRole}
+                      onChange={(e) => setTargetRole(e.target.value)}
+                      style={{ height: 32, borderRadius: 8, border: "1px solid #d9dde3", background: "#f8fafc", fontSize: 12, color: "#1e293b", padding: "0 10px", minWidth: 130 }}
+                      title="Post target role"
+                    >
+                      {targetOptions.map((role) => {
+                        const label = role === "all" ? "All Users" : `${role.charAt(0).toUpperCase()}${role.slice(1)}s`;
+                        return (
+                          <option key={role} value={role}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    {postMedia && (
+                      <div style={{
+                        width: "40%",
+                        minWidth: 120,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "6px 10px",
+                        background: "#f8fafc",
+                        borderRadius: 8,
+                        border: "1px solid #d9dde3",
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                        boxSizing: "border-box",
+                      }}>
+                        <span style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {postMedia.name}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setPostMedia(null);
+                            if (fileInputRef.current) fileInputRef.current.value = "";
+                          }}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "#6b7280",
+                            cursor: "pointer",
+                            fontSize: 16,
+                            lineHeight: 1,
+                          }}
+                          aria-label="Remove selected media"
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+
+                    <div style={{ marginLeft: "auto" }}>
                       <button
-                        onClick={() => {
-                          setPostMedia(null);
-                          if (fileInputRef.current) fileInputRef.current.value = "";
-                        }}
+                        type="button"
+                        onClick={handleSubmitCreatePost}
                         style={{
-                          background: "transparent",
                           border: "none",
-                          color: "#6b7280",
+                          background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                          borderRadius: 8,
+                          height: 32,
+                          minWidth: 70,
+                          padding: "0 14px",
+                          color: "#fff",
+                          fontSize: 12,
+                          fontWeight: 700,
                           cursor: "pointer",
-                          fontSize: 16,
-                          lineHeight: 1,
                         }}
-                        aria-label="Remove selected media"
-                        title="Remove"
                       >
-                        ×
+                        Post
                       </button>
                     </div>
-                  )}
-
-                  <div style={{ marginLeft: "auto" }}>
-                    <button
-                      onClick={handlePost}
-                      style={{
-                        border: "none",
-                        background: "#1877f2",
-                        borderRadius: 6,
-                        height: 30,
-                        minWidth: 64,
-                        padding: "0 12px",
-                        color: "#fff",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Post
-                    </button>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Posts container */}
           {posts.length === 0 ? (
-            <p className="muted" style={{ textAlign: "center", padding: 10 }}>You have no posts yet.</p>
+            <div style={{ maxWidth: FEED_MAX_WIDTH, margin: '0 auto', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, boxShadow: '0 10px 20px rgba(15,23,42,0.06)', padding: 18, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+              You have no posts yet.
+            </div>
           ) : (
-            <div className="posts-container" style={{ maxWidth: 560, margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div className="posts-container" style={{ maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
               {posts.map((post) => (
                 <div
                   className="post-card"
                   id={`post-${post.postId}`}
                   key={post.postId}
-                  style={{ background: "#fff", border: "1px solid #dfe3e8", borderRadius: 8, boxShadow: "0 1px 2px rgba(0,0,0,0.08)", overflow: "hidden" }}
+                  style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, boxShadow: "0 10px 20px rgba(15,23,42,0.06)", overflow: "hidden" }}
                 >
-                  <div className="post-header" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px 4px" }}>
+                  <div className="post-header" style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px 6px" }}>
                     <div className="img-circle" style={{ width: 34, height: 34, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc", flexShrink: 0 }}>
                       <img
                         src={post.adminProfile || admin.profileImage || "/default-profile.png"}
@@ -911,8 +1277,8 @@ function MyPosts() {
                       />
                     </div>
                     <div className="post-info" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      <h4 style={{ margin: 0, fontSize: 13, color: "#0f172a", fontWeight: 700 }}>{post.adminName || admin.name || "Admin"}</h4>
-                      <span style={{ fontSize: 10, color: "#64748b" }}>{post.time}{post.edited ? " · Edited" : ""} · Public</span>
+                      <h4 style={{ margin: 0, fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{post.adminName || admin.name || "Admin"}</h4>
+                      <span style={{ fontSize: 10, color: "#64748b", fontWeight: 500 }}>{post.time}{post.edited ? " · Edited" : ""} · {post.targetRole ? `Target: ${post.targetRole}` : "Public"}</span>
                     </div>
                   </div>
 
@@ -941,9 +1307,9 @@ function MyPosts() {
                     </div>
                   ) : (
                     <>
-                      <p style={{ margin: 0, padding: "0 10px 8px", color: "#1c1e21", fontSize: 13, lineHeight: 1.45 }}>{post.message}</p>
+                      <p style={{ margin: 0, padding: "0 12px 10px", color: "#1e293b", fontSize: 13, lineHeight: 1.5 }}>{post.message}</p>
                       {post.postUrl && (
-                        <div style={{ background: "#000", borderTop: "1px solid #edf0f2", borderBottom: "1px solid #edf0f2" }}>
+                        <div style={{ background: "#0f172a", borderTop: "1px solid #edf0f2", borderBottom: "1px solid #edf0f2" }}>
                           <img
                             src={post.postUrl}
                             alt="post media"
@@ -952,17 +1318,17 @@ function MyPosts() {
                         </div>
                       )}
 
-                      <div style={{ padding: "4px 10px 6px", display: "flex", justifyContent: "flex-end", gap: 8, borderTop: "1px solid #edf0f2" }}>
+                      <div style={{ padding: "6px 10px 8px", display: "flex", justifyContent: "flex-end", gap: 8, borderTop: "1px solid #edf0f2", background: '#fcfdff' }}>
                         <button
                           onClick={() => handleEdit(post.postId, post.message)}
-                          style={{ border: "1px solid #d9dde3", background: "#fff", borderRadius: 6, height: 28, padding: "0 10px", color: "#374151", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                          style={{ border: "1px solid #d9dde3", background: "#fff", borderRadius: 8, height: 30, padding: "0 12px", color: "#374151", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => handleDelete(post.postId)}
                           disabled={deletingId === post.postId}
-                          style={{ border: "none", background: "#ef4444", borderRadius: 6, height: 28, padding: "0 10px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                          style={{ border: "none", background: "#ef4444", borderRadius: 8, height: 30, padding: "0 12px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
                         >
                           {deletingId === post.postId ? "Deleting..." : "Delete"}
                         </button>
@@ -973,6 +1339,107 @@ function MyPosts() {
               ))}
             </div>
           )}
+        </div>
+
+        {/* RIGHT WIDGETS COLUMN */}
+        <div className="dashboard-widgets" style={{ width: 'clamp(300px, 22vw, 380px)', minWidth: 300, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 16, alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: showCreatePostModal ? 0.45 : 1, filter: showCreatePostModal ? 'blur(1px)' : 'none', pointerEvents: showCreatePostModal ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+          <div style={{ background: '#fff', borderRadius: 14, boxShadow: '0 10px 24px rgba(15,23,42,0.08)', padding: '14px', border: '1px solid #e5e7eb' }}>
+            <h4 style={{ fontSize: 14, fontWeight: 800, margin: 0, color: '#0f172a' }}>Quick Statistics</h4>
+            <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ padding: '6px 10px', borderRadius: 12, background: '#fff', border: '1px solid #e6eefc', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 80 }}>
+                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>My Posts</div>
+                  <div style={{ marginTop: 4, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{posts.length}</div>
+                </div>
+                <div style={{ padding: '6px 10px', borderRadius: 12, background: '#fff', border: '1px solid #e6eefc', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 80 }}>
+                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>Unread</div>
+                  <div style={{ marginTop: 4, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{messageCount}</div>
+                </div>
+                <div style={{ padding: '6px 10px', borderRadius: 12, background: '#fff', border: '1px solid #e6eefc', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 80 }}>
+                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>Notifications</div>
+                  <div style={{ marginTop: 4, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{totalNotifications}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+            <div style={{ background: '#fff', borderRadius: 14, boxShadow: '0 10px 24px rgba(15,23,42,0.08)', padding: '12px', border: '1px solid #e5e7eb' }}>
+              <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: '#0f172a' }}>Today's Activity</h4>
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 9px', fontSize: 11 }}>
+                  <span style={{ color: '#334155', fontWeight: 600 }}>New Posts</span>
+                  <strong style={{ color: '#0f172a' }}>{posts.filter(p => new Date(p.parsedTime || p.time).toDateString() === new Date().toDateString()).length}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 9px', fontSize: 11 }}>
+                  <span style={{ color: '#334155', fontWeight: 600 }}>Messages</span>
+                  <strong style={{ color: '#0f172a' }}>{messageCount}</strong>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#334155', marginBottom: 7 }}>Recent Contacts</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {recentContacts.length === 0 ? (
+                    <div style={{ fontSize: 11, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '7px 9px' }}>
+                      No recent chats yet
+                    </div>
+                  ) : (
+                    recentContacts.map((contact) => (
+                      <button
+                        key={contact.userId}
+                        type="button"
+                        onClick={() => navigate('/all-chat', {
+                          state: {
+                            user: {
+                              userId: contact.userId,
+                              name: contact.name,
+                              profileImage: contact.profileImage,
+                              type: contact.type || 'user',
+                            },
+                          },
+                        })}
+                        style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '6px 7px', cursor: 'pointer' }}
+                      >
+                        <img
+                          src={contact.profileImage || '/default-profile.png'}
+                          alt={contact.name}
+                          style={{ width: 24, height: 24, borderRadius: '50%', objectFit: 'cover' }}
+                        />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {contact.name}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {contact.lastMessage || 'Open chat'}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: '#fff', borderRadius: 14, boxShadow: '0 10px 24px rgba(15,23,42,0.08)', padding: '12px', border: '1px solid #e5e7eb' }}>
+              <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: '#0f172a' }}>Upcoming Deadlines</h4>
+              <ul style={{ margin: '10px 0 0 0', padding: 0, listStyle: 'none', fontSize: 11, color: '#334155', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <li style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc' }}>Fee Payment: Mar 10</li>
+                <li style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc' }}>Report Submission: Mar 15</li>
+                <li style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc' }}>Parent Meeting: Mar 20</li>
+              </ul>
+            </div>
+          </div>
+
+          <div style={{ background: '#fff', borderRadius: 14, boxShadow: '0 10px 24px rgba(15,23,42,0.08)', padding: '14px', border: '1px solid #e5e7eb' }}>
+            <h4 style={{ fontSize: 14, fontWeight: 800, margin: 0, color: '#0f172a' }}>Sponsored Links</h4>
+            <ul style={{ margin: '10px 0 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 7, fontSize: 13 }}>
+              <li style={{ color: '#1e3a8a', fontWeight: 600 }}>Gojo Study App</li>
+              <li style={{ color: '#1e3a8a', fontWeight: 600 }}>Finance Portal</li>
+              <li style={{ color: '#1e3a8a', fontWeight: 600 }}>HR Management</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>

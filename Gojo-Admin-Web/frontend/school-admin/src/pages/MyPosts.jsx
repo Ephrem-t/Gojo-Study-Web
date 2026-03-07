@@ -63,7 +63,7 @@ function MyPosts() {
     }
   }, [token]);
 
-  const RTDB_BASE = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
   // counts for badges
   const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
@@ -115,27 +115,19 @@ function MyPosts() {
         return;
       }
 
-      const [usersRes, adminsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/School_Admins.json`),
-      ]);
-
+      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
       const users = usersRes.data || {};
-      const admins = adminsRes.data || {};
 
-      const findAdminUser = (adminId) => {
-        const admin = admins[adminId];
-        if (!admin) return null;
-        return Object.values(users).find((u) => u.userId === admin.userId);
-      };
+      const findAdminUser = (id) =>
+        Object.values(users).find((u) => u.userId === id || u.username === id);
 
       const enriched = notifications.map((n) => {
         const posterUser = findAdminUser(n.adminId);
         return {
           ...n,
           notificationId: n.notificationId || n.id || `${n.postId}_${n.adminId}`,
-          adminName: posterUser?.name || "Unknown Admin",
-          adminProfile: posterUser?.profileImage || "/default-profile.png",
+          adminName: posterUser?.name || n.adminName || "Unknown Admin",
+          adminProfile: posterUser?.profileImage || n.adminProfile || "/default-profile.png",
         };
       });
 

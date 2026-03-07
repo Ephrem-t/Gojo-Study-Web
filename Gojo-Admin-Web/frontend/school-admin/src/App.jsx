@@ -1,21 +1,16 @@
-import React from "react";
+import React, { useEffect } from "react";
 import AppRoutes from "./routes/AppRoutes";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
+import { setupSchoolScopedRtdbRouting } from "./utils/schoolDbRouting";
 
+export default function App() {
+  useEffect(() => {
+    setupSchoolScopedRtdbRouting();
+  }, []);
 
-
- export default function App() {
-      return <AppRoutes />;
-function App() {
   return (
     <ThemeProvider>
-    
-  
-
       <AppRoutes />
     </ThemeProvider>
   );
 }
- }
-

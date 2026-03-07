@@ -57,28 +57,18 @@ function SettingsPage() {
       return;
     }
 
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRes, adminsRes] = await Promise.all([
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      ),
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
-      ),
-    ]);
+    // 2️⃣ Fetch Users
+    const usersRes = await axios.get(
+      "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
+    );
 
     const users = usersRes.data || {};
-    const admins = adminsRes.data || {};
 
     // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
+    const findAdminUser = (posterId) =>
+      Object.values(users).find(
+        (u) => u.userId === posterId || u.username === posterId
       );
-    };
 
     // 4️⃣ Enrich notifications
     const enriched = notifications.map((n) => {
@@ -91,9 +81,9 @@ function SettingsPage() {
           n.id ||
           `${n.postId}_${n.adminId}`,
 
-        adminName: posterUser?.name || "Unknown Admin",
+        adminName: posterUser?.name || n.adminName || "Unknown Admin",
         adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
+          posterUser?.profileImage || n.adminProfile || "/default-profile.png",
       };
     });
 
@@ -173,7 +163,7 @@ useEffect(() => {
       reader.onloadend = async () => {
         const base64Image = reader.result;
         await axios.patch(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
           { profileImage: base64Image }
         );
         const updatedAdmin = { ...admin, profileImage: base64Image };
@@ -191,7 +181,7 @@ useEffect(() => {
     if (!name || !username) return alert("Name and Username required!");
     try {
       await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
         { name, username }
       );
       const updatedAdmin = { ...admin, name, username };
@@ -208,7 +198,7 @@ useEffect(() => {
     if (password !== confirmPassword) return alert("Passwords do not match!");
     try {
       await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
         { password }
       );
       setPassword("");
@@ -258,7 +248,7 @@ useEffect(() => {
     try {
       // 1) USERS (names & images)
       const usersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
       );
       const usersData = usersRes.data || {};
 
@@ -272,10 +262,10 @@ useEffect(() => {
 
         const [r1, r2] = await Promise.all([
           axios.get(
-            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+            `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
           ),
           axios.get(
-            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+            `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
           ),
         ]);
 
@@ -286,7 +276,7 @@ useEffect(() => {
 
       // TEACHERS
       const teachersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"
       );
 
       for (const k in teachersRes.data || {}) {
@@ -307,7 +297,7 @@ useEffect(() => {
 
       // STUDENTS
       const studentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Students.json"
       );
 
       for (const k in studentsRes.data || {}) {
@@ -328,7 +318,7 @@ useEffect(() => {
 
       // PARENTS
       const parentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json"
       );
 
       for (const k in parentsRes.data || {}) {
@@ -380,10 +370,10 @@ useEffect(() => {
 
     const [r1, r2] = await Promise.all([
       axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
       ),
       axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
       ),
     ]);
 
@@ -402,7 +392,7 @@ useEffect(() => {
 
     if (Object.keys(updates).length > 0) {
       await axios.patch(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
+        "https://bale-house-rental-default-rtdb.firebaseio.com/.json",
         updates
       );
     }

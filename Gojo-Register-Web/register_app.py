@@ -832,6 +832,26 @@ def login_registrar():
 @app.route("/api/create_post", methods=["POST"])
 def create_post():
     try:
+        def normalize_target_role(raw_value):
+            value = str(raw_value or "all").strip().lower()
+            aliases = {
+                "all": "all",
+                "student": "student",
+                "students": "student",
+                "parent": "parent",
+                "parents": "parent",
+                "teacher": "teacher",
+                "teachers": "teacher",
+                "registerer": "registerer",
+                "registerers": "registerer",
+                "registrar": "registerer",
+                "registrars": "registerer",
+                "finance": "finance",
+                "admin": "admin",
+                "admins": "admin",
+            }
+            return aliases.get(value, value or "all")
+
         # Accept form-data from frontend. File uploads handled client-side to Firebase Storage.
         message = request.form.get("message") or ""
         postUrl = request.form.get("postUrl") or ""
@@ -842,6 +862,7 @@ def create_post():
         financeName = request.form.get("financeName") or ""
         financeProfile = request.form.get("financeProfile") or ""
         userId = request.form.get("userId") or ""
+        targetRole = normalize_target_role(request.form.get("targetRole") or request.form.get("target") or "all")
         schoolCode = request.form.get("schoolCode") or request.args.get("schoolCode") or ""
 
         if not schoolCode:
@@ -859,6 +880,7 @@ def create_post():
             "adminProfile": adminProfile or financeProfile,
             "postUrl": postUrl,
             "message": message,
+            "targetRole": targetRole,
             "likeCount": 0,
             "likes": {},
             "seenBy": {},

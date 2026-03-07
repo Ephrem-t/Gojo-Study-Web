@@ -37,11 +37,11 @@ function AllChat() {
     const fetchUsers = async () => {
       try {
         const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json").then(res => res.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json").then(res => res.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json").then(res => res.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json").then(res => res.json()),
-          fetch("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats.json").then(res => res.json())
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json").then(res => res.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json").then(res => res.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json").then(res => res.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json").then(res => res.json()),
+          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Chats.json").then(res => res.json())
         ]);
 
         const usersData = usersRes || {};

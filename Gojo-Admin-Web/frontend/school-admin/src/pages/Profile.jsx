@@ -18,7 +18,7 @@ export default function Profile(){
   async function fetchProfile(){
     try {
       const res = await getAdminProfile(adminId);
-      if (res.data?.success) setAdmin(res.data.admin);
+      if (res?.success) setAdmin(res.admin);
       else setAdmin({name:"Admin", username:""});
     } catch(err){
       console.error(err);
@@ -27,9 +27,13 @@ export default function Profile(){
 
   async function fetchPosts(){
     try {
-      const res = await getAllPosts();
-      const all = res.data || [];
-      setPosts(all.filter(p => p.adminId === adminId));
+      const all = await getAllPosts();
+      const normalized = Array.isArray(all) ? all : [];
+      setPosts(
+        normalized.filter(
+          (p) => String(p.adminId || "") === String(adminId || "") || String(p.userId || "") === String(adminId || "")
+        )
+      );
     } catch(err){
       console.error(err);
     }
@@ -52,7 +56,7 @@ export default function Profile(){
           <div style={{marginTop:12}}>
             <h3>Your Posts</h3>
             {posts.length === 0 && <div className="card small-muted">No posts yet</div>}
-            {posts.map(p => <PostCard key={p.postId} post={p} isOwner={p.adminId === adminId} />)}
+            {posts.map(p => <PostCard key={p.postId} post={p} isOwner={String(p.adminId || "") === String(adminId || "")} />)}
           </div>
         </div>
       </div>

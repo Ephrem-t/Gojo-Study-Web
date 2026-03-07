@@ -210,13 +210,13 @@ useEffect(() => {
     try {
       // 1️⃣ Fetch user info
       const userRes = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${s.userId}.json`
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Users/${s.userId}.json`
       );
       const user = userRes.data || {};
 
       // 2️⃣ Fetch ClassMarks from Firebase
       const marksRes = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json`
+        `https://bale-house-rental-default-rtdb.firebaseio.com/ClassMarks.json`
       );
       const classMarks = marksRes.data || {};
 
@@ -244,7 +244,7 @@ useEffect(() => {
 
       // 3️⃣ Fetch Attendance (optional)
       const attendanceRes = await axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Attendance.json`
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Attendance.json`
       );
       const attendanceRaw = attendanceRes.data || {};
 
@@ -268,7 +268,7 @@ useEffect(() => {
       try {
         if (s.studentId) {
           const rtRes = await axios.get(
-            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students/${s.studentId}.json`
+            `https://bale-house-rental-default-rtdb.firebaseio.com/Students/${s.studentId}.json`
           );
           rtStudent = rtRes.data || {};
         }
@@ -303,11 +303,11 @@ useEffect(() => {
         const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
         for (const pid of parentIds) {
           try {
-            const pRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents/${pid}.json`);
+            const pRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Parents/${pid}.json`);
             const parentNode = pRes.data || {};
             const parentUserId = parentNode.userId;
             if (parentUserId) {
-              const uRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${parentUserId}.json`);
+              const uRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Users/${parentUserId}.json`);
               const parentUser = uRes.data || {};
               const pInfo = { parentId: pid, name: parentUser.name || parentNode.name || "Parent", phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null };
               parentsList.push(pInfo);
@@ -372,8 +372,8 @@ useEffect(() => {
     const fetchTeachersAndUnread = async () => {
       try {
         const [teachersRes, usersRes] = await Promise.all([
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"),
-          axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json")
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
+          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json")
         ]);
 
         const teachersData = teachersRes.data || {};
@@ -398,7 +398,7 @@ useEffect(() => {
 
         for (const t of teacherList) {
           const chatKey = `${t.userId}_${adminUserId}`;
-          const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
+          const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
           const msgs = Object.values(res.data || {}).map(m => ({
             ...m,
             sender: m.senderId === adminUserId ? "admin" : "teacher"
@@ -425,8 +425,8 @@ useEffect(() => {
     const fetchStudents = async () => {
       try {
         setLoading(true);
-        const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
+        const studentsRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json");
+        const usersRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json");
 
         const studentsData = studentsRes.data || {};
         const usersData = usersRes.data || {};
@@ -498,7 +498,7 @@ useEffect(() => {
       setLoading(true);
       try {
         const res = await axios.get(
-          "https://ethiostore-17d9f-default-rtdb.firebaseio.com/ClassMarks.json"
+          "https://bale-house-rental-default-rtdb.firebaseio.com/ClassMarks.json"
         );
 
         const marksObj = {};
@@ -542,7 +542,7 @@ useEffect(() => {
         const key = `${s.studentId}_${admin.userId}`;
 
         const res = await axios.get(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key}/messages.json`
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key}/messages.json`
         );
 
         const msgs = res.data || {};
@@ -567,7 +567,7 @@ useEffect(() => {
     const fetchMessages = async () => {
       try {
         const res = await axios.get(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
         );
 
         const msgs = Object.values(res.data || {}).map(m => ({
@@ -600,7 +600,7 @@ useEffect(() => {
       const chatKey = `${selectedStudent.userId}_${adminUserId}`;
       // 1) push message
       const pushRes = await axios.post(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
         {
           senderId: newMessage.senderId,
           receiverId: newMessage.receiverId,
@@ -626,7 +626,7 @@ useEffect(() => {
       };
 
       await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
+        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
         {
           participants: {
             ...(/* keep existing participants if any */ {}),
@@ -640,18 +640,18 @@ useEffect(() => {
       // 3) increment unread for receiver
       try {
         const unreadRes = await axios.get(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`
         );
         const unread = unreadRes.data || {};
         const prev = Number(unread[selectedStudent.userId] || 0);
         const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
         await axios.put(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
           updated
         );
       } catch (uErr) {
         await axios.put(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
           { [selectedStudent.userId]: 1, [adminUserId]: 0 }
         );
       }
@@ -682,7 +682,7 @@ useEffect(() => {
       // push message with full schema
       try {
         const pushRes = await axios.post(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
           {
             senderId: newMessage.senderId,
             receiverId: newMessage.receiverId,
@@ -702,7 +702,7 @@ useEffect(() => {
         // patch lastMessage + participants
         const lastMessage = { text: newMessage.text, senderId: newMessage.senderId, seen: false, timeStamp: newMessage.timeStamp };
         await axios.patch(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
+          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
           {
             participants: { [adminUserId]: true, [selectedStudent.userId]: true },
             lastMessage,
@@ -711,13 +711,13 @@ useEffect(() => {
 
         // update unread
         try {
-          const unreadRes = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`);
+          const unreadRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`);
           const unread = unreadRes.data || {};
           const prev = Number(unread[selectedStudent.userId] || 0);
           const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-          await axios.put(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, updated);
+          await axios.put(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, updated);
         } catch (uErr) {
-          await axios.put(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
+          await axios.put(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
         }
 
         setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
@@ -739,7 +739,7 @@ useEffect(() => {
     try {
       // 1️⃣ USERS (names & images)
       const usersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
       );
       const usersData = usersRes.data || {};
 
@@ -753,8 +753,8 @@ useEffect(() => {
         const key2 = `${userId}_${admin.userId}`;
 
         const [r1, r2] = await Promise.all([
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-          axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
+          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
+          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
         ]);
 
         const msgs = [
@@ -769,7 +769,7 @@ useEffect(() => {
 
       // 2️⃣ TEACHERS
       const teachersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"
       );
 
       for (const k in teachersRes.data || {}) {
@@ -790,7 +790,7 @@ useEffect(() => {
 
       // 3️⃣ STUDENTS
       const studentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Students.json"
       );
 
       for (const k in studentsRes.data || {}) {
@@ -812,7 +812,7 @@ useEffect(() => {
 
       // 4️⃣ PARENTS
       const parentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
+        "https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json"
       );
 
       for (const k in parentsRes.data || {}) {
@@ -899,9 +899,9 @@ useEffect(() => {
 
       if (Object.keys(updates).length > 0) {
         try {
-          await axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json`, updates);
+          await axios.patch(`https://bale-house-rental-default-rtdb.firebaseio.com/.json`, updates);
           // reset unread and mark lastMessage seen at chat root
-          axios.patch(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+          axios.patch(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
         } catch (err) {
           console.error('Failed to patch seen updates:', err);
         }
@@ -940,8 +940,8 @@ useEffect(() => {
     const key2 = `${userId}_${admin.userId}`;
 
     const [r1, r2] = await Promise.all([
-      axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-      axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
+      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
+      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
     ]);
 
     const updates = {};
@@ -959,7 +959,7 @@ useEffect(() => {
 
     if (Object.keys(updates).length > 0) {
       await axios.patch(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
+        "https://bale-house-rental-default-rtdb.firebaseio.com/.json",
         updates
       );
     }

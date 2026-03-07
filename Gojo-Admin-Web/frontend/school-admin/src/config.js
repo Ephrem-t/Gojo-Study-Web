@@ -1,5 +1,5 @@
 // Central backend base URL. Try Vite env, Node env, legacy React env, then default.
-const DEFAULT_BACKEND = "https://gojo-teacher-web.onrender.com";
+const DEFAULT_BACKEND = "http://127.0.0.1:5000";
 
 const viteEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_BASE;
 const nodeViteEnv = typeof process !== 'undefined' && process.env && process.env.VITE_BACKEND_BASE;

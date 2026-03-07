@@ -6,13 +6,14 @@ import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage"; // <-- ADD THIS
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCMkZr4Xz204NjvETje-Rhznf6ECDYiEnE",                      // e.g., "AIzaSyA..."
-  authDomain: "ethiostore-17d9f.firebaseapp.com",   // your project auth domain
-  databaseURL: "https://ethiostore-17d9f-default-rtdb.firebaseio.com", // Realtime DB URL
-  projectId: "ethiostore-17d9f",               // your project ID
-  storageBucket: "ethiostore-17d9f.appspot.com",
+  apiKey: "AIzaSyD47Nw8JROSGpk_HrzOwpoAek_PH12pBS8",                      // e.g., "AIzaSyA..."
+  authDomain: "bale-house-rental.firebaseapp.com",   // your project auth domain
+  databaseURL: "https://bale-house-rental-default-rtdb.firebaseio.com", // Realtime DB URL
+  projectId: "bale-house-rental",               // your project ID
+  storageBucket: "bale-house-rental.appspot.com",
   messagingSenderId: "964518277159",
-  appId: "1:964518277159:web:9404cace890edf88961e02"
+  appId: "1:964518277159:web:73f590faf40217cc961e02",
+  measurementId: "G-X7LYG9HX43"
 };
 
 // Only initialize if no apps exist

@@ -18,7 +18,7 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 
-const DB = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+const DB = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
 
 function Parent() {
@@ -206,24 +206,17 @@ function Parent() {
         setPostNotifications([]);
         return;
       }
-      const [usersRes, adminsRes] = await Promise.all([
-        axios.get(`${DB}/Users.json`),
-        axios.get(`${DB}/School_Admins.json`),
-      ]);
+      const usersRes = await axios.get(`${DB}/Users.json`);
       const users = usersRes.data || {};
-      const admins = adminsRes.data || {};
-      const findAdminUser = (id) => {
-        const rec = admins[id];
-        if (!rec) return null;
-        return Object.values(users).find((u) => u.userId === rec.userId);
-      };
+      const findAdminUser = (id) =>
+        Object.values(users).find((u) => u.userId === id || u.username === id);
       const enriched = notifications.map((n) => {
         const posterUser = findAdminUser(n.adminId);
         return {
           ...n,
           notificationId: n.notificationId || n.id || `${n.postId}_${n.adminId}`,
-          adminName: posterUser?.name || "Unknown Admin",
-          adminProfile: posterUser?.profileImage || "/default-profile.png",
+          adminName: posterUser?.name || n.adminName || "Unknown Admin",
+          adminProfile: posterUser?.profileImage || n.adminProfile || "/default-profile.png",
         };
       });
       setPostNotifications(enriched);

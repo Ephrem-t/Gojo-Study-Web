@@ -16,7 +16,7 @@ function TeacherChatPage() {
   // ADMIN USER (must contain userId)
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
 
-  const BASE_URL = "https://ethiostore-17d9f-default-rtdb.firebaseio.com";
+  const BASE_URL = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
   // ---------------- FETCH TEACHERS ----------------
   useEffect(() => {

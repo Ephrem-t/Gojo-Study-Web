@@ -4,7 +4,8 @@ import { useNavigate } from "react-router-dom";
 export default function Navbar() {
   const navigate = useNavigate();
   const handleLogout = () => {
-    localStorage.removeItem("adminId");
+    localStorage.removeItem("admin");
+    localStorage.removeItem("gojo_admin");
     navigate("/login");
   };
 
