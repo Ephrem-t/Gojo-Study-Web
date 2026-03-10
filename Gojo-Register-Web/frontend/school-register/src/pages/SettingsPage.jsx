@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaHome,
   FaFileAlt,
@@ -16,99 +16,79 @@ import {
 import axios from "axios";
 import { BACKEND_BASE } from "../config";
 import useDarkMode from "../hooks/useDarkMode";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 function SettingsPage() {
-  const [admin, setAdmin] = useState(
-    JSON.parse(localStorage.getItem("admin")) || {}
-  );
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [profileImage, setProfileImage] = useState(
-    admin.profileImage || "/default-profile.png"
-  );
-  const [darkMode, toggleDarkMode] = useDarkMode();
+  const storedAdmin = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("admin") || localStorage.getItem("registrar") || "{}") || {};
+    } catch {
+      return {};
+    }
+  })();
 
-  const [name, setName] = useState(admin.name || "");
-  const [username, setUsername] = useState(admin.username || "");
+  const [admin, setAdmin] = useState(storedAdmin);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [profileImage, setProfileImage] = useState(storedAdmin.profileImage || "/default-profile.png");
+  const [darkMode, toggleDarkMode] = useDarkMode();
+  const [name, setName] = useState(storedAdmin.name || "");
+  const [username, setUsername] = useState(storedAdmin.username || "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const navigate = useNavigate();
-  const [unreadSenders, setUnreadSenders] = useState([]);
+  const [unreadSenders, setUnreadSenders] = useState({});
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
-
-  // POST NOTIFICATIONS
   const [postNotifications, setPostNotifications] = useState([]);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
-  const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
-  const [studentMenuOpen, setStudentMenuOpen] = useState(false);
 
   const adminId = admin.userId;
 
-  // Fetch post notifications and enrich each with poster's name & profile image
   const fetchPostNotifications = async () => {
-  if (!adminId) return;
+    if (!adminId) return;
 
-  try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `${BACKEND_BASE}/api/get_post_notifications/${adminId}`
-    );
+    try {
+      const res = await axios.get(`${BACKEND_BASE}/api/get_post_notifications/${adminId}`);
+      const notifications = Array.isArray(res.data) ? res.data : Object.values(res.data || {});
 
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
+      if (notifications.length === 0) {
+        setPostNotifications([]);
+        return;
+      }
 
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
+      const [usersRes, adminsRes] = await Promise.all([
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"),
+        axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"),
+      ]);
 
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRes, adminsRes] = await Promise.all([
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      ),
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
-      ),
-    ]);
+      const users = usersRes.data || {};
+      const admins = adminsRes.data || {};
 
-    const users = usersRes.data || {};
-    const admins = adminsRes.data || {};
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
-        notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
-
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
+      const findAdminUser = (notificationAdminId) => {
+        const schoolAdmin = admins[notificationAdminId];
+        if (!schoolAdmin) return null;
+        return Object.values(users).find((user) => user.userId === schoolAdmin.userId);
       };
-    });
 
-    setPostNotifications(enriched);
-  } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
-  }
-};
+      const enriched = notifications.map((notification) => {
+        const posterUser = findAdminUser(notification.adminId);
 
+        return {
+          ...notification,
+          notificationId:
+            notification.notificationId ||
+            notification.id ||
+            `${notification.postId}_${notification.adminId}`,
+          adminName: posterUser?.name || "Unknown Admin",
+          adminProfile: posterUser?.profileImage || "/default-profile.png",
+        };
+      });
+
+      setPostNotifications(enriched);
+    } catch (err) {
+      console.error("Post notification fetch failed", err);
+      setPostNotifications([]);
+    }
+  };
 
   useEffect(() => {
     if (!adminId) return;
@@ -117,58 +97,22 @@ function SettingsPage() {
     const interval = setInterval(fetchPostNotifications, 5000);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminId]);
 
- const handleNotificationClick = async (notification) => {
-  try {
-    await axios.post(`${BACKEND_BASE}/api/mark_post_notification_read`, {
-      notificationId: notification.notificationId,
-      adminId: admin.userId,
-    });
-  } catch (err) {
-    console.warn("Failed to delete notification:", err);
-  }
+  const handleFileChange = (e) => setSelectedFile(e.target.files[0] || null);
 
-  // 🔥 REMOVE FROM UI IMMEDIATELY
-  setPostNotifications((prev) =>
-    prev.filter((n) => n.notificationId !== notification.notificationId)
-  );
-
-  setShowPostDropdown(false);
-
-  // ➜ Navigate to post
-  navigate("/dashboard", {
-    state: { postId: notification.postId },
-  });
-};
-useEffect(() => {
-  if (location.state?.postId) {
-    setPostNotifications([]);
-  }
-}, []);
-
-
-  useEffect(() => {
-    const closeDropdown = (e) => {
-      if (
-        !e.target.closest(".icon-circle") &&
-        !e.target.closest(".notification-dropdown")
-      ) {
-        setShowPostDropdown(false);
-      }
-    };
-
-    document.addEventListener("click", closeDropdown);
-    return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
-  // ------------------ rest of the component (unchanged) ------------------
-
-  const handleFileChange = (e) => setSelectedFile(e.target.files[0]);
+  const persistAdmin = (updatedAdmin) => {
+    setAdmin(updatedAdmin);
+    localStorage.setItem("admin", JSON.stringify(updatedAdmin));
+    localStorage.setItem("registrar", JSON.stringify(updatedAdmin));
+  };
 
   const handleProfileSubmit = async () => {
-    if (!selectedFile) return alert("Select an image first.");
+    if (!selectedFile) {
+      alert("Select an image first.");
+      return;
+    }
+
     try {
       const reader = new FileReader();
       reader.readAsDataURL(selectedFile);
@@ -178,8 +122,9 @@ useEffect(() => {
           `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
           { profileImage: base64Image }
         );
+
         const updatedAdmin = { ...admin, profileImage: base64Image };
-        localStorage.setItem("admin", JSON.stringify(updatedAdmin));
+        persistAdmin(updatedAdmin);
         setProfileImage(base64Image);
         setSelectedFile(null);
         alert("Profile image updated!");
@@ -190,15 +135,19 @@ useEffect(() => {
   };
 
   const handleInfoUpdate = async () => {
-    if (!name || !username) return alert("Name and Username required!");
+    if (!name || !username) {
+      alert("Name and Username required!");
+      return;
+    }
+
     try {
       await axios.patch(
         `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
         { name, username }
       );
+
       const updatedAdmin = { ...admin, name, username };
-      localStorage.setItem("admin", JSON.stringify(updatedAdmin));
-      setAdmin(updatedAdmin);
+      persistAdmin(updatedAdmin);
       alert("Profile info updated!");
     } catch (err) {
       console.error("Error updating info:", err);
@@ -206,8 +155,15 @@ useEffect(() => {
   };
 
   const handlePasswordChange = async () => {
-    if (!password || !confirmPassword) return alert("Fill both password fields.");
-    if (password !== confirmPassword) return alert("Passwords do not match!");
+    if (!password || !confirmPassword) {
+      alert("Fill both password fields.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      alert("Passwords do not match!");
+      return;
+    }
+
     try {
       await axios.patch(
         `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
@@ -220,32 +176,6 @@ useEffect(() => {
       console.error("Error updating password:", err);
     }
   };
-
-  const toggleDropdown = () => {
-    setShowMessageDropdown((prev) => !prev);
-  };
-
-  useEffect(() => {
-    const closeDropdown = (e) => {
-      setShowMessageDropdown(false);
-    };
-
-    document.addEventListener("click", closeDropdown);
-    return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
-  useEffect(() => {
-    const fetchUnreadSenders = async () => {
-      try {
-        const response = await fetch("/api/unreadSenders");
-        const data = await response.json();
-        setUnreadSenders(data);
-      } catch (err) {
-        // ignore
-      }
-    };
-    fetchUnreadSenders();
-  }, []);
 
   const handleClick = () => {
     navigate("/all-chat");
@@ -413,9 +343,60 @@ useEffect(() => {
   // badge counts (match MyPosts UI)
   const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
   const totalNotifications = (postNotifications?.length || 0) + messageCount;
+  const cardStyle = {
+    width: "min(100%, 760px)",
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 22,
+    boxShadow: "var(--shadow-panel)",
+    color: "var(--text-primary)",
+  };
+  const mutedTextStyle = {
+    color: "var(--text-secondary)",
+  };
+  const inputStyle = {
+    padding: "12px 14px",
+    borderRadius: "12px",
+    border: "1px solid var(--input-border)",
+    background: "var(--input-bg)",
+    color: "var(--text-primary)",
+    fontSize: 14,
+  };
+  const primaryButtonStyle = {
+    padding: "12px 18px",
+    borderRadius: "12px",
+    border: "1px solid var(--accent-strong)",
+    background: "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 800,
+    boxShadow: "var(--shadow-glow)",
+  };
+  const toggleButtonStyle = {
+    width: 68,
+    height: 38,
+    borderRadius: 999,
+    border: `1px solid ${darkMode ? "var(--border-strong)" : "var(--border-soft)"}`,
+    background: darkMode
+      ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)"
+      : "linear-gradient(135deg, var(--surface-muted) 0%, var(--surface-accent) 100%)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: darkMode ? "flex-end" : "flex-start",
+    padding: 4,
+    cursor: "pointer",
+    boxShadow: darkMode ? "var(--shadow-glow)" : "var(--shadow-soft)",
+  };
+  const toggleKnobStyle = {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: "#ffffff",
+    boxShadow: "0 6px 14px rgba(15,23,42,0.22)",
+  };
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page" style={{ minHeight: "100vh", background: "var(--page-bg)", color: "var(--text-primary)" }}>
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
       <nav className="top-navbar">
         <h2>Gojo Dashboard</h2>
@@ -554,11 +535,6 @@ useEffect(() => {
             {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
 
-          {/* Settings */}
-          <Link className="icon-circle" to="/settings">
-            <FaCog />
-          </Link>
-
           {/* Profile */}
           <img
             src={admin.profileImage || "/default-profile.png"}
@@ -570,119 +546,10 @@ useEffect(() => {
 
       <div
         className="google-dashboard"
-        style={{ background: darkMode ? "#2c2c2c" : "#f1f1f1" }}
+        style={{ background: "var(--page-bg)" }}
       >
         {/* SIDEBAR */}
-        <div
-          className="google-sidebar"
-          style={{ background: darkMode ? "#1a1a1a" : "#fff" }}
-        >
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
-            </div>
-            <h3>{admin.name}</h3>
-            <p>{admin?.adminId || "username"}</p>
-          </div>
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-            >
-              <FaSignOutAlt /> Logout
-            </button>
-          </div>
-        </div>
-
+        <RegisterSidebar user={admin} sticky fullHeight />
         {/* MAIN CONTENT */}
         <div
           className="main-content"
@@ -690,26 +557,39 @@ useEffect(() => {
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
-            justifyContent: "center",
-            padding: "50px",
+            justifyContent: "flex-start",
+            padding: "34px 28px 60px",
             width: "100%",
-            gap: "30px",
+            gap: "24px",
           }}
         >
-          <h2>Settings</h2>
+          <div
+            style={{
+              ...cardStyle,
+              padding: "26px 28px",
+              background: "linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
+            }}
+          >
+            <div style={{ fontSize: 28, fontWeight: 900, color: "var(--text-primary)" }}>Settings</div>
+            <div style={{ marginTop: 8, fontSize: 14, ...mutedTextStyle }}>
+              Manage account details, security, and appearance. Dark mode now applies across the register pages from one standard toggle.
+            </div>
+          </div>
 
           {/* Profile Image */}
           <div
             style={{
+              ...cardStyle,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               padding: "30px",
-              borderRadius: "12px",
-              background: darkMode ? "#3a3a3a" : "#fff",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
             }}
           >
+            <div style={{ alignSelf: "flex-start", marginBottom: 20 }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>Profile Photo</div>
+              <div style={{ marginTop: 4, fontSize: 13, ...mutedTextStyle }}>Update the picture shown in the top bar and sidebar.</div>
+            </div>
             <img
               src={profileImage}
               alt="profile"
@@ -719,21 +599,14 @@ useEffect(() => {
                 borderRadius: "50%",
                 objectFit: "cover",
                 marginBottom: "15px",
-                border: "3px solid #4b6cb7",
+                border: "4px solid var(--border-strong)",
+                boxShadow: "var(--shadow-glow)",
               }}
             />
             <input type="file" onChange={handleFileChange} />
             <button
               onClick={handleProfileSubmit}
-              style={{
-                marginTop: "15px",
-                padding: "10px 20px",
-                borderRadius: "8px",
-                border: "none",
-                background: "#4b6cb7",
-                color: "#fff",
-                cursor: "pointer",
-              }}
+              style={{ ...primaryButtonStyle, marginTop: 15 }}
             >
               Update Profile Image
             </button>
@@ -742,39 +615,34 @@ useEffect(() => {
           {/* Name / Username */}
           <div
             style={{
+              ...cardStyle,
               display: "flex",
               flexDirection: "column",
-              gap: "10px",
+              gap: "12px",
               padding: "30px",
-              borderRadius: "12px",
-              background: darkMode ? "#3a3a3a" : "#fff",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
             }}
           >
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>Profile Information</div>
+              <div style={{ marginTop: 4, fontSize: 13, ...mutedTextStyle }}>Keep your name and username current across your register profile.</div>
+            </div>
             <input
               type="text"
               placeholder="Name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+              style={inputStyle}
             />
             <input
               type="text"
               placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+              style={inputStyle}
             />
             <button
               onClick={handleInfoUpdate}
-              style={{
-                padding: "10px 20px",
-                borderRadius: "8px",
-                border: "none",
-                background: "#4b6cb7",
-                color: "#fff",
-                cursor: "pointer",
-              }}
+              style={primaryButtonStyle}
             >
               Update Info
             </button>
@@ -783,39 +651,34 @@ useEffect(() => {
           {/* Password */}
           <div
             style={{
+              ...cardStyle,
               display: "flex",
               flexDirection: "column",
-              gap: "10px",
+              gap: "12px",
               padding: "30px",
-              borderRadius: "12px",
-              background: darkMode ? "#3a3a3a" : "#fff",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
             }}
           >
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>Security</div>
+              <div style={{ marginTop: 4, fontSize: 13, ...mutedTextStyle }}>Use a new password to keep the register account protected.</div>
+            </div>
             <input
               type="password"
               placeholder="New Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+              style={inputStyle}
             />
             <input
               type="password"
               placeholder="Confirm Password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
+              style={inputStyle}
             />
             <button
               onClick={handlePasswordChange}
-              style={{
-                padding: "10px 20px",
-                borderRadius: "8px",
-                border: "none",
-                background: "#4b6cb7",
-                color: "#fff",
-                cursor: "pointer",
-              }}
+              style={primaryButtonStyle}
             >
               Change Password
             </button>
@@ -824,17 +687,23 @@ useEffect(() => {
           {/* Dark Mode */}
           <div
             style={{
+              ...cardStyle,
               display: "flex",
               alignItems: "center",
+              justifyContent: "space-between",
               gap: "15px",
-              padding: "20px",
-              borderRadius: "12px",
-              background: darkMode ? "#3a3a3a" : "#fff",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
+              padding: "22px 24px",
             }}
           >
-            <label style={{ fontSize: "18px", fontWeight: "500" }}>Dark Mode</label>
-            <input type="checkbox" checked={darkMode} onChange={toggleDarkMode} />
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>Appearance</div>
+              <div style={{ marginTop: 4, fontSize: 13, ...mutedTextStyle }}>
+                {darkMode ? "Dark mode is active across the register interface." : "Light mode is active across the register interface."}
+              </div>
+            </div>
+            <button type="button" onClick={toggleDarkMode} style={toggleButtonStyle} aria-label="Toggle dark mode">
+              <span style={toggleKnobStyle} />
+            </button>
           </div>
         </div>
       </div>

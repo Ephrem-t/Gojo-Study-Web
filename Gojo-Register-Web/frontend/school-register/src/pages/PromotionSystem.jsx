@@ -17,14 +17,15 @@ import {
 } from "react-icons/fa";
 import axios from "axios";
 import { BACKEND_BASE } from "../config";
+import RegisterSidebar from "../components/RegisterSidebar";
 
-const PAGE_BG = "radial-gradient(1200px 600px at 100% -15%, rgba(59, 130, 246, 0.14), transparent 55%), radial-gradient(900px 520px at -10% 10%, rgba(14, 165, 233, 0.1), transparent 55%), linear-gradient(165deg, #f8fbff 0%, #eef5ff 48%, #f7fbff 100%)";
+const PAGE_BG = "var(--page-bg)";
 
 const cardStyle = {
-  background: "#ffffff",
-  border: "1px solid #dbe7fb",
+  background: "var(--surface-panel)",
+  border: "1px solid var(--border-soft)",
   borderRadius: 16,
-  boxShadow: "0 14px 34px rgba(15, 23, 42, 0.08)",
+  boxShadow: "var(--shadow-panel)",
 };
 
 const ACTIONS = {
@@ -1175,38 +1176,38 @@ export default function PromotionSystem() {
     <div className="dashboard-page" style={{ background: PAGE_BG, minHeight: "100vh" }}>
       <style>
         {`
-          .ps-root { color: #0f172a; }
+          .ps-root { color: var(--text-primary); }
           .ps-dashboard { display: flex; gap: 14px; padding: 12px; }
           .ps-sidebar { width: 220px; }
           .ps-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
           .ps-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
           .ps-table { display: grid; grid-template-columns: 0.35fr 1.25fr 0.45fr 0.45fr 0.8fr 0.5fr 0.8fr; gap: 8px; align-items: center; }
           .ps-rereg-body { display: grid; grid-template-columns: 1fr; gap: 14px; }
-          .ps-rereg-section { border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px; background: #f8fbff; }
-          .ps-rereg-section:hover { border-color: #cbd5e1; }
-          .ps-rereg-section-title { font-size: 13px; font-weight: 800; color: #0f172a; margin: 0 0 8px; }
+          .ps-rereg-section { border: 1px solid var(--border-soft); border-radius: 12px; padding: 10px; background: var(--surface-muted); }
+          .ps-rereg-section:hover { border-color: var(--border-strong); }
+          .ps-rereg-section-title { font-size: 13px; font-weight: 800; color: var(--text-primary); margin: 0 0 8px; }
           .ps-rereg-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
           .ps-rereg-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-          .ps-rereg-field label { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 700; color: #334155; }
-          .ps-rereg-field input, .ps-rereg-field select, .ps-rereg-field textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 7px 9px; font-size: 12px; box-sizing: border-box; }
-          .ps-panel { background: #fff; border: 1px solid #dbe7fb; border-radius: 16px; box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08); }
+          .ps-rereg-field label { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+          .ps-rereg-field input, .ps-rereg-field select, .ps-rereg-field textarea { width: 100%; border: 1px solid var(--input-border); border-radius: 8px; padding: 7px 9px; font-size: 12px; box-sizing: border-box; background: var(--input-bg); color: var(--text-primary); }
+          .ps-panel { background: var(--surface-panel); border: 1px solid var(--border-soft); border-radius: 16px; box-shadow: var(--shadow-panel); }
           .ps-kpi { position: relative; overflow: hidden; transition: transform .2s ease, box-shadow .2s ease; }
           .ps-kpi::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--kpi-color, #2563eb); }
-          .ps-kpi:hover { transform: translateY(-1px); box-shadow: 0 16px 28px rgba(15, 23, 42, 0.12); }
-          .ps-table-head { position: sticky; top: 0; z-index: 2; background: #f8fbff; }
+          .ps-kpi:hover { transform: translateY(-1px); box-shadow: 0 16px 28px color-mix(in srgb, var(--shadow-panel) 80%, transparent); }
+          .ps-table-head { position: sticky; top: 0; z-index: 2; background: var(--surface-muted); }
           .ps-row { transition: background .2s ease; }
-          .ps-row:hover { background: #f8fbff; }
+          .ps-row:hover { background: var(--surface-muted); }
           .ps-btn { border-radius: 9px; padding: 8px 12px; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: transform .15s ease, box-shadow .2s ease, background .2s ease; }
           .ps-btn:hover { transform: translateY(-1px); }
           .ps-btn:disabled { transform: none; cursor: not-allowed; opacity: .65; }
           .ps-btn-primary { border: 1px solid #1d4ed8; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #fff; box-shadow: 0 10px 18px rgba(37, 99, 235, 0.25); }
-          .ps-btn-soft { border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+          .ps-btn-soft { border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); background: var(--accent-soft); color: var(--accent-strong); }
           .ps-btn-danger { border: 1px solid #dc2626; background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; box-shadow: 0 10px 18px rgba(220, 38, 38, 0.24); }
-          .ps-step-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 900; color: #0f172a; margin-bottom: 10px; }
-          .ps-step-chip { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 800; }
-          .ps-input, .ps-select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 13px; background: #fff; }
-          .ps-input:focus, .ps-select:focus, .ps-rereg-field input:focus, .ps-rereg-field select:focus, .ps-rereg-field textarea:focus { outline: none; border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13); }
-          .ps-hero-note { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800; }
+          .ps-step-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 900; color: var(--text-primary); margin-bottom: 10px; }
+          .ps-step-chip { background: var(--accent-soft); color: var(--accent-strong); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 800; }
+          .ps-input, .ps-select { border: 1px solid var(--input-border); border-radius: 8px; padding: 8px 10px; font-size: 13px; background: var(--input-bg); color: var(--text-primary); }
+          .ps-input:focus, .ps-select:focus, .ps-rereg-field input:focus, .ps-rereg-field select:focus, .ps-rereg-field textarea:focus { outline: none; border-color: var(--input-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+          .ps-hero-note { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); background: var(--accent-soft); color: var(--accent-strong); border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800; }
           @media (max-width: 1180px) { .ps-dashboard { flex-direction: column; } .ps-sidebar { width: auto; } }
           @media (max-width: 980px) {
             .ps-grid-2 { grid-template-columns: 1fr; }
@@ -1222,71 +1223,25 @@ export default function PromotionSystem() {
         `}
       </style>
 
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #dbe7fb", background: "#ffffffcc", backdropFilter: "blur(6px)" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 900, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "color-mix(in srgb, var(--surface-panel) 88%, transparent)", backdropFilter: "blur(6px)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 900, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="ps-dashboard ps-root">
-        <div className="google-sidebar ps-sidebar" style={{ padding: 12, borderRadius: 16, background: "#ffffff", border: "1px solid #dbe7fb", boxShadow: "0 10px 24px rgba(15, 23, 42, 0.07)", height: "fit-content" }}>
-          <div className="sidebar-profile" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 50, height: 50, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc" }}>
-              <img src={admin.profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>{admin.name}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{admin.username || admin.adminId || "register"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <button type="button" className="sidebar-btn" onClick={() => setDashboardMenuOpen((prev) => !prev)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 12px", fontSize: 13, fontWeight: 700, background: "linear-gradient(135deg, #eff6ff, #eef2ff)", color: "#1e3a8a", borderRadius: 12, border: "1px solid #c7d2fe", cursor: "pointer" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}><FaHome style={{ width: 18, height: 18 }} /> Dashboard</span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaHome style={{ width: 16, height: 16 }} /> Home</Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> My Posts</Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaChartLine style={{ width: 16, height: 16 }} /> Overview</Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year</Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-                <Link className="sidebar-btn" to="/promotion-system" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, fontWeight: 700, backgroundColor: "#1d4ed8", color: "#fff", borderRadius: 10, boxShadow: "0 8px 18px rgba(29,78,216,0.25)" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Promotion System</Link>
-                <Link className="sidebar-btn" to="/transfer-withdrawal" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Transfer & Withdrawal</Link>
-                <Link className="sidebar-btn" to="/document-generation" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Document Generation</Link>
-              </div>
-            )}
-
-            <button type="button" className="sidebar-btn" onClick={() => setStudentMenuOpen((prev) => !prev)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 12px", fontSize: 13, fontWeight: 700, background: "linear-gradient(135deg, #eff6ff, #eef2ff)", color: "#1e3a8a", borderRadius: 12, border: "1px solid #c7d2fe", cursor: "pointer" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}><FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students</span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student</Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Register Student</Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent</Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}><FaChartLine style={{ width: 18, height: 18 }} /> Analytics</Link>
-            <button className="sidebar-btn logout-btn" onClick={() => { localStorage.removeItem("registrar"); localStorage.removeItem("admin"); navigate("/login"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}><FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout</button>
-          </div>
-        </div>
-
+        <RegisterSidebar user={admin} sticky fullHeight />
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1220, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="ps-panel" style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>
               <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, rgba(125, 211, 252, 0.32), rgba(147, 197, 253, 0))" }} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
                 <div>
-                  <h1 style={{ margin: 0, fontSize: 24, color: "#0f172a", fontWeight: 900 }}>Promotion System</h1>
-                    <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>
+                  <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 900 }}>Promotion System</h1>
+                    <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-secondary)" }}>
                       End-of-year workflow from YearHistory snapshot: review selected students, confirm actions, and complete re-registration.
                   </p>
                   <div className="ps-hero-note"><FaLock /> Confirm key: PROMOTE</div>
@@ -1322,11 +1277,11 @@ export default function PromotionSystem() {
               }].map((item) => (
                 <div key={item.title} className="ps-kpi" style={{ ...cardStyle, padding: 12, "--kpi-color": item.color }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>{item.title}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{item.title}</span>
                     <FaUsers style={{ color: item.color }} />
                   </div>
-                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "#0f172a" }}>{item.value}</div>
-                  <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>{item.hint}</div>
+                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "var(--text-primary)" }}>{item.value}</div>
+                  <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-muted)" }}>{item.hint}</div>
                 </div>
               ))}
             </div>
@@ -1363,7 +1318,7 @@ export default function PromotionSystem() {
                 </div>
               </div>
 
-              <div style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>
+              <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)" }}>
                 Current Academic Year: {currentAcademicYear ? yearLabel(currentAcademicYear) : "Not set"}
                 {" | Status: Ready"}
               </div>
@@ -1371,13 +1326,13 @@ export default function PromotionSystem() {
 
             {step >= 2 ? (
               <div className="ps-panel" style={{ ...cardStyle, overflow: "hidden" }}>
-                <div style={{ padding: "12px 14px", fontWeight: 900, color: "#0f172a", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ padding: "12px 14px", fontWeight: 900, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span>Step 2 - Review Student Decisions ({studentsForFromYear.length} students)</span>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>{yearLabel(fromYear)} {"->"} {yearLabel(toYear)}</span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{yearLabel(fromYear)} {"->"} {yearLabel(toYear)}</span>
                 </div>
 
-                <div style={{ ...cardStyle, margin: 12, padding: 10, border: "1px solid #e2e8f0" }}>
-                  <div style={{ fontSize: 12, color: "#334155", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ ...cardStyle, margin: 12, padding: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
                     <span>Selected: {summary.total} / {summary.totalLoaded}</span>
                     <span>Promote: {summary.promoteCount}</span>
                     <span>Repeat: {summary.repeatCount}</span>
@@ -1387,13 +1342,13 @@ export default function PromotionSystem() {
                   </div>
                   <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button onClick={() => setAllSelection(true)} className="ps-btn ps-btn-soft" style={{ padding: "6px 10px", fontSize: 11 }}>Select All</button>
-                    <button onClick={() => setAllSelection(false)} className="ps-btn" style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", padding: "6px 10px", fontSize: 11 }}>Clear Selection</button>
+                    <button onClick={() => setAllSelection(false)} className="ps-btn" style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "6px 10px", fontSize: 11 }}>Clear Selection</button>
                   </div>
                 </div>
 
                 <div style={{ ...cardStyle, margin: "0 12px 12px", overflow: "hidden" }}>
-                  <div className="ps-table-head" style={{ ...cardStyle, borderRadius: 0, border: "none", borderBottom: "1px solid #e5e7eb", boxShadow: "none", padding: "10px 12px" }}>
-                    <div className="ps-table" style={{ fontSize: 12, fontWeight: 900, color: "#475569" }}>
+                  <div className="ps-table-head" style={{ ...cardStyle, borderRadius: 0, border: "none", borderBottom: "1px solid var(--border-soft)", boxShadow: "none", padding: "10px 12px", background: "var(--surface-muted)" }}>
+                    <div className="ps-table" style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)" }}>
                       <div>Select</div>
                       <div>Student</div>
                       <div>Grade</div>
@@ -1410,7 +1365,7 @@ export default function PromotionSystem() {
                       const sectionOpts = sectionOptionsByGrade[decision.targetGrade] || [];
 
                       return (
-                        <div key={student.studentId} className="ps-row" style={{ borderTop: "1px solid #f1f5f9", padding: "10px 12px" }}>
+                        <div key={student.studentId} className="ps-row" style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 12px" }}>
                           <div className="ps-table">
                             <div>
                               <input
@@ -1420,8 +1375,8 @@ export default function PromotionSystem() {
                               />
                             </div>
                             <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
-                              <div style={{ fontSize: 11, color: "#64748b" }}>{student.studentId}</div>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
+                              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
                             </div>
 
                             <div style={{ fontSize: 12, fontWeight: 700 }}>{student.grade}</div>
@@ -1454,7 +1409,7 @@ export default function PromotionSystem() {
                                 ))}
                               </select>
                             ) : (
-                              <div style={{ fontSize: 12, color: "#64748b" }}>-</div>
+                              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>-</div>
                             )}
                           </div>
                         </div>
@@ -1496,16 +1451,16 @@ export default function PromotionSystem() {
 
       {showReRegisterModal && reRegisterDraft ? (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 10000, padding: 16 }}>
-          <div style={{ width: "100%", height: "100%", background: "#fff", borderRadius: 16, border: "1px solid #e2e8f0", boxShadow: "0 24px 44px rgba(15,23,42,0.28)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ width: "100%", height: "100%", background: "var(--surface-panel)", borderRadius: 16, border: "1px solid var(--border-soft)", boxShadow: "0 24px 44px rgba(15,23,42,0.28)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
               <div>
-                <div style={{ fontSize: 18, fontWeight: 900, color: "#0f172a" }}>Re-Register Student Data</div>
-                <div style={{ fontSize: 12, color: "#64748b" }}>Student {reRegisterIndex + 1} of {reRegisterQueue.length} | ID: {reRegisterDraft.studentId}</div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>Re-Register Student Data</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Student {reRegisterIndex + 1} of {reRegisterQueue.length} | ID: {reRegisterDraft.studentId}</div>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={() => moveReRegisterIndex(reRegisterIndex - 1)} className="ps-btn" disabled={reRegisterIndex === 0 || reRegisterSaving} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", padding: "7px 10px", fontWeight: 700 }}>Previous</button>
-                <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", padding: "7px 10px", fontWeight: 700 }}>Next</button>
-                <button onClick={() => setShowReRegisterModal(false)} className="ps-btn" disabled={reRegisterSaving} style={{ border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", padding: "7px 10px", fontWeight: 700 }}>Close</button>
+                <button onClick={() => moveReRegisterIndex(reRegisterIndex - 1)} className="ps-btn" disabled={reRegisterIndex === 0 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "7px 10px", fontWeight: 700 }}>Previous</button>
+                <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "7px 10px", fontWeight: 700 }}>Next</button>
+                <button onClick={() => setShowReRegisterModal(false)} className="ps-btn" disabled={reRegisterSaving} style={{ border: "1px solid var(--danger-border)", background: "var(--surface-panel)", color: "var(--danger)", padding: "7px 10px", fontWeight: 700 }}>Close</button>
               </div>
             </div>
 
@@ -1603,13 +1558,13 @@ export default function PromotionSystem() {
                   <div className="ps-rereg-section">
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
                       <p className="ps-rereg-section-title" style={{ margin: 0 }}>Parent Guardian Information</p>
-                      <button onClick={addParentDraftRow} type="button" style={{ border: "1px solid #1d4ed8", background: "#eff6ff", color: "#1d4ed8", borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>+ Add Parent</button>
+                      <button onClick={addParentDraftRow} type="button" style={{ border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)", background: "var(--accent-soft)", color: "var(--accent-strong)", borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>+ Add Parent</button>
                     </div>
                     {(reRegisterDraft.parents || []).map((parent, index) => (
-                      <div key={`${parent.parentId || "parent"}_${index}`} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: 8, marginBottom: 8, background: "#fff" }}>
+                      <div key={`${parent.parentId || "parent"}_${index}`} style={{ border: "1px solid var(--border-soft)", borderRadius: 10, padding: 8, marginBottom: 8, background: "var(--surface-panel)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                          <strong style={{ fontSize: 12, color: "#0f172a" }}>Parent #{index + 1}</strong>
-                          <button type="button" onClick={() => removeParentDraftRow(index)} style={{ border: "1px solid #dc2626", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "4px 7px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Remove</button>
+                          <strong style={{ fontSize: 12, color: "var(--text-primary)" }}>Parent #{index + 1}</strong>
+                          <button type="button" onClick={() => removeParentDraftRow(index)} style={{ border: "1px solid var(--danger-border)", background: "var(--surface-panel)", color: "var(--danger)", borderRadius: 8, padding: "4px 7px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Remove</button>
                         </div>
                         <div className="ps-rereg-grid-3">
                           <div className="ps-rereg-field"><label>Parent ID</label><input value={parent.parentId || ""} onChange={(e) => updateParentDraftField(index, "parentId", e.target.value)} /></div>
@@ -1648,7 +1603,7 @@ export default function PromotionSystem() {
                           <button
                             type="button"
                             onClick={() => updateParentDraftField(index, "temporaryPassword", generateTemporaryPassword(8))}
-                            style={{ border: "1px solid #dbeafe", color: "#1d4ed8", background: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                            style={{ border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)", color: "var(--accent-strong)", background: "var(--surface-panel)", borderRadius: 8, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
                           >
                             Generate Password
                           </button>
@@ -1660,8 +1615,8 @@ export default function PromotionSystem() {
             </div>
             </div>
 
-            <div style={{ padding: "12px 16px", borderTop: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid #334155", background: "#fff", color: "#334155", fontWeight: 700 }}>
+            <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)" }}>
+              <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontWeight: 700 }}>
                 Skip (Next)
               </button>
 

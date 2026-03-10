@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { FaSave, FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger } from "react-icons/fa";
 import { BACKEND_BASE } from "../config";
 import "../styles/global.css";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 export default function StudentRegister() {
   const navigate = useNavigate();
@@ -551,30 +552,63 @@ export default function StudentRegister() {
     }
   };
 
-  const labelStyle = { textAlign: "left", marginBottom: 6, display: "block", fontWeight: 700, color: "#334155", fontSize: 12 };
+  const labelStyle = { textAlign: "left", marginBottom: 6, display: "block", fontWeight: 700, color: "var(--text-secondary)", fontSize: 12 };
   const fieldStyle = {
     width: "100%",
-    border: "1px solid #dbe3ef",
+    border: "1px solid var(--input-border)",
     borderRadius: 10,
     padding: "10px 12px",
     fontSize: 13,
-    color: "#0f172a",
-    background: "#f8fafc",
+    color: "var(--text-primary)",
+    background: "var(--input-bg)",
     outline: "none",
   };
   const sectionCardStyle = {
-    border: "1px solid #e5e7eb",
+    border: "1px solid var(--border-soft)",
     borderRadius: 12,
     padding: 12,
-    background: "#ffffff",
-    boxShadow: "0 6px 18px rgba(15,23,42,0.05)",
+    background: "var(--surface-panel)",
+    boxShadow: "var(--shadow-soft)",
   };
   const sectionTitleStyle = {
     margin: "0 0 10px",
     fontSize: 14,
     fontWeight: 800,
-    color: "#0f172a",
+    color: "var(--text-primary)",
   };
+  const readonlyFieldStyle = { ...fieldStyle, background: "var(--accent-soft)", fontWeight: 700 };
+  const primaryButtonStyle = {
+    border: "none",
+    background: "var(--accent-strong)",
+    color: "#fff",
+    borderRadius: 8,
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+  const subtleButtonStyle = {
+    border: "1px solid var(--border-strong)",
+    color: "var(--accent-strong)",
+    background: "var(--surface-panel)",
+    borderRadius: 8,
+    padding: "6px 10px",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 12,
+  };
+  const dangerGhostButtonStyle = {
+    border: "1px solid var(--danger-border)",
+    color: "var(--danger)",
+    background: "var(--surface-panel)",
+    borderRadius: 8,
+    padding: "4px 8px",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 700,
+  };
+  const pageBackground = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
+  const messageIsSuccess = message.startsWith("Student registered");
 
   const stepItems = [
     { id: 1, title: "Basic Student Information" },
@@ -638,103 +672,38 @@ export default function StudentRegister() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #e5e7eb", background: "#ffffff" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh" }}>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)", boxShadow: "var(--shadow-soft)", backdropFilter: "blur(10px)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{admin.name || "Register Office"}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin.adminId || "username"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', fontSize: 13, fontWeight: 700, background: 'linear-gradient(135deg, #eff6ff, #eef2ff)', color: '#1e3a8a', borderRadius: 12, border: '1px solid #c7d2fe', cursor: 'pointer' }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><FaHome style={{ width: 18, height: 18 }} /> Dashboard</span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaHome style={{ width: 16, height: 16 }} /> Home</Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaFileAlt style={{ width: 16, height: 16 }} /> My Posts</Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaChartLine style={{ width: 16, height: 16 }} /> Overview</Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year</Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', fontSize: 13, fontWeight: 700, background: 'linear-gradient(135deg, #eff6ff, #eef2ff)', color: '#1e3a8a', borderRadius: 12, border: '1px solid #c7d2fe', cursor: 'pointer' }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students</span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student</Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, fontWeight: 700, backgroundColor: '#1d4ed8', color: '#fff', borderRadius: 10, boxShadow: '0 8px 18px rgba(29,78,216,0.25)' }}><FaFileAlt style={{ width: 16, height: 16 }} /> Register Student</Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}><FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent</Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <RegisterSidebar user={admin} sticky fullHeight />
 
         <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 760, margin: "0 auto 12px", background: "linear-gradient(135deg, #1e3a8a, #2563eb)", color: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "0 14px 28px rgba(30,58,138,0.22)" }}>
+          <div style={{ maxWidth: 760, margin: "0 auto 12px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))", color: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "var(--shadow-glow)" }}>
             <div style={{ fontSize: 17, fontWeight: 800 }}>Student Registration</div>
             <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Create a new student account with complete profile details.</div>
           </div>
 
-          <div style={{ maxWidth: 980, margin: "0 auto", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, boxShadow: "0 8px 20px rgba(15,23,42,0.08)", padding: 16 }}>
+          <div style={{ maxWidth: 980, margin: "0 auto", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-panel)", padding: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <button type="button" onClick={() => navigate(-1)} style={{ background: "none", border: "none", color: "black", cursor: "pointer", fontSize: 20, width: 10 }}>←</button>
-              <h2 style={{ margin: 0 }}>Student Registration</h2>
+              <button type="button" onClick={() => navigate(-1)} style={{ background: "none", border: "none", color: "var(--text-primary)", cursor: "pointer", fontSize: 20, width: 10 }}>←</button>
+              <h2 style={{ margin: 0, color: "var(--text-primary)" }}>Student Registration</h2>
             </div>
 
             {message && (
               <div
                 style={{
                   marginBottom: 12,
-                  color: message.startsWith("Student registered") ? "#166534" : "#b91c1c",
-                  background: message.startsWith("Student registered") ? "#ecfdf3" : "#fff1f2",
-                  border: `1px solid ${message.startsWith("Student registered") ? "#86efac" : "#fecdd3"}`,
+                  color: messageIsSuccess ? "var(--success)" : "var(--danger)",
+                  background: messageIsSuccess ? "var(--success-soft)" : "var(--danger-soft)",
+                  border: `1px solid ${messageIsSuccess ? "var(--success-border)" : "var(--danger-border)"}`,
                   borderRadius: 10,
                   padding: "8px 10px",
                   fontSize: 12,
@@ -760,9 +729,9 @@ export default function StudentRegister() {
                           onClick={() => handleStepOpen(step.id)}
                           style={{
                             textAlign: "left",
-                            border: isOpen ? "1px solid #1d4ed8" : "1px solid #e2e8f0",
-                            background: isOpen ? "#eff6ff" : "#fff",
-                            color: "#0f172a",
+                            border: isOpen ? "1px solid var(--accent-strong)" : "1px solid var(--border-soft)",
+                            background: isOpen ? "var(--accent-soft)" : "var(--surface-panel)",
+                            color: "var(--text-primary)",
                             borderRadius: 10,
                             padding: "10px 10px",
                             cursor: "pointer",
@@ -773,10 +742,10 @@ export default function StudentRegister() {
                           }}
                         >
                           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ width: 22, height: 22, borderRadius: 999, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, background: isOpen ? "#1d4ed8" : "#e2e8f0", color: isOpen ? "#fff" : "#334155" }}>{step.id}</span>
+                            <span style={{ width: 22, height: 22, borderRadius: 999, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, background: isOpen ? "var(--accent-strong)" : "var(--surface-strong)", color: isOpen ? "#fff" : "var(--text-secondary)" }}>{step.id}</span>
                             <span style={{ fontSize: 12, fontWeight: 700 }}>{step.title}</span>
                           </span>
-                          <span style={{ fontSize: 14, fontWeight: 900, color: done ? "#16a34a" : "#94a3b8" }}>{done ? "✓" : "○"}</span>
+                          <span style={{ fontSize: 14, fontWeight: 900, color: done ? "var(--success)" : "var(--text-muted)" }}>{done ? "✓" : "○"}</span>
                         </button>
                       );
                     })}
@@ -803,11 +772,11 @@ export default function StudentRegister() {
                               name="studentNumber"
                               value={idLoading ? "Generating..." : form.studentNumber}
                               readOnly
-                              style={{ ...fieldStyle, background: "#eef2ff", fontWeight: 700 }}
+                              style={readonlyFieldStyle}
                             />
                             
                             {nextAvailableStudentId ? (
-                              <div style={{ marginTop: 4, fontSize: 11, color: "#0f766e", fontWeight: 700 }}>
+                              <div style={{ marginTop: 4, fontSize: 11, color: "var(--success)", fontWeight: 700 }}>
                                 Current available ID: {nextAvailableStudentId}
                               </div>
                             ) : null}
@@ -818,9 +787,9 @@ export default function StudentRegister() {
                               name="academicYear"
                               value={loadingAcademicYear ? "Loading..." : form.academicYear}
                               readOnly
-                              style={{ ...fieldStyle, background: "#eef2ff", fontWeight: 700 }}
+                              style={readonlyFieldStyle}
                             />
-                            <div style={{ marginTop: 4, fontSize: 11, color: activeAcademicYear ? "#0f766e" : "#b91c1c", fontWeight: 700 }}>
+                            <div style={{ marginTop: 4, fontSize: 11, color: activeAcademicYear ? "var(--success)" : "var(--danger)", fontWeight: 700 }}>
                               {activeAcademicYear
                                 ? `Active Academic Year from system: ${String(activeAcademicYear).replace("_", "/")}`
                                 : "No active academic year found. Activate Academic Year before registration."}
@@ -857,7 +826,7 @@ export default function StudentRegister() {
                           <div style={{ gridColumn: "1 / -1" }}><label style={labelStyle}>Student National ID Image</label><input type="file" accept="image/*" onChange={(e) => setStudentNationalIdImage(e.target.files?.[0] || null)} style={fieldStyle} /></div>
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
-                          <button type="button" onClick={() => goToNextStep(1)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button>
+                          <button type="button" onClick={() => goToNextStep(1)} style={primaryButtonStyle}>Save & Next</button>
                         </div>
                       </>
                     )}
@@ -870,15 +839,15 @@ export default function StudentRegister() {
                     {openStep === 2 && (
                       <>
                         {parents.map((parent, index) => (
-                          <div key={index} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                          <div key={index} style={{ border: "1px solid var(--border-soft)", borderRadius: 10, padding: 10, marginBottom: 10, background: "var(--surface-muted)" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                              <strong style={{ fontSize: 13, color: "#1f2937" }}>Parent/Guardian {index + 1}</strong>
-                              {parents.length > 1 && <button type="button" onClick={() => removeParent(index)} style={{ border: "1px solid #fee2e2", color: "#b91c1c", background: "#fff", borderRadius: 8, padding: "4px 8px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Remove</button>}
+                              <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>Parent/Guardian {index + 1}</strong>
+                              {parents.length > 1 && <button type="button" onClick={() => removeParent(index)} style={dangerGhostButtonStyle}>Remove</button>}
                             </div>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
                               <div>
                                 <label style={labelStyle}>Parent ID *</label>
-                                <input value={parent.parentId || ""} readOnly style={{ ...fieldStyle, background: "#eef2ff", fontWeight: 700 }} />
+                                <input value={parent.parentId || ""} readOnly style={readonlyFieldStyle} />
                               </div>
                               <div><label style={labelStyle}>Full Name *</label><input value={parent.fullName} onChange={(e) => handleParentChange(index, "fullName", e.target.value)} style={fieldStyle} /></div>
                               <div><label style={labelStyle}>Relationship *</label><select value={parent.relationship} onChange={(e) => handleParentChange(index, "relationship", e.target.value)} style={fieldStyle}><option value="Father">Father</option><option value="Mother">Mother</option><option value="Guardian">Guardian</option></select></div>
@@ -892,8 +861,8 @@ export default function StudentRegister() {
                           </div>
                         ))}
                         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10 }}>
-                          <button type="button" onClick={addParent} style={{ border: "1px solid #dbeafe", color: "#1d4ed8", background: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>+ Add Another Parent/Guardian</button>
-                          <button type="button" onClick={() => goToNextStep(2)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button>
+                          <button type="button" onClick={addParent} style={subtleButtonStyle}>+ Add Another Parent/Guardian</button>
+                          <button type="button" onClick={() => goToNextStep(2)} style={primaryButtonStyle}>Save & Next</button>
                         </div>
                       </>
                     )}
@@ -910,7 +879,7 @@ export default function StudentRegister() {
                           <div><label style={labelStyle}>Zone/Kebele</label><input name="kebele" value={form.kebele} onChange={handleChange} style={fieldStyle} /></div>
                           <div><label style={labelStyle}>House Number</label><input name="houseNumber" value={form.houseNumber} onChange={handleChange} style={fieldStyle} /></div>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(3)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button></div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(3)} style={primaryButtonStyle}>Save & Next</button></div>
                       </>
                     )}
                   </div>
@@ -926,7 +895,7 @@ export default function StudentRegister() {
                           <div><label style={labelStyle}>Payment Plan Type *</label><select name="paymentPlanType" value={form.paymentPlanType} onChange={handleChange} style={fieldStyle}><option value="monthly">Monthly</option><option value="semester">Semester</option></select></div>
                           <div><label style={labelStyle}>Transport Service *</label><select name="transportService" value={form.transportService} onChange={handleChange} style={fieldStyle}><option value="no">No</option><option value="yes">Yes</option></select></div>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(4)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button></div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(4)} style={primaryButtonStyle}>Save & Next</button></div>
                       </>
                     )}
                   </div>
@@ -941,7 +910,7 @@ export default function StudentRegister() {
                           <div><label style={labelStyle}>Emergency Contact Name</label><input name="emergencyContactName" value={form.emergencyContactName} onChange={handleChange} style={fieldStyle} /></div>
                           <div><label style={labelStyle}>Emergency Phone</label><input name="emergencyPhone" value={form.emergencyPhone} onChange={handleChange} style={fieldStyle} /></div>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(5)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button></div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(5)} style={primaryButtonStyle}>Save & Next</button></div>
                       </>
                     )}
                   </div>
@@ -956,7 +925,7 @@ export default function StudentRegister() {
                           <div><label style={labelStyle}>Language Option</label><input name="languageOption" value={form.languageOption} onChange={handleChange} style={fieldStyle} /></div>
                           <div style={{ gridColumn: "1 / -1" }}><label style={labelStyle}>Elective Subjects</label><input name="electiveSubjects" value={form.electiveSubjects} onChange={handleChange} style={fieldStyle} /></div>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(6)} style={{ border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save & Next</button></div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button type="button" onClick={() => goToNextStep(6)} style={primaryButtonStyle}>Save & Next</button></div>
                       </>
                     )}
                   </div>
@@ -971,29 +940,29 @@ export default function StudentRegister() {
                             <label style={labelStyle}>Temporary Password</label>
                             <div style={{ display: "flex", gap: 6 }}>
                               <input type="password" name="temporaryPassword" value={form.temporaryPassword} onChange={handleChange} style={fieldStyle} />
-                              <button type="button" onClick={() => setForm((prev) => ({ ...prev, temporaryPassword: generateTemporaryPassword(8) }))} style={{ border: "1px solid #dbeafe", color: "#1d4ed8", background: "#fff", borderRadius: 8, padding: "0 10px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Generate</button>
+                              <button type="button" onClick={() => setForm((prev) => ({ ...prev, temporaryPassword: generateTemporaryPassword(8) }))} style={{ ...subtleButtonStyle, padding: "0 10px" }}>Generate</button>
                             </div>
                           </div>
                           <div><label style={labelStyle}>isActive</label><select name="isActive" value={form.isActive} onChange={handleChange} style={fieldStyle}><option value="true">true</option><option value="false">false</option></select></div>
-                          <div><label style={labelStyle}>Role</label><input name="role" value="student" readOnly style={{ ...fieldStyle, background: "#eef2ff", fontWeight: 700 }} /></div>
+                          <div><label style={labelStyle}>Role</label><input name="role" value="student" readOnly style={readonlyFieldStyle} /></div>
                         </div>
 
                         <div style={{ marginTop: 14 }}>
-                          <h4 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800, color: "#1f2937" }}>Parent System Account Information</h4>
+                          <h4 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Parent System Account Information</h4>
                           {parents.map((parent, index) => (
-                            <div key={`parent-system-${index}`} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-                              <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 700, color: "#334155" }}>Parent/Guardian {index + 1}</div>
+                            <div key={`parent-system-${index}`} style={{ border: "1px solid var(--border-soft)", borderRadius: 10, padding: 10, marginBottom: 10, background: "var(--surface-muted)" }}>
+                              <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>Parent/Guardian {index + 1}</div>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
                                 <div><label style={labelStyle}>Username</label><input value={parent.username || parent.parentId || ""} onChange={(e) => handleParentChange(index, "username", e.target.value)} style={fieldStyle} /></div>
                                 <div>
                                   <label style={labelStyle}>Temporary Password</label>
                                   <div style={{ display: "flex", gap: 6 }}>
                                     <input value={parent.temporaryPassword || ""} onChange={(e) => handleParentChange(index, "temporaryPassword", e.target.value)} style={fieldStyle} />
-                                    <button type="button" onClick={() => handleParentChange(index, "temporaryPassword", generateTemporaryPassword(8))} style={{ border: "1px solid #dbeafe", color: "#1d4ed8", background: "#fff", borderRadius: 8, padding: "0 10px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Generate</button>
+                                    <button type="button" onClick={() => handleParentChange(index, "temporaryPassword", generateTemporaryPassword(8))} style={{ ...subtleButtonStyle, padding: "0 10px" }}>Generate</button>
                                   </div>
                                 </div>
                                 <div><label style={labelStyle}>isActive</label><select value={parent.isActive || "true"} onChange={(e) => handleParentChange(index, "isActive", e.target.value)} style={fieldStyle}><option value="true">true</option><option value="false">false</option></select></div>
-                                <div><label style={labelStyle}>Role</label><input value={parent.role || "parent"} readOnly style={{ ...fieldStyle, background: "#eef2ff", fontWeight: 700 }} /></div>
+                                <div><label style={labelStyle}>Role</label><input value={parent.role || "parent"} readOnly style={readonlyFieldStyle} /></div>
                               </div>
                             </div>
                           ))}
@@ -1003,7 +972,7 @@ export default function StudentRegister() {
                           <button
                             type="submit"
                             disabled={submitting}
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, border: "none", background: "#1d4ed8", color: "#fff", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 700, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.75 : 1 }}
+                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, ...primaryButtonStyle, borderRadius: 10, padding: "10px 12px", fontSize: 13, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.75 : 1 }}
                           >
                             <FaSave style={{ marginRight: 8 }} />
                             {submitting ? "Saving..." : "Register Student"}

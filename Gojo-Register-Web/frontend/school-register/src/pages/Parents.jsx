@@ -20,6 +20,7 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -758,120 +759,12 @@ function Parent() {
             )}
           </div>
 
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
-
           <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{admin?.name || "Admin Name"}</h3>
-            {(admin?.username || admin?.userId || admin?.adminId) ? (
-              <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.username || admin?.userId || admin?.adminId}</p>
-            ) : null}
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 12px',
-                fontSize: 13,
-                fontWeight: 700,
-                background: 'linear-gradient(135deg, #eff6ff, #eef2ff)',
-                color: '#1e3a8a',
-                borderRadius: 12,
-                border: '1px solid #c7d2fe',
-                cursor: 'pointer'
-              }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 12px',
-                fontSize: 13,
-                fontWeight: 700,
-                background: 'linear-gradient(135deg, #eff6ff, #eef2ff)',
-                color: '#1e3a8a',
-                borderRadius: 12,
-                border: '1px solid #c7d2fe',
-                cursor: 'pointer'
-              }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, fontWeight: 700, backgroundColor: '#1d4ed8', color: '#fff', borderRadius: 10, boxShadow: '0 8px 18px rgba(29,78,216,0.25)' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-            <Link className="sidebar-btn" to="/analytics" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-            {/* registration-form removed */}
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <RegisterSidebar user={admin} sticky fullHeight />
 
         {/* MAIN CONTENT (centered & responsive) */}
         <main className="main-content" style={mainContentStyle}>

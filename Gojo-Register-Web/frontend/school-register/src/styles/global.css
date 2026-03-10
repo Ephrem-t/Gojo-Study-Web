@@ -11,6 +11,69 @@
   --sidebar-width: 220px;
   --sidebar-gap: 20px;
   --topbar-height: 56px;
+  --page-bg: #eef4ff;
+  --page-bg-secondary: #f7faff;
+  --surface-panel: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-accent: #eff6ff;
+  --surface-overlay: rgba(255, 255, 255, 0.82);
+  --surface-strong: #e2e8f0;
+  --border-soft: #dbe5f0;
+  --border-strong: #bfdbfe;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: #dbeafe;
+  --success: #16a34a;
+  --success-soft: #eefbf3;
+  --success-border: #bbf7d0;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+  --danger: #dc2626;
+  --danger-soft: #fff1f2;
+  --danger-border: #fecaca;
+  --shadow-soft: 0 14px 34px rgba(15, 23, 42, 0.08);
+  --shadow-panel: 0 18px 40px rgba(15, 23, 42, 0.08);
+  --shadow-glow: 0 18px 46px rgba(37, 99, 235, 0.14);
+  --input-bg: #ffffff;
+  --input-border: #cbd5e1;
+  --input-focus: #60a5fa;
+}
+
+html[data-theme="dark"] {
+  --page-bg: #08111f;
+  --page-bg-secondary: #0d1728;
+  --surface-panel: #0f172a;
+  --surface-muted: #111c31;
+  --surface-accent: #14213b;
+  --surface-overlay: rgba(8, 17, 31, 0.84);
+  --surface-strong: #1e293b;
+  --border-soft: #243247;
+  --border-strong: #2f4f77;
+  --text-primary: #e5eefb;
+  --text-secondary: #c5d4ea;
+  --text-muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-strong: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.18);
+  --success: #4ade80;
+  --success-soft: rgba(20, 83, 45, 0.32);
+  --success-border: rgba(74, 222, 128, 0.35);
+  --warning: #fbbf24;
+  --warning-soft: rgba(120, 53, 15, 0.34);
+  --warning-border: rgba(251, 191, 36, 0.34);
+  --danger: #f87171;
+  --danger-soft: rgba(127, 29, 29, 0.28);
+  --danger-border: rgba(248, 113, 113, 0.35);
+  --shadow-soft: 0 18px 48px rgba(2, 6, 23, 0.48);
+  --shadow-panel: 0 28px 60px rgba(2, 6, 23, 0.5);
+  --shadow-glow: 0 18px 40px rgba(37, 99, 235, 0.18);
+  --input-bg: #0b1424;
+  --input-border: #334155;
+  --input-focus: #60a5fa;
 }
 
 /* ---------------- TOP NAVIGATION BAR ---------------- */
@@ -511,59 +574,139 @@
 
 
 
-/* Light mode default */
 body {
-  background-color: #f5f6fa;
-  color: #111;
+  background: radial-gradient(circle at top, rgba(96, 165, 250, 0.14), transparent 28%), var(--page-bg);
+  color: var(--text-primary);
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
-/* Dark mode */
+body.light-mode,
 body.dark-mode {
-  background-color: #1e1e2f;
-  color: #e0e0e0;
+  background-color: var(--page-bg);
+  color: var(--text-primary);
 }
 
-/* Navbar */
-.top-navbar.dark-mode {
-  background-color: #2a2a3c;
-  color: #fff;
+.dashboard-page,
+.google-dashboard {
+  background: radial-gradient(circle at top, rgba(96, 165, 250, 0.12), transparent 26%), var(--page-bg) !important;
+  color: var(--text-primary);
 }
 
-/* Sidebar */
-.google-sidebar.dark-mode {
-  background-color: #2a2a3c;
-  color: #fff;
-  box-shadow: 0 0.6px 2px rgba(0, 0, 0, 0.8);
+.top-navbar {
+  background: var(--surface-overlay) !important;
+  color: var(--text-primary) !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+  backdrop-filter: blur(18px);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
 }
 
-.sidebar-btn.dark-mode {
-  background: #3a3a50;
-  color: #fff;
+.top-navbar h2,
+.main-header,
+.dashboard-page h1,
+.dashboard-page h2,
+.dashboard-page h3 {
+  color: var(--text-primary);
 }
 
-.sidebar-btn.dark-mode:hover {
-  background: #4b4b6b;
+.dashboard-page p,
+.dashboard-page label,
+.dashboard-page small,
+.dashboard-page .muted,
+.dashboard-page .notification-section-title {
+  color: var(--text-secondary);
 }
 
-/* Main content cards */
-.main-content .card.dark-mode {
-  background-color: #2a2a3c;
-  color: #fff;
-  box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+.nav-right img,
+.profile-img {
+  border-color: var(--surface-panel);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
 }
 
-/* Buttons */
-button.dark-mode {
-  background-color: #4b4b6b;
-  color: #fff;
+.icon-circle {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(180deg, var(--surface-muted), var(--surface-accent));
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+  transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
 }
 
-/* Thin and invisible scrollbars for dashboard columns */
+.icon-circle svg {
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.icon-circle:hover {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, var(--surface-accent), var(--accent-soft));
+  border-color: var(--border-strong);
+}
+
+.notification-dropdown,
+.messenger-dropdown {
+  background: var(--surface-panel) !important;
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-panel);
+}
+
+.notification-row,
+.notification-dropdown > div > div > div[style],
+.messenger-dropdown > div[style] {
+  color: var(--text-primary);
+}
+
+.notification-section-title {
+  background: var(--surface-muted) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-soft);
+}
+
+input,
+textarea,
+select {
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input-border);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--input-focus);
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.18);
+  outline: none;
+}
+
+body.dark-mode input,
+body.dark-mode textarea,
+body.dark-mode select {
+  color-scheme: dark;
+}
+
+.sidebar-btn,
+.logout-btn,
+button {
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+button:hover,
+.sidebar-btn:hover,
+.logout-btn:hover {
+  transform: translateY(-1px);
+}
+
 .google-sidebar::-webkit-scrollbar,
 .google-main::-webkit-scrollbar,
 .dashboard-widgets::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 
 .google-sidebar::-webkit-scrollbar-track,
@@ -575,64 +718,14 @@ button.dark-mode {
 .google-sidebar::-webkit-scrollbar-thumb,
 .google-main::-webkit-scrollbar-thumb,
 .dashboard-widgets::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: rgba(148, 163, 184, 0.28);
   border-radius: 999px;
 }
 
-button.dark-mode:hover {
-  background-color: #5c5c80;
-}
-
-
-
-/* Cards & containers */
-.dark-mode .main-content,
-.dark-mode .post-card,
-.dark-mode .post-box {
-  background-color: #2a2a3c;
-  color: #e0e0e0;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-
-/* Inputs */
-.dark-mode input,
-.dark-mode textarea {
-  background-color: #3a3a50;
-  color: #fff;
-  border: 1px solid #555;
-}
-
-/* Buttons */
-.dark-mode button {
-  background-color: #4b4b6b;
-  color: #fff;
-}
-
-.dark-mode button:hover {
-  background-color: #5c5c80;
-}
-
- /* ---------------- TOP NAVIGATION BAR ---------------- */
-
-
-.icon-circle {
-  width: 40px;
-  height: 40px;
-  background-color: #e0e0e4;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.icon-circle svg {
-  font-size: 22px;
-  color: #000000;
-}
-
-.icon-circle:hover {
-  background-color: #cfd5e5;
+body.dark-mode .google-sidebar::-webkit-scrollbar-thumb,
+body.dark-mode .google-main::-webkit-scrollbar-thumb,
+body.dark-mode .dashboard-widgets::-webkit-scrollbar-thumb {
+  background: rgba(96, 165, 250, 0.22);
 }
 
 
@@ -1166,6 +1259,28 @@ button.dark-mode:hover {
   border-radius: 8px;
   border: 1px solid #ddd;
   box-sizing: border-box;
+}
+
+/* Dashboard Facebook-style posts should preserve natural media aspect ratio. */
+.facebook-post-card {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.facebook-post-media-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+.facebook-post-media {
+  width: 100% !important;
+  height: auto !important;
+  max-height: min(78vh, 720px) !important;
+  object-fit: contain !important;
+  display: block !important;
+  margin: 0 auto !important;
 }
 
 .edit-actions {

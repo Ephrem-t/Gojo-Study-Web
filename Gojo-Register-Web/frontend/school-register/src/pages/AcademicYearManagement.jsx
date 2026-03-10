@@ -3,14 +3,15 @@ import { Link, useNavigate } from "react-router-dom";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger, FaPlus, FaSyncAlt, FaUsers, FaSearch } from "react-icons/fa";
 import { BACKEND_BASE } from "../config";
 import axios from "axios";
+import RegisterSidebar from "../components/RegisterSidebar";
 
-const PAGE_BG = "linear-gradient(150deg, #f7f8ff 0%, #eef6ff 45%, #f9fcff 100%)";
+const PAGE_BG = "var(--page-bg)";
 
 const cardStyle = {
-  background: "#ffffff",
-  border: "1px solid #dde7f5",
+  background: "var(--surface-panel)",
+  border: "1px solid var(--border-soft)",
   borderRadius: 16,
-  boxShadow: "0 12px 32px rgba(16, 24, 40, 0.08)",
+  boxShadow: "var(--shadow-panel)",
 };
 
 export default function AcademicYearManagement() {
@@ -136,10 +137,10 @@ export default function AcademicYearManagement() {
   const chipStyle = (active) => ({
     padding: "6px 12px",
     borderRadius: "999px",
-    background: active ? "#1d4ed8" : "#eef2ff",
-    color: active ? "#fff" : "#1e3a8a",
+    background: active ? "var(--accent-strong)" : "var(--surface-accent)",
+    color: active ? "#fff" : "var(--accent-strong)",
     cursor: "pointer",
-    border: active ? "1px solid #1d4ed8" : "1px solid #dbeafe",
+    border: active ? "1px solid var(--accent-strong)" : "1px solid var(--border-strong)",
     fontSize: "11px",
     fontWeight: 700,
     whiteSpace: "nowrap",
@@ -380,7 +381,7 @@ export default function AcademicYearManagement() {
             max-width: 100vw;
             max-height: 100vh;
             overflow-y: auto;
-            background: linear-gradient(165deg, #f8fbff 0%, #eef4ff 45%, #ffffff 100%);
+            background: linear-gradient(165deg, var(--page-bg-secondary) 0%, color-mix(in srgb, var(--accent-soft) 42%, var(--page-bg)) 45%, var(--surface-overlay) 100%);
             padding: 20px;
             display: flex;
             flex-direction: column;
@@ -394,17 +395,17 @@ export default function AcademicYearManagement() {
             align-items: center;
             justify-content: space-between;
             gap: 10px;
-            background: rgba(255, 255, 255, 0.92);
+            background: color-mix(in srgb, var(--surface-overlay) 90%, transparent);
             backdrop-filter: blur(6px);
-            border: 1px solid #dbe7ff;
+            border: 1px solid var(--border-soft);
             border-radius: 12px;
             padding: 10px 12px;
           }
           .ay-student-panel {
-            border: 1px solid #dbe7ff;
+            border: 1px solid var(--border-soft);
             border-radius: 12px;
-            background: #ffffff;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+            background: var(--surface-panel);
+            box-shadow: var(--shadow-soft);
             padding: 12px;
           }
           .ay-student-grid {
@@ -413,8 +414,8 @@ export default function AcademicYearManagement() {
             gap: 8px;
           }
           .ay-student-item {
-            background: #f8fbff;
-            border: 1px solid #e2e8f0;
+            background: var(--surface-muted);
+            border: 1px solid var(--border-soft);
             border-radius: 10px;
             padding: 9px 10px;
           }
@@ -429,146 +430,35 @@ export default function AcademicYearManagement() {
         `}
       </style>
 
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #dbe7fb", background: "#ffffffcc", backdropFilter: "blur(6px)" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)", backdropFilter: "blur(6px)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="google-dashboard ay-main-dashboard">
-        <div className="google-sidebar" style={{ width: "220px", padding: "12px", borderRadius: 16, background: "#ffffff", border: "1px solid #e5e7eb", boxShadow: "0 10px 24px rgba(15,23,42,0.06)", height: "fit-content" }}>
-          <div className="sidebar-profile" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc" }}>
-              <img src={admin.profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>{admin.name}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{admin.username || admin.adminId || "register"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, fontWeight: 700, backgroundColor: "#1d4ed8", color: "#fff", borderRadius: 10, boxShadow: "0 8px 18px rgba(29,78,216,0.25)" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-                <Link className="sidebar-btn" to="/promotion-system" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Promotion System</Link>
-                <Link className="sidebar-btn" to="/transfer-withdrawal" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Transfer & Withdrawal</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                navigate("/login");
-              }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <RegisterSidebar user={admin} sticky fullHeight />
 
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, rgba(125, 211, 252, 0.32), rgba(147, 197, 253, 0))" }} />
+              <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 24%, transparent), transparent)" }} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
                 <div>
-                  <h1 style={{ margin: 0, fontSize: 24, color: "#0f172a", fontWeight: 900 }}>Academic Year Management</h1>
-                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>Create, activate, archive, and rollover academic years for promotion logic.</p>
+                  <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 900 }}>Academic Year Management</h1>
+                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)" }}>Create, activate, archive, and rollover academic years for promotion logic.</p>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>{currentAcademicYear ? `Current: ${currentAcademicYear.replace("_", "/")}` : "No active year"}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{currentAcademicYear ? `Current: ${currentAcademicYear.replace("_", "/")}` : "No active year"}</div>
                   <button
                     type="button"
                     onClick={fetchAcademicYears}
                     disabled={loading || working}
-                    style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid #1d4ed8", background: "#eff6ff", color: "#1d4ed8", borderRadius: 9, padding: "7px 10px", fontSize: 12, fontWeight: 800, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.6 : 1 }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--accent-strong)", background: "var(--surface-accent)", color: "var(--accent-strong)", borderRadius: 9, padding: "7px 10px", fontSize: 12, fontWeight: 800, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.6 : 1 }}
                   >
                     <FaSyncAlt /> Refresh
                   </button>
@@ -600,29 +490,29 @@ export default function AcademicYearManagement() {
               }].map((item) => (
                 <div key={item.title} style={{ ...cardStyle, padding: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>{item.title}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{item.title}</span>
                     <FaUsers style={{ color: item.color }} />
                   </div>
-                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "#0f172a" }}>{item.value}</div>
-                  <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>{item.hint}</div>
+                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "var(--text-primary)" }}>{item.value}</div>
+                  <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-muted)" }}>{item.hint}</div>
                 </div>
               ))}
             </div>
 
             <div className="ay-grid-two">
               <div style={{ ...cardStyle, padding: 14 }}>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#0f172a", marginBottom: 10 }}>Create New Academic Year</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--text-primary)", marginBottom: 10 }}>Create New Academic Year</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <input
                     value={startYear}
                     onChange={(e) => setStartYear(e.target.value.replace(/[^0-9]/g, ""))}
                     placeholder="2026"
-                    style={{ flex: 1, border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+                    style={{ flex: 1, border: "1px solid var(--input-border)", background: "var(--input-bg)", color: "var(--text-primary)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
                   />
                   <button
                     onClick={handleCreateYear}
                     disabled={working}
-                    style={{ border: "1px solid #1d4ed8", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
+                    style={{ border: "1px solid var(--accent-strong)", background: "var(--accent-strong)", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
                   >
                     <FaPlus /> Create
                   </button>
@@ -630,12 +520,12 @@ export default function AcademicYearManagement() {
               </div>
 
               <div style={{ ...cardStyle, padding: 14 }}>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#0f172a", marginBottom: 10 }}>Rollover to Next Year</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--text-primary)", marginBottom: 10 }}>Rollover to Next Year</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
                   <select
                     value={targetRolloverYear}
                     onChange={(e) => setTargetRolloverYear(e.target.value)}
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+                    style={{ border: "1px solid var(--input-border)", background: "var(--input-bg)", color: "var(--text-primary)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
                   >
                     <option value="">Select target year</option>
                     {rolloverYearOptions.map((yearKey) => (
@@ -647,7 +537,7 @@ export default function AcademicYearManagement() {
                   <button
                     onClick={openRolloverConfirm}
                     disabled={working}
-                    style={{ border: "1px solid #16a34a", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1 }}
+                    style={{ border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1 }}
                   >
                     Rollover
                   </button>
@@ -662,9 +552,9 @@ export default function AcademicYearManagement() {
                   padding: "10px 12px",
                   fontSize: 13,
                   fontWeight: 700,
-                  border: `1px solid ${feedback.type === "error" ? "#fecaca" : feedback.type === "warning" ? "#fde68a" : "#bfdbfe"}`,
-                  background: feedback.type === "error" ? "#fef2f2" : feedback.type === "warning" ? "#fffbeb" : "#eff6ff",
-                  color: feedback.type === "error" ? "#991b1b" : feedback.type === "warning" ? "#92400e" : "#1e3a8a",
+                  border: `1px solid ${feedback.type === "error" ? "var(--danger-border)" : feedback.type === "warning" ? "var(--warning-border)" : "var(--border-strong)"}`,
+                  background: feedback.type === "error" ? "var(--danger-soft)" : feedback.type === "warning" ? "var(--warning-soft)" : "var(--surface-accent)",
+                  color: feedback.type === "error" ? "var(--danger)" : feedback.type === "warning" ? "var(--warning)" : "var(--accent-strong)",
                 }}
               >
                 {feedback.text}
@@ -672,8 +562,8 @@ export default function AcademicYearManagement() {
             ) : null}
 
             <div style={{ ...cardStyle, overflow: "hidden" }}>
-              <div style={{ padding: "12px 14px", fontWeight: 800, color: "#0f172a", borderBottom: "1px solid #e5e7eb" }}>Academic Years</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 800, color: "#475569" }}>
+              <div style={{ padding: "12px 14px", fontWeight: 800, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)" }}>Academic Years</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
                 <div>Year</div>
                 <div>Status</div>
                 <div>Current</div>
@@ -681,19 +571,19 @@ export default function AcademicYearManagement() {
               </div>
 
               {loading ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>Loading...</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>Loading...</div>
               ) : yearRows.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>No academic years created yet.</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>No academic years created yet.</div>
               ) : (
                 yearRows.map(([yearKey, row]) => {
                   const status = String(row?.status || "inactive");
                   const isCurrent = !!row?.isCurrent;
                   const isExpanded = selectedHistoryYear === yearKey;
                   return (
-                    <div key={yearKey} style={{ borderTop: "1px solid #f1f5f9" }}>
+                    <div key={yearKey} style={{ borderTop: "1px solid var(--border-soft)" }}>
                       <div
                         onClick={() => fetchYearHistoryStudents(yearKey)}
-                        style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", alignItems: "center", cursor: "pointer", background: isExpanded ? "#f8fbff" : "transparent" }}
+                        style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", alignItems: "center", cursor: "pointer", background: isExpanded ? "var(--surface-muted)" : "transparent" }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                           <span
@@ -705,9 +595,9 @@ export default function AcademicYearManagement() {
                               width: 22,
                               height: 22,
                               borderRadius: 999,
-                              border: "1px solid #cbd5e1",
-                              background: "#fff",
-                              color: "#0f766e",
+                              border: "1px solid var(--border-soft)",
+                              background: "var(--surface-panel)",
+                              color: "var(--success)",
                               transition: "transform .2s ease",
                               transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)",
                               flexShrink: 0,
@@ -715,7 +605,7 @@ export default function AcademicYearManagement() {
                           >
                             <FaChevronDown style={{ width: 12, height: 12 }} />
                           </span>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                             {row?.label || yearKey.replace("_", "/")}
                           </div>
                         </div>
@@ -728,7 +618,7 @@ export default function AcademicYearManagement() {
                             handleActivateYear(yearKey);
                           }}
                           disabled={working || isCurrent}
-                          style={{ border: "1px solid #2563eb", background: "#2563eb", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || isCurrent ? "not-allowed" : "pointer", opacity: working || isCurrent ? 0.6 : 1 }}
+                          style={{ border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || isCurrent ? "not-allowed" : "pointer", opacity: working || isCurrent ? 0.6 : 1 }}
                         >
                           Activate
                         </button>
@@ -738,7 +628,7 @@ export default function AcademicYearManagement() {
                             handleArchiveYear(yearKey);
                           }}
                           disabled={working || status === "archived"}
-                          style={{ border: "1px solid #b45309", background: "#b45309", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || status === "archived" ? "not-allowed" : "pointer", opacity: working || status === "archived" ? 0.6 : 1 }}
+                          style={{ border: "1px solid var(--warning)", background: "var(--warning)", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || status === "archived" ? "not-allowed" : "pointer", opacity: working || status === "archived" ? 0.6 : 1 }}
                         >
                           Archive
                         </button>
@@ -747,11 +637,11 @@ export default function AcademicYearManagement() {
                       </div>
 
                       {isExpanded ? (
-                        <div style={{ padding: "0 14px 12px", background: "#f8fbff", borderTop: "1px dashed #dbeafe" }}>
+                        <div style={{ padding: "0 14px 12px", background: "var(--surface-muted)", borderTop: "1px dashed var(--border-strong)" }}>
                           {historyStudentsLoading ? (
-                            <div style={{ paddingTop: 10, fontSize: 13, color: "#64748b" }}>Loading students...</div>
+                            <div style={{ paddingTop: 10, fontSize: 13, color: "var(--text-muted)" }}>Loading students...</div>
                           ) : historyStudents.length === 0 ? (
-                            <div style={{ paddingTop: 10, fontSize: 13, color: "#64748b" }}>No students found for this year.</div>
+                            <div style={{ paddingTop: 10, fontSize: 13, color: "var(--text-muted)" }}>No students found for this year.</div>
                           ) : (
                             <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
                               <div
@@ -759,19 +649,19 @@ export default function AcademicYearManagement() {
                                   display: "flex",
                                   alignItems: "center",
                                   gap: "8px",
-                                  background: "#fff",
-                                  border: "1px solid #e5e7eb",
+                                  background: "var(--surface-panel)",
+                                  border: "1px solid var(--border-soft)",
                                   borderRadius: "12px",
                                   padding: "10px 12px",
-                                  boxShadow: "0 6px 18px rgba(15,23,42,0.07)",
+                                  boxShadow: "var(--shadow-soft)",
                                 }}
                               >
-                                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                                 <input
                                   value={historySearch}
                                   onChange={(e) => setHistorySearch(e.target.value)}
                                   placeholder="Search student by name or ID"
-                                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent" }}
+                                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent", color: "var(--text-primary)" }}
                                 />
                               </div>
 
@@ -804,15 +694,15 @@ export default function AcademicYearManagement() {
                                 </div>
                               ) : null}
 
-                              <div style={{ marginTop: 2, fontSize: 12, color: "#475569", fontWeight: 700 }}>
+                              <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-secondary)", fontWeight: 700 }}>
                                 Showing {visibleHistoryStudents.length} of {historyStudents.length} students
                               </div>
 
                               {visibleHistoryStudents.length === 0 ? (
-                                <div style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>No students match your search/filter.</div>
+                                <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-muted)" }}>No students match your search/filter.</div>
                               ) : (
-                                <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-                                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 800, color: "#475569" }}>
+                                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 10, overflow: "hidden", background: "var(--surface-panel)" }}>
+                                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
                                     <div>Student</div>
                                     <div>Grade</div>
                                     <div>Section</div>
@@ -820,7 +710,7 @@ export default function AcademicYearManagement() {
                                   </div>
 
                                   {visibleHistoryStudents.map((student) => (
-                                    <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderTop: "1px solid #f1f5f9", alignItems: "center", gap: 8 }}>
+                                    <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderTop: "1px solid var(--border-soft)", alignItems: "center", gap: 8 }}>
                                       <div style={{ minWidth: 0 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                                           <img
@@ -830,11 +720,11 @@ export default function AcademicYearManagement() {
                                               e.currentTarget.onerror = null;
                                               e.currentTarget.src = "/default-profile.png";
                                             }}
-                                            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid #dbeafe", flexShrink: 0 }}
+                                            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-strong)", flexShrink: 0 }}
                                           />
                                           <div style={{ minWidth: 0 }}>
-                                            <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
-                                            <div style={{ fontSize: 11, color: "#64748b" }}>{student.studentId}</div>
+                                            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
+                                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
                                           </div>
                                         </div>
                                       </div>
@@ -845,15 +735,15 @@ export default function AcademicYearManagement() {
                                           type="button"
                                           onClick={() => setSelectedHistoryStudent(student)}
                                           style={{
-                                            border: "1px solid #1d4ed8",
-                                            background: "linear-gradient(180deg, #eff6ff, #dbeafe)",
-                                            color: "#1e3a8a",
+                                            border: "1px solid var(--border-strong)",
+                                            background: "linear-gradient(180deg, var(--surface-accent), var(--accent-soft))",
+                                            color: "var(--accent-strong)",
                                             borderRadius: 8,
                                             padding: "5px 10px",
                                             fontSize: 11,
                                             fontWeight: 800,
                                             cursor: "pointer",
-                                            boxShadow: "0 4px 10px rgba(37,99,235,0.22)",
+                                            boxShadow: "var(--shadow-glow)",
                                           }}
                                         >
                                           Show
@@ -899,10 +789,10 @@ export default function AcademicYearManagement() {
             style={{
               width: "100%",
               maxWidth: 520,
-              background: "#fff",
-              border: "1px solid #e5e7eb",
+              background: "var(--surface-panel)",
+              border: "1px solid var(--border-soft)",
               borderRadius: 14,
-              boxShadow: "0 18px 36px rgba(15,23,42,0.22)",
+              boxShadow: "var(--shadow-panel)",
               padding: 16,
               display: "flex",
               flexDirection: "column",
@@ -910,13 +800,13 @@ export default function AcademicYearManagement() {
             }}
           >
             <div>
-              <h3 style={{ margin: 0, fontSize: 18, color: "#0f172a", fontWeight: 800 }}>Confirm Academic Year Rollover</h3>
-              <p style={{ margin: "8px 0 0", fontSize: 13, color: "#475569", lineHeight: 1.5 }}>
+              <h3 style={{ margin: 0, fontSize: 18, color: "var(--text-primary)", fontWeight: 800 }}>Confirm Academic Year Rollover</h3>
+              <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>
                 This will promote students to the next grade, archive yearly snapshots, and reset operational yearly data.
               </p>
             </div>
 
-            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 10, fontSize: 12, color: "#334155" }}>
+            <div style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: 10, fontSize: 12, color: "var(--text-secondary)" }}>
               <div><strong>From Year:</strong> {currentAcademicYear ? currentAcademicYear.replace("_", "/") : "Current active year"}</div>
               <div><strong>Target Year:</strong> {targetRolloverYear ? targetRolloverYear.replace("_", "/") : "Not selected"}</div>
             </div>
@@ -927,14 +817,14 @@ export default function AcademicYearManagement() {
                   setShowRolloverConfirm(false);
                 }}
                 disabled={working}
-                style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
               >
                 Cancel
               </button>
               <button
                 onClick={handleRollover}
                 disabled={working || !targetRolloverYear}
-                style={{ border: "1px solid #dc2626", background: "#dc2626", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working || !targetRolloverYear ? "not-allowed" : "pointer", opacity: working || !targetRolloverYear ? 0.6 : 1 }}
+                style={{ border: "1px solid var(--danger)", background: "var(--danger)", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working || !targetRolloverYear ? "not-allowed" : "pointer", opacity: working || !targetRolloverYear ? 0.6 : 1 }}
               >
                 Confirm Rollover
               </button>
@@ -962,11 +852,11 @@ export default function AcademicYearManagement() {
             className="ay-student-fullscreen"
           >
             <div className="ay-student-header">
-              <h3 style={{ margin: 0, fontSize: 18, color: "#0f172a", fontWeight: 900, letterSpacing: "0.2px" }}>Student Profile</h3>
+              <h3 style={{ margin: 0, fontSize: 18, color: "var(--text-primary)", fontWeight: 900, letterSpacing: "0.2px" }}>Student Profile</h3>
               <button
                 type="button"
                 onClick={() => setSelectedHistoryStudent(null)}
-                style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+                style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
               >
                 Close
               </button>
@@ -980,41 +870,41 @@ export default function AcademicYearManagement() {
                   e.currentTarget.onerror = null;
                   e.currentTarget.src = "/default-profile.png";
                 }}
-                style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid #bfdbfe", flexShrink: 0 }}
+                style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)", flexShrink: 0 }}
               />
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 17, fontWeight: 900, color: "#0f172a" }}>{selectedHistoryStudent.name || "Student"}</div>
-                <div style={{ marginTop: 2, fontSize: 12, color: "#64748b", fontWeight: 700 }}>{selectedHistoryStudent.studentId || "No student ID"}</div>
+                <div style={{ fontSize: 17, fontWeight: 900, color: "var(--text-primary)" }}>{selectedHistoryStudent.name || "Student"}</div>
+                <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{selectedHistoryStudent.studentId || "No student ID"}</div>
               </div>
             </div>
 
             <div className="ay-student-panel ay-student-grid">
-              <div style={{ fontSize: 12, color: "#334155" }}><strong>Grade:</strong> {selectedHistoryStudent.grade || "—"}</div>
-              <div style={{ fontSize: 12, color: "#334155" }}><strong>Section:</strong> {selectedHistoryStudent.section || "—"}</div>
-              <div style={{ fontSize: 12, color: "#334155" }}><strong>Email:</strong> {selectedHistoryStudent.email || "—"}</div>
-              <div style={{ fontSize: 12, color: "#334155" }}><strong>User ID:</strong> {selectedHistoryStudent.userId || "—"}</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Grade:</strong> {selectedHistoryStudent.grade || "—"}</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Section:</strong> {selectedHistoryStudent.section || "—"}</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Email:</strong> {selectedHistoryStudent.email || "—"}</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>User ID:</strong> {selectedHistoryStudent.userId || "—"}</div>
             </div>
 
             <div className="ay-student-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a" }}>Student Details</div>
+              <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>Student Details</div>
 
               <div className="ay-student-grid">
                 {Object.entries(selectedHistoryStudent.basicStudentInformation || {}).map(([key, value]) => (
                   <div key={`basic-${key}`} className="ay-student-item">
-                    <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                    <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                    <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
                   </div>
                 ))}
               </div>
 
               {selectedHistoryStudent.contactInformation ? (
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Contact Information</div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Contact Information</div>
                   <div className="ay-student-grid">
                     {Object.entries(selectedHistoryStudent.contactInformation).map(([key, value]) => (
                       <div key={`contact-${key}`} className="ay-student-item">
-                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
                       </div>
                     ))}
                   </div>
@@ -1023,12 +913,12 @@ export default function AcademicYearManagement() {
 
               {selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation ? (
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Guardian Information</div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Guardian Information</div>
                   <div className="ay-student-grid">
                     {Object.entries(selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation || {}).map(([key, value]) => (
                       <div key={`guardian-${key}`} className="ay-student-item">
-                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
                       </div>
                     ))}
                   </div>
@@ -1036,14 +926,14 @@ export default function AcademicYearManagement() {
               ) : null}
 
               <div>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "#334155", marginBottom: 6 }}>Other Information</div>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Other Information</div>
                 <div className="ay-student-grid">
                   {Object.entries(selectedHistoryStudent)
                     .filter(([key, value]) => !["basicStudentInformation", "contactInformation", "parentInformation", "guardianInformation", "profileImage", "name", "studentId"].includes(key) && (typeof value !== "object" || Array.isArray(value)))
                     .map(([key, value]) => (
                       <div key={`other-${key}`} className="ay-student-item">
-                        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                        <div style={{ marginTop: 2, fontSize: 12, color: "#0f172a", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
                       </div>
                     ))}
                 </div>

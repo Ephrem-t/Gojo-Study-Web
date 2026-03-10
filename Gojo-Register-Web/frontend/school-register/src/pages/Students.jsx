@@ -13,6 +13,7 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 
 function StudentsPage() {
@@ -1408,7 +1409,7 @@ useEffect(() => {
         <img
           src={String(value)}
           alt={formatFieldLabel(fieldKey)}
-          style={{ width: "100%", maxHeight: 180, objectFit: "cover", borderRadius: 8, border: "1px solid #dbeafe" }}
+          style={{ width: "100%", maxHeight: 180, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
         />
       );
     }
@@ -1421,16 +1422,16 @@ useEffect(() => {
           {value.map((item, index) => (
             <div
               key={`${String(fieldKey)}_${index}`}
-              style={{ background: "#f8fafc", border: "1px solid #dbeafe", borderRadius: 8, padding: "8px 10px" }}
+              style={{ background: "var(--surface-muted)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 10px" }}
             >
               {item && typeof item === "object" ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                   {Object.entries(item).map(([nestedKey, nestedValue]) => (
                     <div key={`${nestedKey}_${index}`}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 2 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>
                         {formatFieldLabel(nestedKey)}
                       </div>
-                      <div style={{ fontSize: 12, color: "#0f172a", wordBreak: "break-word" }}>
+                      <div style={{ fontSize: 12, color: "var(--text-primary)", wordBreak: "break-word" }}>
                         {renderDisplayValue(nestedKey, nestedValue)}
                       </div>
                     </div>
@@ -1451,12 +1452,12 @@ useEffect(() => {
           {Object.entries(value).map(([nestedKey, nestedValue]) => (
             <div
               key={nestedKey}
-              style={{ background: "#f8fafc", border: "1px solid #dbeafe", borderRadius: 8, padding: "8px 10px" }}
+              style={{ background: "var(--surface-muted)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 10px" }}
             >
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 2 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>
                 {formatFieldLabel(nestedKey)}
               </div>
-              <div style={{ fontSize: 12, color: "#0f172a", wordBreak: "break-word" }}>
+              <div style={{ fontSize: 12, color: "var(--text-primary)", wordBreak: "break-word" }}>
                 {renderDisplayValue(nestedKey, nestedValue)}
               </div>
             </div>
@@ -1643,21 +1644,50 @@ useEffect(() => {
   const chipStyle = (active) => ({
     padding: "6px 12px",
     borderRadius: "999px",
-    background: active ? "#1d4ed8" : "#eef2ff",
-    color: active ? "#fff" : "#1e3a8a",
+    background: active ? "var(--accent-strong)" : "var(--surface-accent)",
+    color: active ? "#fff" : "var(--accent-strong)",
     cursor: "pointer",
-    border: active ? "1px solid #1d4ed8" : "1px solid #dbeafe",
+    border: active ? "1px solid var(--accent-strong)" : "1px solid var(--border-strong)",
     fontSize: "11px",
     fontWeight: 700,
     whiteSpace: "nowrap",
     transition: "all 0.2s ease",
   });
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const softPanelStyle = {
+    background: "var(--surface-muted)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 10,
+  };
+  const listCardStyle = (isSelected) => ({
+    width: isNarrow ? "92%" : "560px",
+    minHeight: "86px",
+    borderRadius: "14px",
+    padding: "12px",
+    background: isSelected ? "var(--surface-accent)" : "var(--surface-panel)",
+    border: isSelected ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
+    boxShadow: isSelected ? "var(--shadow-glow)" : "var(--shadow-soft)",
+    cursor: "pointer",
+    transition: "all 0.25s ease",
+    position: "relative",
+  });
+  const rightDrawerCardStyle = {
+    background: "var(--surface-panel)",
+    borderRadius: 12,
+    border: "1px solid var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
+  };
 
  return (
-    <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
+    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", color: "var(--text-primary)" }}>
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #e5e7eb", background: "#ffffff" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         
         <div className="nav-right">
           <div
@@ -1674,27 +1704,27 @@ useEffect(() => {
               const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
               const total = (postNotifications?.length || 0) + messageCount;
               return total > 0 ? (
-                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
+                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
               ) : null;
             })()}
 
             {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "#fff", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.12)", zIndex: 1000, padding: 6 }}>
+              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "var(--surface-panel)", borderRadius: 10, boxShadow: "var(--shadow-panel)", border: "1px solid var(--border-soft)", zIndex: 1000, padding: 6 }}>
                 {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
-                  <p style={{ padding: 12, textAlign: "center", color: "#777" }}>No new notifications</p>
+                  <p style={{ padding: 12, textAlign: "center", color: "var(--text-muted)" }}>No new notifications</p>
                 ) : (
                   <div>
                     {postNotifications.length > 0 && (
                       <div>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
+                        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
                         {postNotifications.map(n => (
-                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
+                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
                             <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
+                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
                             </div>
-                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                           </div>
                         ))}
                       </div>
@@ -1702,13 +1732,13 @@ useEffect(() => {
 
                     {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
                       <div>
-                        <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
+                        <div style={{ padding: '8px 10px', color: 'var(--text-primary)', fontWeight: 700, background: 'var(--surface-muted)', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
                         {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
+                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
                             <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
+                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
                             </div>
                           </div>
                         ))}
@@ -1727,124 +1757,13 @@ useEffect(() => {
             )}
           </div>
 
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{admin?.name || "Admin Name"}</h3>
-            {(admin?.username || admin?.userId || admin?.adminId) ? (
-              <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.username || admin?.userId || admin?.adminId}</p>
-            ) : null}
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 12px',
-                fontSize: 13,
-                fontWeight: 700,
-                background: 'linear-gradient(135deg, #eff6ff, #eef2ff)',
-                color: '#1e3a8a',
-                borderRadius: 12,
-                border: '1px solid #c7d2fe',
-                cursor: 'pointer'
-              }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 12px',
-                fontSize: 13,
-                fontWeight: 700,
-                background: 'linear-gradient(135deg, #eff6ff, #eef2ff)',
-                color: '#1e3a8a',
-                borderRadius: 12,
-                border: '1px solid #c7d2fe',
-                cursor: 'pointer'
-              }}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .2s ease' }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: '2px solid #dbeafe' }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, fontWeight: 700, backgroundColor: '#1d4ed8', color: '#fff', borderRadius: 10, boxShadow: '0 8px 18px rgba(29,78,216,0.25)' }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', fontSize: 12, color: '#334155', borderRadius: 10, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-            <Link className="sidebar-btn" to="/analytics" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
+        <RegisterSidebar user={admin} sticky fullHeight />
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
@@ -1860,12 +1779,12 @@ useEffect(() => {
               style={{
                 marginBottom: "12px",
                 marginLeft: contentLeft,
-                background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
+                background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
                 color: "#fff",
                 borderRadius: 14,
                 padding: "14px 16px",
                 width: isNarrow ? "92%" : "560px",
-                boxShadow: "0 14px 28px rgba(30,58,138,0.22)",
+                boxShadow: "var(--shadow-glow)",
               }}
             >
               <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800 }}>Students</h2>
@@ -1877,8 +1796,8 @@ useEffect(() => {
                   style={{
                     padding: "2px 10px",
                     borderRadius: 999,
-                    background: "rgba(255,255,255,0.18)",
-                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "rgba(255,255,255,0.16)",
+                    border: "1px solid rgba(255,255,255,0.32)",
                     fontWeight: 700,
                   }}
                 >
@@ -1897,14 +1816,14 @@ useEffect(() => {
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "#fff",
-                  border: "1px solid #e5e7eb",
+                  background: "var(--surface-panel)",
+                  border: "1px solid var(--border-soft)",
                   borderRadius: "12px",
                   padding: "10px 12px",
-                  boxShadow: "0 6px 18px rgba(15,23,42,0.07)",
+                  boxShadow: "var(--shadow-soft)",
                 }}
               >
-                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
@@ -1978,13 +1897,13 @@ useEffect(() => {
             {studentsLoading ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {Array.from({ length: 6 }).map((_, idx) => (
-                  <div key={idx} style={{ width: isNarrow ? "92%" : "560px", height: "86px", borderRadius: "14px", padding: "12px", background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 8px 18px rgba(15,23,42,0.06)" }}>
+                    <div key={idx} style={{ width: isNarrow ? "92%" : "560px", height: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "#f1f5f9" }} />
-                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#f1f5f9" }} />
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
+                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
                       <div style={{ flex: 1 }}>
-                        <div style={{ width: "60%", height: 12, background: "#f1f5f9", borderRadius: 6, marginBottom: 8 }} />
-                        <div style={{ width: "40%", height: 10, background: "#f1f5f9", borderRadius: 6 }} />
+                        <div style={{ width: "60%", height: 12, background: "var(--surface-muted)", borderRadius: 6, marginBottom: 8 }} />
+                        <div style={{ width: "40%", height: 10, background: "var(--surface-muted)", borderRadius: 6 }} />
                       </div>
                     </div>
                   </div>
@@ -1992,41 +1911,30 @@ useEffect(() => {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                <div style={{ width: isNarrow ? "92%" : "560px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", boxShadow: "0 6px 18px rgba(15,23,42,0.06)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+                <div style={{ ...shellCardStyle, width: isNarrow ? "92%" : "560px", padding: "10px 12px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
                     Current Year Students ({currentYearStudents.length})
                   </div>
                 </div>
 
                 {currentYearStudents.length === 0 ? (
-                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "#555", margin: 0 }}>No current year students for this selection.</p>
+                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
                 ) : (
                   currentYearStudents.map((s, i) => (
                     <div
                       key={`current-${s.studentId || s.userId || i}`}
                       onClick={() => handleSelectStudent(s)}
                       className="student-card"
-                      style={{
-                        width: isNarrow ? "92%" : "560px",
-                        minHeight: "86px",
-                        borderRadius: "14px",
-                        padding: "12px",
-                        background: selectedStudent?.studentId === s.studentId ? "#eef4ff" : "#fff",
-                        border: selectedStudent?.studentId === s.studentId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
-                        boxShadow: selectedStudent?.studentId === s.studentId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
-                        cursor: "pointer",
-                        transition: "all 0.25s ease",
-                        position: "relative",
-                      }}
+                      style={listCardStyle(selectedStudent?.studentId === s.studentId)}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
-                        <div style={{ width: 36, height: 36, borderRadius: 10, background: "#dbeafe", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
+                        <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
                           {i + 1}
                         </div>
-                        <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid #2563eb" : "3px solid #e5e7eb", objectFit: "cover", transition: "all 0.3s ease" }} />
+                        <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
                         <div style={{ minWidth: 0 }}>
-                          <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                          <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4 }}>
+                          <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
+                          <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
                             Grade {s.grade} • Section {s.section}
                           </div>
                         </div>
@@ -2035,22 +1943,22 @@ useEffect(() => {
                   ))
                 )}
 
-                <div style={{ width: isNarrow ? "92%" : "560px", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", boxShadow: "0 6px 18px rgba(15,23,42,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+                <div style={{ ...shellCardStyle, width: isNarrow ? "92%" : "560px", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
                     Last Year Students ({lastYearStudents.length})
                   </div>
                   <button
                     type="button"
                     onClick={passAllLastYearStudents}
                     disabled={!currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear}
-                    style={{ border: "1px solid #15803d", background: "#15803d", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? "not-allowed" : "pointer", opacity: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? 0.6 : 1 }}
+                    style={{ border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? "not-allowed" : "pointer", opacity: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? 0.6 : 1 }}
                   >
                     {passingAllLastYear ? "Passing..." : "Pass All to New Year"}
                   </button>
                 </div>
 
                 {lastYearStudents.length === 0 ? (
-                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "#555", margin: 0 }}>No last year students for this selection.</p>
+                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No last year students for this selection.</p>
                 ) : (
                   lastYearStudents.map((s, i) => {
                     const isPassing = !!passingStudentsMap[s.studentId];
@@ -2059,18 +1967,7 @@ useEffect(() => {
                         key={`last-${s.studentId || s.userId || i}`}
                         onClick={() => handleSelectStudent(s)}
                         className="student-card"
-                        style={{
-                          width: isNarrow ? "92%" : "560px",
-                          minHeight: "86px",
-                          borderRadius: "14px",
-                          padding: "12px",
-                          background: selectedStudent?.studentId === s.studentId ? "#eef4ff" : "#fff",
-                          border: selectedStudent?.studentId === s.studentId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
-                          boxShadow: selectedStudent?.studentId === s.studentId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
-                          cursor: "pointer",
-                          transition: "all 0.25s ease",
-                          position: "relative",
-                        }}
+                        style={listCardStyle(selectedStudent?.studentId === s.studentId)}
                       >
                         <button
                           type="button"
@@ -2079,22 +1976,22 @@ useEffect(() => {
                             passStudentToCurrentYear(s);
                           }}
                           disabled={isPassing || !currentAcademicYear}
-                          style={{ position: "absolute", right: 12, top: 12, border: "1px solid #16a34a", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 10, fontWeight: 800, cursor: isPassing || !currentAcademicYear ? "not-allowed" : "pointer", opacity: isPassing || !currentAcademicYear ? 0.65 : 1 }}
+                          style={{ position: "absolute", right: 12, top: 12, border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 10, fontWeight: 800, cursor: isPassing || !currentAcademicYear ? "not-allowed" : "pointer", opacity: isPassing || !currentAcademicYear ? 0.65 : 1 }}
                         >
                           {isPassing ? "Passing..." : "Pass to New Year"}
                         </button>
 
                         <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 120 }}>
-                          <div style={{ width: 36, height: 36, borderRadius: 10, background: "#dbeafe", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
+                          <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
                             {i + 1}
                           </div>
-                          <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid #2563eb" : "3px solid #e5e7eb", objectFit: "cover", transition: "all 0.3s ease" }} />
+                          <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
                           <div style={{ minWidth: 0 }}>
-                            <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                            <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4 }}>
+                            <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
+                            <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
                               Grade {s.grade} • Section {s.section}
                             </div>
-                            <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: 2 }}>
+                            <div style={{ color: "var(--text-secondary)", fontSize: "10px", marginTop: 2 }}>
                               Year: {String(s.academicYear || "").replace("_", "/") || "N/A"}
                             </div>
                           </div>
@@ -2118,14 +2015,14 @@ useEffect(() => {
       position: "fixed",
       right: 0,
       top: isPortrait ? 0 : "55px",
-      background: "#f8fbff",
+      background: "var(--page-bg-secondary)",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
       padding: "14px",
-      boxShadow: "0 0 24px rgba(15,23,42,0.12)",
-      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+      boxShadow: "var(--shadow-panel)",
+      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       transition: "all 0.35s ease",
       fontSize: "10px",
     }}
@@ -2143,7 +2040,7 @@ useEffect(() => {
           border: "none",
           fontSize: 28,
           fontWeight: 700,
-          color: "#3647b7",
+          color: "var(--accent-strong)",
           cursor: "pointer",
           padding: 2,
           lineHeight: 1,
@@ -2160,9 +2057,9 @@ useEffect(() => {
         aria-label="Expand student profile"
         title="Expand"
         style={{
-          border: "1px solid rgba(255,255,255,0.45)",
-          background: "rgba(30,58,138,0.8)",
-          color: "#fff",
+          border: "1px solid var(--border-strong)",
+          background: "var(--surface-panel)",
+          color: "var(--accent-strong)",
           borderRadius: 8,
           padding: "4px 8px",
           fontSize: 14,
@@ -2178,7 +2075,7 @@ useEffect(() => {
     {/* Header */}
     <div
       style={{
-        background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
+        background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
         margin: "-14px -14px 12px",
         padding: "16px 10px",
         textAlign: "center",
@@ -2191,7 +2088,7 @@ useEffect(() => {
           margin: "0 auto 10px",
           borderRadius: "50%",
           overflow: "hidden",
-          border: "3px solid rgba(255,255,255,0.85)",
+          border: "3px solid rgba(255,255,255,0.8)",
         }}
       >
         <img
@@ -2209,7 +2106,7 @@ useEffect(() => {
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", marginBottom: "10px" }}>
+    <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
       {["details", "attendance", "payment"].map((tab) => (
         <button
           key={tab}
@@ -2221,9 +2118,9 @@ useEffect(() => {
             border: "none",
             cursor: "pointer",
             fontWeight: 600,
-            color: studentTab === tab ? "#4b6cb7" : "#6b7280",
+            color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
             fontSize: "10px",
-            borderBottom: studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
+            borderBottom: studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
           }}
         >
           {tab.toUpperCase()}
@@ -2238,10 +2135,7 @@ useEffect(() => {
         <div
           style={{
             padding: "12px",
-            background: "#ffffff",
-            borderRadius: 12,
-            border: "1px solid #e5e7eb",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            ...rightDrawerCardStyle,
             margin: "0 auto",
             maxWidth: 380,
           }}
@@ -2253,7 +2147,7 @@ useEffect(() => {
                 style={{
                   margin: 0,
                   marginBottom: 6,
-                  color: "#0f172a",
+                  color: "var(--text-primary)",
                   fontWeight: 800,
                   letterSpacing: "0.1px",
                   fontSize: 12,
@@ -2268,9 +2162,9 @@ useEffect(() => {
                   <button
                     onClick={startEditProfile}
                     style={{
-                      background: "#ffffff",
-                      border: "1px solid #c7d2fe",
-                      color: "#1e3a8a",
+                      background: "var(--surface-panel)",
+                      border: "1px solid var(--border-strong)",
+                      color: "var(--accent-strong)",
                       padding: "6px 10px",
                       borderRadius: 8,
                       cursor: "pointer",
@@ -2286,7 +2180,7 @@ useEffect(() => {
                       onClick={saveProfileEdits}
                       disabled={savingProfile}
                       style={{
-                        background: "#1d4ed8",
+                        background: "var(--accent-strong)",
                         border: "none",
                         color: "#fff",
                         padding: "6px 10px",
@@ -2301,9 +2195,9 @@ useEffect(() => {
                     <button
                       onClick={cancelEditProfile}
                       style={{
-                        background: "#fff",
-                        border: "1px solid #e5e7eb",
-                        color: "#374151",
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
+                        color: "var(--text-secondary)",
                         padding: "6px 10px",
                         borderRadius: 8,
                         cursor: "pointer",
@@ -2344,10 +2238,10 @@ useEffect(() => {
                       alignItems: "center",
                       justifyContent: "flex-start",
                       display: "flex",
-                      background: "#ffffff",
+                      background: "var(--surface-panel)",
                       padding: "8px",
                       borderRadius: 10,
-                      border: "1px solid #eef2f7",
+                      border: "1px solid var(--border-soft)",
                       boxShadow: "none",
                       minHeight: 36,
                     }}
@@ -2358,7 +2252,7 @@ useEffect(() => {
                           fontSize: "9px",
                           fontWeight: 700,
                           letterSpacing: "0.4px",
-                          color: "#64748b",
+                          color: "var(--text-muted)",
                           textTransform: "uppercase",
                         }}
                       >
@@ -2370,12 +2264,12 @@ useEffect(() => {
                           style={{
                             fontSize: 10,
                             fontWeight: 600,
-                            color: "#111",
+                            color: "var(--text-primary)",
                             marginTop: 2,
                             wordBreak: "break-word",
                           }}
                         >
-                          {value || <span style={{ color: "#cbd5e1" }}>N/A</span>}
+                          {value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
                         </div>
                       ) : (
                         key === "gender" ? (
@@ -2387,9 +2281,10 @@ useEffect(() => {
                               width: "100%",
                               padding: "8px 10px",
                               borderRadius: 8,
-                              border: "1px solid #e5e7eb",
+                              border: "1px solid var(--input-border)",
                               fontSize: 12,
-                              background: "#fff"
+                              background: "var(--input-bg)",
+                              color: "var(--text-primary)",
                             }}
                           >
                             <option value="">Select gender</option>
@@ -2405,8 +2300,10 @@ useEffect(() => {
                               width: "100%",
                               padding: "8px 10px",
                               borderRadius: 8,
-                              border: "1px solid #e5e7eb",
+                              border: "1px solid var(--input-border)",
                               fontSize: 12,
+                              background: "var(--input-bg)",
+                              color: "var(--text-primary)",
                             }}
                           />
                         )
@@ -2426,10 +2323,10 @@ useEffect(() => {
         <div
           style={{
             padding: "12px",
-            background: "#ffffff",
+            background: "var(--surface-panel)",
             borderRadius: 12,
-            border: "1px solid #e5e7eb",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            border: "1px solid var(--border-soft)",
+            boxShadow: "var(--shadow-soft)",
           }}
         >
           {/* VIEW SWITCH */}
@@ -2452,8 +2349,8 @@ useEffect(() => {
                   fontWeight: 700,
                   fontSize: 10,
                   cursor: "pointer",
-                  background: attendanceView === v ? "#4b6cb7" : "#e5e7eb",
-                  color: attendanceView === v ? "#fff" : "#111827",
+                  background: attendanceView === v ? "var(--accent-strong)" : "var(--surface-strong)",
+                  color: attendanceView === v ? "#fff" : "var(--text-primary)",
                 }}
               >
                 {v.toUpperCase()}
@@ -2488,12 +2385,12 @@ useEffect(() => {
                   onClick={() => toggleExpand(expandKey)}
                   style={{
                     cursor: "pointer",
-                    background: "#ffffff",
+                    background: "var(--surface-panel)",
                     borderRadius: 12,
                     padding: 12,
                     marginBottom: 10,
-                    border: "1px solid #e5e7eb",
-                    boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+                    border: "1px solid var(--border-soft)",
+                    boxShadow: "var(--shadow-soft)",
                     position: "relative",
                     overflow: "hidden",
                   }}
@@ -2522,7 +2419,7 @@ useEffect(() => {
                           margin: 0,
                           fontSize: 12,
                           fontWeight: 800,
-                          color: "#0f172a",
+                          color: "var(--text-primary)",
                         }}
                       >
                         {formatSubjectName(course)}
@@ -2531,7 +2428,7 @@ useEffect(() => {
                         style={{
                           margin: "6px 0 0",
                           fontSize: 10,
-                          color: "#64748b",
+                          color: "var(--text-muted)",
                         }}
                       >
                         {records[0]?.teacherName}
@@ -2543,9 +2440,9 @@ useEffect(() => {
                         borderRadius: 999,
                         fontSize: 10,
                         fontWeight: 800,
-                        background: "#e0e7ff",
-                        color: "#1e40af",
-                        border: "1px solid #c7d2fe",
+                        background: "var(--accent-soft)",
+                        color: "var(--accent-strong)",
+                        border: "1px solid var(--border-strong)",
                       }}
                     >
                       {progress}%
@@ -2556,7 +2453,7 @@ useEffect(() => {
                     onClick={() => toggleExpand(expandKey)}
                     style={{
                       height: 8,
-                      background: "#e5e7eb",
+                      background: "var(--surface-strong)",
                       borderRadius: 999,
                       cursor: "pointer",
                       overflow: "hidden",
@@ -2567,7 +2464,7 @@ useEffect(() => {
                       style={{
                         height: "100%",
                         width: `${progress}%`,
-                        background: "#4b6cb7",
+                        background: "var(--accent-strong)",
                         transition: "width .3s ease",
                       }}
                     />
@@ -2576,7 +2473,7 @@ useEffect(() => {
                     style={{
                       fontSize: 10,
                       fontWeight: 700,
-                      color: "#475569",
+                      color: "var(--text-secondary)",
                       marginBottom: 12,
                     }}
                   >
@@ -2587,8 +2484,8 @@ useEffect(() => {
                     <div
                       style={{
                         marginTop: 14,
-                        background: "#ffffff",
-                        border: "1px solid #e5e7eb",
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
                         borderRadius: 10,
                         padding: 10,
                       }}
@@ -2603,12 +2500,12 @@ useEffect(() => {
                             padding: "8px 6px",
                             borderBottom:
                               i !== displayRecords.length - 1
-                                ? "1px solid #e5e7eb"
+                                ? "1px solid var(--border-soft)"
                                 : "none",
                           }}
                         >
                           <div style={{ display: "flex", flexDirection: "column" }}>
-                            <span style={{ fontSize: 10, color: "#1f2937" }}>
+                            <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
                               {new Date(r.date).toDateString()}
                             </span>
                           </div>
@@ -2620,16 +2517,16 @@ useEffect(() => {
                               fontWeight: 800,
                               background:
                                 r.status === "present"
-                                  ? "#dcfce7"
+                                  ? "var(--success-soft)"
                                   : r.status === "late"
-                                  ? "#fef3c7"
-                                  : "#fee2e2",
+                                  ? "var(--warning-soft)"
+                                  : "var(--danger-soft)",
                               color:
                                 r.status === "present"
-                                  ? "#166534"
+                                  ? "var(--success)"
                                   : r.status === "late"
-                                  ? "#92400e"
-                                  : "#991b1b",
+                                  ? "var(--warning)"
+                                  : "var(--danger)",
                             }}
                           >
                             {r.status.toUpperCase()}
@@ -2649,23 +2546,23 @@ useEffect(() => {
         <div
           style={{
             position: "relative",
-            background: "#ffffff",
-            border: "1px solid #e5e7eb",
+            background: "var(--surface-panel)",
+            border: "1px solid var(--border-soft)",
             borderRadius: 12,
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            boxShadow: "var(--shadow-soft)",
             padding: 12,
           }}
         >
-          <h3 style={{ margin: 0, marginBottom: 10, color: "#0f172a", fontWeight: 800, fontSize: 13, textAlign: "center" }}>
+          <h3 style={{ margin: 0, marginBottom: 10, color: "var(--text-primary)", fontWeight: 800, fontSize: 13, textAlign: "center" }}>
             Monthly Payment History
           </h3>
 
           {!selectedStudent ? (
-            <p style={{ textAlign: "center", color: "#64748b" }}>Select a student to view payment history.</p>
+            <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Select a student to view payment history.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {Object.keys(paymentHistory).length === 0 ? (
-                <p style={{ textAlign: "center", color: "#64748b" }}>Loading payment history...</p>
+                <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading payment history...</p>
               ) : (
                 Object.entries(paymentHistory).map(([monthKey, paid]) => {
                   const [year, monthShort] = monthKey.split("-");
@@ -2678,15 +2575,15 @@ useEffect(() => {
                         justifyContent: "space-between",
                         padding: "10px 12px",
                         borderRadius: 8,
-                        background: paid ? "#e6ffef" : "#fff6f6",
-                        border: paid ? "1px solid #10b981" : "1px solid #f97316",
+                        background: paid ? "var(--success-soft)" : "var(--danger-soft)",
+                        border: paid ? "1px solid var(--success)" : "1px solid var(--danger)",
                       }}
                     >
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <div style={{ width: 10, height: 10, borderRadius: 999, background: paid ? "#10b981" : "#f97316" }} />
+                        <div style={{ width: 10, height: 10, borderRadius: 999, background: paid ? "var(--success)" : "var(--danger)" }} />
                         <div style={{ fontWeight: 700 }}>{monthShort} {year}</div>
                       </div>
-                      <div style={{ fontWeight: 800, color: paid ? "#065f46" : "#7f1d1d" }}>{paid ? "Paid" : "Unpaid"}</div>
+                      <div style={{ fontWeight: 800, color: paid ? "var(--success)" : "var(--danger)" }}>{paid ? "Paid" : "Unpaid"}</div>
                     </div>
                   );
                 })
@@ -2729,7 +2626,7 @@ useEffect(() => {
           right: "220px",
           width: "140px",
           height: "48px",
-          background: "linear-gradient(135deg, #059669, #10b981)",
+          background: "linear-gradient(135deg, color-mix(in srgb, var(--success) 78%, #0f172a), var(--success))",
           borderRadius: "28px",
           display: "flex",
           alignItems: "center",
@@ -2739,7 +2636,7 @@ useEffect(() => {
           color: "#fff",
           cursor: "pointer",
           zIndex: 1100,
-          boxShadow: "0 10px 24px rgba(5,150,105,0.18)",
+          boxShadow: "var(--shadow-glow)",
           transition: "transform 0.16s ease",
         }}
       >
@@ -2751,7 +2648,7 @@ useEffect(() => {
             width: 34,
             height: 34,
             borderRadius: 10,
-            background: "rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.14)",
           }}
         >
           <FaFacebookMessenger size={18} />
@@ -2764,7 +2661,7 @@ useEffect(() => {
             position: "absolute",
             top: -8,
             right: 8,
-            background: "#062f1f",
+            background: "color-mix(in srgb, var(--success) 42%, #04130b)",
             color: "#fff",
             borderRadius: "999px",
             fontSize: 10,
@@ -2805,7 +2702,7 @@ useEffect(() => {
           right: "20px",
           width: "140px",
           height: "48px",
-          background: "linear-gradient(135deg, #833ab4, #0259fa)",
+          background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
           borderRadius: "28px",
           display: "flex",
           alignItems: "center",
@@ -2815,7 +2712,7 @@ useEffect(() => {
           color: "#fff",
           cursor: "pointer",
           zIndex: 1000,
-          boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
+          boxShadow: "var(--shadow-glow)",
           transition: "transform 0.16s ease",
         }}
       >
@@ -2827,7 +2724,7 @@ useEffect(() => {
             width: 34,
             height: 34,
             borderRadius: 10,
-            background: "rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.14)",
           }}
         >
           <FaCommentDots size={18} />
@@ -2840,7 +2737,7 @@ useEffect(() => {
             position: "absolute",
             top: -8,
             right: 8,
-            background: "#0b1220",
+            background: "color-mix(in srgb, var(--accent-strong) 28%, #020617)",
             color: "#fff",
             borderRadius: "999px",
             fontSize: 10,
@@ -2863,9 +2760,9 @@ useEffect(() => {
           right: "20px",
           width: "360px",
           height: "480px",
-          background: "#fff",
+          background: "var(--surface-panel)",
           borderRadius: "16px",
-          boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+          boxShadow: "var(--shadow-panel)",
           zIndex: 2000,
           display: "flex",
           flexDirection: "column",
@@ -2876,11 +2773,11 @@ useEffect(() => {
         <div
           style={{
             padding: "14px",
-            borderBottom: "1px solid #eee",
+            borderBottom: "1px solid var(--border-soft)",
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            background: "#fafafa",
+            background: "var(--surface-muted)",
           }}
         >
             <strong>{selectedStudent.name}</strong>
@@ -2932,11 +2829,11 @@ useEffect(() => {
             display: "flex",
             flexDirection: "column",
             gap: "6px",
-            background: "#f9f9f9",
+            background: "var(--surface-muted)",
           }}
         >
           {popupMessages.length === 0 ? (
-            <p style={{ textAlign: "center", color: "#aaa" }}>
+            <p style={{ textAlign: "center", color: "var(--text-muted)" }}>
               Start chatting with {selectedStudent.name}
             </p>
           ) : (
@@ -2955,13 +2852,13 @@ useEffect(() => {
                   <div
                     style={{
                       maxWidth: "70%",
-                      background: isAdmin ? "#4facfe" : "#fff",
-                      color: isAdmin ? "#fff" : "#000",
+                      background: isAdmin ? "var(--accent)" : "var(--surface-panel)",
+                      color: isAdmin ? "#fff" : "var(--text-primary)",
                       padding: "10px 14px",
                       borderRadius: 18,
                       borderTopRightRadius: isAdmin ? 0 : 18,
                       borderTopLeftRadius: isAdmin ? 18 : 0,
-                      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                      boxShadow: "var(--shadow-soft)",
                       wordBreak: "break-word",
                       cursor: "default",
                       position: "relative",
@@ -2979,7 +2876,7 @@ useEffect(() => {
                         gap: 6,
                         marginTop: 6,
                         fontSize: 11,
-                        color: isAdmin ? "#fff" : "#888",
+                        color: isAdmin ? "#fff" : "var(--text-muted)",
                       }}
                     >
                       <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>
@@ -2988,8 +2885,8 @@ useEffect(() => {
                       <span>{formatTime(m.timeStamp)}</span>
                       {isAdmin && !m.deleted && (
                       <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
-                                                          <FaCheck size={10} color={isAdmin ? "#fff" : "#888"} style={{ opacity: 0.90, marginLeft: 2 }} />
-                                                          {m.seen && (<FaCheck size={10} color={isAdmin ? "#f3f7f8" : "#ccc"} style={{ marginLeft: -6, opacity: 0.95 }} />)}
+                                                          <FaCheck size={10} color={isAdmin ? "#fff" : "var(--text-muted)"} style={{ opacity: 0.90, marginLeft: 2 }} />
+                                                          {m.seen && (<FaCheck size={10} color={isAdmin ? "#f8fafc" : "var(--text-muted)"} style={{ marginLeft: -6, opacity: 0.95 }} />)}
                                                         </span>
                       )}
                     </div>
@@ -3004,10 +2901,10 @@ useEffect(() => {
         <div
           style={{
             padding: "10px",
-            borderTop: "1px solid #eee",
+            borderTop: "1px solid var(--border-soft)",
             display: "flex",
             gap: "8px",
-            background: "#fff",
+            background: "var(--surface-panel)",
           }}
         >
           <input
@@ -3018,8 +2915,10 @@ useEffect(() => {
               flex: 1,
               padding: "10px 14px",
               borderRadius: "25px",
-              border: "1px solid #ccc",
+              border: "1px solid var(--input-border)",
               outline: "none",
+              background: "var(--input-bg)",
+              color: "var(--text-primary)",
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") sendMessage();
@@ -3031,7 +2930,7 @@ useEffect(() => {
               width: 45,
               height: 45,
               borderRadius: "50%",
-              background: "#4facfe",
+              background: "var(--accent)",
               border: "none",
               color: "#fff",
               display: "flex",
@@ -3054,7 +2953,7 @@ useEffect(() => {
       position: "fixed",
       inset: 0,
       zIndex: 3000,
-      background: "linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%)",
+      background: "linear-gradient(180deg, var(--page-bg-secondary) 0%, var(--page-bg) 100%)",
       overflowY: "auto",
       padding: "16px 20px 24px",
     }}
@@ -3063,10 +2962,10 @@ useEffect(() => {
       style={{
         maxWidth: 1180,
         margin: "0 auto",
-        background: "#fff",
-        border: "1px solid #dbe3ef",
+        background: "var(--surface-panel)",
+        border: "1px solid var(--border-soft)",
         borderRadius: 16,
-        boxShadow: "0 16px 32px rgba(15,23,42,0.12)",
+        boxShadow: "var(--shadow-panel)",
         overflow: "hidden",
       }}
     >
@@ -3078,7 +2977,7 @@ useEffect(() => {
           gap: 12,
           padding: "14px 16px",
           color: "#fff",
-          background: "linear-gradient(135deg, #1e3a8a, #2563eb)",
+          background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -3183,11 +3082,11 @@ useEffect(() => {
           <div
             key={section.title}
             style={{
-              background: "#ffffff",
-              border: "1px solid #e5e7eb",
+              background: "var(--surface-panel)",
+              border: "1px solid var(--border-soft)",
               borderRadius: 12,
               padding: 10,
-              boxShadow: "0 6px 14px rgba(15,23,42,0.05)",
+              boxShadow: "var(--shadow-soft)",
               gridColumn: section.fullWidth ? "1 / -1" : "auto",
             }}
           >
@@ -3199,27 +3098,27 @@ useEffect(() => {
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                background: "#f8fafc",
-                border: "1px solid #dbeafe",
+                background: "var(--surface-muted)",
+                border: "1px solid var(--border-strong)",
                 borderRadius: 10,
                 padding: "8px 10px",
                 cursor: "pointer",
                 marginBottom: 8,
               }}
             >
-              <span style={{ fontSize: 13, fontWeight: 800, color: "#1e3a8a" }}>{section.title}</span>
-              <FaChevronDown style={{ color: "#1e3a8a", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
+              <span style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)" }}>{section.title}</span>
+              <FaChevronDown style={{ color: "var(--accent-strong)", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
             </button>
 
             {!isCollapsed && (Object.keys(sectionData || {}).length === 0 ? (
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>No data</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No data</div>
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
                 {!fullscreenEditing && imageEntries.length > 0 && (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                     {imageEntries.map(([key, value]) => (
-                      <div key={`image_${key}`} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 6 }}>{formatFieldLabel(key)}</div>
+                      <div key={`image_${key}`} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 6 }}>{formatFieldLabel(key)}</div>
                         {renderDisplayValue(key, value)}
                       </div>
                     ))}
@@ -3228,9 +3127,9 @@ useEffect(() => {
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                   {nonImageEntries.map(([key, value]) => (
-                    <div key={key} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px" }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
-                      <div style={{ fontSize: 12, color: "#0f172a", marginTop: 2, wordBreak: "break-word" }}>
+                    <div key={key} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2, wordBreak: "break-word" }}>
                         {!fullscreenEditing ? (
                           renderDisplayValue(key, value)
                         ) : (
@@ -3238,13 +3137,13 @@ useEffect(() => {
                             <input
                               value={value ?? ""}
                               onChange={(event) => updateFullscreenSectionField(section.key, key, event.target.value)}
-                              style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}
+                              style={{ width: "100%", border: "1px solid var(--input-border)", borderRadius: 8, padding: "8px 10px", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
                             />
                             {isImageValue(key, value) ? (
                               <img
                                 src={String(value || "")}
                                 alt={formatFieldLabel(key)}
-                                style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid #dbeafe" }}
+                                style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
                               />
                             ) : null}
                           </div>
@@ -3260,11 +3159,11 @@ useEffect(() => {
 
         <div
           style={{
-            background: "#ffffff",
-            border: "1px solid #e5e7eb",
+            background: "var(--surface-panel)",
+            border: "1px solid var(--border-soft)",
             borderRadius: 12,
             padding: 12,
-            boxShadow: "0 6px 14px rgba(15,23,42,0.05)",
+            boxShadow: "var(--shadow-soft)",
             gridColumn: "1 / -1",
           }}
         >
@@ -3276,16 +3175,16 @@ useEffect(() => {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              background: "#f8fafc",
-              border: "1px solid #dbeafe",
+              background: "var(--surface-muted)",
+              border: "1px solid var(--border-strong)",
               borderRadius: 10,
               padding: "8px 10px",
               cursor: "pointer",
               marginBottom: 8,
             }}
           >
-            <span style={{ fontSize: 13, fontWeight: 800, color: "#1e3a8a" }}>Additional Student Data</span>
-            <FaChevronDown style={{ color: "#1e3a8a", transform: fullscreenSectionCollapsed?.additional ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
+            <span style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)" }}>Additional Student Data</span>
+            <FaChevronDown style={{ color: "var(--accent-strong)", transform: fullscreenSectionCollapsed?.additional ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
           </button>
 
           {!fullscreenSectionCollapsed?.additional && (
@@ -3293,9 +3192,9 @@ useEffect(() => {
               {Object.entries(fullscreenEditing ? (fullscreenEditForm.additional || {}) : Object.fromEntries(
                 Object.entries(selectedStudent || {}).filter(([k]) => !excludedAdditionalKeys.includes(k))
               )).map(([key, value]) => (
-                <div key={key} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
-                  <div style={{ fontSize: 12, color: "#0f172a", marginTop: 2, wordBreak: "break-word" }}>
+                <div key={key} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2, wordBreak: "break-word" }}>
                     {!fullscreenEditing ? (
                       renderDisplayValue(key, value)
                     ) : (
@@ -3303,13 +3202,13 @@ useEffect(() => {
                         <input
                           value={value ?? ""}
                           onChange={(event) => updateFullscreenAdditionalField(key, event.target.value)}
-                          style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}
+                          style={{ width: "100%", border: "1px solid var(--input-border)", borderRadius: 8, padding: "8px 10px", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
                         />
                         {isImageValue(key, value) ? (
                           <img
                             src={String(value || "")}
                             alt={formatFieldLabel(key)}
-                            style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid #dbeafe" }}
+                            style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
                           />
                         ) : null}
                       </div>

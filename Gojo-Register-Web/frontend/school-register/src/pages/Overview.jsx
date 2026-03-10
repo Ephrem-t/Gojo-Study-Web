@@ -12,6 +12,7 @@ import {
   FaFacebookMessenger,
 } from "react-icons/fa";
 import axios from "axios";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 export default function OverviewPage() {
   const navigate = useNavigate();
@@ -155,138 +156,58 @@ export default function OverviewPage() {
     return date.toLocaleString();
   };
 
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const statCardStyle = {
+    ...shellCardStyle,
+    borderRadius: 14,
+    padding: "14px 16px",
+  };
+  const mutedTextStyle = {
+    color: "var(--text-muted)",
+  };
+  const softRowStyle = {
+    display: "grid",
+    alignItems: "center",
+    gap: 10,
+    background: "var(--surface-muted)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 10,
+    padding: "8px 10px",
+  };
+  const progressTrackStyle = {
+    height: 8,
+    background: "var(--surface-strong)",
+    borderRadius: 999,
+  };
+
   return (
-    <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #e5e7eb", background: "#ffffff" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", color: "var(--text-primary)" }}>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", flexDirection: isNarrow ? "column" : "row", gap: 14, padding: "12px" }}>
-        <div className="google-sidebar" style={{ width: isNarrow ? "100%" : "220px", flex: "0 0 auto", padding: "12px", borderRadius: 16, background: "#ffffff", border: "1px solid #e5e7eb", boxShadow: "0 10px 24px rgba(15,23,42,0.06)", height: "fit-content" }}>
-          <div className="sidebar-profile" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc" }}>
-              <img src={admin.profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>{admin.name}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{admin.username || admin.adminId || "register"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, fontWeight: 700, backgroundColor: "#1d4ed8", color: "#fff", borderRadius: 10, boxShadow: "0 8px 18px rgba(29,78,216,0.25)" }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}><FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management</Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                navigate("/login");
-              }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <RegisterSidebar user={admin} sticky={!isNarrow} fullHeight={!isNarrow} style={isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { flex: "0 0 auto" }} />
 
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 16, boxShadow: "0 10px 24px rgba(15,23,42,0.06)", padding: 18 }}>
+          <div style={{ ...shellCardStyle, padding: 18 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div>
-                <h1 style={{ margin: 0, fontSize: 24, color: "#0f172a", fontWeight: 800 }}>Overview</h1>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>Operational snapshot for students, parents and posts.</p>
+                <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 800 }}>Overview</h1>
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)" }}>Operational snapshot for students, parents and posts.</p>
               </div>
-              <div style={{ fontSize: 12, color: "#64748b" }}>{loading ? "Loading..." : `Updated: ${new Date().toLocaleString()}`}</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{loading ? "Loading..." : `Updated: ${new Date().toLocaleString()}`}</div>
             </div>
           </div>
 
@@ -298,37 +219,37 @@ export default function OverviewPage() {
               { title: "👦 Male Count", value: summary.maleCount, tone: "#0f766e" },
               { title: "👧 Female Count", value: summary.femaleCount, tone: "#be185d" },
             ].map((card) => (
-              <div key={card.title} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, boxShadow: "0 8px 20px rgba(15,23,42,0.06)", padding: "14px 16px" }}>
-                <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>{card.title}</div>
+              <div key={card.title} style={statCardStyle}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{card.title}</div>
                 <div style={{ marginTop: 6, fontSize: 28, fontWeight: 800, color: card.tone }}>{loading ? "--" : card.value}</div>
               </div>
             ))}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "1.4fr 1fr", gap: 12 }}>
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, boxShadow: "0 8px 20px rgba(15,23,42,0.06)", padding: 14 }}>
+            <div style={{ ...shellCardStyle, borderRadius: 14, padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>New Registrations (This Month)</div>
-                <div style={{ fontSize: 12, color: "#64748b" }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>New Registrations (This Month)</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {loading ? "--" : summary.thisMonthRegistrationCount} registrations • Posts: {loading ? "--" : postsCount}
                 </div>
               </div>
 
               {loading ? (
-                <div style={{ fontSize: 13, color: "#64748b" }}>Loading students...</div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading students...</div>
               ) : summary.recentStudents.length === 0 ? (
-                <div style={{ fontSize: 13, color: "#64748b" }}>No registrations found for this month yet.</div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No registrations found for this month yet.</div>
               ) : (
                 <div style={{ display: "grid", gap: 8 }}>
                   {summary.recentStudents.map((student) => (
-                    <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: isNarrow ? "42px 1fr" : "42px 1fr auto", alignItems: "center", gap: 10, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "8px 10px" }}>
-                      <img src={student.profileImage} alt={student.name} style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", border: "2px solid #dbeafe" }} />
+                    <div key={student.studentId} style={{ ...softRowStyle, gridTemplateColumns: isNarrow ? "42px 1fr" : "42px 1fr auto" }}>
+                      <img src={student.profileImage} alt={student.name} style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)" }} />
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{student.name}</div>
-                        <div style={{ fontSize: 11, color: "#64748b" }}>{student.studentId}</div>
-                        <div style={{ fontSize: 11, color: "#94a3b8" }}>Registered: {formatDateTime(student.createdAt)}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{student.name}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Registered: {formatDateTime(student.createdAt)}</div>
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "#1d4ed8", gridColumn: isNarrow ? "2 / 3" : "auto" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-strong)", gridColumn: isNarrow ? "2 / 3" : "auto" }}>
                         G{student.grade} • {student.section}
                       </div>
                     </div>
@@ -337,12 +258,12 @@ export default function OverviewPage() {
               )}
             </div>
 
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, boxShadow: "0 8px 20px rgba(15,23,42,0.06)", padding: 14 }}>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a", marginBottom: 10 }}>Grade Distribution</div>
+            <div style={{ ...shellCardStyle, borderRadius: 14, padding: 14 }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)", marginBottom: 10 }}>Grade Distribution</div>
               {loading ? (
-                <div style={{ fontSize: 13, color: "#64748b" }}>Loading distribution...</div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading distribution...</div>
               ) : summary.topGrades.length === 0 ? (
-                <div style={{ fontSize: 13, color: "#64748b" }}>No distribution data.</div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No distribution data.</div>
               ) : (
                 <div style={{ display: "grid", gap: 12 }}>
                   <div style={{ display: "grid", gap: 8 }}>
@@ -351,10 +272,10 @@ export default function OverviewPage() {
                       return (
                         <div key={row.grade}>
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>Grade {row.grade}</span>
-                            <span style={{ fontSize: 12, color: "#64748b" }}>{row.count} ({pct}%)</span>
+                            <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 700 }}>Grade {row.grade}</span>
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{row.count} ({pct}%)</span>
                           </div>
-                          <div style={{ height: 8, background: "#e2e8f0", borderRadius: 999 }}>
+                          <div style={progressTrackStyle}>
                             <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#1d4ed8,#3b82f6)", borderRadius: 999 }} />
                           </div>
                         </div>
@@ -362,8 +283,8 @@ export default function OverviewPage() {
                     })}
                   </div>
 
-                  <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", marginBottom: 8 }}>Gender Split</div>
+                  <div style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 10 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>Gender Split</div>
                     {[
                       { label: "Male", count: summary.maleCount, tone: "#0f766e" },
                       { label: "Female", count: summary.femaleCount, tone: "#be185d" },
@@ -372,10 +293,10 @@ export default function OverviewPage() {
                       return (
                         <div key={row.label} style={{ marginBottom: 8 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                            <span style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>{row.label}</span>
-                            <span style={{ fontSize: 12, color: "#64748b" }}>{row.count} ({pct}%)</span>
+                            <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 700 }}>{row.label}</span>
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{row.count} ({pct}%)</span>
                           </div>
-                          <div style={{ height: 8, background: "#e2e8f0", borderRadius: 999 }}>
+                          <div style={progressTrackStyle}>
                             <div style={{ height: "100%", width: `${pct}%`, background: row.tone, borderRadius: 999 }} />
                           </div>
                         </div>

@@ -16,6 +16,7 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
+import RegisterSidebar from "../components/RegisterSidebar";
 
 const PAGE_BG = "linear-gradient(150deg, #f7f8ff 0%, #eef6ff 45%, #f9fcff 100%)";
 
@@ -144,7 +145,6 @@ export default function GredeManagement() {
     Object.values(studentsMap || {}).forEach((studentNode) => {
       const row = studentNode || {};
       if (activeAcademicYear && String(row.academicYear || "") !== String(activeAcademicYear)) return;
-
       const grade = String(row.grade || "");
       const section = String(row.section || "").toUpperCase();
       if (!grade || !section) return;
@@ -174,6 +174,7 @@ export default function GredeManagement() {
       const nextGrades = Object.fromEntries(
         Object.entries(rawGrades).filter(([gradeKey]) => isValidGradeKey(gradeKey))
       );
+
       setGradesMap(nextGrades);
       setStudentsMap(studentsRes.data || {});
       setActiveAcademicYear(String(activeYearRes.data || ""));
@@ -188,7 +189,7 @@ export default function GredeManagement() {
 
       setSelectedSection((prev) => {
         if (!prev) return "";
-        const currentGrade = (selectedGrade && nextGrades[selectedGrade]) ? selectedGrade : firstGrade;
+        const currentGrade = selectedGrade && nextGrades[selectedGrade] ? selectedGrade : firstGrade;
         const sections = (nextGrades[currentGrade] || {}).sections || {};
         return sections[prev] ? prev : "";
       });
@@ -490,130 +491,12 @@ export default function GredeManagement() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
           <img src={admin.profileImage} alt="admin" className="profile-img" />
         </div>
       </nav>
 
       <div className="gm-dashboard">
-        <div className="google-sidebar gm-sidebar" style={{ padding: 12, borderRadius: 16, background: "#ffffff", border: "1px solid #dbe7fb", boxShadow: "0 10px 24px rgba(15, 23, 42, 0.07)", height: "fit-content" }}>
-          <div className="sidebar-profile" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 50, height: 50, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc" }}>
-              <img src={admin.profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>{admin.name}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{admin.username || admin.adminId || "register"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setDashboardMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaHome style={{ width: 18, height: 18 }} /> Dashboard
-              </span>
-              <FaChevronDown style={{ transform: dashboardMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {dashboardMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaHome style={{ width: 16, height: 16 }} /> Home
-                </Link>
-                <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> My Posts
-                </Link>
-                <Link className="sidebar-btn" to="/overview" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChartLine style={{ width: 16, height: 16 }} /> Overview
-                </Link>
-                <Link className="sidebar-btn" to="/academic-years" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Academic Year
-                </Link>
-                <Link className="sidebar-btn" to="/grede-management" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, fontWeight: 700, backgroundColor: "#1d4ed8", color: "#fff", borderRadius: 10, boxShadow: "0 8px 18px rgba(29,78,216,0.25)" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Grede Management
-                </Link>
-                <Link className="sidebar-btn" to="/promotion-system" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Promotion System
-                </Link>
-                <Link className="sidebar-btn" to="/transfer-withdrawal" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Transfer & Withdrawal
-                </Link>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setStudentMenuOpen((prev) => !prev)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "10px 12px",
-                fontSize: 13,
-                fontWeight: 700,
-                background: "linear-gradient(135deg, #eff6ff, #eef2ff)",
-                color: "#1e3a8a",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-              </span>
-              <FaChevronDown style={{ transform: studentMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
-            </button>
-
-            {studentMenuOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: 10, paddingLeft: 10, borderLeft: "2px solid #dbeafe" }}>
-                <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaChalkboardTeacher style={{ width: 16, height: 16 }} /> Student
-                </Link>
-                <Link className="sidebar-btn" to="/student-register" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Register Student
-                </Link>
-                <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", fontSize: 12, color: "#334155", borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <FaFileAlt style={{ width: 16, height: 16 }} /> Student Parent
-                </Link>
-              </div>
-            )}
-
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("registrar");
-                localStorage.removeItem("admin");
-                navigate("/login");
-              }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
+        <RegisterSidebar user={admin} sticky fullHeight />
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>

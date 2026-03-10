@@ -980,6 +980,83 @@ def get_my_posts(owner_id):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/like_post", methods=["POST"])
+def like_post():
+    try:
+        body = request.get_json(silent=True) or {}
+        post_id = (
+            body.get("postId")
+            or request.form.get("postId")
+            or request.args.get("postId")
+            or ""
+        ).strip()
+        actor_id = str(
+            body.get("userId")
+            or body.get("adminId")
+            or body.get("financeId")
+            or request.form.get("userId")
+            or request.form.get("adminId")
+            or request.form.get("financeId")
+            or request.args.get("userId")
+            or request.args.get("adminId")
+            or request.args.get("financeId")
+            or ""
+        ).strip()
+        school_code = (
+            body.get("schoolCode")
+            or request.form.get("schoolCode")
+            or request.args.get("schoolCode")
+            or ""
+        ).strip()
+
+        if not post_id:
+            return jsonify({"success": False, "message": "postId is required"}), 400
+        if not actor_id:
+            return jsonify({"success": False, "message": "user identifier is required"}), 400
+
+        post_data = None
+        resolved_school_code = school_code
+
+        if resolved_school_code:
+            post_data = school_ref(resolved_school_code).child(f"Posts/{post_id}").get()
+
+        if not post_data:
+            all_schools = schools_data()
+            for code, school_node in all_schools.items():
+                candidate = ((school_node or {}).get("Posts") or {}).get(post_id)
+                if candidate:
+                    resolved_school_code = code
+                    post_data = candidate
+                    break
+
+        if not resolved_school_code or not post_data:
+            return jsonify({"success": False, "message": "Post not found"}), 404
+
+        likes = post_data.get("likes") if isinstance(post_data.get("likes"), dict) else {}
+        liked = False
+
+        if likes.get(actor_id):
+            likes.pop(actor_id, None)
+        else:
+            likes[actor_id] = True
+            liked = True
+
+        like_count = len([value for value in likes.values() if value])
+        post_ref = school_ref(resolved_school_code).child(f"Posts/{post_id}")
+        post_ref.update({"likes": likes, "likeCount": like_count})
+
+        return jsonify({
+            "success": True,
+            "liked": liked,
+            "likeCount": like_count,
+            "likes": likes,
+            "postId": post_id,
+            "schoolCode": resolved_school_code,
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/get_students", methods=["GET"])
 def get_students():
     try:
@@ -1239,6 +1316,26 @@ def rollover_academic_year():
         history_students_ref = history_root_ref.child("Students")
         history_parents_ref = history_root_ref.child("Parents")
 
+        snapshot_excluded_nodes = {"YearHistory", "Students", "Parents"}
+        school_snapshot = {}
+        school_snapshot_counts = {}
+
+        for node_name, node_value in (school_node or {}).items():
+            if node_name in snapshot_excluded_nodes:
+                continue
+
+            school_snapshot[node_name] = node_value
+            school_snapshot_counts[node_name] = len(node_value) if isinstance(node_value, dict) else (1 if node_value else 0)
+
+        if school_snapshot:
+            history_root_ref.child("SchoolSnapshot").set({
+                "archivedAt": now_iso,
+                "fromAcademicYear": normalized_current_year,
+                "toAcademicYear": target_year,
+                "excludedNodes": sorted(snapshot_excluded_nodes),
+                "data": school_snapshot,
+            })
+
         promoted = 0
         graduated = 0
         skipped = 0
@@ -1346,6 +1443,8 @@ def rollover_academic_year():
             "resetYearlyData": bool(reset_yearly_data),
             "archivedNodes": {},
             "clearedNodes": [],
+            "schoolSnapshotNodes": sorted(school_snapshot.keys()),
+            "schoolSnapshotCounts": school_snapshot_counts,
         }
 
         if reset_yearly_data:
@@ -1377,6 +1476,8 @@ def rollover_academic_year():
                 "skipped": skipped,
                 "movedStudents": moved_students,
                 "movedParents": moved_parents,
+                "schoolSnapshotStored": bool(school_snapshot),
+                "schoolSnapshotNodes": sorted(school_snapshot.keys()),
                 "resetYearlyData": True,
             })
         else:
@@ -1389,6 +1490,8 @@ def rollover_academic_year():
                 "skipped": skipped,
                 "movedStudents": moved_students,
                 "movedParents": moved_parents,
+                "schoolSnapshotStored": bool(school_snapshot),
+                "schoolSnapshotNodes": sorted(school_snapshot.keys()),
                 "resetYearlyData": False,
             })
 
