@@ -1234,14 +1234,13 @@ export default function PromotionSystem() {
 
       <div className="ps-dashboard ps-root">
         <RegisterSidebar user={admin} sticky fullHeight />
-        <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 1220, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className="ps-panel" style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, rgba(125, 211, 252, 0.32), rgba(147, 197, 253, 0))" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+        <div className="main-content" style={{ padding: "10px 8px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
+          <div style={{ width: "min(100%, 1220px)", margin: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="ps-panel section-header-card" style={{ padding: 18 }}>
+              <div className="section-header-card__row">
                 <div>
-                  <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 900 }}>Promotion System</h1>
-                    <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-secondary)" }}>
+                  <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Promotion System</h1>
+                    <p className="section-header-card__subtitle" style={{ fontSize: 13 }}>
                       End-of-year workflow from YearHistory snapshot: review selected students, confirm actions, and complete re-registration.
                   </p>
                   <div className="ps-hero-note"><FaLock /> Confirm key: PROMOTE</div>

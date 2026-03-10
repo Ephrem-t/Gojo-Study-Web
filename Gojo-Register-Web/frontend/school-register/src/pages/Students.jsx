@@ -29,6 +29,7 @@ function StudentsPage() {
   const [studentChatOpen, setStudentChatOpen] = useState(false); // Toggle chat popup
   const [popupMessages, setPopupMessages] = useState([]); // Messages for chat popup
   const messagesEndRef = useRef(null);
+  const studentSelectionRequestRef = useRef(0);
   const [popupInput, setPopupInput] = useState(""); // Input for chat message
   const [details, setDetails] = useState(null);
   const [performance, setPerformance] = useState([]);
@@ -38,8 +39,7 @@ function StudentsPage() {
   const [marks, setMarks] = useState({});
   const [studentsLoading, setStudentsLoading] = useState(true);
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
-  const [passingStudentsMap, setPassingStudentsMap] = useState({});
-  const [passingAllLastYear, setPassingAllLastYear] = useState(false);
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -248,6 +248,13 @@ function StudentsPage() {
     semester1: ["quarter1", "quarter2"],
     semester2: ["quarter3", "quarter4"],
   };
+
+  const isValidGradeKey = (value) => {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 1 && numeric <= 12;
+  };
+
+  const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
 
   const [studentMarks, setStudentMarks] = useState({});
@@ -359,16 +366,6 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    const fetchStudents = async () => {
-      const querySnapshot = await getDocs(collection(firestore, "students"));
-      const studentsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(studentsData);
-    };
-
-    fetchStudents();
-  }, []);
-
   // load finance/admin on mount
   useEffect(() => {
     loadFinanceFromStorage();
@@ -408,6 +405,8 @@ useEffect(() => {
   };
 
   const handleSelectStudent = async (s) => {
+    const requestId = studentSelectionRequestRef.current + 1;
+    studentSelectionRequestRef.current = requestId;
     setSelectedStudent((prev) => ({ ...(prev || {}), ...s }));
     setRightSidebarOpen(true);
     try {
@@ -525,6 +524,10 @@ useEffect(() => {
         // ignore
       }
       // 6️⃣ Set selected student state (include age & parent info)
+      if (studentSelectionRequestRef.current !== requestId) {
+        return;
+      }
+
       setSelectedStudent((prev) => ({
         ...(prev || {}),
         ...s,
@@ -538,7 +541,9 @@ useEffect(() => {
         parentPhone: parentPhone,
       }));
     } catch (err) {
-      console.error("Error fetching student data:", err);
+      if (studentSelectionRequestRef.current === requestId) {
+        console.error("Error fetching student data:", err);
+      }
     }
   };
 
@@ -631,93 +636,6 @@ useEffect(() => {
     }
   };
 
-  const bumpGrade = (gradeValue) => {
-    const parsed = Number(gradeValue);
-    if (Number.isNaN(parsed)) return gradeValue;
-    return String(parsed + 1);
-  };
-
-  const passStudentToCurrentYear = async (student) => {
-    if (!student?.studentId || !currentAcademicYear) {
-      alert("No active academic year is set.");
-      return;
-    }
-
-    const fromYear = String(student.academicYear || "").trim();
-    if (fromYear && fromYear === String(currentAcademicYear).trim()) {
-      alert("Student is already in the current academic year.");
-      return;
-    }
-
-    setPassingStudentsMap((prev) => ({ ...prev, [student.studentId]: true }));
-    try {
-      const promotedGrade = bumpGrade(student.grade);
-      const payload = {
-        academicYear: currentAcademicYear,
-        previousAcademicYear: fromYear || null,
-        grade: promotedGrade,
-        promotedAt: new Date().toISOString(),
-        basicStudentInformation: {
-          grade: promotedGrade,
-          academicYear: currentAcademicYear,
-        },
-      };
-
-      await axios.patch(`${DB_URL}/Students/${student.studentId}.json`, payload);
-
-      setStudents((prev) =>
-        prev.map((item) =>
-          item.studentId === student.studentId
-            ? {
-                ...item,
-                grade: promotedGrade,
-                academicYear: currentAcademicYear,
-                previousAcademicYear: fromYear || item.previousAcademicYear,
-              }
-            : item
-        )
-      );
-
-      setSelectedStudent((prev) =>
-        prev?.studentId === student.studentId
-          ? {
-              ...prev,
-              grade: promotedGrade,
-              academicYear: currentAcademicYear,
-              previousAcademicYear: fromYear || prev.previousAcademicYear,
-            }
-          : prev
-      );
-    } catch (error) {
-      console.error("Pass student error:", error);
-      alert("Could not pass student to new year.");
-    } finally {
-      setPassingStudentsMap((prev) => ({ ...prev, [student.studentId]: false }));
-    }
-  };
-
-  const passAllLastYearStudents = async () => {
-    if (!currentAcademicYear) {
-      alert("No active academic year is set.");
-      return;
-    }
-    if (lastYearStudents.length === 0) {
-      alert("No last year students to pass.");
-      return;
-    }
-
-    setPassingAllLastYear(true);
-    try {
-      await Promise.all(lastYearStudents.map((student) => passStudentToCurrentYear(student)));
-      alert("All last year students passed to current year.");
-    } catch (error) {
-      console.error("Bulk pass error:", error);
-      alert("Some students could not be passed. Please retry.");
-    } finally {
-      setPassingAllLastYear(false);
-    }
-  };
-
   // close dropdowns outside click - unchanged logic retained
   useEffect(() => {
     const closeDropdown = (e) => {
@@ -791,16 +709,27 @@ useEffect(() => {
     const fetchStudents = async () => {
       try {
         setStudentsLoading(true);
-        const [studentsRes, usersRes, schoolInfoRes] = await Promise.all([
+        const [studentsRes, usersRes, schoolInfoRes, gradesRes] = await Promise.all([
           axios.get(`${DB_URL}/Students.json`),
           axios.get(`${DB_URL}/Users.json`),
           axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
         ]);
 
         const studentsData = studentsRes.data || {};
         const usersData = usersRes.data || {};
         const activeAcademicYear = (schoolInfoRes.data || {}).currentAcademicYear || "";
+        const gradesData = gradesRes.data || {};
         setCurrentAcademicYear(activeAcademicYear);
+
+        const managedGrades = Object.keys(gradesData)
+          .filter((gradeKey) => isValidGradeKey(gradeKey))
+          .sort((a, b) => Number(a) - Number(b));
+        setGradeOptions(managedGrades);
+        setSelectedGrade((prev) => {
+          if (prev === "All") return prev;
+          return managedGrades.includes(String(prev)) ? prev : "All";
+        });
 
         const studentKeys = Object.keys(studentsData);
 
@@ -860,8 +789,9 @@ useEffect(() => {
 
   const currentYearStudents = useMemo(() => {
     if (!currentAcademicYear) return filteredStudentsBase;
+    const normalizedCurrentYear = normalizeAcademicYear(currentAcademicYear);
     return filteredStudentsBase.filter(
-      (student) => String(student.academicYear || "").trim() === String(currentAcademicYear).trim()
+      (student) => normalizeAcademicYear(student.academicYear) === normalizedCurrentYear
     );
   }, [filteredStudentsBase, currentAcademicYear]);
 
@@ -1684,7 +1614,7 @@ useEffect(() => {
   };
 
  return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", color: "var(--text-primary)" }}>
+   <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
         <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
@@ -1761,7 +1691,7 @@ useEffect(() => {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         {/* ---------------- SIDEBAR ---------------- */}
         <RegisterSidebar user={admin} sticky fullHeight />
         {/* ---------------- MAIN CONTENT ---------------- */}
@@ -1772,35 +1702,25 @@ useEffect(() => {
             flex: 1,
             minWidth: 0,
             boxSizing: "border-box",
+            height: "100%",
+            overflowY: "auto",
+            overflowX: "hidden",
           }}
         >
           <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
             <div
+              className="section-header-card"
               style={{
                 marginBottom: "12px",
                 marginLeft: contentLeft,
-                background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
-                color: "#fff",
-                borderRadius: 14,
-                padding: "14px 16px",
                 width: isNarrow ? "92%" : "560px",
-                boxShadow: "var(--shadow-glow)",
               }}
             >
-              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 800 }}>Students</h2>
-              <div style={{ marginTop: 6, display: "flex", gap: 16, fontSize: 12, opacity: 0.95, flexWrap: "wrap" }}>
+              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Students</h2>
+              <div className="section-header-card__meta">
                 <span>Total: {filteredStudentsBase.length}</span>
                 <span>Current Year: {currentYearStudents.length}</span>
-                <span>Last Year: {lastYearStudents.length}</span>
-                <span
-                  style={{
-                    padding: "2px 10px",
-                    borderRadius: 999,
-                    background: "rgba(255,255,255,0.16)",
-                    border: "1px solid rgba(255,255,255,0.32)",
-                    fontWeight: 700,
-                  }}
-                >
+                <span className="section-header-card__chip">
                   {currentAcademicYear
                     ? `Academic Year: ${String(currentAcademicYear).replace("_", "/")}`
                     : "Academic Year: Not Set"}
@@ -1853,7 +1773,7 @@ useEffect(() => {
                   paddingBottom: 1,
                 }}
               >
-                {["All","5","6","7","8"].map(g => (
+                {["All", ...gradeOptions].map(g => (
                   <button
                     key={g}
                     onClick={() => setSelectedGrade(g)}
@@ -1911,12 +1831,6 @@ useEffect(() => {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                <div style={{ ...shellCardStyle, width: isNarrow ? "92%" : "560px", padding: "10px 12px" }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
-                    Current Year Students ({currentYearStudents.length})
-                  </div>
-                </div>
-
                 {currentYearStudents.length === 0 ? (
                   <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
                 ) : (
@@ -1941,64 +1855,6 @@ useEffect(() => {
                       </div>
                     </div>
                   ))
-                )}
-
-                <div style={{ ...shellCardStyle, width: isNarrow ? "92%" : "560px", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
-                    Last Year Students ({lastYearStudents.length})
-                  </div>
-                  <button
-                    type="button"
-                    onClick={passAllLastYearStudents}
-                    disabled={!currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear}
-                    style={{ border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? "not-allowed" : "pointer", opacity: !currentAcademicYear || lastYearStudents.length === 0 || passingAllLastYear ? 0.6 : 1 }}
-                  >
-                    {passingAllLastYear ? "Passing..." : "Pass All to New Year"}
-                  </button>
-                </div>
-
-                {lastYearStudents.length === 0 ? (
-                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No last year students for this selection.</p>
-                ) : (
-                  lastYearStudents.map((s, i) => {
-                    const isPassing = !!passingStudentsMap[s.studentId];
-                    return (
-                      <div
-                        key={`last-${s.studentId || s.userId || i}`}
-                        onClick={() => handleSelectStudent(s)}
-                        className="student-card"
-                        style={listCardStyle(selectedStudent?.studentId === s.studentId)}
-                      >
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            passStudentToCurrentYear(s);
-                          }}
-                          disabled={isPassing || !currentAcademicYear}
-                          style={{ position: "absolute", right: 12, top: 12, border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "4px 8px", fontSize: 10, fontWeight: 800, cursor: isPassing || !currentAcademicYear ? "not-allowed" : "pointer", opacity: isPassing || !currentAcademicYear ? 0.65 : 1 }}
-                        >
-                          {isPassing ? "Passing..." : "Pass to New Year"}
-                        </button>
-
-                        <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 120 }}>
-                          <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
-                            {i + 1}
-                          </div>
-                          <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
-                          <div style={{ minWidth: 0 }}>
-                            <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                            <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
-                              Grade {s.grade} • Section {s.section}
-                            </div>
-                            <div style={{ color: "var(--text-secondary)", fontSize: "10px", marginTop: 2 }}>
-                              Year: {String(s.academicYear || "").replace("_", "/") || "N/A"}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
                 )}
               </div>
             )}
@@ -2028,22 +1884,32 @@ useEffect(() => {
     }}
   >
     {/* Close button */}
-    <div style={{ position: "absolute", top: 0, left: 22, zIndex: 2000 }}>
+    <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
       <button
         onClick={() => {
+          studentSelectionRequestRef.current += 1;
+          setRightSidebarOpen(false);
           setStudentFullscreenOpen(false);
           setSelectedStudent(null);
         }}
         aria-label="Close sidebar"
         style={{
-          background: "none",
-          border: "none",
-          fontSize: 28,
+          width: 34,
+          height: 34,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "rgba(255,255,255,0.18)",
+          border: "1px solid rgba(255,255,255,0.42)",
+          borderRadius: 999,
+          backdropFilter: "blur(6px)",
+          fontSize: 24,
           fontWeight: 700,
-          color: "var(--accent-strong)",
+          color: "#ffffff",
           cursor: "pointer",
-          padding: 2,
+          padding: 0,
           lineHeight: 1,
+          boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
         }}
       >
         ×

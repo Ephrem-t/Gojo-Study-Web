@@ -97,11 +97,8 @@ export default function DocumentGeneration() {
   const heroStyle = {
     maxWidth: 760,
     margin: "0 auto 12px",
-    background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
-    color: "#fff",
-    borderRadius: 14,
-    padding: "12px 14px",
-    boxShadow: "var(--shadow-glow)",
+    position: "relative",
+    overflow: "hidden",
   };
   const inputShellStyle = {
     display: "flex",
@@ -849,9 +846,9 @@ export default function DocumentGeneration() {
         <RegisterSidebar user={admin} sticky fullHeight />
 
         <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={heroStyle}>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>Document Generation System</div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Generate official school documents in one click: preview, export PDF, print.</div>
+          <div className="section-header-card" style={heroStyle}>
+            <div className="section-header-card__title" style={{ fontSize: 17 }}>Document Generation System</div>
+            <div className="section-header-card__subtitle">Generate official school documents in one click: preview, export PDF, print.</div>
           </div>
 
           <div style={{ maxWidth: 980, margin: "0 auto", ...cardStyle, padding: 16 }}>

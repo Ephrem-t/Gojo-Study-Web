@@ -546,10 +546,65 @@ function Analatics() {
     }
   };
 
+  const pageBackground = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
+  const heroStyle = {
+    position: "relative",
+    overflow: "hidden",
+  };
+  const panelStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const filterBarStyle = {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    alignItems: "center",
+    padding: "10px 12px",
+    ...panelStyle,
+  };
+  const pillButtonStyle = (active) => ({
+    border: active ? "1px solid var(--accent-strong)" : "1px solid var(--accent-soft)",
+    background: active ? "var(--accent-strong)" : "var(--accent-soft)",
+    color: active ? "#fff" : "var(--accent-strong)",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+  });
+  const statCardStyle = (borderColor) => ({
+    ...panelStyle,
+    padding: 12,
+    border: `1px solid ${borderColor}`,
+  });
+  const notificationDropdownStyle = {
+    position: "absolute",
+    top: 40,
+    right: 0,
+    width: 360,
+    maxHeight: 420,
+    overflowY: "auto",
+    background: "var(--surface-panel)",
+    borderRadius: 10,
+    border: "1px solid var(--border-soft)",
+    boxShadow: "var(--shadow-panel)",
+    zIndex: 1000,
+    padding: 6,
+  };
+  const chartAxisStyle = { fontSize: 11, fill: "var(--text-muted)" };
+  const chartGridStroke = "var(--border-soft)";
+  const paidColor = "var(--success)";
+  const unpaidColor = "var(--danger)";
+  const accentColor = "var(--accent-strong)";
+  const warningColor = "var(--warning)";
+
   return (
-    <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #e5e7eb", background: "#ffffff" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
+    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh" }}>
+      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
+        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
           <div
             className="icon-circle"
@@ -566,7 +621,7 @@ function Analatics() {
                   position: "absolute",
                   top: "-5px",
                   right: "-5px",
-                  background: "red",
+                  background: "var(--danger)",
                   color: "#fff",
                   borderRadius: "50%",
                   padding: "2px 6px",
@@ -582,27 +637,15 @@ function Analatics() {
               <div
                 className="notification-dropdown"
                 onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: "absolute",
-                  top: 40,
-                  right: 0,
-                  width: 360,
-                  maxHeight: 420,
-                  overflowY: "auto",
-                  background: "#fff",
-                  borderRadius: 10,
-                  boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-                  zIndex: 1000,
-                  padding: 6,
-                }}
+                style={notificationDropdownStyle}
               >
                 {totalNotifications === 0 ? (
-                  <p style={{ padding: 12, textAlign: "center", color: "#777" }}>No new notifications</p>
+                  <p style={{ padding: 12, textAlign: "center", color: "var(--text-muted)" }}>No new notifications</p>
                 ) : (
                   <div>
                     {unreadPostList.length > 0 && (
                       <div>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
+                        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
                         {unreadPostList.map((post) => (
                           <div
                             key={post.postId}
@@ -613,16 +656,16 @@ function Analatics() {
                               alignItems: "center",
                               gap: 12,
                               cursor: "pointer",
-                              borderBottom: "1px solid #f0f0f0",
+                              borderBottom: "1px solid var(--border-soft)",
                               transition: "background 120ms ease",
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           >
                             <img src={post.adminProfile || "/default-profile.png"} alt="" style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong>{post.adminName || "Admin"}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              <strong style={{ color: "var(--text-primary)" }}>{post.adminName || "Admin"}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 {post.message || "New post"}
                               </p>
                             </div>
@@ -633,7 +676,7 @@ function Analatics() {
 
                     {messageCount > 0 && (
                       <div>
-                        <div style={{ padding: "8px 10px", color: "#333", fontWeight: 700, background: "#fafafa", borderRadius: 6, margin: "8px 6px" }}>Messages</div>
+                        <div style={{ padding: "8px 10px", color: "var(--text-primary)", fontWeight: 700, background: "var(--surface-muted)", borderRadius: 6, margin: "8px 6px" }}>Messages</div>
                         {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
                           <div
                             key={userId}
@@ -643,10 +686,10 @@ function Analatics() {
                               alignItems: "center",
                               gap: 12,
                               cursor: "pointer",
-                              borderBottom: "1px solid #f0f0f0",
+                              borderBottom: "1px solid var(--border-soft)",
                               transition: "background 120ms ease",
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                             onClick={async () => {
                               await markMessagesAsSeen(userId);
@@ -670,8 +713,8 @@ function Analatics() {
                           >
                             <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
+                              <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{sender.name}</strong>
+                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
                             </div>
                           </div>
                         ))}
@@ -697,14 +740,14 @@ function Analatics() {
 
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: "linear-gradient(135deg, #1e3a8a, #2563eb)", color: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 14px 28px rgba(30,58,138,0.22)" }}>
-              <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>Financial Analytics Dashboard</h2>
-              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.95 }}>Production-level payment analytics by month, grade, and gender.</div>
+            <div className="section-header-card" style={heroStyle}>
+              <h2 className="section-header-card__title">Financial Analytics Dashboard</h2>
+              <div className="section-header-card__subtitle">Production-level payment analytics by month, grade, and gender.</div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", boxShadow: "0 6px 18px rgba(15,23,42,0.07)" }}>
-              <label style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>Year</label>
-              <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "6px 10px", fontSize: 12, outline: "none" }}>
+            <div style={filterBarStyle}>
+              <label style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 700 }}>Year</label>
+              <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} style={{ border: "1px solid var(--input-border)", borderRadius: 8, padding: "6px 10px", fontSize: 12, outline: "none", background: "var(--input-bg)", color: "var(--text-primary)" }}>
                 {allYears.map((y) => (
                   <option key={y} value={y}>{y}</option>
                 ))}
@@ -712,22 +755,12 @@ function Analatics() {
 
               <button
                 onClick={() => setPeriodMode("year")}
-                style={{
-                  marginLeft: 10,
-                  border: periodMode === "year" ? "1px solid #1d4ed8" : "1px solid #dbeafe",
-                  background: periodMode === "year" ? "#1d4ed8" : "#eef2ff",
-                  color: periodMode === "year" ? "#fff" : "#1e3a8a",
-                  borderRadius: 999,
-                  padding: "6px 10px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
+                style={{ marginLeft: 10, ...pillButtonStyle(periodMode === "year") }}
               >
                 This Year
               </button>
 
-              <label style={{ fontSize: 12, color: "#334155", fontWeight: 700, marginLeft: 8 }}>Month</label>
+              <label style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 700, marginLeft: 8 }}>Month</label>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {MONTHS.map((m) => (
                   <button
@@ -736,16 +769,7 @@ function Analatics() {
                       setSelectedMonth(m);
                       setPeriodMode("month");
                     }}
-                    style={{
-                      border: periodMode === "month" && selectedMonth === m ? "1px solid #1d4ed8" : "1px solid #dbeafe",
-                      background: periodMode === "month" && selectedMonth === m ? "#1d4ed8" : "#eef2ff",
-                      color: periodMode === "month" && selectedMonth === m ? "#fff" : "#1e3a8a",
-                      borderRadius: 999,
-                      padding: "6px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
+                    style={pillButtonStyle(periodMode === "month" && selectedMonth === m)}
                   >
                     {m}
                   </button>
@@ -757,8 +781,8 @@ function Analatics() {
                   onClick={handleExportExcel}
                   disabled={loading || exporting}
                   style={{
-                    border: "1px solid #16a34a",
-                    background: "#16a34a",
+                    border: "1px solid var(--success)",
+                    background: "var(--success)",
                     color: "#fff",
                     borderRadius: 8,
                     padding: "7px 12px",
@@ -774,8 +798,8 @@ function Analatics() {
                   onClick={handleExportPdf}
                   disabled={loading || exporting}
                   style={{
-                    border: "1px solid #1d4ed8",
-                    background: "#1d4ed8",
+                    border: "1px solid var(--accent-strong)",
+                    background: "var(--accent-strong)",
                     color: "#fff",
                     borderRadius: 8,
                     padding: "7px 12px",
@@ -793,53 +817,53 @@ function Analatics() {
             {loading ? (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(140px, 1fr))", gap: 10 }}>
                 {Array.from({ length: 4 }).map((_, i) => (
-                  <div key={i} style={{ height: 90, borderRadius: 12, background: "#fff", border: "1px solid #e5e7eb" }} />
+                  <div key={i} style={{ height: 90, borderRadius: 12, background: "var(--surface-panel)", border: "1px solid var(--border-soft)" }} />
                 ))}
               </div>
             ) : (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-                  <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
-                    <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700 }}>{periodMode === "year" ? "TOTAL EXPECTED PAYMENTS" : "TOTAL STUDENTS"}</div>
-                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{activeSummary.totalStudents}</div>
+                  <div style={statCardStyle("var(--border-soft)")}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{periodMode === "year" ? "TOTAL EXPECTED PAYMENTS" : "TOTAL STUDENTS"}</div>
+                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "var(--text-primary)" }}>{activeSummary.totalStudents}</div>
                   </div>
-                  <div style={{ background: "#fff", border: "1px solid #dcfce7", borderRadius: 12, padding: 12 }}>
-                    <div style={{ fontSize: 11, color: "#166534", fontWeight: 700 }}>PAID ({activeLabel})</div>
-                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "#166534" }}>{activeSummary.paid}</div>
+                  <div style={statCardStyle("var(--success-border)")}>
+                    <div style={{ fontSize: 11, color: "var(--success)", fontWeight: 700 }}>PAID ({activeLabel})</div>
+                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "var(--success)" }}>{activeSummary.paid}</div>
                   </div>
-                  <div style={{ background: "#fff", border: "1px solid #fee2e2", borderRadius: 12, padding: 12 }}>
-                    <div style={{ fontSize: 11, color: "#991b1b", fontWeight: 700 }}>UNPAID ({activeLabel})</div>
-                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "#991b1b" }}>{activeSummary.unpaid}</div>
+                  <div style={statCardStyle("var(--danger-border)")}>
+                    <div style={{ fontSize: 11, color: "var(--danger)", fontWeight: 700 }}>UNPAID ({activeLabel})</div>
+                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "var(--danger)" }}>{activeSummary.unpaid}</div>
                   </div>
-                  <div style={{ background: "#fff", border: "1px solid #dbeafe", borderRadius: 12, padding: 12 }}>
-                    <div style={{ fontSize: 11, color: "#1e3a8a", fontWeight: 700 }}>PAYMENT RATE</div>
-                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "#1e3a8a" }}>{activeSummary.paidRate}%</div>
+                  <div style={statCardStyle("var(--accent-soft)")}>
+                    <div style={{ fontSize: 11, color: "var(--accent-strong)", fontWeight: 700 }}>PAYMENT RATE</div>
+                    <div style={{ marginTop: 8, fontSize: 24, fontWeight: 800, color: "var(--accent-strong)" }}>{activeSummary.paidRate}%</div>
                   </div>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
-                  <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 320 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Monthly Payment Trend ({selectedYear})</div>
+                  <div style={{ ...panelStyle, padding: 12, minHeight: 320 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Monthly Payment Trend ({selectedYear})</div>
                     <ResponsiveContainer width="100%" height={260}>
                       <LineChart data={monthlyTrend}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="month" />
-                        <YAxis />
+                        <CartesianGrid stroke={chartGridStroke} strokeDasharray="3 3" />
+                        <XAxis dataKey="month" tick={chartAxisStyle} />
+                        <YAxis tick={chartAxisStyle} />
                         <Tooltip />
                         <Legend />
-                        <Line type="monotone" dataKey="paid" stroke="#16a34a" strokeWidth={2.5} />
-                        <Line type="monotone" dataKey="unpaid" stroke="#dc2626" strokeWidth={2.5} />
+                        <Line type="monotone" dataKey="paid" stroke={paidColor} strokeWidth={2.5} />
+                        <Line type="monotone" dataKey="unpaid" stroke={unpaidColor} strokeWidth={2.5} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
 
-                  <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 320 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Paid vs Unpaid ({activeLabel})</div>
+                  <div style={{ ...panelStyle, padding: 12, minHeight: 320 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Paid vs Unpaid ({activeLabel})</div>
                     <ResponsiveContainer width="100%" height={260}>
                       <PieChart>
                         <Pie data={[{ name: "Paid", value: activeSummary.paid }, { name: "Unpaid", value: activeSummary.unpaid }]} dataKey="value" nameKey="name" innerRadius={45} outerRadius={78} paddingAngle={4}>
-                          <Cell fill="#16a34a" />
-                          <Cell fill="#dc2626" />
+                          <Cell fill={paidColor} />
+                          <Cell fill={unpaidColor} />
                         </Pie>
                         <Tooltip />
                         <Legend />
@@ -849,32 +873,32 @@ function Analatics() {
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
-                  <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 340 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Grade-wise Collection Performance ({activeLabel})</div>
+                  <div style={{ ...panelStyle, padding: 12, minHeight: 340 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Grade-wise Collection Performance ({activeLabel})</div>
                     <ResponsiveContainer width="100%" height={280}>
                       <BarChart data={activeGradeBreakdown}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="grade" />
-                        <YAxis />
+                        <CartesianGrid stroke={chartGridStroke} strokeDasharray="3 3" />
+                        <XAxis dataKey="grade" tick={chartAxisStyle} />
+                        <YAxis tick={chartAxisStyle} />
                         <Tooltip />
                         <Legend />
-                        <Bar dataKey="paid" stackId="a" fill="#16a34a" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="unpaid" stackId="a" fill="#f97316" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="paid" stackId="a" fill={paidColor} radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="unpaid" stackId="a" fill={warningColor} radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
 
-                  <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 340 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Gender Distribution ({activeLabel})</div>
+                  <div style={{ ...panelStyle, padding: 12, minHeight: 340 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Gender Distribution ({activeLabel})</div>
                     <ResponsiveContainer width="100%" height={280}>
                       <BarChart data={activeGenderBreakdown}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
+                        <CartesianGrid stroke={chartGridStroke} strokeDasharray="3 3" />
+                        <XAxis dataKey="name" tick={chartAxisStyle} />
+                        <YAxis tick={chartAxisStyle} />
                         <Tooltip />
                         <Legend />
-                        <Bar dataKey="paid" fill="#2563eb" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="unpaid" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="paid" fill={accentColor} radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="unpaid" fill={unpaidColor} radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -882,51 +906,51 @@ function Analatics() {
 
                 {periodMode === "year" && (
                   <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
-                    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 320 }}>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Yearly Collection Trend</div>
+                    <div style={{ ...panelStyle, padding: 12, minHeight: 320 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Yearly Collection Trend</div>
                       <ResponsiveContainer width="100%" height={260}>
                         <LineChart data={yearlyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" />
-                          <YAxis />
+                          <CartesianGrid stroke={chartGridStroke} strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tick={chartAxisStyle} />
+                          <YAxis tick={chartAxisStyle} />
                           <Tooltip />
                           <Legend />
-                          <Line type="monotone" dataKey="paid" stroke="#2563eb" strokeWidth={2.5} />
-                          <Line type="monotone" dataKey="unpaid" stroke="#ea580c" strokeWidth={2.5} />
+                          <Line type="monotone" dataKey="paid" stroke={accentColor} strokeWidth={2.5} />
+                          <Line type="monotone" dataKey="unpaid" stroke={warningColor} strokeWidth={2.5} />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
 
-                    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, minHeight: 320 }}>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 8 }}>Yearly Payment Rate %</div>
-                      <div style={{ fontSize: 12, color: "#475569", marginBottom: 6 }}>
+                    <div style={{ ...panelStyle, padding: 12, minHeight: 320 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 8 }}>Yearly Payment Rate %</div>
+                      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
                         paidRate : {selectedYearRateText}
                       </div>
                       <ResponsiveContainer width="100%" height={260}>
                         <BarChart data={yearlyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" />
-                          <YAxis domain={[0, 100]} />
+                          <CartesianGrid stroke={chartGridStroke} strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tick={chartAxisStyle} />
+                          <YAxis domain={[0, 100]} tick={chartAxisStyle} />
                           <Tooltip formatter={(v) => `${v}%`} />
                           <Legend />
-                          <Bar dataKey="paidRate" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="paidRate" fill={paidColor} radius={[4, 4, 0, 0]} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
                 )}
 
-                <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a", marginBottom: 10 }}>Grade Summary Table ({activeLabel})</div>
+                <div style={{ ...panelStyle, padding: 12 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: "var(--text-primary)", marginBottom: 10 }}>Grade Summary Table ({activeLabel})</div>
                   <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                       <thead>
-                        <tr style={{ background: "#f8fafc" }}>
-                          <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>Grade</th>
-                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>Total</th>
-                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>Paid</th>
-                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>Unpaid</th>
-                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>Rate</th>
+                        <tr style={{ background: "var(--surface-muted)" }}>
+                          <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", color: "var(--text-primary)" }}>Grade</th>
+                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", color: "var(--text-primary)" }}>Total</th>
+                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", color: "var(--text-primary)" }}>Paid</th>
+                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", color: "var(--text-primary)" }}>Unpaid</th>
+                          <th style={{ textAlign: "right", padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", color: "var(--text-primary)" }}>Rate</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -934,11 +958,11 @@ function Analatics() {
                           const rate = row.total ? Math.round((row.paid / row.total) * 100) : 0;
                           return (
                             <tr key={row.grade}>
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9", fontWeight: 700 }}>Grade {row.grade}</td>
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9", textAlign: "right" }}>{row.total}</td>
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9", textAlign: "right", color: "#166534", fontWeight: 700 }}>{row.paid}</td>
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9", textAlign: "right", color: "#b45309", fontWeight: 700 }}>{row.unpaid}</td>
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9", textAlign: "right", color: "#1e3a8a", fontWeight: 800 }}>{rate}%</td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Grade {row.grade}</td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", textAlign: "right", color: "var(--text-primary)" }}>{row.total}</td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", textAlign: "right", color: "var(--success)", fontWeight: 700 }}>{row.paid}</td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", textAlign: "right", color: "var(--warning)", fontWeight: 700 }}>{row.unpaid}</td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-soft)", textAlign: "right", color: "var(--accent-strong)", fontWeight: 800 }}>{rate}%</td>
                             </tr>
                           );
                         })}

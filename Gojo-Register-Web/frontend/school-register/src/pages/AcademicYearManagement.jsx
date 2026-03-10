@@ -444,15 +444,14 @@ export default function AcademicYearManagement() {
 
         <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 24%, transparent), transparent)" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+            <div className="section-header-card" style={{ padding: 18 }}>
+              <div className="section-header-card__row">
                 <div>
-                  <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 900 }}>Academic Year Management</h1>
-                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)" }}>Create, activate, archive, and rollover academic years for promotion logic.</p>
+                  <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Academic Year Management</h1>
+                  <p className="section-header-card__subtitle" style={{ fontSize: 13 }}>Create, activate, archive, and rollover academic years for promotion logic.</p>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div className="section-header-card__actions">
                   <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{currentAcademicYear ? `Current: ${currentAcademicYear.replace("_", "/")}` : "No active year"}</div>
                   <button
                     type="button"
@@ -835,86 +834,102 @@ export default function AcademicYearManagement() {
 
       {selectedHistoryStudent ? (
         <div
-          onClick={() => setSelectedHistoryStudent(null)}
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 10000,
-            padding: 0,
+            zIndex: 3000,
+            background: "linear-gradient(180deg, var(--page-bg-secondary) 0%, var(--page-bg) 100%)",
+            overflowY: "auto",
+            padding: "16px 20px 24px",
           }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="ay-student-fullscreen"
+            style={{
+              maxWidth: 1180,
+              margin: "0 auto",
+              background: "var(--surface-panel)",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 16,
+              boxShadow: "var(--shadow-panel)",
+              overflow: "hidden",
+            }}
           >
-            <div className="ay-student-header">
-              <h3 style={{ margin: 0, fontSize: 18, color: "var(--text-primary)", fontWeight: 900, letterSpacing: "0.2px" }}>Student Profile</h3>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                padding: "14px 16px",
+                color: "#fff",
+                background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <img
+                  src={selectedHistoryStudent.profileImage || "/default-profile.png"}
+                  alt={selectedHistoryStudent.name || "Student"}
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = "/default-profile.png";
+                  }}
+                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
+                />
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedHistoryStudent.name || "Student"}</div>
+                  <div style={{ fontSize: 12, opacity: 0.95 }}>
+                    {selectedHistoryStudent.studentId || "No student ID"}
+                    {selectedHistoryStudent.grade ? ` • Grade ${selectedHistoryStudent.grade}` : ""}
+                    {selectedHistoryStudent.section ? ` • Section ${selectedHistoryStudent.section}` : ""}
+                  </div>
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={() => setSelectedHistoryStudent(null)}
-                style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.45)",
+                  background: "rgba(255,255,255,0.14)",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
               >
-                Close
+                Exit Full Screen
               </button>
             </div>
 
-            <div className="ay-student-panel" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <img
-                src={selectedHistoryStudent.profileImage || "/default-profile.png"}
-                alt={selectedHistoryStudent.name || "Student"}
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "/default-profile.png";
-                }}
-                style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)", flexShrink: 0 }}
-              />
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 17, fontWeight: 900, color: "var(--text-primary)" }}>{selectedHistoryStudent.name || "Student"}</div>
-                <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{selectedHistoryStudent.studentId || "No student ID"}</div>
-              </div>
-            </div>
-
-            <div className="ay-student-panel ay-student-grid">
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Grade:</strong> {selectedHistoryStudent.grade || "—"}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Section:</strong> {selectedHistoryStudent.section || "—"}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>Email:</strong> {selectedHistoryStudent.email || "—"}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}><strong>User ID:</strong> {selectedHistoryStudent.userId || "—"}</div>
-            </div>
-
-            <div className="ay-student-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>Student Details</div>
-
-              <div className="ay-student-grid">
-                {Object.entries(selectedHistoryStudent.basicStudentInformation || {}).map(([key, value]) => (
-                  <div key={`basic-${key}`} className="ay-student-item">
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                    <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
-                  </div>
-                ))}
-              </div>
-
-              {selectedHistoryStudent.contactInformation ? (
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Contact Information</div>
-                  <div className="ay-student-grid">
-                    {Object.entries(selectedHistoryStudent.contactInformation).map(([key, value]) => (
-                      <div key={`contact-${key}`} className="ay-student-item">
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
-                        <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
-                      </div>
-                    ))}
-                  </div>
+            <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: 12, boxShadow: "var(--shadow-soft)" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)", marginBottom: 8 }}>Overview</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div style={{ padding: 8, borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 12, color: "var(--text-secondary)" }}><strong>Grade:</strong> {selectedHistoryStudent.grade || "—"}</div>
+                  <div style={{ padding: 8, borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 12, color: "var(--text-secondary)" }}><strong>Section:</strong> {selectedHistoryStudent.section || "—"}</div>
+                  <div style={{ padding: 8, borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 12, color: "var(--text-secondary)" }}><strong>Email:</strong> {selectedHistoryStudent.email || "—"}</div>
+                  <div style={{ padding: 8, borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 12, color: "var(--text-secondary)" }}><strong>User ID:</strong> {selectedHistoryStudent.userId || "—"}</div>
                 </div>
-              ) : null}
+              </div>
+
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: 12, boxShadow: "var(--shadow-soft)" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)", marginBottom: 8 }}>Basic Information</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {Object.entries(selectedHistoryStudent.basicStudentInformation || {}).map(([key, value]) => (
+                    <div key={`basic-${key}`} className="ay-student-item">
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                      <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               {selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation ? (
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Guardian Information</div>
-                  <div className="ay-student-grid">
+                <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: 12, boxShadow: "var(--shadow-soft)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)", marginBottom: 8 }}>Guardian Information</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                     {Object.entries(selectedHistoryStudent.parentInformation || selectedHistoryStudent.guardianInformation || {}).map(([key, value]) => (
                       <div key={`guardian-${key}`} className="ay-student-item">
                         <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
@@ -925,9 +940,23 @@ export default function AcademicYearManagement() {
                 </div>
               ) : null}
 
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 6 }}>Other Information</div>
-                <div className="ay-student-grid">
+              {selectedHistoryStudent.contactInformation ? (
+                <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: 12, boxShadow: "var(--shadow-soft)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)", marginBottom: 8 }}>Contact Information</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                    {Object.entries(selectedHistoryStudent.contactInformation).map(([key, value]) => (
+                      <div key={`contact-${key}`} className="ay-student-item">
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{formatFieldLabel(key)}</div>
+                        <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-primary)", fontWeight: 700 }}>{formatFieldValue(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, padding: 12, boxShadow: "var(--shadow-soft)", gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)", marginBottom: 8 }}>Other Information</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                   {Object.entries(selectedHistoryStudent)
                     .filter(([key, value]) => !["basicStudentInformation", "contactInformation", "parentInformation", "guardianInformation", "profileImage", "name", "studentId"].includes(key) && (typeof value !== "object" || Array.isArray(value)))
                     .map(([key, value]) => (

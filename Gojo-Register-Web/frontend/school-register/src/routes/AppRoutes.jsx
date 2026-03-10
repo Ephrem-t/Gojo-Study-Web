@@ -1,8 +1,7 @@
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from "react-router-dom";
+import RegisterShell from "../components/RegisterShell";
 import Login from "../pages/Login";
-
 import Dashboard from "../pages/Dashboard";
 import Overview from "../pages/Overview";
 import AcademicYearManagement from "../pages/AcademicYearManagement";
@@ -23,13 +22,14 @@ import TeacherRegister from "../pages/TeacherRegister";
 import RegistererRegister from "../pages/RegistererRegister";
 import Register from "../pages/Register";
 
-function ProtectedRoute({ element }) {
+function ProtectedRoute() {
   const registrarRaw = localStorage.getItem("registrar");
   if (!registrarRaw) return <Navigate to="/login" replace />;
+
   try {
     const session = JSON.parse(registrarRaw) || {};
     if (!session.registrarId || !session.schoolCode) return <Navigate to="/login" replace />;
-    return element;
+    return <Outlet />;
   } catch {
     return <Navigate to="/login" replace />;
   }
@@ -39,34 +39,35 @@ export default function AppRoutes() {
   return (
     <Router>
       <Routes>
-        {/* Auth */}
         <Route path="/" element={<Login />} />
         <Route path="/login" element={<Login />} />
-        
 
-        {/* Admin Pages */}
-        <Route path="/dashboard" element={<ProtectedRoute element={<Dashboard />} />} />
-        <Route path="/overview" element={<ProtectedRoute element={<Overview />} />} />
-        <Route path="/academic-years" element={<ProtectedRoute element={<AcademicYearManagement />} />} />
-        <Route path="/grede-management" element={<ProtectedRoute element={<GredeManagement />} />} />
-        <Route path="/promotion-system" element={<ProtectedRoute element={<PromotionSystem />} />} />
-        <Route path="/transfer-withdrawal" element={<ProtectedRoute element={<TransferWithdrawal />} />} />
-        <Route path="/document-generation" element={<ProtectedRoute element={<DocumentGeneration />} />} />
-        <Route path="/my-posts" element={<ProtectedRoute element={<MyPosts />} />} />
-        <Route path="/students" element={<ProtectedRoute element={<Students />} />} />
-        <Route path="/parents" element={<ProtectedRoute element={<Parents />} />} />
-        <Route path="/analytics" element={<ProtectedRoute element={<Analatics />} />} />
-        <Route path="/analatics" element={<ProtectedRoute element={<Analatics />} />} />
-        <Route path="/settings" element={<ProtectedRoute element={<SettingsPage />} />} />
+        <Route element={<ProtectedRoute />}>
+          <Route element={<RegisterShell />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/overview" element={<Overview />} />
+            <Route path="/academic-years" element={<AcademicYearManagement />} />
+            <Route path="/grede-management" element={<GredeManagement />} />
+            <Route path="/promotion-system" element={<PromotionSystem />} />
+            <Route path="/transfer-withdrawal" element={<TransferWithdrawal />} />
+            <Route path="/document-generation" element={<DocumentGeneration />} />
+            <Route path="/my-posts" element={<MyPosts />} />
+            <Route path="/students" element={<Students />} />
+            <Route path="/parents" element={<Parents />} />
+            <Route path="/analytics" element={<Analatics />} />
+            <Route path="/analatics" element={<Analatics />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/parent-register" element={<ParentRegister />} />
+            <Route path="/student-register" element={<StudentRegister />} />
+            <Route path="/teacher-register" element={<TeacherRegister />} />
+          </Route>
 
-        {/* Chat */}
-        <Route path="/all-chat" element={<ProtectedRoute element={<AllChat />} />} />
-        <Route path="/student-chat" element={<ProtectedRoute element={<StudentChatPage />} />} />
+          <Route path="/all-chat" element={<AllChat />} />
+          <Route path="/student-chat" element={<StudentChatPage />} />
+        </Route>
+
         <Route path="/register" element={<Register />} />
         <Route path="/registerer-register" element={<RegistererRegister />} />
-        <Route path="/parent-register" element={<ProtectedRoute element={<ParentRegister />} />} />
-        <Route path="/student-register" element={<ProtectedRoute element={<StudentRegister />} />} />
-        <Route path="/teacher-register" element={<ProtectedRoute element={<TeacherRegister />} />} />
       </Routes>
     </Router>
   );

@@ -369,7 +369,7 @@ function Dashboard() {
     boxShadow: "var(--shadow-glow)",
   };
   const sidebarSectionRoutes = {
-    dashboard: ["/dashboard", "/overview", "/my-posts"],
+    dashboard: ["/dashboard", "/my-posts", "/overview"],
     academic: ["/academic-years", "/grede-management", "/promotion-system"],
     student: ["/students", "/student-register", "/parents"],
     status: ["/transfer-withdrawal"],
@@ -1660,11 +1660,11 @@ function Dashboard() {
                   <Link className="sidebar-btn" to="/dashboard" style={getSidebarLinkStyle('/dashboard')}>
                     Home
                   </Link>
-                  <Link className="sidebar-btn" to="/overview" style={getSidebarLinkStyle('/overview')}>
-                    Overview
-                  </Link>
                   <Link className="sidebar-btn" to="/my-posts" style={getSidebarLinkStyle('/my-posts')}>
                     My Posts
+                  </Link>
+                  <Link className="sidebar-btn" to="/overview" style={getSidebarLinkStyle('/overview')}>
+                    Overview
                   </Link>
                 </div>
               ) : null}
@@ -1795,23 +1795,9 @@ function Dashboard() {
         {/* MIDDLE FEED COLUMN */}
         <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Feed header */}
-          <div
-            style={{
-              ...FEED_SECTION_STYLE,
-              margin: "0 auto 14px",
-              background: "var(--surface-panel)",
-              color: "var(--text-primary)",
-              borderRadius: 16,
-              padding: "14px 16px",
-              border: "1px solid var(--border-soft)",
-              boxShadow: "var(--shadow-soft)",
-              position: "relative",
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent-strong), var(--accent), color-mix(in srgb, var(--accent) 68%, white))" }} />
-            <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: "0.2px" }}>School Updates Feed</div>
-            <div style={{ marginTop: 5, fontSize: 12, color: "var(--text-secondary)" }}>Post announcements, payment reminders, and notices.</div>
+          <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
+            <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
+            <div className="section-header-card__subtitle">Post announcements, payment reminders, and notices.</div>
           </div>
 
           {/* Post input box */}

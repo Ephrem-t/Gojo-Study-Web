@@ -405,6 +405,7 @@ def register_student():
                 "email": (p.get("email") or "").strip(),
                 "occupation": (p.get("occupation") or "").strip(),
                 "nationalIdNumber": (p.get("nationalIdNumber") or "").strip(),
+                "profileImage": (p.get("profileImage") or "").strip(),
                 "systemAccountInformation": {
                     "username": (p.get("username") or "").strip(),
                     "temporaryPassword": (p.get("temporaryPassword") or "").strip(),
@@ -493,6 +494,7 @@ def register_student():
 
         # Optional parent records from student registration payload
         parents_ref = school_ref(school_code).child("Parents")
+        finalized_parent_guardian_info = []
 
         for idx, parent in enumerate(parents_list):
             parent = parent or {}
@@ -503,12 +505,27 @@ def register_student():
             parent_relationship = (parent.get("relationship") or "Guardian").strip() or "Guardian"
             parent_occupation = (parent.get("occupation") or "").strip()
             parent_nid_number = (parent.get("nationalIdNumber") or "").strip()
+            parent_profile_field = (parent.get("profileImageField") or f"parentProfileImage_{idx}").strip()
             parent_nid_field = (parent.get("nationalIdImageField") or f"parentNationalIdImage_{idx}").strip()
             parent_username = (parent.get("username") or "").strip() or parent_id
             parent_temp_password = (parent.get("temporaryPassword") or "").strip() or generate_temp_password(8)
             parent_role = (parent.get("role") or "parent").strip() or "parent"
             parent_is_active_raw = str(parent.get("isActive") or "true").strip().lower()
             parent_is_active = parent_is_active_raw in ("1", "true", "yes", "y", "on")
+
+            parent_profile_url = (parent.get("profileImage") or "").strip() or "/default-profile.png"
+            parent_profile_file = request.files.get(parent_profile_field)
+            if parent_profile_file:
+                try:
+                    safe_parent_key = (parent_id or "parent").replace("/", "_")
+                    safe_parent_filename = os.path.basename(parent_profile_file.filename or "profile.jpg")
+                    object_name = f"parents/{safe_parent_key}_{int(datetime.utcnow().timestamp())}_{safe_parent_filename}"
+                    blob = bucket.blob(object_name)
+                    blob.upload_from_file(parent_profile_file, content_type=parent_profile_file.content_type)
+                    blob.make_public()
+                    parent_profile_url = blob.public_url
+                except Exception:
+                    parent_profile_url = "/default-profile.png"
 
             parent_nid_image_url = ""
             parent_nid_file = request.files.get(parent_nid_field)
@@ -545,7 +562,7 @@ def register_student():
                 "password": parent_temp_password,
                 "email": parent_email,
                 "phone": parent_phone,
-                "profileImage": "/default-profile.png",
+                "profileImage": parent_profile_url,
                 "role": parent_role,
                 "isActive": parent_is_active,
                 "schoolCode": school_code,
@@ -562,6 +579,7 @@ def register_student():
                 "phone": parent_phone,
                 "email": parent_email,
                 "occupation": parent_occupation,
+                "profileImage": parent_profile_url,
                 "nationalIdNumber": parent_nid_number,
                 "nationalIdImage": parent_nid_image_url,
                 "status": "active",
@@ -576,6 +594,28 @@ def register_student():
                 "parentId": parent_id,
                 "linkedAt": datetime.utcnow().isoformat(),
             })
+
+            finalized_parent_guardian_info.append({
+                "parentId": parent_id,
+                "fullName": parent_name,
+                "relationship": parent_relationship,
+                "phone": parent_phone,
+                "alternativePhone": (parent.get("alternativePhone") or "").strip(),
+                "email": parent_email,
+                "occupation": parent_occupation,
+                "nationalIdNumber": parent_nid_number,
+                "nationalIdImage": parent_nid_image_url,
+                "profileImage": parent_profile_url,
+                "systemAccountInformation": {
+                    "username": parent_username,
+                    "temporaryPassword": parent_temp_password,
+                    "isActive": str(parent.get("isActive") or "true").strip(),
+                    "role": parent_role,
+                },
+            })
+
+        if finalized_parent_guardian_info:
+            students_ref.child(f"{student_id}/parentGuardianInformation/parents").set(finalized_parent_guardian_info)
 
         return jsonify({
             "success": True,

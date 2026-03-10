@@ -169,6 +169,196 @@ html[data-theme="dark"] {
   margin-top: var(--topbar-height);
 }
 
+.register-shell {
+  min-height: 100vh;
+  background: linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%);
+  color: var(--text-primary);
+}
+
+.register-shell__topbar {
+  background: var(--surface-overlay);
+}
+
+.register-shell__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.register-shell__page-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(40vw, 280px);
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-accent);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+}
+
+.register-shell__body {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 100vh;
+  padding: calc(var(--topbar-height) + 12px) 12px 12px;
+}
+
+.register-shell__sidebar {
+  flex: 0 0 auto;
+}
+
+.register-shell__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.section-header-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.section-header-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent), color-mix(in srgb, var(--accent) 68%, white));
+}
+
+.section-header-card__row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.section-header-card__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.section-header-card__subtitle {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.section-header-card__meta {
+  margin-top: 6px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.section-header-card__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-accent);
+  border: 1px solid var(--border-strong);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.section-header-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.register-shell__content .dashboard-page {
+  min-height: auto !important;
+  background: transparent !important;
+}
+
+.register-shell__content .dashboard-page .top-navbar {
+  display: none !important;
+}
+
+.register-shell__content .dashboard-page > .google-dashboard {
+  min-height: auto !important;
+  margin-top: 0 !important;
+  background: transparent !important;
+  width: 100% !important;
+  padding: 0 !important;
+}
+
+.register-shell__content .dashboard-page > .ps-dashboard {
+  min-height: auto !important;
+  margin-top: 0 !important;
+  background: transparent !important;
+  width: 100% !important;
+  padding: 0 !important;
+}
+
+.register-shell__content .dashboard-page .google-sidebar {
+  display: none !important;
+}
+
+.register-shell__content .dashboard-page > .google-dashboard > .main-content {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 10px 6px 20px !important;
+  margin: 0 !important;
+}
+
+.register-shell__content .dashboard-page > .ps-dashboard > .main-content {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 10px 6px 20px !important;
+  margin: 0 !important;
+}
+
+.register-shell__content .dashboard-page > .google-dashboard > .main-content > div:first-child {
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+
+.register-shell__content .dashboard-page > .ps-dashboard > .main-content > div:first-child {
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+
+@media (max-width: 1100px) {
+  .register-shell__body {
+    flex-direction: column;
+  }
+
+  .register-shell__sidebar {
+    width: 100%;
+  }
+}
+
 /* ---------------- LEFT SIDEBAR ---------------- */
 .google-sidebar {
   width: var(--sidebar-width);

@@ -1,12 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
 import {
-  FaBell,
   FaChartLine,
   FaChalkboardTeacher,
   FaChevronDown,
   FaCog,
-  FaFacebookMessenger,
   FaFileAlt,
   FaHome,
   FaPlus,
@@ -16,20 +13,69 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
-import RegisterSidebar from "../components/RegisterSidebar";
 
-const PAGE_BG = "linear-gradient(150deg, #f7f8ff 0%, #eef6ff 45%, #f9fcff 100%)";
+const PAGE_BG = "linear-gradient(150deg, var(--page-bg-secondary) 0%, var(--page-bg) 45%, color-mix(in srgb, var(--page-bg-secondary) 78%, white) 100%)";
 
 const cardStyle = {
-  background: "#ffffff",
-  border: "1px solid #dde7f5",
+  background: "var(--surface-panel)",
+  border: "1px solid var(--border-soft)",
   borderRadius: 16,
-  boxShadow: "0 12px 32px rgba(16, 24, 40, 0.08)",
+  boxShadow: "var(--shadow-panel)",
+};
+
+const inputStyle = {
+  border: "1px solid var(--input-border)",
+  borderRadius: 8,
+  padding: "8px 10px",
+  fontSize: 13,
+  background: "var(--input-bg)",
+  color: "var(--text-primary)",
+};
+
+const primaryButtonStyle = {
+  border: "1px solid var(--accent-strong)",
+  background: "var(--accent-strong)",
+  color: "#fff",
+  borderRadius: 8,
+  padding: "8px 12px",
+  fontSize: 12,
+  fontWeight: 800,
+};
+
+const successButtonStyle = {
+  border: "1px solid var(--success)",
+  background: "var(--success)",
+  color: "#fff",
+  borderRadius: 8,
+  padding: "8px 12px",
+  fontSize: 12,
+  fontWeight: 800,
+};
+
+const dangerGhostButtonStyle = {
+  border: "1px solid var(--danger)",
+  background: "var(--danger-soft)",
+  color: "var(--danger)",
+  borderRadius: 7,
+  padding: "6px 10px",
+  fontSize: 11,
+  fontWeight: 800,
+};
+
+const tableHeadStyle = {
+  fontSize: 12,
+  fontWeight: 900,
+  color: "var(--text-secondary)",
+};
+
+const toneByStat = {
+  blue: "var(--accent-strong)",
+  green: "var(--success)",
+  purple: "color-mix(in srgb, var(--accent) 72%, var(--text-primary))",
+  amber: "var(--warning)",
 };
 
 export default function GredeManagement() {
-  const navigate = useNavigate();
-
   const stored = useMemo(() => {
     try {
       return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
@@ -41,16 +87,6 @@ export default function GredeManagement() {
   const schoolCode = stored.schoolCode || "";
   const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
   const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
-
-  const admin = {
-    name: stored.name || stored.username || "Register Office",
-    adminId: stored.financeId || stored.adminId || stored.userId || "",
-    profileImage: stored.profileImage || "/default-profile.png",
-    username: stored.username || "",
-  };
-
-  const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
-  const [studentMenuOpen, setStudentMenuOpen] = useState(true);
 
   const [gradesMap, setGradesMap] = useState({});
   const [studentsMap, setStudentsMap] = useState({});
@@ -412,7 +448,7 @@ export default function GredeManagement() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: PAGE_BG, minHeight: "100vh" }}>
+    <div style={{ padding: "10px 6px 20px", minWidth: 0, boxSizing: "border-box", color: "var(--text-primary)" }}>
       <style>
         {`
           .grade-actions-wrap {
@@ -486,31 +522,18 @@ export default function GredeManagement() {
         `}
       </style>
 
-      <nav className="top-navbar" style={{ borderBottom: "1px solid #dbe7fb", background: "#ffffffcc", backdropFilter: "blur(6px)" }}>
-        <h2 style={{ color: "#0f172a", fontWeight: 900, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
-        <div className="nav-right">
-          <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
-          <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="gm-dashboard">
-        <RegisterSidebar user={admin} sticky fullHeight />
-        <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ ...cardStyle, padding: 18, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", right: -50, top: -40, width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle, rgba(125, 211, 252, 0.32), rgba(147, 197, 253, 0))" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+      <div style={{ width: "min(100%, 1180px)", margin: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="section-header-card" style={{ padding: 18 }}>
+              <div className="section-header-card__row">
                 <div>
-                  <h1 style={{ margin: 0, fontSize: 24, color: "#0f172a", fontWeight: 900 }}>Grede Management</h1>
-                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>
+                  <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Grede Management</h1>
+                  <p className="section-header-card__subtitle" style={{ fontSize: 13 }}>
                     Manage grades and sections with capacity control and live section occupancy.
                   </p>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>
+                <div className="section-header-card__actions">
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>
                     {activeAcademicYear ? `Current Year: ${activeAcademicYear.replace("_", "/")}` : "No active academic year"}
                   </div>
                   <button
@@ -521,9 +544,9 @@ export default function GredeManagement() {
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
-                      border: "1px solid #1d4ed8",
-                      background: "#eff6ff",
-                      color: "#1d4ed8",
+                      border: "1px solid var(--border-strong)",
+                      background: "var(--accent-soft)",
+                      color: "var(--accent-strong)",
                       borderRadius: 9,
                       padding: "7px 10px",
                       fontSize: 12,
@@ -543,30 +566,30 @@ export default function GredeManagement() {
                 title: "Total Grades",
                 value: stats.totalGrades,
                 hint: "Configured levels",
-                color: "#2563eb",
+                color: toneByStat.blue,
               }, {
                 title: "Total Sections",
                 value: stats.totalSections,
                 hint: "Across all grades",
-                color: "#0f766e",
+                color: toneByStat.green,
               }, {
                 title: "Section Capacity",
                 value: stats.totalCapacity,
                 hint: "Maximum seat count",
-                color: "#7c3aed",
+                color: toneByStat.purple,
               }, {
                 title: "Students (Year)",
                 value: stats.activeStudentCount,
                 hint: activeAcademicYear ? activeAcademicYear.replace("_", "/") : "All years",
-                color: "#c2410c",
+                color: toneByStat.amber,
               }].map((item) => (
                 <div key={item.title} style={{ ...cardStyle, padding: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>{item.title}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{item.title}</span>
                     <FaUsers style={{ color: item.color }} />
                   </div>
-                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "#0f172a" }}>{item.value}</div>
-                  <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>{item.hint}</div>
+                  <div style={{ marginTop: 8, fontSize: 26, fontWeight: 900, color: "var(--text-primary)" }}>{item.value}</div>
+                  <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-muted)" }}>{item.hint}</div>
                 </div>
               ))}
             </div>
@@ -578,9 +601,9 @@ export default function GredeManagement() {
                   padding: "10px 12px",
                   fontSize: 13,
                   fontWeight: 700,
-                  border: `1px solid ${feedback.type === "error" ? "#fecaca" : feedback.type === "warning" ? "#fde68a" : "#bfdbfe"}`,
-                  background: feedback.type === "error" ? "#fef2f2" : feedback.type === "warning" ? "#fffbeb" : "#eff6ff",
-                  color: feedback.type === "error" ? "#991b1b" : feedback.type === "warning" ? "#92400e" : "#1e3a8a",
+                  border: `1px solid ${feedback.type === "error" ? "var(--danger-border)" : feedback.type === "warning" ? "var(--warning-border)" : "var(--border-strong)"}`,
+                  background: feedback.type === "error" ? "var(--danger-soft)" : feedback.type === "warning" ? "var(--warning-soft)" : "var(--accent-soft)",
+                  color: feedback.type === "error" ? "var(--danger)" : feedback.type === "warning" ? "var(--warning)" : "var(--accent-strong)",
                 }}
               >
                 {feedback.text}
@@ -589,18 +612,18 @@ export default function GredeManagement() {
 
             <div className="gm-top-grid">
               <div style={{ ...cardStyle, padding: 14 }}>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#0f172a", marginBottom: 10 }}>Create Grade (1-12)</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--text-primary)", marginBottom: 10 }}>Create Grade (1-12)</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
                   <input
                     value={newGrade}
                     onChange={(e) => setNewGrade(normalizeGradeInput(e.target.value))}
                     placeholder="Example: 1"
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "9px 10px", fontSize: 13 }}
+                    style={{ ...inputStyle, padding: "9px 10px" }}
                   />
                   <button
                     onClick={createGrade}
                     disabled={working}
-                    style={{ border: "1px solid #1d4ed8", background: "#1d4ed8", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
+                    style={{ ...primaryButtonStyle, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
                   >
                     <FaPlus /> Create
                   </button>
@@ -608,7 +631,7 @@ export default function GredeManagement() {
               </div>
 
               <div style={{ ...cardStyle, padding: 14 }}>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#0f172a", marginBottom: 10 }}>Add Section & Max Students</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--text-primary)", marginBottom: 10 }}>Add Section & Max Students</div>
                 <div className="gm-add-section-grid">
                   <select
                     value={selectedGrade}
@@ -616,7 +639,7 @@ export default function GredeManagement() {
                       setSelectedGrade(e.target.value);
                       setSelectedSection("");
                     }}
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+                    style={inputStyle}
                   >
                     <option value="">Select Grade</option>
                     {gradeKeys.map((grade) => (
@@ -628,7 +651,7 @@ export default function GredeManagement() {
                     value={newSection}
                     onChange={(e) => setNewSection(e.target.value.toUpperCase())}
                     placeholder="Section (A/B/C)"
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+                    style={inputStyle}
                   />
 
                   <input
@@ -636,13 +659,13 @@ export default function GredeManagement() {
                     onChange={(e) => setNewSectionMax(e.target.value.replace(/[^0-9]/g, ""))}
                     placeholder="Max"
                     className="gm-max-input"
-                    style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+                    style={inputStyle}
                   />
 
                   <button
                     onClick={addSection}
                     disabled={working || !selectedGrade}
-                    style={{ border: "1px solid #16a34a", background: "#16a34a", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 800, cursor: working || !selectedGrade ? "not-allowed" : "pointer", opacity: working || !selectedGrade ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
+                    style={{ ...successButtonStyle, cursor: working || !selectedGrade ? "not-allowed" : "pointer", opacity: working || !selectedGrade ? 0.75 : 1, display: "flex", alignItems: "center", gap: 6 }}
                   >
                     <FaPlus /> Add
                   </button>
@@ -651,15 +674,15 @@ export default function GredeManagement() {
             </div>
 
             <div style={{ ...cardStyle, overflow: "hidden" }}>
-              <div style={{ padding: "12px 14px", fontWeight: 900, color: "#0f172a", borderBottom: "1px solid #e5e7eb" }}>Grades & Sections</div>
+              <div style={{ padding: "12px 14px", fontWeight: 900, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)" }}>Grades & Sections</div>
 
               {loading ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>Loading...</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>Loading...</div>
               ) : gradeKeys.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>No grades configured yet.</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>No grades configured yet.</div>
               ) : (
                 <>
-                  <div style={{ ...sectionColumns, padding: "10px 14px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 900, color: "#475569" }}>
+                  <div style={{ ...sectionColumns, padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", ...tableHeadStyle }}>
                     <div>Grade</div>
                     <div>Section</div>
                     <div>Students / Max</div>
@@ -672,14 +695,14 @@ export default function GredeManagement() {
 
                     if (sectionRows.length === 0) {
                       return (
-                        <div key={grade} style={{ ...sectionColumns, padding: "10px 14px", borderTop: "1px solid #f1f5f9" }}>
-                          <div style={{ fontWeight: 800, color: "#0f172a" }}>Grade {grade}</div>
-                          <div style={{ color: "#64748b", fontSize: 12 }}>No section</div>
-                          <div style={{ color: "#64748b", fontSize: 12 }}>-</div>
+                        <div key={grade} style={{ ...sectionColumns, padding: "10px 14px", borderTop: "1px solid var(--border-soft)" }}>
+                          <div style={{ fontWeight: 800, color: "var(--text-primary)" }}>Grade {grade}</div>
+                          <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No section</div>
+                          <div style={{ color: "var(--text-muted)", fontSize: 12 }}>-</div>
                           <button
                             onClick={() => deleteGrade(grade)}
                             disabled={working}
-                            style={{ border: "1px solid #ef4444", background: "#fff1f2", color: "#b91c1c", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1, width: "fit-content", display: "flex", alignItems: "center", gap: 6 }}
+                            style={{ ...dangerGhostButtonStyle, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1, width: "fit-content", display: "flex", alignItems: "center", gap: 6 }}
                           >
                             <FaTrashAlt /> Delete Grade
                           </button>
@@ -693,30 +716,30 @@ export default function GredeManagement() {
                       const current = Number(sectionOccupancy[occupancyKey] || 0);
 
                       return (
-                        <div key={`${grade}-${sectionKey}`} style={{ ...sectionColumns, padding: "10px 14px", borderTop: "1px solid #f1f5f9" }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+                        <div key={`${grade}-${sectionKey}`} style={{ ...sectionColumns, padding: "10px 14px", borderTop: "1px solid var(--border-soft)" }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
                             {idx === 0 ? `Grade ${grade}` : ""}
                           </div>
 
                           <div style={{ fontSize: 12, fontWeight: 800 }}>{sectionKey}</div>
 
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                            <span style={{ fontSize: 12, fontWeight: 800, color: current > maxStudents && maxStudents > 0 ? "#b91c1c" : "#166534" }}>
+                            <span style={{ fontSize: 12, fontWeight: 800, color: current > maxStudents && maxStudents > 0 ? "var(--danger)" : "var(--success)" }}>
                               {current}
                             </span>
-                            <span style={{ fontSize: 12, color: "#64748b" }}>/</span>
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>/</span>
                             <input
                               value={sectionMaxDraft[occupancyKey] || ""}
                               onChange={(e) => {
                                 const value = e.target.value.replace(/[^0-9]/g, "");
                                 setSectionMaxDraft((prev) => ({ ...prev, [occupancyKey]: value }));
                               }}
-                              style={{ width: 76, border: "1px solid #cbd5e1", borderRadius: 8, padding: "5px 8px", fontSize: 12 }}
+                              style={{ ...inputStyle, width: 76, padding: "5px 8px", fontSize: 12 }}
                             />
                             <button
                               onClick={() => updateSectionMax(grade, sectionKey)}
                               disabled={working}
-                              style={{ border: "1px solid #1d4ed8", background: "#1d4ed8", color: "#fff", borderRadius: 7, padding: "5px 8px", fontSize: 11, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                              style={{ ...primaryButtonStyle, borderRadius: 7, padding: "5px 8px", fontSize: 11, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
                             >
                               Save
                             </button>
@@ -728,7 +751,7 @@ export default function GredeManagement() {
                                 setSelectedGrade(String(grade));
                                 setSelectedSection(String(sectionKey).toUpperCase());
                               }}
-                              style={{ border: "1px solid #0f766e", background: "#0f766e", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}
+                              style={{ border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}
                             >
                               View
                             </button>
@@ -736,7 +759,7 @@ export default function GredeManagement() {
                             <button
                               onClick={() => deleteSection(grade, sectionKey)}
                               disabled={working}
-                              style={{ border: "1px solid #ef4444", background: "#fff1f2", color: "#b91c1c", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1, display: "flex", alignItems: "center", gap: 6 }}
+                              style={{ ...dangerGhostButtonStyle, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1, display: "flex", alignItems: "center", gap: 6 }}
                             >
                               <FaTrashAlt /> Delete
                             </button>
@@ -750,31 +773,31 @@ export default function GredeManagement() {
             </div>
 
             <div style={{ ...cardStyle, overflow: "hidden" }}>
-              <div style={{ padding: "12px 14px", fontWeight: 900, color: "#0f172a", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ padding: "12px 14px", fontWeight: 900, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span>
                   Section Student List {selectedGrade && selectedSection ? `- Grade ${selectedGrade} / ${selectedSection}` : ""}
                 </span>
-                <div style={{ fontSize: 12, color: "#64748b" }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {activeAcademicYear ? `Year: ${activeAcademicYear.replace("_", "/")}` : "All years"}
                 </div>
               </div>
 
               {!selectedGrade || !selectedSection ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>Choose a section from the table above to view students.</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>Choose a section from the table above to view students.</div>
               ) : sectionStudentList.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: "#64748b" }}>No students found in this section.</div>
+                <div style={{ padding: 14, fontSize: 13, color: "var(--text-muted)" }}>No students found in this section.</div>
               ) : (
                 <>
-                  <div style={{ ...studentColumns, padding: "10px 14px", borderBottom: "1px solid #eef2f7", fontSize: 12, fontWeight: 900, color: "#475569" }}>
+                  <div style={{ ...studentColumns, padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", ...tableHeadStyle }}>
                     <div>Student</div>
                     <div>Student ID</div>
                     <div>Grade</div>
                     <div>Section</div>
                   </div>
                   {sectionStudentList.map((student) => (
-                    <div key={student.studentId} style={{ ...studentColumns, padding: "10px 14px", borderTop: "1px solid #f1f5f9" }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>{student.name}</div>
-                      <div style={{ fontSize: 12, color: "#64748b" }}>{student.studentId}</div>
+                    <div key={student.studentId} style={{ ...studentColumns, padding: "10px 14px", borderTop: "1px solid var(--border-soft)" }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>{student.name}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{student.studentId}</div>
                       <div style={{ fontSize: 12, fontWeight: 800 }}>{student.grade}</div>
                       <div style={{ fontSize: 12, fontWeight: 800 }}>{student.section}</div>
                     </div>
@@ -782,8 +805,6 @@ export default function GredeManagement() {
                 </>
               )}
             </div>
-          </div>
-        </div>
       </div>
     </div>
   );

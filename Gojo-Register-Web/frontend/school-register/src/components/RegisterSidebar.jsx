@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaHome,
   FaChalkboardTeacher,
@@ -19,8 +19,8 @@ const SIDEBAR_SECTIONS = [
     icon: FaHome,
     links: [
       { label: "Home", path: "/dashboard" },
-      { label: "Overview", path: "/overview" },
       { label: "My Posts", path: "/my-posts" },
+      { label: "Overview", path: "/overview" },
     ],
   },
   {
@@ -106,11 +106,20 @@ function RegisterSidebar({
   onLogout,
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const currentPath = location.pathname;
   const [sidebarSections, setSidebarSections] = useState(() => ({ ...registerSidebarSectionsState }));
 
   const profileName = user?.name || user?.username || "Register Office";
-  const profileId = user?.username || user?.userId || user?.adminId || user?.financeId || "username";
+  const profileId =
+    user?.registrarId ||
+    user?.registererId ||
+    user?.employeeId ||
+    user?.adminId ||
+    user?.financeId ||
+    user?.userId ||
+    user?.username ||
+    "username";
   const profileImage = user?.profileImage || "/default-profile.png";
 
   const rootStyle = {
@@ -223,7 +232,7 @@ function RegisterSidebar({
 
     localStorage.removeItem("admin");
     localStorage.removeItem("registrar");
-    window.location.href = "/login";
+    navigate("/login", { replace: true });
   };
 
   return (

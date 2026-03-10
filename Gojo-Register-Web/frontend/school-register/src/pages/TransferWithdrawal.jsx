@@ -10,6 +10,7 @@ import {
   FaFacebookMessenger,
   FaFileAlt,
   FaHome,
+  FaSearch,
   FaSignOutAlt,
   FaSyncAlt,
   FaUserTimes,
@@ -54,6 +55,182 @@ const fieldStyle = {
   color: "var(--text-primary)",
 };
 
+const searchBarShellStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid var(--border-soft)",
+  background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+  boxSizing: "border-box",
+};
+
+const searchBarInputStyle = {
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  color: "var(--text-primary)",
+  fontSize: 13,
+  fontWeight: 600,
+};
+
+const selectShellStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid var(--border-soft)",
+  background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+  boxSizing: "border-box",
+};
+
+const selectInputStyle = {
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  color: "var(--text-primary)",
+  fontSize: 13,
+  fontWeight: 700,
+  appearance: "none",
+  WebkitAppearance: "none",
+  MozAppearance: "none",
+  cursor: "pointer",
+};
+
+const selectChevronStyle = {
+  width: 30,
+  height: 30,
+  borderRadius: 10,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "var(--surface-panel)",
+  border: "1px solid var(--border-soft)",
+  color: "var(--accent-strong)",
+  flexShrink: 0,
+  pointerEvents: "none",
+};
+
+const textFieldShellStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid var(--border-soft)",
+  background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+  boxSizing: "border-box",
+};
+
+const textFieldInputStyle = {
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  color: "var(--text-primary)",
+  fontSize: 13,
+  fontWeight: 600,
+};
+
+const textAreaShellStyle = {
+  display: "grid",
+  gridTemplateColumns: "32px minmax(0, 1fr)",
+  alignItems: "start",
+  gap: 10,
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid var(--border-soft)",
+  background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+  boxSizing: "border-box",
+};
+
+const textAreaInputStyle = {
+  width: "100%",
+  minHeight: 78,
+  border: "none",
+  outline: "none",
+  resize: "vertical",
+  background: "transparent",
+  color: "var(--text-primary)",
+  fontSize: 13,
+  fontWeight: 600,
+  boxSizing: "border-box",
+  fontFamily: "inherit",
+};
+
+const fieldIconBoxStyle = {
+  width: 32,
+  height: 32,
+  borderRadius: 10,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "var(--surface-accent)",
+  color: "var(--accent-strong)",
+  flexShrink: 0,
+};
+
+const toggleCardStyle = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 10,
+  padding: "12px 14px",
+  borderRadius: 12,
+  border: "1px solid var(--border-soft)",
+  background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+  fontSize: 12,
+  fontWeight: 700,
+  color: "var(--text-secondary)",
+};
+
+const selectedCardStyle = {
+  marginTop: 12,
+  border: "1px solid var(--border-soft)",
+  borderRadius: 14,
+  padding: 14,
+  background: "linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)",
+  boxShadow: "var(--shadow-soft)",
+};
+
+const searchResultsPanelStyle = {
+  marginTop: 8,
+  border: "1px solid var(--border-soft)",
+  borderRadius: 12,
+  background: "var(--surface-panel)",
+  boxShadow: "var(--shadow-soft)",
+  overflow: "hidden",
+};
+
+const searchResultButtonStyle = (isActive) => ({
+  width: "100%",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  padding: "10px 12px",
+  background: isActive ? "var(--surface-accent)" : "transparent",
+  border: "none",
+  borderBottom: "1px solid var(--border-soft)",
+  cursor: "pointer",
+  textAlign: "left",
+});
+
 const heroActionStyle = {
   border: "1px solid rgba(255,255,255,0.45)",
   background: "rgba(255,255,255,0.15)",
@@ -95,6 +272,34 @@ const normalizeParents = (node) => {
 const getStudentStatus = (student = {}) =>
   String(student.status || student.basicStudentInformation?.status || "active").toLowerCase();
 
+const getLinkedParentIds = (studentNode = {}) => {
+  const parentIds = new Set();
+
+  Object.keys(studentNode?.parents || {}).forEach((pid) => {
+    if (pid) parentIds.add(String(pid));
+  });
+
+  normalizeParents(studentNode?.parentGuardianInformation?.parents).forEach((parent) => {
+    const pid = String(parent?.parentId || "").trim();
+    if (pid) parentIds.add(pid);
+  });
+
+  return [...parentIds];
+};
+
+const studentReferencesParent = (studentNode = {}, parentId) => {
+  if (!parentId) return false;
+  const canonicalParentId = String(parentId);
+
+  if (studentNode?.parents && studentNode.parents[canonicalParentId]) {
+    return true;
+  }
+
+  return normalizeParents(studentNode?.parentGuardianInformation?.parents).some(
+    (parent) => String(parent?.parentId || "").trim() === canonicalParentId
+  );
+};
+
 export default function TransferWithdrawal() {
   const navigate = useNavigate();
 
@@ -113,6 +318,7 @@ export default function TransferWithdrawal() {
   const admin = {
     name: stored.name || stored.username || "Register Office",
     adminId: stored.financeId || stored.adminId || stored.userId || "",
+    userId: stored.userId || "",
     profileImage: stored.profileImage || "/default-profile.png",
     username: stored.username || "",
   };
@@ -134,8 +340,9 @@ export default function TransferWithdrawal() {
   const [actionType, setActionType] = useState("transfer_out");
   const [note, setNote] = useState("");
   const [destinationSchool, setDestinationSchool] = useState("");
-  const [removeFromStudentsNode, setRemoveFromStudentsNode] = useState(true);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [registererPassword, setRegistererPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
 
   const notify = (type, text) => setFeedback({ type, text });
 
@@ -257,21 +464,21 @@ export default function TransferWithdrawal() {
       notify("error", "Current academic year is missing.");
       return;
     }
+    setRegistererPassword("");
+    setPasswordError("");
     setShowConfirmModal(true);
   };
 
+  const handleSelectStudentChoice = (studentId) => {
+    setSelectedStudentId(studentId);
+    setStudentSearch("");
+  };
+
   const copyParentsToYearHistory = async (yearKey, studentNode) => {
-    const parentIds = new Set();
-    Object.keys(studentNode?.parents || {}).forEach((pid) => {
-      if (pid) parentIds.add(pid);
-    });
-    normalizeParents(studentNode?.parentGuardianInformation?.parents).forEach((parent) => {
-      const pid = String(parent?.parentId || "").trim();
-      if (pid) parentIds.add(pid);
-    });
+    const parentIds = getLinkedParentIds(studentNode);
 
     await Promise.all(
-      [...parentIds].map(async (pid) => {
+      parentIds.map(async (pid) => {
         const parentPayload = parentsMap[pid] || {
           parentId: pid,
           name: "Parent",
@@ -307,22 +514,52 @@ export default function TransferWithdrawal() {
       if (usernames.has(uname)) patchUserIds.add(uid);
     });
 
-    const parentIds = new Set();
-    Object.keys(studentNode?.parents || {}).forEach((pid) => {
-      if (pid) parentIds.add(pid);
-    });
-    normalizeParents(studentNode?.parentGuardianInformation?.parents).forEach((parent) => {
-      const pid = String(parent?.parentId || "").trim();
-      if (pid) parentIds.add(pid);
-    });
-
-    Object.entries(users).forEach(([uid, row]) => {
-      const user = row || {};
-      if (parentIds.has(String(user.parentId || ""))) patchUserIds.add(uid);
-    });
-
     await Promise.all(
       [...patchUserIds].map((uid) => axios.patch(`${DB_URL}/Users/${uid}.json`, { isActive }))
+    );
+  };
+
+  const cleanupParentsAfterStudentRemoval = async (studentNode) => {
+    const studentId = String(studentNode?.studentId || selectedStudent?.studentId || "").trim();
+    if (!studentId) return;
+
+    const linkedParentIds = getLinkedParentIds(studentNode);
+    if (linkedParentIds.length === 0) return;
+
+    const usersRes = await axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} }));
+    const users = usersRes.data || {};
+    const remainingStudents = Object.entries(studentsMap || {}).filter(([sid]) => String(sid) !== studentId);
+
+    await Promise.all(
+      linkedParentIds.map(async (parentId) => {
+        const parentRecord = parentsMap[parentId] || (await axios.get(`${DB_URL}/Parents/${parentId}.json`).catch(() => ({ data: null }))).data || null;
+        const nextChildrenEntries = Object.entries(parentRecord?.children || {}).filter(
+          ([, childLink]) => String(childLink?.studentId || "") !== studentId
+        );
+        const nextChildren = Object.fromEntries(nextChildrenEntries);
+        const stillLinkedElsewhere = remainingStudents.some(([, studentRow]) => studentReferencesParent(studentRow || {}, parentId));
+
+        if (!stillLinkedElsewhere) {
+          await axios.delete(`${DB_URL}/Parents/${parentId}.json`).catch(() => {});
+
+          const parentUserIds = new Set();
+          const directUserId = String(parentRecord?.userId || studentNode?.parents?.[parentId]?.userId || "").trim();
+          if (directUserId) parentUserIds.add(directUserId);
+
+          Object.entries(users).forEach(([uid, userRow]) => {
+            if (String(userRow?.parentId || "").trim() === String(parentId)) {
+              parentUserIds.add(uid);
+            }
+          });
+
+          await Promise.all([...parentUserIds].map((uid) => axios.delete(`${DB_URL}/Users/${uid}.json`).catch(() => {})));
+          return;
+        }
+
+        await axios.patch(`${DB_URL}/Parents/${parentId}.json`, {
+          children: Object.keys(nextChildren).length ? nextChildren : null,
+        }).catch(() => {});
+      })
     );
   };
 
@@ -336,11 +573,31 @@ export default function TransferWithdrawal() {
       return;
     }
 
-    const finalStatus = actionType === "withdraw" ? "withdrawn" : actionType === "graduate" ? "graduated" : "transferred";
+    if (!registererPassword) {
+      setPasswordError("Enter your registerer password to continue.");
+      return;
+    }
 
-    setShowConfirmModal(false);
+    if (!admin.userId) {
+      setPasswordError("Missing registerer session. Please login again.");
+      return;
+    }
+
+    const finalStatus = actionType === "withdraw" ? "withdrawn" : actionType === "graduate" ? "graduated" : "transferred";
     setWorking(true);
     try {
+      const currentUserRes = await axios.get(`${DB_URL}/Users/${admin.userId}.json`).catch(() => ({ data: null }));
+      const currentUser = currentUserRes.data || null;
+      const expectedPassword = String(currentUser?.password || "");
+
+      if (!expectedPassword || expectedPassword !== registererPassword) {
+        setPasswordError("Incorrect registerer password.");
+        return;
+      }
+
+      setPasswordError("");
+      setShowConfirmModal(false);
+
       const now = new Date().toISOString();
       const studentNode = selectedStudent.raw || {};
 
@@ -377,23 +634,8 @@ export default function TransferWithdrawal() {
       await copyParentsToYearHistory(currentAcademicYear, studentNode);
       await setUsersActiveByStudent(studentNode, false);
 
-      if (removeFromStudentsNode) {
-        await axios.delete(`${DB_URL}/Students/${selectedStudent.studentId}.json`);
-      } else {
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, {
-          status: finalStatus,
-          academicYear: currentAcademicYear,
-          transferAction: actionType,
-          transferNote: note || "",
-          destinationSchool: destinationSchool || "",
-          movedAt: now,
-          basicStudentInformation: {
-            ...(studentNode.basicStudentInformation || {}),
-            status: finalStatus,
-            academicYear: currentAcademicYear,
-          },
-        });
-      }
+      await cleanupParentsAfterStudentRemoval(studentNode);
+      await axios.delete(`${DB_URL}/Students/${selectedStudent.studentId}.json`);
 
       setSelectedStudentId("");
       setStudentSearch("");
@@ -409,7 +651,7 @@ export default function TransferWithdrawal() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: PAGE_BG, minHeight: "100vh" }}>
+    <div className="dashboard-page" style={{ background: PAGE_BG, height: "100vh", overflow: "hidden" }}>
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)", boxShadow: "var(--shadow-soft)", backdropFilter: "blur(10px)" }}>
         <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
@@ -419,22 +661,24 @@ export default function TransferWithdrawal() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <RegisterSidebar user={admin} sticky fullHeight />
 
-        <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 760, margin: "0 auto 12px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))", color: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "var(--shadow-glow)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 800 }}>Transfer & Withdrawal</div>
-              <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Update student exit status and archive records to YearHistory.</div>
+        <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden" }}>
+          <div className="section-header-card" style={{ width: "100%", margin: "0 0 12px" }}>
+            <div className="section-header-card__row">
+              <div>
+                <div className="section-header-card__title" style={{ fontSize: 17 }}>Transfer & Withdrawal</div>
+                <div className="section-header-card__subtitle">Update student exit status and archive records to YearHistory.</div>
+              </div>
+              <button type="button" onClick={loadBaseData} disabled={loading || working} style={{ ...heroActionStyle, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.65 : 1 }}>
+                <FaSyncAlt /> Refresh
+              </button>
             </div>
-            <button type="button" onClick={loadBaseData} disabled={loading || working} style={{ ...heroActionStyle, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.65 : 1 }}>
-              <FaSyncAlt /> Refresh
-            </button>
           </div>
 
-          <div style={{ maxWidth: 980, margin: "0 auto", ...cardStyle, padding: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginBottom: 12 }}>
+          <div style={{ width: "100%", ...cardStyle, padding: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, marginBottom: 12 }}>
               {[{
                 title: "Active Students",
                 value: activeStudents.length,
@@ -470,24 +714,126 @@ export default function TransferWithdrawal() {
               <div style={{ display: "grid", gap: 9 }}>
                   <div>
                     <label style={fieldLabelStyle}>Search Active Student</label>
-                    <input
-                      style={fieldStyle}
-                      value={studentSearch}
-                      onChange={(e) => setStudentSearch(e.target.value)}
-                      placeholder="Search by name, student ID, grade, or section"
-                    />
+                    <div style={searchBarShellStyle}>
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 10,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: "var(--surface-accent)",
+                          color: "var(--accent-strong)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <FaSearch size={13} />
+                      </div>
+                      <input
+                        style={searchBarInputStyle}
+                        value={studentSearch}
+                        onChange={(e) => setStudentSearch(e.target.value)}
+                        placeholder="Search by name, student ID, grade, or section"
+                      />
+                      <div
+                        style={{
+                          flexShrink: 0,
+                          padding: "5px 9px",
+                          borderRadius: 999,
+                          background: "var(--surface-panel)",
+                          border: "1px solid var(--border-soft)",
+                          color: "var(--text-muted)",
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {filteredActiveStudents.length} match{filteredActiveStudents.length === 1 ? "" : "es"}
+                      </div>
+                    </div>
+                    {studentSearch.trim() ? (
+                      <div style={searchResultsPanelStyle}>
+                        {filteredActiveStudents.length > 0 ? (
+                          filteredActiveStudents.slice(0, 8).map((student, index, visibleStudents) => (
+                            <button
+                              key={student.studentId}
+                              type="button"
+                              onClick={() => handleSelectStudentChoice(student.studentId)}
+                              style={{
+                                ...searchResultButtonStyle(selectedStudentId === student.studentId),
+                                borderBottom: index === visibleStudents.length - 1 ? "none" : "1px solid var(--border-soft)",
+                              }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  {student.name}
+                                </div>
+                                <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-muted)" }}>
+                                  {student.studentId} • Grade {student.grade || "-"}{student.section ? ` • ${student.section}` : ""}
+                                </div>
+                              </div>
+                              <div style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, color: selectedStudentId === student.studentId ? "var(--accent-strong)" : "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                                {selectedStudentId === student.studentId ? "Selected" : "Choose"}
+                              </div>
+                            </button>
+                          ))
+                        ) : (
+                          <div style={{ padding: "12px", fontSize: 12, color: "var(--text-muted)" }}>
+                            No active student matches this search.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div>
                     <label style={fieldLabelStyle}>Select Active Student</label>
-                    <select style={fieldStyle} value={selectedStudentId} onChange={(e) => setSelectedStudentId(e.target.value)}>
-                      <option value="">Choose student</option>
-                      {filteredActiveStudents.map((student) => (
-                        <option key={student.studentId} value={student.studentId}>
-                          {student.name} ({student.studentId}) - G{student.grade}{student.section ? ` ${student.section}` : ""}
-                        </option>
-                      ))}
-                    </select>
+                    <div style={selectShellStyle}>
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 10,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: "var(--surface-accent)",
+                          color: "var(--accent-strong)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <FaUsers size={13} />
+                      </div>
+                      <select style={selectInputStyle} value={selectedStudentId} onChange={(e) => handleSelectStudentChoice(e.target.value)}>
+                        <option value="">Choose student</option>
+                        {filteredActiveStudents.map((student) => (
+                          <option key={student.studentId} value={student.studentId}>
+                            {student.name} ({student.studentId}) - G{student.grade}{student.section ? ` ${student.section}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={selectChevronStyle}>
+                        <FaChevronDown size={11} />
+                      </div>
+                      <div
+                        style={{
+                          flexShrink: 0,
+                          padding: "5px 9px",
+                          borderRadius: 999,
+                          background: selectedStudentId ? "var(--surface-accent)" : "var(--surface-panel)",
+                          border: "1px solid var(--border-soft)",
+                          color: selectedStudentId ? "var(--accent-strong)" : "var(--text-muted)",
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: "0.04em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {selectedStudentId ? "Selected" : "Choose"}
+                      </div>
+                    </div>
                     <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
                       Showing {filteredActiveStudents.length} of {activeStudents.length} active students
                     </div>
@@ -495,45 +841,60 @@ export default function TransferWithdrawal() {
 
                   <div>
                     <label style={fieldLabelStyle}>Action</label>
-                    <select style={fieldStyle} value={actionType} onChange={(e) => setActionType(e.target.value)}>
-                      <option value="transfer_out">Transfer Out</option>
-                      <option value="withdraw">Dropout / Withdraw</option>
-                      <option value="graduate">Graduate</option>
-                    </select>
+                    <div style={selectShellStyle}>
+                      <div style={fieldIconBoxStyle}>
+                        <FaExchangeAlt size={13} />
+                      </div>
+                      <select style={selectInputStyle} value={actionType} onChange={(e) => setActionType(e.target.value)}>
+                        <option value="transfer_out">Transfer Out</option>
+                        <option value="withdraw">Dropout / Withdraw</option>
+                        <option value="graduate">Graduate</option>
+                      </select>
+                      <div style={selectChevronStyle}>
+                        <FaChevronDown size={11} />
+                      </div>
+                      <div style={{ flexShrink: 0, padding: "5px 9px", borderRadius: 999, background: "var(--surface-panel)", border: "1px solid var(--border-soft)", color: "var(--text-muted)", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                        {actionLabel}
+                      </div>
+                    </div>
                   </div>
 
                   <div>
                     <label style={fieldLabelStyle}>Destination School (for transfer)</label>
-                    <input
-                      style={fieldStyle}
-                      value={destinationSchool}
-                      onChange={(e) => setDestinationSchool(e.target.value)}
-                      placeholder="Optional"
-                    />
+                    <div style={textFieldShellStyle}>
+                      <div style={fieldIconBoxStyle}>
+                        <FaHome size={13} />
+                      </div>
+                      <input
+                        style={textFieldInputStyle}
+                        value={destinationSchool}
+                        onChange={(e) => setDestinationSchool(e.target.value)}
+                        placeholder="Optional"
+                      />
+                      <div style={{ flexShrink: 0, padding: "5px 9px", borderRadius: 999, background: destinationSchool.trim() ? "var(--surface-accent)" : "var(--surface-panel)", border: "1px solid var(--border-soft)", color: destinationSchool.trim() ? "var(--accent-strong)" : "var(--text-muted)", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                        {destinationSchool.trim() ? "Set" : "Optional"}
+                      </div>
+                    </div>
                   </div>
 
                   <div>
                     <label style={fieldLabelStyle}>Reason / Note</label>
-                    <textarea
-                      rows={3}
-                      style={fieldStyle}
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="Reason, reference, or registrar note"
-                    />
+                    <div style={textAreaShellStyle}>
+                      <div style={fieldIconBoxStyle}>
+                        <FaFileAlt size={13} />
+                      </div>
+                      <textarea
+                        rows={3}
+                        style={textAreaInputStyle}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        placeholder="Reason, reference, or registrar note"
+                      />
+                    </div>
                   </div>
 
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>
-                    <input
-                      type="checkbox"
-                      checked={removeFromStudentsNode}
-                      onChange={(e) => setRemoveFromStudentsNode(e.target.checked)}
-                    />
-                    Remove from Students node after archiving to YearHistory
-                  </label>
-
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                    <button onClick={openConfirmModal} disabled={working || !selectedStudentId || loading} style={{ ...dangerButtonStyle, cursor: working || !selectedStudentId || loading ? "not-allowed" : "pointer", opacity: working || !selectedStudentId || loading ? 0.65 : 1, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <button onClick={openConfirmModal} disabled={working || !selectedStudentId || loading} style={{ ...dangerButtonStyle, cursor: working || !selectedStudentId || loading ? "not-allowed" : "pointer", opacity: working || !selectedStudentId || loading ? 0.65 : 1, display: "inline-flex", alignItems: "center", gap: 8, minWidth: 190, justifyContent: "center", boxShadow: "0 12px 26px rgba(185, 28, 28, 0.18)" }}>
                       <FaUserTimes /> Save Status Change
                     </button>
                   </div>
@@ -541,11 +902,12 @@ export default function TransferWithdrawal() {
             </div>
 
             {selectedStudent ? (
-              <div style={{ marginTop: 10, border: "1px solid var(--border-soft)", borderRadius: 10, padding: 12, background: "var(--surface-muted)" }}>
-                <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>Selected:</strong>{" "}
-                <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                  {selectedStudent.name} ({selectedStudent.studentId}) - Grade {selectedStudent.grade} {selectedStudent.section || ""}
-                </span>
+              <div style={selectedCardStyle}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "var(--accent-strong)", letterSpacing: "0.05em", textTransform: "uppercase" }}>Selected Student</div>
+                <div style={{ marginTop: 8, fontSize: 16, fontWeight: 800, color: "var(--text-primary)" }}>{selectedStudent.name}</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                  {selectedStudent.studentId} • Grade {selectedStudent.grade || "-"}{selectedStudent.section ? ` • ${selectedStudent.section}` : ""}
+                </div>
               </div>
             ) : null}
           </div>
@@ -564,7 +926,35 @@ export default function TransferWithdrawal() {
               <div><strong>Student:</strong> {selectedStudent?.name || "-"} ({selectedStudent?.studentId || "-"})</div>
               <div><strong>Action:</strong> {actionLabel}</div>
               <div><strong>Academic Year:</strong> {currentAcademicYear ? yearLabel(currentAcademicYear) : "-"}</div>
-              <div><strong>Remove From Students:</strong> {removeFromStudentsNode ? "Yes" : "No"}</div>
+              <div style={{ marginTop: 6 }}>
+                <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>
+                  Registerer Password
+                </label>
+                <input
+                  type="password"
+                  value={registererPassword}
+                  onChange={(e) => {
+                    setRegistererPassword(e.target.value);
+                    if (passwordError) setPasswordError("");
+                  }}
+                  placeholder="Enter your password to confirm"
+                  style={{
+                    width: "100%",
+                    border: "1px solid var(--input-border)",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    fontSize: 13,
+                    boxSizing: "border-box",
+                    background: "var(--input-bg)",
+                    color: "var(--text-primary)",
+                  }}
+                />
+                {passwordError ? (
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "var(--danger)" }}>
+                    {passwordError}
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border-soft)", display: "flex", justifyContent: "flex-end", gap: 8 }}>

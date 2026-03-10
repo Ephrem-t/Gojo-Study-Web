@@ -7,6 +7,7 @@ import RegisterSidebar from "../components/RegisterSidebar";
 
 export default function StudentRegister() {
   const navigate = useNavigate();
+  const todayDate = new Date().toISOString().split("T")[0];
   const [form, setForm] = useState({
     firstName: "",
     middleName: "",
@@ -15,7 +16,7 @@ export default function StudentRegister() {
     section: "",
     gender: "",
     dob: "",
-    admissionDate: "",
+    admissionDate: todayDate,
     studentNumber: "",
     academicYear: "",
     previousSchool: "",
@@ -59,6 +60,7 @@ export default function StudentRegister() {
       email: "",
       occupation: "",
       nationalIdNumber: "",
+      profileImage: "",
       username: "",
       temporaryPassword: "",
       isActive: "true",
@@ -67,6 +69,7 @@ export default function StudentRegister() {
   ]);
   const [studentPhoto, setStudentPhoto] = useState(null);
   const [studentNationalIdImage, setStudentNationalIdImage] = useState(null);
+  const [parentProfileFiles, setParentProfileFiles] = useState({});
   const [parentNationalIdFiles, setParentNationalIdFiles] = useState({});
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -113,6 +116,13 @@ export default function StudentRegister() {
 
   const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+  const isValidGradeKey = (value) => {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 1 && numeric <= 12;
+  };
+
+  const normalizeSectionKey = (value) => String(value || "").trim().toUpperCase();
+
   const generateTemporaryPassword = (length = 8) => {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     let result = "";
@@ -154,12 +164,18 @@ export default function StudentRegister() {
       if (!schoolCode) return;
       try {
         const res = await fetch(`${DB_URL}/GradeManagement/grades.json`);
-        const gradesObj = res.ok ? (await res.json()) || {} : {};
-        const grades = Object.keys(gradesObj || {}).sort((a, b) => Number(a) - Number(b));
+        const rawGrades = res.ok ? (await res.json()) || {} : {};
+        const gradesObj = Object.fromEntries(
+          Object.entries(rawGrades || {}).filter(([gradeKey]) => isValidGradeKey(gradeKey))
+        );
+        const grades = Object.keys(gradesObj).sort((a, b) => Number(a) - Number(b));
 
         const nextSections = {};
         grades.forEach((grade) => {
-          const sections = Object.keys((gradesObj?.[grade]?.sections || {})).sort((a, b) => String(a).localeCompare(String(b)));
+          const sections = Object.keys((gradesObj?.[grade]?.sections || {}))
+            .map((sectionKey) => normalizeSectionKey(sectionKey))
+            .filter(Boolean)
+            .sort((a, b) => String(a).localeCompare(String(b)));
           nextSections[grade] = sections;
         });
 
@@ -168,14 +184,14 @@ export default function StudentRegister() {
 
         setForm((prev) => {
           const next = { ...prev };
-          if (grades.length > 0 && !grades.includes(String(prev.grade || ""))) {
-            next.grade = grades[0];
+          if (prev.grade && !grades.includes(String(prev.grade || ""))) {
+            next.grade = "";
           }
 
           const activeGrade = String(next.grade || "");
           const allowedSections = nextSections[activeGrade] || [];
-          if (allowedSections.length > 0 && !allowedSections.includes(String(prev.section || "").toUpperCase())) {
-            next.section = allowedSections[0];
+          if (!activeGrade || !allowedSections.includes(String(prev.section || "").toUpperCase())) {
+            next.section = "";
           }
           return next;
         });
@@ -304,10 +320,7 @@ export default function StudentRegister() {
     setForm((prev) => {
       const next = { ...prev, [name]: value };
       if (name === "grade") {
-        const allowedSections = sectionsByGrade[String(value || "")] || [];
-        if (allowedSections.length > 0 && !allowedSections.includes(String(prev.section || "").toUpperCase())) {
-          next.section = allowedSections[0];
-        }
+        next.section = "";
       }
       if (name === "section") {
         next.section = String(value || "").toUpperCase();
@@ -334,6 +347,7 @@ export default function StudentRegister() {
         email: "",
         occupation: "",
         nationalIdNumber: "",
+        profileImage: "",
         username: "",
         temporaryPassword: generateTemporaryPassword(8),
         isActive: "true",
@@ -343,6 +357,15 @@ export default function StudentRegister() {
   };
 
   const removeParent = (index) => {
+    setParentProfileFiles((prev) => {
+      const next = {};
+      Object.entries(prev || {}).forEach(([key, file]) => {
+        const idx = Number(key);
+        if (Number.isNaN(idx) || idx === index) return;
+        next[idx > index ? idx - 1 : idx] = file;
+      });
+      return next;
+    });
     setParentNationalIdFiles((prev) => {
       const next = {};
       Object.entries(prev || {}).forEach(([key, file]) => {
@@ -357,6 +380,10 @@ export default function StudentRegister() {
 
   const handleParentNationalIdFileChange = (index, file) => {
     setParentNationalIdFiles((prev) => ({ ...prev, [index]: file || null }));
+  };
+
+  const handleParentProfileFileChange = (index, file) => {
+    setParentProfileFiles((prev) => ({ ...prev, [index]: file || null }));
   };
 
   useEffect(() => {
@@ -460,9 +487,14 @@ export default function StudentRegister() {
 
       const validParentsWithFiles = [];
       validParents.forEach((parent, index) => {
+        const profileImageField = `parentProfileImage_${index}`;
         const nationalIdImageField = `parentNationalIdImage_${index}`;
         const { originalIndex, ...parentPayload } = parent;
-        validParentsWithFiles.push({ ...parentPayload, nationalIdImageField });
+        validParentsWithFiles.push({ ...parentPayload, profileImageField, nationalIdImageField });
+        const parentProfileFile = parentProfileFiles[originalIndex];
+        if (parentProfileFile) {
+          fd.append(profileImageField, parentProfileFile);
+        }
         const parentFile = parentNationalIdFiles[originalIndex];
         if (parentFile) {
           fd.append(nationalIdImageField, parentFile);
@@ -494,7 +526,7 @@ export default function StudentRegister() {
           section: "",
           gender: "",
           dob: "",
-          admissionDate: "",
+          admissionDate: todayDate,
           studentNumber: "",
           academicYear: activeAcademicYear,
           previousSchool: "",
@@ -533,6 +565,7 @@ export default function StudentRegister() {
             email: "",
             occupation: "",
             nationalIdNumber: "",
+            profileImage: "",
             username: "",
             temporaryPassword: generateTemporaryPassword(8),
             isActive: "true",
@@ -541,6 +574,7 @@ export default function StudentRegister() {
         ]);
         setStudentPhoto(null);
         setStudentNationalIdImage(null);
+        setParentProfileFiles({});
         setParentNationalIdFiles({});
       } else {
         setMessage(data.message || "Registration failed.");
@@ -671,8 +705,10 @@ export default function StudentRegister() {
     }
   };
 
+  const activeStep = stepItems.find((step) => step.id === openStep) || stepItems[0];
+
   return (
-    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh" }}>
+    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh", height: "100vh", overflow: "hidden" }}>
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)", boxShadow: "var(--shadow-soft)", backdropFilter: "blur(10px)" }}>
         <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
         <div className="nav-right">
@@ -682,16 +718,17 @@ export default function StudentRegister() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <RegisterSidebar user={admin} sticky fullHeight />
 
-        <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 760, margin: "0 auto 12px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))", color: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "var(--shadow-glow)" }}>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>Student Registration</div>
-            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.95 }}>Create a new student account with complete profile details.</div>
-          </div>
+        <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box", overflowY: "auto", overflowX: "hidden", height: "100%" }}>
+          <div style={{ width: "min(100%, 980px)", margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="section-header-card" style={{ padding: 18 }}>
+              <div className="section-header-card__title" style={{ fontSize: 17 }}>Student Registration</div>
+              <div className="section-header-card__subtitle">Create a new student account with complete profile details.</div>
+            </div>
 
-          <div style={{ maxWidth: 980, margin: "0 auto", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-panel)", padding: 16 }}>
+            <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-panel)", padding: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
               <button type="button" onClick={() => navigate(-1)} style={{ background: "none", border: "none", color: "var(--text-primary)", cursor: "pointer", fontSize: 20, width: 10 }}>←</button>
               <h2 style={{ margin: 0, color: "var(--text-primary)" }}>Student Registration</h2>
@@ -753,10 +790,14 @@ export default function StudentRegister() {
                 </div>
 
                 <div style={{ display: "grid", gap: 12 }}>
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(1)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}>
-                      <h3 style={sectionTitleStyle}>1) Basic Student Information {completedSteps[1] ? "✓" : ""}</h3>
-                    </button>
+                  <div style={{ ...sectionCardStyle, paddingBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span className="section-header-card__chip">Step {activeStep.id}</span>
+                      <h3 style={{ ...sectionTitleStyle, margin: 0 }}>{activeStep.title}</h3>
+                    </div>
+                  </div>
+
+                  <div style={{ ...sectionCardStyle, display: openStep === 1 ? "block" : "none" }}>
                     {openStep === 1 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
@@ -799,6 +840,7 @@ export default function StudentRegister() {
                             <label style={labelStyle}>Grade *</label>
                             {gradeOptions.length > 0 ? (
                               <select name="grade" value={form.grade} onChange={handleChange} style={fieldStyle}>
+                                <option value="">Select grade</option>
                                 {gradeOptions.map((grade) => (
                                   <option key={grade} value={grade}>{grade}</option>
                                 ))}
@@ -809,8 +851,13 @@ export default function StudentRegister() {
                           </div>
                           <div>
                             <label style={labelStyle}>Section *</label>
-                            {(sectionsByGrade[String(form.grade || "")] || []).length > 0 ? (
+                            {!form.grade ? (
+                              <select name="section" value="" disabled style={{ ...fieldStyle, opacity: 0.7, cursor: "not-allowed" }}>
+                                <option value="">Select grade first</option>
+                              </select>
+                            ) : (sectionsByGrade[String(form.grade || "")] || []).length > 0 ? (
                               <select name="section" value={form.section} onChange={handleChange} style={fieldStyle}>
+                                <option value="">Select section</option>
                                 {(sectionsByGrade[String(form.grade || "")] || []).map((section) => (
                                   <option key={section} value={section}>{section}</option>
                                 ))}
@@ -832,10 +879,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(2)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}>
-                      <h3 style={sectionTitleStyle}>2) Parent / Guardian Information {completedSteps[2] ? "✓" : ""}</h3>
-                    </button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 2 ? "block" : "none" }}>
                     {openStep === 2 && (
                       <>
                         {parents.map((parent, index) => (
@@ -856,6 +900,7 @@ export default function StudentRegister() {
                               <div><label style={labelStyle}>Email</label><input type="email" value={parent.email} onChange={(e) => handleParentChange(index, "email", e.target.value)} style={fieldStyle} /></div>
                               <div><label style={labelStyle}>Occupation</label><input value={parent.occupation} onChange={(e) => handleParentChange(index, "occupation", e.target.value)} style={fieldStyle} /></div>
                               <div><label style={labelStyle}>National ID Number</label><input value={parent.nationalIdNumber || ""} onChange={(e) => handleParentChange(index, "nationalIdNumber", e.target.value)} style={fieldStyle} /></div>
+                              <div><label style={labelStyle}>Parent Profile Picture</label><input type="file" accept="image/*" onChange={(e) => handleParentProfileFileChange(index, e.target.files?.[0] || null)} style={fieldStyle} /></div>
                               <div style={{ gridColumn: "span 2" }}><label style={labelStyle}>National ID Image</label><input type="file" accept="image/*" onChange={(e) => handleParentNationalIdFileChange(index, e.target.files?.[0] || null)} style={fieldStyle} /></div>
                             </div>
                           </div>
@@ -868,8 +913,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(3)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}><h3 style={sectionTitleStyle}>3) Address Information {completedSteps[3] ? "✓" : ""}</h3></button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 3 ? "block" : "none" }}>
                     {openStep === 3 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
@@ -884,8 +928,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(4)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}><h3 style={sectionTitleStyle}>4) Finance Information {completedSteps[4] ? "✓" : ""}</h3></button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 4 ? "block" : "none" }}>
                     {openStep === 4 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
@@ -900,8 +943,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(5)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}><h3 style={sectionTitleStyle}>5) Health & Emergency (Optional) {completedSteps[5] ? "✓" : ""}</h3></button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 5 ? "block" : "none" }}>
                     {openStep === 5 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
@@ -915,8 +957,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(6)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}><h3 style={sectionTitleStyle}>6) Academic Setup (Optional) {completedSteps[6] ? "✓" : ""}</h3></button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 6 ? "block" : "none" }}>
                     {openStep === 6 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
@@ -930,8 +971,7 @@ export default function StudentRegister() {
                     )}
                   </div>
 
-                  <div style={sectionCardStyle}>
-                    <button type="button" onClick={() => handleStepOpen(7)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}><h3 style={sectionTitleStyle}>7) System Account Information {completedSteps[7] ? "✓" : ""}</h3></button>
+                  <div style={{ ...sectionCardStyle, display: openStep === 7 ? "block" : "none" }}>
                     {openStep === 7 && (
                       <>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
@@ -984,6 +1024,7 @@ export default function StudentRegister() {
                 </div>
               </div>
             </form>
+            </div>
           </div>
         </div>
       </div>

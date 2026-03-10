@@ -1,21 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import {
-  FaHome,
-  FaFileAlt,
-  FaChalkboardTeacher,
-  FaChartLine,
-  FaSignOutAlt,
-  FaCog,
-  FaChevronDown,
-  FaBell,
-  FaFacebookMessenger,
-} from "react-icons/fa";
 import axios from "axios";
-import RegisterSidebar from "../components/RegisterSidebar";
 
 export default function OverviewPage() {
-  const navigate = useNavigate();
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
 
   const stored = (() => {
@@ -26,19 +12,10 @@ export default function OverviewPage() {
     }
   })();
 
-  const admin = {
-    name: stored.name || stored.username || "Register Office",
-    adminId: stored.financeId || stored.adminId || stored.userId || "",
-    username: stored.username || "",
-    profileImage: stored.profileImage || "/default-profile.png",
-  };
-
   const schoolCode = stored.schoolCode || "";
   const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
   const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
 
-  const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
-  const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const [isNarrow, setIsNarrow] = useState(getIsNarrow());
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
@@ -186,26 +163,13 @@ export default function OverviewPage() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", color: "var(--text-primary)" }}>
-      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
-        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
-        <div className="nav-right">
-          <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
-          <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex", flexDirection: isNarrow ? "column" : "row", gap: 14, padding: "12px" }}>
-        <RegisterSidebar user={admin} sticky={!isNarrow} fullHeight={!isNarrow} style={isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { flex: "0 0 auto" }} />
-
-        <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
-          <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ ...shellCardStyle, padding: 18 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+    <div style={{ padding: "10px 4px 20px", minWidth: 0, boxSizing: "border-box", color: "var(--text-primary)" }}>
+      <div style={{ width: "min(100%, 1120px)", margin: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="section-header-card" style={{ padding: 18 }}>
+            <div className="section-header-card__row">
               <div>
-                <h1 style={{ margin: 0, fontSize: 24, color: "var(--text-primary)", fontWeight: 800 }}>Overview</h1>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)" }}>Operational snapshot for students, parents and posts.</p>
+                <h1 className="section-header-card__title" style={{ fontSize: 24 }}>Overview</h1>
+                <p className="section-header-card__subtitle" style={{ fontSize: 13 }}>Operational snapshot for students, parents and posts.</p>
               </div>
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{loading ? "Loading..." : `Updated: ${new Date().toLocaleString()}`}</div>
             </div>
@@ -213,11 +177,11 @@ export default function OverviewPage() {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
             {[
-              { title: "Total Students", value: summary.totalStudents, tone: "#1d4ed8" },
-              { title: "Active Students", value: summary.activeStudents, tone: "#16a34a" },
-              { title: "Inactive Students", value: summary.inactiveStudents, tone: "#dc2626" },
-              { title: "👦 Male Count", value: summary.maleCount, tone: "#0f766e" },
-              { title: "👧 Female Count", value: summary.femaleCount, tone: "#be185d" },
+              { title: "Total Students", value: summary.totalStudents, tone: "var(--accent-strong)" },
+              { title: "Active Students", value: summary.activeStudents, tone: "var(--success)" },
+              { title: "Inactive Students", value: summary.inactiveStudents, tone: "var(--danger)" },
+              { title: "Male Count", value: summary.maleCount, tone: "color-mix(in srgb, var(--success) 82%, var(--text-primary))" },
+              { title: "Female Count", value: summary.femaleCount, tone: "color-mix(in srgb, var(--accent) 52%, var(--text-primary))" },
             ].map((card) => (
               <div key={card.title} style={statCardStyle}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{card.title}</div>
@@ -276,7 +240,7 @@ export default function OverviewPage() {
                             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{row.count} ({pct}%)</span>
                           </div>
                           <div style={progressTrackStyle}>
-                            <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#1d4ed8,#3b82f6)", borderRadius: 999 }} />
+                            <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg, var(--accent-strong), var(--accent))", borderRadius: 999 }} />
                           </div>
                         </div>
                       );
@@ -286,8 +250,8 @@ export default function OverviewPage() {
                   <div style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 10 }}>
                     <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>Gender Split</div>
                     {[
-                      { label: "Male", count: summary.maleCount, tone: "#0f766e" },
-                      { label: "Female", count: summary.femaleCount, tone: "#be185d" },
+                      { label: "Male", count: summary.maleCount, tone: "color-mix(in srgb, var(--success) 82%, var(--text-primary))" },
+                      { label: "Female", count: summary.femaleCount, tone: "color-mix(in srgb, var(--accent) 52%, var(--text-primary))" },
                     ].map((row) => {
                       const pct = summary.totalStudents ? Math.round((row.count / summary.totalStudents) * 100) : 0;
                       return (
@@ -307,8 +271,6 @@ export default function OverviewPage() {
               )}
             </div>
           </div>
-          </div>
-        </div>
       </div>
     </div>
   );
