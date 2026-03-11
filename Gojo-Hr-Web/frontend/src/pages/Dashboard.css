@@ -31,7 +31,7 @@
 .top-navbar .brand h2{color:#fff;margin:0;font-size:20px}
 .top-navbar .brand span{color:rgba(255,255,255,0.85);font-size:13px}
 
-.sidebar{width:240px; background-image: linear-gradient(to right, #182848, #4b6cb7); color:#fff; padding:28px 18px; box-shadow:2px 0 20px rgba(2,6,23,0.06)}
+.sidebar{width:240px; background-image: linear-gradient(to right, #182848, #4b6cb7); color:#406cbe; padding:28px 18px; box-shadow:2px 0 20px rgba(2,6,23,0.06)}
 .sidebar .profile img{width:72px;height:72px;border-radius:50%;border:3px solid rgba(255,255,255,0.08)}
 .sidebar .profile h3{color:#fff;margin:12px 0 4px}
 .sidebar .profile p{color:rgba(255,255,255,0.85);font-size:12px}
@@ -40,3 +40,46 @@
 .sidebar .nav a:hover{background:rgba(255,255,255,0.06)}
 .logout-btn{background: linear-gradient(to right, #ff4b2b, #ff416c); border:none; color:#fff; padding:10px 12px; border-radius:8px; font-weight:700; cursor:pointer}
 .logout-btn:hover{transform:scale(1.02); box-shadow:0 8px 20px rgba(0,0,0,0.15)}
+
+/* Thin + invisible scrollbars (scoped to dashboard) */
+.dashboard-page,
+.dashboard-page * {
+	scrollbar-width: thin;
+	scrollbar-color: transparent transparent;
+}
+
+.dashboard-page *::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.dashboard-page *::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.dashboard-page *::-webkit-scrollbar-thumb {
+	background: transparent;
+	border-radius: 999px;
+}
+
+.dashboard-page *::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+.dashboard-widgets {
+	scrollbar-width: none !important;
+	-ms-overflow-style: none !important;
+}
+
+.dashboard-widgets::-webkit-scrollbar {
+	width: 0 !important;
+	height: 0 !important;
+	display: none !important;
+}
+
+.dashboard-widgets::-webkit-scrollbar-thumb,
+.dashboard-widgets::-webkit-scrollbar-track,
+.dashboard-widgets::-webkit-scrollbar-corner {
+	background: transparent !important;
+	border: 0 !important;
+}

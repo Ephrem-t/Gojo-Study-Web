@@ -24,8 +24,8 @@ python -m pip install firebase-admin
 
 
 git log --oneline
-git reset --soft c369a7a
-git reset --mixed c369a7a
+git reset --soft 966850a6
+git reset --mixed 966850a6
 git rm --cached ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json
 
 

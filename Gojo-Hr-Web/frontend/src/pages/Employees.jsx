@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import api from '../api'
 import { Link, useNavigate } from "react-router-dom";
 
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaCalendarAlt } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaBell, FaFacebookMessenger, FaCalendarAlt } from "react-icons/fa";
 
 // Mock fallback using provided Employees export (used when API fails)
 const MOCK_EMPLOYEES = {
@@ -296,113 +296,277 @@ export default function Employees() {
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
             <Link className="sidebar-btn" to="/employees" style={{backgroundColor: "#4b6cb7", color: "white"}}> <FaChalkboardTeacher /> Employees</Link>
+            <Link className="sidebar-btn" to="/employees/attendance"> <FaCalendarAlt /> Attendance</Link>
             <Link className="sidebar-btn" to="/register"> <FaFileAlt /> Registration</Link>
             <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
           </div>
         </aside>
 
         <main className="google-main">
-          <h1 style={{ fontWeight: 800, fontSize: 32, color: '#4b6cb7', marginBottom: 24 }}>Employees</h1>
-          <div style={{ marginBottom: 24, display: 'flex', gap: 12 }}>
-            <button onClick={() => setFilter('all')} style={{ padding: '8px 18px', background: filter === 'all' ? '#4b6cb7' : '#eee', color: filter === 'all' ? '#fff' : '#4b6cb7', borderRadius: 8, border: 'none', fontWeight: 600, fontSize: 15, boxShadow: filter === 'all' ? '0 2px 8px rgba(75,108,183,0.08)' : 'none' }}>All</button>
-            <button onClick={() => setFilter('management')} style={{ padding: '8px 18px', background: filter === 'management' ? '#4b6cb7' : '#eee', color: filter === 'management' ? '#fff' : '#4b6cb7', borderRadius: 8, border: 'none', fontWeight: 600, fontSize: 15, boxShadow: filter === 'management' ? '0 2px 8px rgba(75,108,183,0.08)' : 'none' }}>Management</button>
-            <button onClick={() => setFilter('finance')} style={{ padding: '8px 18px', background: filter === 'finance' ? '#4b6cb7' : '#eee', color: filter === 'finance' ? '#fff' : '#4b6cb7', borderRadius: 8, border: 'none', fontWeight: 600, fontSize: 15, boxShadow: filter === 'finance' ? '0 2px 8px rgba(75,108,183,0.08)' : 'none' }}>Finance</button>
-            <button onClick={() => setFilter('hr')} style={{ padding: '8px 18px', background: filter === 'hr' ? '#4b6cb7' : '#eee', color: filter === 'hr' ? '#fff' : '#4b6cb7', borderRadius: 8, border: 'none', fontWeight: 600, fontSize: 15, boxShadow: filter === 'hr' ? '0 2px 8px rgba(75,108,183,0.08)' : 'none' }}>HR</button>
-            <button onClick={() => setFilter('teacher')} style={{ padding: '8px 18px', background: filter === 'teacher' ? '#4b6cb7' : '#eee', color: filter === 'teacher' ? '#fff' : '#4b6cb7', borderRadius: 8, border: 'none', fontWeight: 600, fontSize: 15, boxShadow: filter === 'teacher' ? '0 2px 8px rgba(75,108,183,0.08)' : 'none' }}>Teacher</button>
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 16, boxShadow: '0 4px 24px rgba(75,108,183,0.08)', overflow: 'hidden' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
-                <th style={{ padding: 8 }}>Image</th>
-                <th style={{ padding: 8 }}>ID</th>
-                <th style={{ padding: 8 }}>Name</th>
-                <th style={{ padding: 8 }}>Role</th>
-                <th style={{ padding: 8 }}>Phone</th>
-                <th style={{ padding: 8 }}>Dept / Position</th>
-                <th style={{ padding: 8 }}>Joined</th>
-                <th style={{ padding: 8 }}>Status</th>
-                <th style={{ padding: 8 }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {employees
-                .filter(e => {
-                  const raw = e.raw || {}
-                  const job = raw.job || (raw.profileData && raw.profileData.job) || {}
-                  const empCat = (job.employeeCategory || job.position || '').toString().toLowerCase()
-                  if (filter === 'management') {
-                    const isMgmtByEmployeeId = Boolean(raw.managementId || (e.user && e.user.managementId))
-                    const isMgmtByCategory = empCat === 'management' || empCat.includes('director') || empCat.includes('manager')
-                    return isMgmtByEmployeeId || isMgmtByCategory
-                  }
-                  if (filter === 'finance') {
-                    const isFinanceByEmployeeId = Boolean(raw.financeId || (e.user && e.user.financeId))
-                    const isFinanceByCategory = empCat === 'finance'
-                    return isFinanceByEmployeeId || isFinanceByCategory
-                  }
-                  if (filter === 'hr') {
-                    const isHrByEmployeeId = Boolean(raw.hrId || (e.user && e.user.hrId))
-                    const isHrByCategory = empCat === 'hr'
-                    return isHrByEmployeeId || isHrByCategory
-                  }
-                  if (filter === 'teacher') {
-                    const isTeacherByEmployeeId = Boolean(raw.teacherId || (e.user && e.user.teacherId))
-                    const isTeacherByCategory = empCat === 'teacher'
-                    return isTeacherByEmployeeId || isTeacherByCategory
-                  }
-                  return true
-                })
-                .map(e => {
-                  const raw = e.raw || {}
-                  const personal = raw.personal || (raw.profileData && raw.profileData.personal) || {}
-                  const job = raw.job || (raw.profileData && raw.profileData.job) || {}
-                  const contact = raw.contact || (raw.profileData && raw.profileData.contact) || {}
+          <style>{`
+            .emp-main-shell {
+              width: 100%;
+            }
+            .emp-hero {
+              background: linear-gradient(135deg, #f8fbff 0%, #edf2ff 56%, #f7fbff 100%);
+              border: 1px solid #e1e9ff;
+              border-radius: 18px;
+              padding: 24px;
+              box-shadow: 0 12px 28px rgba(33, 57, 117, 0.08);
+              margin-bottom: 18px;
+            }
+            .emp-title {
+              margin: 0;
+              font-size: 30px;
+              font-weight: 800;
+              color: #173467;
+            }
+            .emp-subtitle {
+              margin: 8px 0 0;
+              color: #62729a;
+              font-size: 14px;
+              font-weight: 500;
+            }
+            .emp-toolbar {
+              margin-top: 16px;
+              display: flex;
+              flex-wrap: wrap;
+              gap: 10px;
+            }
+            .emp-filter-btn {
+              border: 1px solid #d6e1ff;
+              background: #fff;
+              color: #2a4c8b;
+              border-radius: 999px;
+              padding: 9px 16px;
+              font-size: 13px;
+              font-weight: 700;
+              cursor: pointer;
+              transition: all 0.2s ease;
+            }
+            .emp-filter-btn:hover {
+              transform: translateY(-1px);
+              box-shadow: 0 8px 16px rgba(53, 92, 176, 0.16);
+            }
+            .emp-filter-btn.active {
+              background: linear-gradient(135deg, #2f67d3, #4d86ee);
+              color: #fff;
+              border-color: #2f67d3;
+            }
+            .emp-card {
+              background: #fff;
+              border: 1px solid #e6ecf8;
+              border-radius: 16px;
+              box-shadow: 0 12px 26px rgba(23, 43, 91, 0.06);
+              overflow: hidden;
+            }
+            .emp-table-wrap {
+              width: 100%;
+              overflow-x: auto;
+            }
+            .emp-table {
+              width: 100%;
+              min-width: 930px;
+              border-collapse: collapse;
+            }
+            .emp-table thead th {
+              text-align: left;
+              padding: 14px 12px;
+              color: #5f6f91;
+              font-size: 12px;
+              font-weight: 800;
+              letter-spacing: 0.35px;
+              border-bottom: 1px solid #e8eefb;
+              background: #f9fbff;
+            }
+            .emp-table tbody td {
+              padding: 12px;
+              color: #1c2e54;
+              font-size: 13px;
+              border-bottom: 1px solid #eff3fb;
+              vertical-align: middle;
+            }
+            .emp-table tbody tr:hover {
+              background: #fbfdff;
+            }
+            .emp-avatar {
+              width: 46px;
+              height: 46px;
+              border-radius: 10px;
+              object-fit: cover;
+              border: 1px solid #dce5f8;
+            }
+            .emp-avatar-fallback {
+              width: 46px;
+              height: 46px;
+              border-radius: 10px;
+              background: #eef2fb;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              color: #6e7d9d;
+              font-size: 12px;
+              font-weight: 700;
+              border: 1px solid #dce5f8;
+            }
+            .emp-name {
+              font-weight: 700;
+              color: #193465;
+            }
+            .emp-role {
+              font-weight: 700;
+            }
+            .emp-status {
+              display: inline-block;
+              padding: 5px 10px;
+              border-radius: 999px;
+              font-size: 12px;
+              font-weight: 700;
+              background: #edf4ff;
+              color: #2d55a2;
+            }
+            .emp-actions {
+              display: flex;
+              gap: 8px;
+            }
+            .emp-action-btn {
+              border: none;
+              border-radius: 8px;
+              padding: 7px 12px;
+              font-size: 12px;
+              font-weight: 700;
+              cursor: pointer;
+            }
+            .emp-action-btn.view {
+              background: #e8f1ff;
+              color: #2552a1;
+            }
+            .emp-action-btn.delete {
+              background: #fff0f2;
+              color: #bd2842;
+            }
+            .emp-empty {
+              padding: 28px;
+              text-align: center;
+              color: #6d7e9f;
+              font-weight: 600;
+            }
+          `}</style>
 
-                  // Prefer teacher/finance profile image from both employee and user nodes
-                  let img = '';
-                  // Teacher: check user, employee, and profileData
-                  if (raw.teacherId || (e.user && e.user.teacherId)) {
-                    img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || '';
-                  } else if (raw.financeId || (e.user && e.user.financeId)) {
-                    img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || '';
-                  } else {
-                    img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || '';
-                  }
-                  const idDisplay = (e.id || '').toString()
-                  const name = e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')
-                  const role = job.employeeCategory || job.position || raw.role || ''
-                  // teacher id may be stored on employee record or on the joined user
-                  const teacherId = raw.teacherId || (raw.profileData && raw.profileData.teacherId) || (e.user && e.user.teacherId) || ''
-                  const phone = contact.phone1 || contact.phone || contact.phone2 || ''
-                  const deptPos = [job.department, job.position].filter(Boolean).join(' / ')
-                  const joined = job.hireDate || job.dateJoined || ''
-                  const status = (job.status || raw.status || '').toString()
+          <div className="emp-main-shell">
+            <section className="emp-hero">
+              <h1 className="emp-title">Employees</h1>
+              <p className="emp-subtitle">Manage all staff profiles, roles, and details from one professional workspace.</p>
+              <div className="emp-toolbar">
+                <button onClick={() => setFilter('all')} className={`emp-filter-btn ${filter === 'all' ? 'active' : ''}`}>All</button>
+                <button onClick={() => setFilter('management')} className={`emp-filter-btn ${filter === 'management' ? 'active' : ''}`}>Management</button>
+                <button onClick={() => setFilter('finance')} className={`emp-filter-btn ${filter === 'finance' ? 'active' : ''}`}>Finance</button>
+                <button onClick={() => setFilter('hr')} className={`emp-filter-btn ${filter === 'hr' ? 'active' : ''}`}>HR</button>
+                <button onClick={() => setFilter('teacher')} className={`emp-filter-btn ${filter === 'teacher' ? 'active' : ''}`}>Teacher</button>
+              </div>
+            </section>
 
-                  return (
-                    <tr key={e.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: 8 }}>
-                        {img ? (
-                          <img src={img} alt="avatar" style={{ width: 48, height: 48, borderRadius: 6, objectFit: 'cover' }} />
-                        ) : (
-                          <div style={{ width: 48, height: 48, borderRadius: 6, background: '#eee', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>No</div>
-                        )}
-                      </td>
-                      <td style={{ padding: 8 }}>{idDisplay}</td>
-                      <td style={{ padding: 8 }}>{name}</td>
-                      <td style={{ padding: 8 }}>{role}{teacherId ? ` (${teacherId})` : ''}</td>
-                      <td style={{ padding: 8 }}>{phone}</td>
-                      <td style={{ padding: 8 }}>{deptPos}</td>
-                      <td style={{ padding: 8 }}>{joined}</td>
-                      <td style={{ padding: 8 }}>{status}</td>
-                      <td style={{ padding: 8 }}>
-                        <button onClick={() => window.location.assign(`/employees/${encodeURIComponent(e.id)}`)} style={{ marginRight: 8 }}>View</button>
-                        <button onClick={() => remove(e.id)}>Delete</button>
-                      </td>
+            <section className="emp-card">
+              <div className="emp-table-wrap">
+                <table className="emp-table">
+                  <thead>
+                    <tr>
+                      <th>Image</th>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Role</th>
+                      <th>Phone</th>
+                      <th>Dept / Position</th>
+                      <th>Joined</th>
+                      <th>Status</th>
+                      <th>Actions</th>
                     </tr>
-                  )
-                })}
-            </tbody>
-          </table>
+                  </thead>
+                  <tbody>
+                    {employees
+                      .filter(e => {
+                        const raw = e.raw || {}
+                        const job = raw.job || (raw.profileData && raw.profileData.job) || {}
+                        const empCat = (job.employeeCategory || job.position || '').toString().toLowerCase()
+                        if (filter === 'management') {
+                          const isMgmtByEmployeeId = Boolean(raw.managementId || (e.user && e.user.managementId))
+                          const isMgmtByCategory = empCat === 'management' || empCat.includes('director') || empCat.includes('manager')
+                          return isMgmtByEmployeeId || isMgmtByCategory
+                        }
+                        if (filter === 'finance') {
+                          const isFinanceByEmployeeId = Boolean(raw.financeId || (e.user && e.user.financeId))
+                          const isFinanceByCategory = empCat === 'finance'
+                          return isFinanceByEmployeeId || isFinanceByCategory
+                        }
+                        if (filter === 'hr') {
+                          const isHrByEmployeeId = Boolean(raw.hrId || (e.user && e.user.hrId))
+                          const isHrByCategory = empCat === 'hr'
+                          return isHrByEmployeeId || isHrByCategory
+                        }
+                        if (filter === 'teacher') {
+                          const isTeacherByEmployeeId = Boolean(raw.teacherId || (e.user && e.user.teacherId))
+                          const isTeacherByCategory = empCat === 'teacher'
+                          return isTeacherByEmployeeId || isTeacherByCategory
+                        }
+                        return true
+                      })
+                      .map(e => {
+                        const raw = e.raw || {}
+                        const personal = raw.personal || (raw.profileData && raw.profileData.personal) || {}
+                        const job = raw.job || (raw.profileData && raw.profileData.job) || {}
+                        const contact = raw.contact || (raw.profileData && raw.profileData.contact) || {}
+
+                        let img = ''
+                        if (raw.teacherId || (e.user && e.user.teacherId)) {
+                          img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || ''
+                        } else if (raw.financeId || (e.user && e.user.financeId)) {
+                          img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || ''
+                        } else {
+                          img = (e.user && (e.user.profileImage || e.user.profileImageName)) || raw.profileImage || personal.profileImageName || (raw.profileData && raw.profileData.personal && raw.profileData.personal.profileImageName) || ''
+                        }
+                        const idDisplay = (e.id || '').toString()
+                        const name = e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')
+                        const role = job.employeeCategory || job.position || raw.role || ''
+                        const teacherId = raw.teacherId || (raw.profileData && raw.profileData.teacherId) || (e.user && e.user.teacherId) || ''
+                        const phone = contact.phone1 || contact.phone || contact.phone2 || ''
+                        const deptPos = [job.department, job.position].filter(Boolean).join(' / ')
+                        const joined = job.hireDate || job.dateJoined || ''
+                        const status = (job.status || raw.status || '').toString()
+
+                        return (
+                          <tr key={e.id}>
+                            <td>
+                              {img ? (
+                                <img src={img} alt="avatar" className="emp-avatar" />
+                              ) : (
+                                <div className="emp-avatar-fallback">No Img</div>
+                              )}
+                            </td>
+                            <td>{idDisplay}</td>
+                            <td className="emp-name">{name || '—'}</td>
+                            <td className="emp-role">{role}{teacherId ? ` (${teacherId})` : ''}</td>
+                            <td>{phone || '—'}</td>
+                            <td>{deptPos || '—'}</td>
+                            <td>{joined || '—'}</td>
+                            <td><span className="emp-status">{status || 'Unknown'}</span></td>
+                            <td>
+                              <div className="emp-actions">
+                                <button onClick={() => navigate(`/employees/${encodeURIComponent(e.id)}`)} className="emp-action-btn view">View</button>
+                                <button onClick={() => remove(e.id)} className="emp-action-btn delete">Delete</button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                  </tbody>
+                </table>
+              </div>
+
+              {employees.length === 0 && (
+                <div className="emp-empty">No employee records available yet.</div>
+              )}
+            </section>
+          </div>
         </main>
       </div>
     </div>

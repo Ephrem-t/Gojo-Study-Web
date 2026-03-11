@@ -3,6 +3,8 @@ import { Routes, Route, Link } from 'react-router-dom'
 import Dashboard from '../pages/Dashboard'
 import Register from '../pages/Register'
 import Employees from '../pages/Employees'
+import EmployeeDetail from '../pages/EmployeeDetail'
+import EmployeesAttendance from '../pages/EmployeesAttendance'
 import Login from '../pages/Login'
 
 export default function AppRoutes() {
@@ -14,6 +16,8 @@ export default function AppRoutes() {
         <Route path="/register" element={<Register />} />
         <Route path="/login" element={<Login />} />
         <Route path="/employees" element={<Employees />} />
+        <Route path="/employees/attendance" element={<EmployeesAttendance />} />
+        <Route path="/employees/:id" element={<EmployeeDetail />} />
       </Routes>
     </>
   )
