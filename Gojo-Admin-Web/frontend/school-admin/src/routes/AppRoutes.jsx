@@ -5,13 +5,14 @@ import Login from "../pages/Login";
 
 import Dashboard from "../pages/Dashboard";
 import MyPosts from "../pages/MyPosts";
-// Teachers page removed
+import Teachers from "../pages/Teachers";
 import Students from "../pages/Students";
 import Parents from "../pages/Parents";
 import SettingsPage from "../pages/SettingsPage";
+import SchedulePage from "../pages/SchedulePage";
+import AssagninTeacher from "../pages/AssagninTeacher";
 import AllChat from "../pages/AllChat";
 import StudentChatPage from "../pages/StudentChatPage";
-// SchedulePage and RegistrationForm removed
 import TeacherRegister from "../pages/TeacherRegister"; // NEW
 import StudentRegister from "../pages/StudentRegister"; // NEW
 import ParentRegister from "../pages/ParentRegister"; // NEW
@@ -28,9 +29,11 @@ export default function AppRoutes() {
         {/* Admin Pages */}
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/my-posts" element={<MyPosts />} />
-        {/* /teachers removed */}
+        <Route path="/teachers" element={<Teachers />} />
         <Route path="/students" element={<Students />} />
         <Route path="/parents" element={<Parents />} />
+        <Route path="/schedule" element={<SchedulePage />} />
+        <Route path="/assign-teacher" element={<AssagninTeacher />} />
         <Route path="/settings" element={<SettingsPage />} />
 
 

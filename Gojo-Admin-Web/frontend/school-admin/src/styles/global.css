@@ -8,9 +8,72 @@
 
 /* ---------------- THEME VARS ---------------- */
 :root {
-  --sidebar-width: 400px;  /* default sidebar width */
-  --sidebar-gap: 40px;     /* spacing between sidebar and main content */
-  --topbar-height: 60px;
+  --sidebar-width: 220px;
+  --sidebar-gap: 20px;
+  --topbar-height: 56px;
+  --page-bg: #eef4ff;
+  --page-bg-secondary: #f7faff;
+  --surface-panel: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-accent: #eff6ff;
+  --surface-overlay: rgba(255, 255, 255, 0.82);
+  --surface-strong: #e2e8f0;
+  --border-soft: #dbe5f0;
+  --border-strong: #bfdbfe;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: #dbeafe;
+  --success: #16a34a;
+  --success-soft: #eefbf3;
+  --success-border: #bbf7d0;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+  --danger: #dc2626;
+  --danger-soft: #fff1f2;
+  --danger-border: #fecaca;
+  --shadow-soft: 0 14px 34px rgba(15, 23, 42, 0.08);
+  --shadow-panel: 0 18px 40px rgba(15, 23, 42, 0.08);
+  --shadow-glow: 0 18px 46px rgba(37, 99, 235, 0.14);
+  --input-bg: #ffffff;
+  --input-border: #cbd5e1;
+  --input-focus: #60a5fa;
+}
+
+html[data-theme="dark"] {
+  --page-bg: #08111f;
+  --page-bg-secondary: #0d1728;
+  --surface-panel: #0f172a;
+  --surface-muted: #111c31;
+  --surface-accent: #14213b;
+  --surface-overlay: rgba(8, 17, 31, 0.84);
+  --surface-strong: #1e293b;
+  --border-soft: #243247;
+  --border-strong: #2f4f77;
+  --text-primary: #e5eefb;
+  --text-secondary: #c5d4ea;
+  --text-muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-strong: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.18);
+  --success: #4ade80;
+  --success-soft: rgba(20, 83, 45, 0.32);
+  --success-border: rgba(74, 222, 128, 0.35);
+  --warning: #fbbf24;
+  --warning-soft: rgba(120, 53, 15, 0.34);
+  --warning-border: rgba(251, 191, 36, 0.34);
+  --danger: #f87171;
+  --danger-soft: rgba(127, 29, 29, 0.28);
+  --danger-border: rgba(248, 113, 113, 0.35);
+  --shadow-soft: 0 18px 48px rgba(2, 6, 23, 0.48);
+  --shadow-panel: 0 28px 60px rgba(2, 6, 23, 0.5);
+  --shadow-glow: 0 18px 40px rgba(37, 99, 235, 0.18);
+  --input-bg: #0b1424;
+  --input-border: #334155;
+  --input-focus: #60a5fa;
 }
 
 /* ---------------- TOP NAVIGATION BAR ---------------- */
@@ -1588,4 +1651,100 @@ button.dark-mode:hover {
    a minimum width to trigger scrolling (e.g. schedule grid). */
 .main-content .wide {
   min-width: 1000px;
+}
+
+/* Register-style middle feed visuals for admin dashboard */
+.section-header-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.section-header-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent), color-mix(in srgb, var(--accent) 68%, white));
+}
+
+.section-header-card__row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.section-header-card__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.section-header-card__subtitle {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.section-header-card__meta {
+  margin-top: 6px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.section-header-card__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-accent);
+  border: 1px solid var(--border-strong);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.section-header-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.facebook-post-card {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.facebook-post-media-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+.facebook-post-media {
+  width: 100% !important;
+  height: auto !important;
+  max-height: min(78vh, 720px) !important;
+  object-fit: contain !important;
+  display: block !important;
+  margin: 0 auto !important;
 }

@@ -496,14 +496,46 @@ def create_post():
 # ---------------- GET ALL POSTS ---------------- #
 @app.route("/api/get_posts", methods=["GET"])
 def get_posts():
+    def normalize_posts_node(posts_node, school_code=""):
+        normalized = {}
+        if not isinstance(posts_node, dict):
+            return normalized
+
+        # Handle legacy shape where Posts contains a single post object directly.
+        if "postId" in posts_node and ("message" in posts_node or "postUrl" in posts_node):
+            normalized[str(posts_node.get("postId") or f"{school_code}-legacy-post")] = posts_node
+            return normalized
+
+        for raw_key, raw_value in posts_node.items():
+            if not isinstance(raw_value, dict):
+                continue
+
+            if "postId" not in raw_value and "message" not in raw_value and "postUrl" not in raw_value:
+                continue
+
+            normalized[str(raw_value.get("postId") or raw_key)] = raw_value
+
+        return normalized
+
     all_posts = {}
-    schools = all_schools_snapshot()
-    for school in schools.values():
+    requested_school_code = (request.args.get("schoolCode") or "").strip()
+
+    if requested_school_code:
+        school = (all_schools_snapshot() or {}).get(requested_school_code) or {}
         if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-            all_posts.update(school.get("Posts") or {})
+            all_posts.update(normalize_posts_node(school.get("Posts") or {}, requested_school_code))
+    else:
+        schools = all_schools_snapshot()
+        for school_code, school in schools.items():
+            if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
+                all_posts.update(normalize_posts_node(school.get("Posts") or {}, school_code))
+
     post_list = []
 
     for key, post in all_posts.items():
+        if not isinstance(post, dict):
+            continue
+
         post_owner = resolve_admin_identifiers(post.get("adminId"))
         user_data = post_owner.get("user", {}) if post_owner else {}
         
@@ -512,6 +544,9 @@ def get_posts():
             "message": post.get("message"),
             "postUrl": post.get("postUrl"),
             "adminId": post.get("adminId"),
+            "userId": post.get("userId"),
+            "targetRole": post.get("targetRole", "all"),
+            "schoolCode": post.get("schoolCode", requested_school_code),
             "adminName": user_data.get("name", "Admin"),
             "adminProfile": user_data.get("profileImage", "/default-profile.png"),
             "time": post.get("time"),
@@ -528,14 +563,35 @@ def get_posts():
 
 @app.route("/api/get_all_posts", methods=["GET"])
 def get_all_posts():
+    def normalize_posts_node(posts_node, school_code=""):
+        normalized = {}
+        if not isinstance(posts_node, dict):
+            return normalized
+
+        if "postId" in posts_node and ("message" in posts_node or "postUrl" in posts_node):
+            normalized[str(posts_node.get("postId") or f"{school_code}-legacy-post")] = posts_node
+            return normalized
+
+        for raw_key, raw_value in posts_node.items():
+            if not isinstance(raw_value, dict):
+                continue
+            if "postId" not in raw_value and "message" not in raw_value and "postUrl" not in raw_value:
+                continue
+            normalized[str(raw_value.get("postId") or raw_key)] = raw_value
+
+        return normalized
+
     all_posts = {}
     schools = all_schools_snapshot()
-    for school in schools.values():
+    for school_code, school in schools.items():
         if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-            all_posts.update(school.get("Posts") or {})
+            all_posts.update(normalize_posts_node(school.get("Posts") or {}, school_code))
     post_list = []
 
     for key, post in all_posts.items():
+        if not isinstance(post, dict):
+            continue
+
         post_list.append({
             "postId": key,
             "message": post.get("message"),
