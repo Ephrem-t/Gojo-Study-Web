@@ -20,7 +20,7 @@ import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
-import RegisterSidebar from "../components/RegisterSidebar";
+import Sidebar from "../components/Sidebar";
 
 /* ================= CONSTANTS ================= */
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -54,33 +54,27 @@ const sanitizeForFirebase = (value) => {
 export default function SchedulePage() {
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
   const API_BASE = `${BACKEND_BASE}/api`;
-  const schoolCode = String(admin.schoolCode || "").trim();
+  const [schoolCode, setSchoolCode] = useState(() => String(admin.schoolCode || "").trim());
   const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
   const SCHOOL_DB_ROOT = schoolCode
     ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
     : RTDB_BASE;
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
   const getSchoolNodePath = (nodeName) =>
     schoolCode ? `Platform1/Schools/${schoolCode}/${nodeName}` : nodeName;
 
   const readSchoolNode = async (nodeName) => {
-    if (schoolCode) {
-      try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
-        if (schoolRes.data !== null && schoolRes.data !== undefined) {
-          return schoolRes.data;
-        }
-      } catch (err) {
-        // fallback to root for legacy paths
-      }
+    if (!schoolCode) {
+      console.warn(`Missing schoolCode. Cannot read school node: ${nodeName}`);
+      return {};
     }
 
     try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName));
-      return rootRes.data ?? {};
+      const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
+      return schoolRes.data ?? {};
     } catch (err) {
+      console.error(`Failed to read school node ${nodeName}:`, err);
       return {};
     }
   };
@@ -139,6 +133,7 @@ export default function SchedulePage() {
   const [generatingAll, setGeneratingAll] = useState(false);
   const [savingAllAdded, setSavingAllAdded] = useState(false);
   const [weeklySubjectsOpen, setWeeklySubjectsOpen] = useState({}); // { [classKey]: boolean }
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("");
   const [selectedSection, setSelectedSection] = useState("");
   const [loading, setLoading] = useState(true);
@@ -283,12 +278,10 @@ useEffect(() => {
   /* ================= FETCH DATABASE ================= */
   const fetchAll = async () => {
     try {
-      const [usersRaw, teachersRaw, coursesRaw, assignmentsRaw, schedulesRaw, gradeMgmtRaw] =
+      const [usersRaw, teachersRaw, schedulesRaw, gradeMgmtRaw] =
         await Promise.all([
           readSchoolNode("Users"),
           readSchoolNode("Teachers"),
-          readSchoolNode("Courses"),
-          readSchoolNode("TeacherAssignments"),
           readSchoolNode("Schedules"),
           readSchoolNode("GradeManagement"),
         ]);
@@ -301,71 +294,209 @@ useEffect(() => {
         if (users[t.userId]) tMap[tid] = users[t.userId].name;
       });
 
-      const coursesData =
-        coursesRaw && typeof coursesRaw === "object" ? coursesRaw : {};
-      const courseArr = Object.entries(coursesData).map(([id, c]) => ({ id, ...c }));
-
       const classMap = {};
+      const gradeSet = new Set();
+      const ctMap = {};
+      const courseArr = [];
+      const seenCourseIds = new Set();
+
+      const normalizeToken = (value) =>
+        String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "");
+
+      const makeCourseId = (gradeValue, sectionValue, subjectToken) =>
+        `gm_${normalizeToken(gradeValue)}_${normalizeToken(sectionValue)}_${normalizeToken(subjectToken)}`;
+
+      const toSectionList = (sectionsNode) => {
+        if (Array.isArray(sectionsNode)) {
+          return sectionsNode
+            .map((sec) => {
+              if (!sec) return "";
+              if (typeof sec === "string") return sec;
+              if (typeof sec === "object") return sec.section || sec.name || sec.code || "";
+              return "";
+            })
+            .map((s) => String(s || "").trim().toUpperCase())
+            .filter(Boolean);
+        }
+
+        if (sectionsNode && typeof sectionsNode === "object") {
+          return Object.entries(sectionsNode)
+            .map(([sectionKey, sectionValue]) => {
+              if (sectionValue && typeof sectionValue === "object") {
+                return sectionValue.section || sectionValue.name || sectionValue.code || sectionKey;
+              }
+              return sectionKey;
+            })
+            .map((s) => String(s || "").trim().toUpperCase())
+            .filter(Boolean);
+        }
+
+        return [];
+      };
+
+      const toSubjectList = (subjectsNode) => {
+        if (Array.isArray(subjectsNode)) {
+          return subjectsNode
+            .map((subjectItem) => {
+              if (!subjectItem) return null;
+              if (typeof subjectItem === "string") {
+                return { key: normalizeToken(subjectItem), name: subjectItem };
+              }
+              if (typeof subjectItem === "object") {
+                const displayName = subjectItem.name || subjectItem.subject || subjectItem.code || "";
+                const subjectKey = normalizeToken(subjectItem.key || subjectItem.id || displayName);
+                if (!subjectKey || !displayName) return null;
+                return { key: subjectKey, name: displayName };
+              }
+              return null;
+            })
+            .filter(Boolean);
+        }
+
+        if (subjectsNode && typeof subjectsNode === "object") {
+          return Object.entries(subjectsNode)
+            .map(([subjectKey, subjectValue]) => {
+              if (subjectValue && typeof subjectValue === "object") {
+                const displayName = subjectValue.name || subjectValue.subject || subjectKey;
+                return {
+                  key: normalizeToken(subjectKey || displayName),
+                  name: displayName,
+                };
+              }
+              if (typeof subjectValue === "string") {
+                return {
+                  key: normalizeToken(subjectKey || subjectValue),
+                  name: subjectValue,
+                };
+              }
+              return {
+                key: normalizeToken(subjectKey),
+                name: subjectKey,
+              };
+            })
+            .filter((x) => x.key && x.name);
+        }
+
+        return [];
+      };
+
+      const resolveTeacherId = (assignment) => {
+        const raw = assignment?.teacherId || assignment?.teacherRecordKey || "";
+        return String(raw || "").trim().replace(/^-+/, "");
+      };
 
       const addClassOption = (gradeValue, sectionValue) => {
         const grade = String(gradeValue || "").trim();
         const section = String(sectionValue || "").trim().toUpperCase();
-        if (!grade || !section) return;
+        if (!grade) return;
+        gradeSet.add(grade);
+        if (!section) return;
         if (!classMap[grade]) classMap[grade] = new Set();
         classMap[grade].add(section);
       };
 
       // Primary source: GradeManagement/grades from DB
       const gradeMgmt = gradeMgmtRaw && typeof gradeMgmtRaw === "object" ? gradeMgmtRaw : {};
-      const gradeEntries = Array.isArray(gradeMgmt?.grades)
-        ? gradeMgmt.grades
-        : Object.values(gradeMgmt?.grades || {});
+      const gradeNode = gradeMgmt?.grades;
+      const gradeEntries = Array.isArray(gradeNode)
+        ? gradeNode
+        : Object.entries(gradeNode || {}).map(([gradeKey, gradeValue]) => ({
+            grade: gradeValue?.grade ?? gradeKey,
+            ...(gradeValue && typeof gradeValue === "object" ? gradeValue : {}),
+          }));
 
-      gradeEntries.forEach((entry) => {
+      gradeEntries.forEach((entry, index) => {
         if (!entry || typeof entry !== "object") return;
-        const grade = entry.grade;
-        const sectionsNode = entry.sections;
-
-        if (Array.isArray(sectionsNode)) {
-          sectionsNode.forEach((sec) => {
-            if (!sec) return;
-            if (typeof sec === "string") {
-              addClassOption(grade, sec);
-              return;
-            }
-            if (typeof sec === "object") {
-              addClassOption(grade, sec.section || sec.name || sec.code);
-            }
-          });
-          return;
+        const grade = String(entry.grade ?? (Array.isArray(gradeNode) ? "" : String(index + 1))).trim();
+        if (grade) {
+          gradeSet.add(grade);
         }
+        const sectionSubjectTeachers =
+          entry.sectionSubjectTeachers && typeof entry.sectionSubjectTeachers === "object"
+            ? entry.sectionSubjectTeachers
+            : {};
 
-        if (sectionsNode && typeof sectionsNode === "object") {
-          Object.entries(sectionsNode).forEach(([sectionKey, sectionValue]) => {
-            const sectionName =
-              (sectionValue && typeof sectionValue === "object" && (sectionValue.section || sectionValue.name || sectionValue.code))
-                ? (sectionValue.section || sectionValue.name || sectionValue.code)
-                : sectionKey;
-            addClassOption(grade, sectionName);
-          });
-        }
-      });
-
-      // Fallback/merge: include classes that exist in Courses
-      courseArr.forEach((c) => {
-        addClassOption(c.grade, c.section);
-      });
-
-      const assigns =
-        assignmentsRaw && typeof assignmentsRaw === "object"
-          ? assignmentsRaw
-          : {};
-      const ctMap = {};
-      if (assigns && typeof assigns === "object") {
-        Object.values(assigns).forEach(a => {
-          ctMap[a.courseId] = a.teacherId;
+        const sections = toSectionList(entry.sections);
+        Object.keys(sectionSubjectTeachers || {}).forEach((sectionKey) => {
+          const section = String(sectionKey || "").trim().toUpperCase();
+          if (section) sections.push(section);
         });
-      }
+
+        const uniqueSections = [...new Set(sections.filter(Boolean))];
+        uniqueSections.forEach((section) => addClassOption(grade, section));
+
+        const subjects = toSubjectList(entry.subjects);
+        const subjectMap = new Map(subjects.map((s) => [normalizeToken(s.key || s.name), s]));
+
+        Object.entries(sectionSubjectTeachers).forEach(([sectionKey, subjectTeacherNode]) => {
+          const section = String(sectionKey || "").trim().toUpperCase();
+          if (!section || !subjectTeacherNode || typeof subjectTeacherNode !== "object") return;
+
+          Object.entries(subjectTeacherNode).forEach(([subjectKey, assignment]) => {
+            const displayName =
+              (assignment && typeof assignment === "object" && (assignment.subject || assignment.name))
+                ? (assignment.subject || assignment.name)
+                : subjectKey;
+            const token = normalizeToken(displayName || subjectKey);
+            if (!token) return;
+            if (!subjectMap.has(token)) {
+              subjectMap.set(token, { key: token, name: displayName || subjectKey });
+            }
+          });
+        });
+
+        const mergedSubjects = [...subjectMap.values()];
+
+        uniqueSections.forEach((section) => {
+          mergedSubjects.forEach((subjectItem) => {
+            const courseId = makeCourseId(grade, section, subjectItem.key || subjectItem.name);
+            if (seenCourseIds.has(courseId)) return;
+            seenCourseIds.add(courseId);
+            courseArr.push({
+              id: courseId,
+              grade,
+              section,
+              name: subjectItem.name,
+              subject: subjectItem.name,
+            });
+          });
+        });
+
+        Object.entries(sectionSubjectTeachers).forEach(([sectionKey, subjectTeacherNode]) => {
+          const section = String(sectionKey || "").trim().toUpperCase();
+          if (!section || !subjectTeacherNode || typeof subjectTeacherNode !== "object") return;
+
+          Object.entries(subjectTeacherNode).forEach(([subjectKey, assignment]) => {
+            if (!assignment || typeof assignment !== "object") return;
+            const subjectToken = normalizeToken(assignment.subject || subjectKey);
+            const teacherId = resolveTeacherId(assignment);
+            if (!subjectToken || !teacherId) return;
+            const courseId = makeCourseId(grade, section, subjectToken);
+            ctMap[courseId] = teacherId;
+          });
+        });
+      });
+
+      const parsedGrades = [...gradeSet].filter(Boolean).sort((a, b) => {
+        const aNum = Number(a);
+        const bNum = Number(b);
+        if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) return aNum - bNum;
+        return String(a).localeCompare(String(b));
+      });
+
+      courseArr.sort((a, b) => {
+        const gradeDiff = Number(a.grade) - Number(b.grade);
+        if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
+        const gradeCmp = String(a.grade).localeCompare(String(b.grade));
+        if (gradeCmp !== 0) return gradeCmp;
+        const sectionCmp = String(a.section).localeCompare(String(b.section));
+        if (sectionCmp !== 0) return sectionCmp;
+        return String(a.subject).localeCompare(String(b.subject));
+      });
 
       if (schedulesRaw && typeof schedulesRaw === "object") {
         setSchedule(schedulesRaw);
@@ -373,6 +504,7 @@ useEffect(() => {
 
       setCourses(courseArr);
       setClasses(classMap);
+      setGradeOptions(parsedGrades);
       setTeacherMap(tMap);
       setCourseTeacherMap(ctMap);
       setLoading(false);
@@ -387,19 +519,12 @@ useEffect(() => {
     let unsubscribe = () => {};
 
     const connectScheduleListener = async () => {
-      let targetPath = "Schedules";
-
-      if (schoolCode) {
-        const schoolPath = getSchoolNodePath("Schedules");
-        try {
-          const schoolSnap = await get(ref(db, schoolPath));
-          if (schoolSnap.exists()) {
-            targetPath = schoolPath;
-          }
-        } catch (err) {
-          targetPath = "Schedules";
-        }
+      if (!schoolCode) {
+        console.warn("Missing schoolCode. Schedule listener disabled.");
+        return;
       }
+
+      const targetPath = getSchoolNodePath("Schedules");
 
       if (cancelled) return;
 
@@ -423,17 +548,37 @@ const handleClick = () => {
   };
 
   useEffect(() => {
-    // Replace with your actual API call
-    const fetchUnreadSenders = async () => {
-      const response = await fetch("/api/unreadSenders");
-      const data = await response.json();
-      setUnreadSenders(data);
+    if (schoolCode) return;
+    const identity = admin.adminId || admin.userId;
+    if (!identity) return;
+
+    const recoverSchoolCode = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/admin/${encodeURIComponent(identity)}`);
+        const profile = res?.data?.admin || {};
+        const resolvedCode = String(profile.schoolCode || "").trim();
+        if (!resolvedCode) return;
+
+        setSchoolCode(resolvedCode);
+        const existing = JSON.parse(localStorage.getItem("admin") || "{}");
+        localStorage.setItem(
+          "admin",
+          JSON.stringify({
+            ...existing,
+            schoolCode: resolvedCode,
+          })
+        );
+      } catch (err) {
+        console.warn("Failed to recover schoolCode for SchedulePage", err);
+      }
     };
-    fetchUnreadSenders();
-  }, []);
+
+    recoverSchoolCode();
+  }, [schoolCode, admin.adminId, admin.userId, API_BASE]);
 
 useEffect(() => {
   const fetchTeachersAndUnread = async () => {
+    if (!schoolCode || !adminUserId) return;
     try {
       const [teachersRaw, usersRaw] = await Promise.all([
         readSchoolNode("Teachers"),
@@ -461,18 +606,23 @@ useEffect(() => {
       const unread = {};
       const allMessages = [];
 
-      for (const t of teacherList) {
-        const chatKey = `${adminUserId}_${t.userId}`;
-        const chatData = await fetchChatMessages(chatKey);
-        const msgs = Object.values(chatData || {}).map(m => ({
-          ...m,
-          sender: m.senderId === adminUserId ? "admin" : "teacher"
-        }));
-        allMessages.push(...msgs);
+      const chatResults = await Promise.all(
+        teacherList.map(async (t) => {
+          const chatKey = `${adminUserId}_${t.userId}`;
+          const chatData = await fetchChatMessages(chatKey);
+          const msgs = Object.values(chatData || {}).map((m) => ({
+            ...m,
+            sender: m.senderId === adminUserId ? "admin" : "teacher",
+          }));
+          return { userId: t.userId, msgs };
+        })
+      );
 
-        const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
-        if (unreadCount > 0) unread[t.userId] = unreadCount;
-      }
+      chatResults.forEach(({ userId, msgs }) => {
+        allMessages.push(...msgs);
+        const unreadCount = msgs.filter((m) => m.receiverId === adminUserId && !m.seen).length;
+        if (unreadCount > 0) unread[userId] = unreadCount;
+      });
 
       setPopupMessages(allMessages);
       setUnreadTeachers(unread);
@@ -483,12 +633,13 @@ useEffect(() => {
   };
 
   fetchTeachersAndUnread();
-}, [adminUserId]);
+}, [adminUserId, schoolCode]);
 
 
   useEffect(() => {
+    if (!schoolCode) return;
     fetchAll();
-  }, []);
+  }, [schoolCode]);
 
   useEffect(() => {
     scheduleRef.current = schedule || {};
@@ -2889,97 +3040,8 @@ const autoGenerate = (opts = {}) => {
 
   return (
     <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-{/* TOP NAVBAR */}
-<nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
-  <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
-  
-  <div className="nav-right">
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown(prev => !prev);
-            }}
-          >
-            <FaBell />
-
-            {(() => {
-              const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
-              const total = (postNotifications?.length || 0) + messageCount;
-              return total > 0 ? (
-                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
-              ) : null;
-            })()}
-
-            {showPostDropdown && (
-              <div
-                className="notification-dropdown"
-                style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "var(--surface-panel)", borderRadius: 10, boxShadow: "var(--shadow-panel)", border: "1px solid var(--border-soft)", zIndex: 1000, padding: 6 }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
-                  <p style={{ padding: 12, textAlign: "center", color: "var(--text-muted)" }}>No new notifications</p>
-                ) : (
-                  <div>
-                    {/* Posts */}
-                    {postNotifications.length > 0 && (
-                      <div>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
-                        {postNotifications.map((n) => (
-                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")} onMouseLeave={(e) => (e.currentTarget.style.background = "")} onClick={() => handleNotificationClick(n)}>
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                            </div>
-                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Messages */}
-                    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
-                      <div>
-                        <div style={{ padding: "8px 10px", color: "var(--text-primary)", fontWeight: 700, background: "var(--surface-muted)", borderRadius: 6, margin: "8px 6px" }}>Messages</div>
-                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")} onMouseLeave={(e) => (e.currentTarget.style.background = "")} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders((prev) => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-  {/* ================= MESSENGER ================= */}
-  <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-    <FaFacebookMessenger />
-    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
-      <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-    )}
-  </div>
-  {/* ============== END MESSENGER ============== */}
-  
-
-  
-            <Link className="icon-circle" to="/settings">
-                  <FaCog />
-                </Link>
-            <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-          </div>
-</nav>
-
-<div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
-  <RegisterSidebar user={admin} sticky fullHeight />
+<div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+  <Sidebar admin={admin} />
 
         {/* MAIN */}
         <div style={styles.main}>
@@ -2992,7 +3054,7 @@ const autoGenerate = (opts = {}) => {
             <div style={styles.selectorRight}>
               <select style={styles.select} value={selectedGrade} onChange={e => { setSelectedGrade(e.target.value); setSelectedSection(""); }}>
                 <option value="">🎓 Select Grade</option>
-                {Object.keys(classes).map(g => <option key={g}>{g}</option>)}
+                {gradeOptions.map(g => <option key={g}>{g}</option>)}
               </select>
               <select style={styles.select} value={selectedSection} onChange={e => setSelectedSection(e.target.value)} disabled={!selectedGrade}>
                 <option value="">📘 Select Section</option>
@@ -3152,11 +3214,29 @@ const autoGenerate = (opts = {}) => {
                       </div>
 
                       <div id={weeklyPanelId} style={styles.freqGrid}>
-                        {classCourses.map((course) => (
-                          <div key={course.id} style={styles.freqItem}>
+                        {classCourses.map((course) => {
+                          const isUnassigned = !courseTeacherMap?.[course.id];
+                          return (
+                          <div
+                            key={course.id}
+                            style={
+                              isUnassigned
+                                ? {
+                                    ...styles.freqItem,
+                                    border: "1px solid #ef4444",
+                                    background: "#fef2f2",
+                                  }
+                                : styles.freqItem
+                            }
+                          >
                             <div style={styles.freqSubject}>
                               <div style={styles.freqSubjectName}>{course.subject}</div>
                               <div style={styles.freqSubjectSub}>Periods per week</div>
+                              {!courseTeacherMap?.[course.id] ? (
+                                <div style={{ ...styles.freqSubjectSub, color: "#ef4444" }}>
+                                  Teacher not assigned
+                                </div>
+                              ) : null}
                             </div>
                             <select
                               style={styles.selectSmall}
@@ -3174,7 +3254,7 @@ const autoGenerate = (opts = {}) => {
                               {[...Array(9)].map((_, i) => <option key={i}>{i}</option>)}
                             </select>
                           </div>
-                        ))}
+                        )})}
                       </div>
 
                     </div>

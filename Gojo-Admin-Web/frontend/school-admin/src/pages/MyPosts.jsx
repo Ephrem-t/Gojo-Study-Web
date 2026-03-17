@@ -16,46 +16,7 @@ import {
 import "../styles/global.css";
 import { BACKEND_BASE } from "../config.js";
 import EthiopicCalendar from "ethiopic-calendar";
-
-const parsePostTimestamp = (postValue) => {
-  const rawCandidates = [
-    postValue?.time,
-    postValue?.createdAt,
-    postValue?.timestamp,
-    postValue?.postedAt,
-    postValue?.date,
-  ];
-
-  for (const rawValue of rawCandidates) {
-    if (rawValue === undefined || rawValue === null || rawValue === "") {
-      continue;
-    }
-
-    if (typeof rawValue === "number") {
-      const normalizedValue = rawValue < 1e12 ? rawValue * 1000 : rawValue;
-      const parsedNumberDate = new Date(normalizedValue);
-      if (!Number.isNaN(parsedNumberDate.getTime())) {
-        return parsedNumberDate;
-      }
-      continue;
-    }
-
-    const parsedStringDate = new Date(rawValue);
-    if (!Number.isNaN(parsedStringDate.getTime())) {
-      return parsedStringDate;
-    }
-  }
-
-  return null;
-};
-
-const isVideoMediaUrl = (mediaUrl, mediaType) => {
-  if (String(mediaType || "").toLowerCase().startsWith("video/")) {
-    return true;
-  }
-
-  return /\.(mp4|webm|ogg|mov|m4v|avi)(?:$|[?#])/i.test(String(mediaUrl || ""));
-};
+import Sidebar from "../components/Sidebar";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -186,9 +147,148 @@ const formatCalendarDeadlineDate = (isoDate) => {
   });
 };
 
+const isVideoMediaUrl = (mediaUrl, mediaType = "") => {
+  const normalizedMediaType = String(mediaType || "").trim().toLowerCase();
+  if (normalizedMediaType.startsWith("video/")) {
+    return true;
+  }
+
+  const normalizedUrl = String(mediaUrl || "").trim().toLowerCase();
+  return /\.(mp4|webm|ogg|mov|m4v|avi)(\?|#|$)/.test(normalizedUrl);
+};
+
+const parsePostTimestamp = (postValue) => {
+  const rawCandidates = [
+    postValue?.time,
+    postValue?.createdAt,
+    postValue?.timestamp,
+    postValue?.postedAt,
+    postValue?.date,
+  ];
+
+  for (const rawValue of rawCandidates) {
+    if (rawValue === undefined || rawValue === null || rawValue === "") {
+      continue;
+    }
+
+    if (typeof rawValue === "number") {
+      const normalizedValue = rawValue < 1e12 ? rawValue * 1000 : rawValue;
+      const parsedNumberDate = new Date(normalizedValue);
+      if (!Number.isNaN(parsedNumberDate.getTime())) {
+        return parsedNumberDate;
+      }
+      continue;
+    }
+
+    const parsedStringDate = new Date(rawValue);
+    if (!Number.isNaN(parsedStringDate.getTime())) {
+      return parsedStringDate;
+    }
+  }
+
+  return null;
+};
+
+const formatCompactDate = (dateValue) => {
+  const parsedDate = parsePostTimestamp(dateValue);
+  if (!parsedDate) {
+    return "";
+  }
+
+  return parsedDate.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const SESSION_CACHE_TTL = 60 * 1000;
+const skeletonBaseStyle = {
+  background: "linear-gradient(90deg, color-mix(in srgb, var(--surface-muted) 92%, white) 0%, color-mix(in srgb, var(--surface-panel) 72%, white) 50%, color-mix(in srgb, var(--surface-muted) 92%, white) 100%)",
+  backgroundSize: "200% 100%",
+  animation: "myPostsSkeletonPulse 1.2s ease-in-out infinite",
+  borderRadius: 10,
+};
+
+const readSessionCache = (key, ttlMs = SESSION_CACHE_TTL) => {
+  try {
+    const rawValue = sessionStorage.getItem(key);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsedValue = JSON.parse(rawValue);
+    if (!parsedValue?.savedAt || Date.now() - parsedValue.savedAt > ttlMs) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
+
+    return parsedValue.data ?? null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const writeSessionCache = (key, data) => {
+  try {
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        savedAt: Date.now(),
+        data,
+      })
+    );
+  } catch (error) {
+    // Ignore cache write failures.
+  }
+};
+
+const getCachedJsonNode = async (cacheKey, requestFactory, ttlMs = SESSION_CACHE_TTL) => {
+  const cachedValue = readSessionCache(cacheKey, ttlMs);
+  if (cachedValue !== null) {
+    return cachedValue;
+  }
+
+  const response = await requestFactory();
+  const data = response?.data || {};
+  writeSessionCache(cacheKey, data);
+  return data;
+};
+
 function MyPosts() {
   const API_BASE = `${BACKEND_BASE}/api`;
-  const [posts, setPosts] = useState([]);
+  const _storedAdmin = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("admin")) || {};
+    } catch (error) {
+      return {};
+    }
+  })();
+  const initialAdminId = _storedAdmin?.userId || null;
+  const readStoredMyPostsCache = (adminIdValue) => {
+    if (!adminIdValue) {
+      return [];
+    }
+
+    try {
+      const rawCache = localStorage.getItem(`my_posts_cache_${adminIdValue}`);
+      if (!rawCache) {
+        return [];
+      }
+
+      const parsedCache = JSON.parse(rawCache);
+      if (!Array.isArray(parsedCache)) {
+        return [];
+      }
+
+      return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+    } catch (error) {
+      return [];
+    }
+  };
+  const initialCachedPosts = readStoredMyPostsCache(initialAdminId);
+  const [posts, setPosts] = useState(initialCachedPosts);
+  const [postsLoading, setPostsLoading] = useState(initialCachedPosts.length === 0 && Boolean(initialAdminId));
+  const [postsInitialized, setPostsInitialized] = useState(initialCachedPosts.length > 0);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editedContent, setEditedContent] = useState("");
   const [postText, setPostText] = useState("");
@@ -196,6 +296,7 @@ function MyPosts() {
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [posting, setPosting] = useState(false);
   const fileInputRef = useRef(null);
+  const postsFetchRequestIdRef = useRef(0);
   const [teachers, setTeachers] = useState([]);
   const [unreadTeachers, setUnreadTeachers] = useState({});
   const [popupMessages, setPopupMessages] = useState([]);
@@ -236,7 +337,6 @@ function MyPosts() {
   const [deletingId, setDeletingId] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
-  const currentPath = location.pathname || "/my-posts";
   const FEED_MAX_WIDTH = "min(700px, 100%)";
   const isOverlayModalOpen = showCreatePostModal || showCalendarEventModal;
   const mediaPostCount = posts.filter((post) => Boolean(post.postUrl)).length;
@@ -275,39 +375,8 @@ function MyPosts() {
     background: "var(--surface-panel)",
     color: "var(--text-secondary)",
   };
-  const sidebarLinkBaseStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 10px",
-    marginLeft: 10,
-    fontSize: 11,
-    borderRadius: 12,
-    background: "var(--surface-muted)",
-    border: "1px solid var(--border-soft)",
-    color: "var(--text-secondary)",
-    fontWeight: 700,
-    textDecoration: "none",
-    transition: "all 180ms ease",
-  };
-  const sidebarLinkActiveStyle = {
-    background: "var(--accent-strong)",
-    color: "#ffffff",
-    border: "1px solid var(--accent-strong)",
-    boxShadow: "var(--shadow-glow)",
-  };
-  const getSidebarLinkStyle = (path) =>
-    currentPath === path
-      ? { ...sidebarLinkBaseStyle, ...sidebarLinkActiveStyle }
-      : sidebarLinkBaseStyle;
-
   // Read admin from localStorage
-  let admin = {};
-  try {
-    admin = JSON.parse(localStorage.getItem("admin")) || {};
-  } catch (e) {
-    admin = {};
-  }
+  const admin = _storedAdmin;
   const adminId = admin?.userId || null;
   const token =
     admin?.token ||
@@ -321,6 +390,8 @@ function MyPosts() {
     : "https://bale-house-rental-default-rtdb.firebaseio.com";
   const currentCalendarRole = String(admin?.role || admin?.userType || "admin").trim().toLowerCase();
   const canManageCalendar = CALENDAR_MANAGER_ROLES.has(currentCalendarRole);
+  const shouldShowPostsLoadingState = (postsLoading || !postsInitialized) && posts.length === 0;
+  const myPostsCacheKey = adminId ? `my_posts_cache_${adminId}` : "";
 
   useEffect(() => {
     if (token) {
@@ -333,6 +404,13 @@ function MyPosts() {
   }, [token]);
 
   const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const usersCacheKey = "my-posts:users";
+  const teachersCacheKey = "my-posts:teachers";
+  const studentsCacheKey = "my-posts:students";
+  const parentsCacheKey = "my-posts:parents";
+  const renderSkeletonLine = (width, height = 12, extraStyle = {}) => (
+    <div style={{ ...skeletonBaseStyle, width, height, ...extraStyle }} />
+  );
 
   // counts for badges
   const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
@@ -484,8 +562,10 @@ function MyPosts() {
         return;
       }
 
-      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-      const users = usersRes.data || {};
+      const users = await getCachedJsonNode(
+        usersCacheKey,
+        () => axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }))
+      );
 
       const findAdminUser = (id) =>
         Object.values(users).find((u) => u.userId === id || u.username === id);
@@ -514,9 +594,12 @@ function MyPosts() {
     const senders = {};
 
     try {
-      // load all users for names/images
-      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-      const usersData = usersRes.data || {};
+      const [usersData, teachersData, studentsData, parentsData] = await Promise.all([
+        getCachedJsonNode(usersCacheKey, () => axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }))),
+        getCachedJsonNode(teachersCacheKey, () => axios.get(`${RTDB_BASE}/Teachers.json`).catch(() => ({ data: {} }))),
+        getCachedJsonNode(studentsCacheKey, () => axios.get(`${RTDB_BASE}/Students.json`).catch(() => ({ data: {} }))),
+        getCachedJsonNode(parentsCacheKey, () => axios.get(`${RTDB_BASE}/Parents.json`).catch(() => ({ data: {} }))),
+      ]);
 
       const findUserByUserId = (userId) => Object.values(usersData).find(u => u.userId === userId);
 
@@ -534,9 +617,8 @@ function MyPosts() {
       };
 
       // Teachers
-      const teachersRes = await axios.get(`${RTDB_BASE}/Teachers.json`).catch(() => ({ data: {} }));
-      for (const k in teachersRes.data || {}) {
-        const t = teachersRes.data[k];
+      for (const k in teachersData || {}) {
+        const t = teachersData[k];
         const unread = await getUnreadCount(t.userId);
         if (unread > 0) {
           const user = findUserByUserId(t.userId);
@@ -550,9 +632,8 @@ function MyPosts() {
       }
 
       // Students
-      const studentsRes = await axios.get(`${RTDB_BASE}/Students.json`).catch(() => ({ data: {} }));
-      for (const k in studentsRes.data || {}) {
-        const s = studentsRes.data[k];
+      for (const k in studentsData || {}) {
+        const s = studentsData[k];
         const unread = await getUnreadCount(s.userId);
         if (unread > 0) {
           const user = findUserByUserId(s.userId);
@@ -566,9 +647,8 @@ function MyPosts() {
       }
 
       // Parents
-      const parentsRes = await axios.get(`${RTDB_BASE}/Parents.json`).catch(() => ({ data: {} }));
-      for (const k in parentsRes.data || {}) {
-        const p = parentsRes.data[k];
+      for (const k in parentsData || {}) {
+        const p = parentsData[k];
         const unread = await getUnreadCount(p.userId);
         if (unread > 0) {
           const user = findUserByUserId(p.userId);
@@ -622,9 +702,28 @@ function MyPosts() {
   };
 
   const fetchMyPosts = async () => {
-    if (!adminId) return;
+    const requestId = postsFetchRequestIdRef.current + 1;
+    postsFetchRequestIdRef.current = requestId;
+
+    if (!adminId) {
+      setPostsLoading(false);
+      setPostsInitialized(true);
+      return;
+    }
+
+    const isCurrentRequest = () => postsFetchRequestIdRef.current === requestId;
+    const readCachedPosts = () => readStoredMyPostsCache(adminId);
+
+    const cachedPosts = readCachedPosts();
+    if (cachedPosts.length > 0 && isCurrentRequest()) {
+      setPosts(cachedPosts);
+      setPostsLoading(false);
+    } else {
+      setPostsLoading(true);
+    }
+
     try {
-      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`);
+      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, { timeout: 4500 });
       const postsArray = Array.isArray(res.data)
         ? res.data
         : Object.entries(res.data || {}).map(([key, post]) => ({
@@ -656,9 +755,24 @@ function MyPosts() {
         })
         .sort((a, b) => b.parsedTime - a.parsedTime);
 
-      setPosts(mappedPosts);
+      if (myPostsCacheKey) {
+        try {
+          localStorage.setItem(myPostsCacheKey, JSON.stringify(mappedPosts.slice(0, 120)));
+        } catch (error) {
+          // Ignore localStorage write issues.
+        }
+      }
+
+      if (isCurrentRequest()) {
+        setPosts(mappedPosts);
+      }
     } catch (err) {
       console.error("Error fetching posts:", err.response?.data || err);
+    } finally {
+      if (isCurrentRequest()) {
+        setPostsLoading(false);
+        setPostsInitialized(true);
+      }
     }
   };
 
@@ -668,6 +782,18 @@ function MyPosts() {
     const interval = setInterval(fetchMyPosts, 10000);
     return () => clearInterval(interval);
   }, [adminId]);
+
+  useEffect(() => {
+    if (!myPostsCacheKey) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(myPostsCacheKey, JSON.stringify(posts.slice(0, 120)));
+    } catch (error) {
+      // Ignore localStorage write issues.
+    }
+  }, [myPostsCacheKey, posts]);
 
   const handlePost = async () => {
     if (!postText && !postMedia) return;
@@ -1112,245 +1238,28 @@ function MyPosts() {
   }, [showCreatePostModal]);
 
   return (
-    <div className="dashboard-page">
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-
-        <div className="nav-right">
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown((prev) => !prev);
-            }}
-          >
-            <FaBell />
-            {totalNotifications > 0 && (
-              <span className="badge">{totalNotifications}</span>
-            )}
-            {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{
-                  position: "absolute",
-                  top: "45px",
-                  right: "0",
-                  width: "360px",
-                  maxHeight: "420px",
-                  overflowY: "auto",
-                  background: "#fff",
-                  borderRadius: 10,
-                  boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-                  zIndex: 1000,
-                  padding: 6,
-                }}>
-                {totalNotifications === 0 ? (
-                  <p className="muted">No new notifications</p>
-                ) : (
-                  <div>
-                    {/* Posts section */}
-                    {postNotifications.length > 0 && (
-                      <div>
-                        <div className="notification-section-title">Posts</div>
-                        {postNotifications.map((n) => (
-                          <div
-                            key={n.notificationId}
-                            className="notification-row"
-                            onClick={async () => {
-                              try {
-                                await axios.post(`${API_BASE}/mark_post_notification_read`, {
-                                  notificationId: n.notificationId,
-                                });
-                              } catch (err) {
-                                console.warn("Failed to mark notification:", err);
-                              }
-
-                              setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
-                              setShowPostDropdown(false);
-                              navigate("/dashboard", {
-                                state: {
-                                  postId: n.postId,
-                                  posterName: n.adminName,
-                                  posterProfile: n.adminProfile,
-                                },
-                              });
-                            }}
-                            style={{
-                              padding: 10,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 12,
-                              cursor: "pointer",
-                              borderBottom: "1px solid #f0f0f0",
-                              transition: "background 120ms ease",
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
-                            onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                          >
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                            </div>
-                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Messages section */}
-                    {messageCount > 0 && (
-                      <div>
-                        <div className="notification-section-title" style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                              <div
-                                key={userId}
-                                className="notification-row"
-                                onClick={async () => {
-                                  await markMessagesAsSeen(userId);
-                                  setUnreadSenders((prev) => {
-                                    const copy = { ...prev };
-                                    delete copy[userId];
-                                    return copy;
-                                  });
-                                  setShowPostDropdown(false);
-                                  navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
-                                }}
-                                style={{
-                                  padding: 10,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 12,
-                                  cursor: "pointer",
-                                  borderBottom: "1px solid #f0f0f0",
-                                  transition: "background 120ms ease",
-                                }}
-                                onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
-                                onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                              >
-                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                                  <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
-                                </div>
-                              </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-            <FaFacebookMessenger />
-            {messageCount > 0 && <span className="badge">{messageCount}</span>}
-          </div>
-
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
-
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
+    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
+      <style>
+        {`@keyframes myPostsSkeletonPulse {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }`}
+      </style>
       <div
         className="google-dashboard"
         style={{
           display: "flex",
-          gap: 16,
-          padding: "18px 16px",
-          minHeight: "100vh",
+          gap: 14,
+          padding: "4px 14px",
+          height: "calc(100vh - 73px)",
+          overflow: "hidden",
           background: "var(--page-bg)",
           width: "100%",
           boxSizing: "border-box",
         }}
       >
         {/* ---------------- SIDEBAR ---------------- */}
-        <div
-          className="google-sidebar"
-          style={{
-            width: "clamp(230px, 16vw, 290px)",
-            minWidth: 230,
-            padding: 14,
-            borderRadius: 24,
-            background: "var(--surface-panel)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow-panel)",
-            height: "calc(100vh - 24px)",
-            overflowY: "auto",
-            alignSelf: "flex-start",
-            position: "sticky",
-            top: 24,
-            scrollbarWidth: "thin",
-            scrollbarColor: "transparent transparent",
-            opacity: isOverlayModalOpen ? 0.45 : 1,
-            filter: isOverlayModalOpen ? "blur(1px)" : "none",
-            pointerEvents: isOverlayModalOpen ? "none" : "auto",
-            transition: "opacity 180ms ease, filter 180ms ease",
-          }}
-        >
-          <div
-            className="sidebar-profile"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 8,
-              padding: "16px 14px",
-              marginBottom: 8,
-              borderRadius: 18,
-              background: "linear-gradient(180deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
-              border: "1px solid var(--border-strong)",
-              boxShadow: "inset 0 1px 0 color-mix(in srgb, white 8%, transparent)",
-            }}
-          >
-            <div className="sidebar-img-circle" style={{ width: 58, height: 58, borderRadius: "50%", overflow: "hidden", border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <div style={{ padding: "4px 10px", borderRadius: 999, background: "var(--surface-accent)", border: "1px solid var(--border-strong)", color: "var(--accent)", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>Acadamic Office</div>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "var(--text-primary)", textAlign: "center" }}>{admin?.name || "Admin Name"}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{admin?.adminId || "username"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={getSidebarLinkStyle("/dashboard")}>
-              <FaHome style={{ width: 15, height: 15 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={getSidebarLinkStyle("/my-posts")}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/teachers" style={getSidebarLinkStyle("/teachers")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Teachers
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={getSidebarLinkStyle("/students")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/schedule" style={getSidebarLinkStyle("/schedule")}>
-              <FaCalendarAlt style={{ width: 15, height: 15 }} /> Schedule
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={getSidebarLinkStyle("/parents")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/registration-form" style={getSidebarLinkStyle("/registration-form")}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> Registration Form
-            </Link>
-            <Link className="sidebar-btn" to="/settings" style={getSidebarLinkStyle("/settings")}>
-              <FaCog style={{ width: 15, height: 15 }} /> Settings
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                localStorage.removeItem("registrar");
-                window.location.href = "/login";
-              }}
-              style={{ ...sidebarLinkBaseStyle, marginLeft: 0, justifyContent: "center", color: "var(--danger)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", cursor: "pointer" }}
-            >
-              <FaSignOutAlt style={{ width: 15, height: 15 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <Sidebar admin={admin} dimmed={isOverlayModalOpen} />
 
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
@@ -1361,11 +1270,10 @@ function MyPosts() {
             maxWidth: "none",
             margin: "0",
             boxSizing: "border-box",
-            alignSelf: "flex-start",
-            height: "calc(100vh - 24px)",
+            alignSelf: "stretch",
+            height: "100%",
             overflowY: "auto",
-            position: "sticky",
-            top: 24,
+            overflowX: "hidden",
             scrollbarWidth: "thin",
             scrollbarColor: "transparent transparent",
             padding: "0 2px",
@@ -1462,7 +1370,29 @@ function MyPosts() {
           </div>
 
           {/* Posts container */}
-          {posts.length === 0 ? (
+          {shouldShowPostsLoadingState ? (
+            <div style={{ maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div key={`my-posts-skeleton-${index}`} style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden", padding: "12px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
+                      <div style={{ ...skeletonBaseStyle, width: 40, height: 40, borderRadius: "50%", flexShrink: 0 }} />
+                      <div style={{ display: "grid", gap: 7, flex: 1 }}>
+                        {renderSkeletonLine("28%", 14)}
+                        {renderSkeletonLine("52%", 12)}
+                      </div>
+                    </div>
+                    {renderSkeletonLine("74px", 28, { borderRadius: 999 })}
+                  </div>
+                  <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+                    {renderSkeletonLine("88%", 12)}
+                    {renderSkeletonLine(index === 1 ? "56%" : "72%", 12)}
+                    <div style={{ ...skeletonBaseStyle, width: "100%", height: index === 1 ? 210 : 170, borderRadius: 12, marginTop: 4 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : posts.length === 0 ? (
             <div style={{ ...shellCardStyle, maxWidth: FEED_MAX_WIDTH, margin: "0 auto", borderRadius: 10, padding: 18, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
               You have no posts yet.
             </div>
@@ -1570,7 +1500,7 @@ function MyPosts() {
           )}
         </div>
 
-        <div className="dashboard-widgets" style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh - 24px)", overflowY: "auto", position: "sticky", top: 24, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, marginLeft: "auto", marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
+        <div className="dashboard-widgets" style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh - 4px)", overflowY: "auto", position: "sticky", top: 4, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, marginLeft: "auto", marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Quick Statistics</h4>
             <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", justifyContent: "center", flexWrap: "nowrap" }}>

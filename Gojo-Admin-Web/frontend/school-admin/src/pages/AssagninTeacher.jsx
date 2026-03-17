@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { FaCog, FaEdit, FaSave, FaTrash } from "react-icons/fa";
-import RegisterSidebar from "../components/RegisterSidebar";
+import Sidebar from "../components/Sidebar";
 
 const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -456,31 +456,15 @@ function AssagninTeacher() {
         color: "var(--text-primary)",
       }}
     >
-      <nav
-        className="top-navbar"
-        style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}
-      >
-        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>
-          Gojo Admin Portal
-        </h2>
-
-        <div className="nav-right">
-          <Link className="icon-circle" to="/settings">
-            <FaCog />
-          </Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
       <div
         className="google-dashboard"
-        style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}
+        style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}
       >
-        <RegisterSidebar user={admin} sticky fullHeight />
+        <Sidebar admin={admin} />
 
         <div
           style={{
-            padding: "10px 20px 20px",
+            padding: "0 20px 20px",
             flex: 1,
             minWidth: 0,
             boxSizing: "border-box",
@@ -491,7 +475,7 @@ function AssagninTeacher() {
         >
           <div
             className="section-header-card"
-            style={{ marginBottom: "12px", width: "min(980px, 100%)" }}
+            style={{ marginBottom: "12px", width: "min(760px, 100%)" }}
           >
             <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>
               Assign Teacher
@@ -503,7 +487,7 @@ function AssagninTeacher() {
 
           <div
             style={{
-              width: "min(980px, 100%)",
+              width: "min(760px, 100%)",
               background: "var(--surface-panel)",
               border: "1px solid var(--border-soft)",
               borderRadius: 14,

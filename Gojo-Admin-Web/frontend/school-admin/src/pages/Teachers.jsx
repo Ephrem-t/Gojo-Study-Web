@@ -25,20 +25,68 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
+import Sidebar from "../components/Sidebar";
 
 
 
 
 function TeachersPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
-  const [teachers, setTeachers] = useState([]);
-  const [loadingTeachers, setLoadingTeachers] = useState(true);
-  const [selectedGrade, setSelectedGrade] = useState("All");
-  const [gradeOptions, setGradeOptions] = useState([]);
+  const bootstrapAdmin = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("admin") || "{}") || {};
+    } catch {
+      return {};
+    }
+  })();
+  const bootstrapSchoolCode = String(bootstrapAdmin.schoolCode || "").trim();
+  const TEACHERS_CACHE_KEY = `teachers_page_cache_${bootstrapSchoolCode || "global"}`;
+  const TEACHERS_UI_STATE_KEY = `teachers_page_ui_${bootstrapSchoolCode || "global"}`;
+  const readBootstrapTeachersCache = () => {
+    try {
+      const rawSession = sessionStorage.getItem(TEACHERS_CACHE_KEY);
+      const rawLocal = localStorage.getItem(TEACHERS_CACHE_KEY);
+      const parsed = JSON.parse(rawSession || rawLocal || "null");
+      if (!parsed || typeof parsed !== "object") return null;
+      if (!rawSession && rawLocal) {
+        sessionStorage.setItem(TEACHERS_CACHE_KEY, rawLocal);
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+  const bootstrapCache = readBootstrapTeachersCache();
+  const readBootstrapUiState = () => {
+    try {
+      const rawSession = sessionStorage.getItem(TEACHERS_UI_STATE_KEY);
+      const rawLocal = localStorage.getItem(TEACHERS_UI_STATE_KEY);
+      const parsed = JSON.parse(rawSession || rawLocal || "null");
+      if (!parsed || typeof parsed !== "object") return null;
+      if (!rawSession && rawLocal) {
+        sessionStorage.setItem(TEACHERS_UI_STATE_KEY, rawLocal);
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+  const bootstrapUiState = readBootstrapUiState();
+
+  const [teachers, setTeachers] = useState(Array.isArray(bootstrapCache?.teacherList) ? bootstrapCache.teacherList : []);
+  const [loadingTeachers, setLoadingTeachers] = useState(!bootstrapCache);
+  const [selectedGrade, setSelectedGrade] = useState(
+    typeof bootstrapUiState?.selectedGrade === "string" && bootstrapUiState.selectedGrade.trim()
+      ? bootstrapUiState.selectedGrade
+      : "All"
+  );
+  const [gradeOptions, setGradeOptions] = useState(Array.isArray(bootstrapCache?.gradeOptions) ? bootstrapCache.gradeOptions : []);
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(
+    typeof bootstrapUiState?.searchTerm === "string" ? bootstrapUiState.searchTerm : ""
+  );
   const [popupMessages, setPopupMessages] = useState([]);
   const [popupInput, setPopupInput] = useState("");
   const messagesEndRef = useRef(null);
@@ -79,14 +127,17 @@ function TeachersPage() {
   const [postNotifications, setPostNotifications] = useState([]);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
+  const [usersByUserId, setUsersByUserId] = useState(
+    bootstrapCache?.usersMap && typeof bootstrapCache.usersMap === "object" ? bootstrapCache.usersMap : {}
+  );
   const [isPortrait, setIsPortrait] = useState(typeof window !== "undefined" ? window.innerWidth < window.innerHeight : false);
   const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" ? window.innerWidth < 900 : false);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [teachersRefreshNonce, setTeachersRefreshNonce] = useState(0);
 
   const navigate = useNavigate();
   const location = useLocation();
-  const currentPath = location.pathname;
-  const admin = JSON.parse(localStorage.getItem("admin")) || {};
+  const admin = bootstrapAdmin;
   const adminUserId = admin.userId;
   const adminId = admin.userId;
   const schoolCode = String(admin.schoolCode || "").trim();
@@ -99,32 +150,6 @@ function TeachersPage() {
   const SCHOOL_DB_ROOT = schoolCode
     ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
     : RTDB_BASE;
-
-  const sidebarLinkBaseStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 10px",
-    marginLeft: 10,
-    fontSize: 11,
-    borderRadius: 12,
-    background: "var(--surface-muted)",
-    border: "1px solid var(--border-soft)",
-    color: "var(--text-secondary)",
-    fontWeight: 700,
-    textDecoration: "none",
-    transition: "all 180ms ease",
-  };
-  const sidebarLinkActiveStyle = {
-    background: "var(--accent-strong)",
-    color: "#ffffff",
-    border: "1px solid var(--accent-strong)",
-    boxShadow: "var(--shadow-glow)",
-  };
-  const getSidebarLinkStyle = (path) =>
-    currentPath === path
-      ? { ...sidebarLinkBaseStyle, ...sidebarLinkActiveStyle }
-      : sidebarLinkBaseStyle;
 
   const chipStyle = (active) => ({
     padding: "6px 12px",
@@ -146,15 +171,40 @@ function TeachersPage() {
     boxShadow: "var(--shadow-soft)",
   };
 
+  const headerCardStyle = {
+    ...shellCardStyle,
+    borderRadius: 14,
+    padding: "16px 18px 14px",
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
+  };
+
+  const contentWidth = isNarrow
+    ? "100%"
+    : !isPortrait
+      ? "min(760px, max(320px, calc(100vw - 560px)))"
+      : "760px";
+  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const rightSidebarOffset = !isPortrait ? 408 : 2;
+  const sidebarTeacherName = selectedTeacher?.name || "Teachers Workspace";
+  const sidebarTeacherImage = selectedTeacher?.profileImage || "/default-profile.png";
+  const sidebarTeacherEmail = selectedTeacherUser?.email || selectedTeacher?.email || "";
   const listCardStyle = (isSelected) => ({
-    width: isNarrow ? "92%" : "560px",
-    minHeight: "86px",
-    borderRadius: "14px",
-    padding: "12px",
+    width: contentWidth,
+    maxWidth: "100%",
+    minHeight: isNarrow ? "76px" : "88px",
+    borderRadius: "16px",
+    padding: isNarrow ? "9px 10px" : "12px 14px",
     background: isSelected ? "var(--surface-accent)" : "var(--surface-panel)",
     border: isSelected ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
     boxShadow: isSelected ? "var(--shadow-glow)" : "var(--shadow-soft)",
     cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    boxSizing: "border-box",
     transition: "all 0.25s ease",
   });
 
@@ -165,7 +215,23 @@ function TeachersPage() {
     boxShadow: "var(--shadow-soft)",
   };
 
-  const contentLeft = isNarrow ? 0 : 90;
+  const tabButtonStyle = (tab) => ({
+    flex: 1,
+    padding: "8px",
+    background: activeTab === tab ? "var(--surface-accent)" : "transparent",
+    border: "none",
+    cursor: "pointer",
+    fontWeight: 700,
+    color: activeTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
+    fontSize: "11px",
+    borderBottom:
+      activeTab === tab
+        ? "2px solid var(--accent-strong)"
+        : "2px solid transparent",
+    transition: "all 0.2s ease",
+  });
+
+  const contentLeft = 0;
 
   const isValidGradeKey = (value) => {
     const numeric = Number(value);
@@ -177,7 +243,7 @@ function TeachersPage() {
   const readSchoolNode = async (nodeName) => {
     if (schoolCode) {
       try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
+        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName), { timeout: 6000 });
         if (schoolRes.data && typeof schoolRes.data === "object") {
           return schoolRes.data;
         }
@@ -187,11 +253,50 @@ function TeachersPage() {
     }
 
     try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName));
+      const rootRes = await axios.get(getRootNodeUrl(nodeName), { timeout: 6000 });
       return rootRes.data || {};
     } catch (err) {
       return {};
     }
+  };
+
+  const readTeachersCache = () => {
+    try {
+      const rawSession = sessionStorage.getItem(TEACHERS_CACHE_KEY);
+      const rawLocal = localStorage.getItem(TEACHERS_CACHE_KEY);
+      const parsed = JSON.parse(rawSession || rawLocal || "null");
+      if (!parsed || typeof parsed !== "object") return null;
+      if (!rawSession && rawLocal) {
+        sessionStorage.setItem(TEACHERS_CACHE_KEY, rawLocal);
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeTeachersCache = (payload) => {
+    try {
+      const value = JSON.stringify({ ...payload, fetchedAt: Date.now() });
+      sessionStorage.setItem(
+        TEACHERS_CACHE_KEY,
+        value
+      );
+      localStorage.setItem(TEACHERS_CACHE_KEY, value);
+    } catch {
+      // ignore cache write errors
+    }
+  };
+
+  const handleRefreshTeachers = () => {
+    try {
+      sessionStorage.removeItem(TEACHERS_CACHE_KEY);
+      localStorage.removeItem(TEACHERS_CACHE_KEY);
+    } catch {
+      // ignore
+    }
+    setLoadingTeachers(true);
+    setTeachersRefreshNonce((prev) => prev + 1);
   };
 
   useEffect(() => {
@@ -199,6 +304,16 @@ function TeachersPage() {
     const intervalId = setInterval(tick, 60 * 1000);
     return () => clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    try {
+      const value = JSON.stringify({ selectedGrade, searchTerm });
+      sessionStorage.setItem(TEACHERS_UI_STATE_KEY, value);
+      localStorage.setItem(TEACHERS_UI_STATE_KEY, value);
+    } catch {
+      // ignore UI state cache write errors
+    }
+  }, [selectedGrade, searchTerm, TEACHERS_UI_STATE_KEY]);
 
   const getPeriodRangeMinutes = (label) => {
     if (!label) return null;
@@ -348,26 +463,132 @@ useEffect(() => {
   // ---------------- FETCH TEACHERS ----------------
   useEffect(() => {
     const fetchTeachers = async () => {
+      const isLikelyIdOrMissingName = (nameValue, teacherIdValue) => {
+        const name = String(nameValue || "").trim();
+        const teacherId = String(teacherIdValue || "").trim();
+        if (!name) return true;
+        if (name === teacherId) return true;
+        if (name.toLowerCase() === "unknown teacher") return true;
+        return false;
+      };
+
+      const normalizeProfileImage = (value) => {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        if (/^(https?:\/\/|data:|blob:|\/)/i.test(raw)) return raw;
+        return "";
+      };
+
+      const resolveProfileImage = (...candidates) => {
+        for (const candidate of candidates) {
+          const normalized = normalizeProfileImage(candidate);
+          if (normalized) return normalized;
+        }
+        return "/default-profile.png";
+      };
+
+      const cached = readTeachersCache();
+      if (cached) {
+        const cachedUsersMap = cached.usersMap && typeof cached.usersMap === "object" ? cached.usersMap : {};
+        const cachedTeacherList = (Array.isArray(cached.teacherList) ? cached.teacherList : []).map((teacherItem) => {
+          const user = cachedUsersMap[String(teacherItem?.userId || "").trim()] || {};
+          const currentName = String(teacherItem?.name || "").trim();
+          const currentTeacherId = String(teacherItem?.teacherId || "").trim();
+          const shouldReplaceWithUserName = !currentName || currentName === currentTeacherId;
+          return {
+            ...teacherItem,
+            name: shouldReplaceWithUserName ? (user.name || teacherItem.name || "Unknown Teacher") : teacherItem.name,
+            profileImage: resolveProfileImage(user.profileImage),
+          };
+        });
+        setTeachers(cachedTeacherList);
+        setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
+        setUsersByUserId(cachedUsersMap);
+        setSelectedGrade((prev) => {
+          if (prev === "All") return prev;
+          return (cached.gradeOptions || []).includes(String(prev)) ? prev : "All";
+        });
+        setLoadingTeachers(false);
+      }
+
       setLoadingTeachers(true);
+
       try {
-        const [teachersData, assignmentsData, coursesData, usersData, gradesData] = await Promise.all([
+        const [teachersData, assignmentsData, coursesData, gradesData, employeesData, usersData] = await Promise.all([
           readSchoolNode("Teachers"),
           readSchoolNode("TeacherAssignments"),
           readSchoolNode("Courses"),
-          readSchoolNode("Users"),
           readSchoolNode("GradeManagement/grades"),
+          readSchoolNode("Employees"),
+          readSchoolNode("Users"),
         ]);
 
-        const teacherList = Object.keys(teachersData).map(teacherId => {
-          const teacher = teachersData[teacherId];
-          const user = usersData[teacher.userId] || {};
+        const buildEmployeeDisplayName = (employee) => {
+          const personal = employee?.personal || {};
+          const candidates = [
+            employee?.name,
+            employee?.fullName,
+            personal?.fullName,
+            [personal?.firstName, personal?.middleName, personal?.lastName].filter(Boolean).join(" "),
+            personal?.firstName,
+          ];
+          return candidates
+            .map((value) => String(value || "").trim())
+            .find((value) => Boolean(value)) || "";
+        };
 
-          const gradesSubjectsRaw = Object.values(assignmentsData)
-            .filter(a => a.teacherId === teacherId)
-            .map(a => {
-              const course = coursesData[a.courseId];
+        const usersMap = Object.values(usersData || {}).reduce((acc, userRecord) => {
+          const userId = String(userRecord?.userId || "").trim();
+          if (!userId) return acc;
+          acc[userId] = userRecord;
+          return acc;
+        }, {});
+
+        const teacherSeedMap = { ...(teachersData || {}) };
+        const employeeNameByTeacherId = {};
+        Object.entries(employeesData || {}).forEach(([employeeId, employee]) => {
+          const teacherId = String(employee?.teacherId || "").trim();
+          if (!teacherId) return;
+          const existing = teacherSeedMap[teacherId] || {};
+          const employeeUserId = String(employee?.userId || "").trim();
+          const employeeDisplayName = buildEmployeeDisplayName(employee);
+          if (employeeDisplayName) {
+            employeeNameByTeacherId[teacherId] = employeeDisplayName;
+          }
+
+          teacherSeedMap[teacherId] = {
+            ...existing,
+            teacherId,
+            employeeId: existing.employeeId || employeeId,
+            userId: String(existing.userId || "").trim() || employeeUserId || null,
+            status: existing.status || employee?.status || "active",
+          };
+        });
+
+        const assignmentsByTeacher = {};
+        Object.values(assignmentsData || {}).forEach((assignment) => {
+          const teacherId = String(assignment?.teacherId || "").trim();
+          const courseId = String(assignment?.courseId || "").trim();
+          if (!teacherId || !courseId) return;
+          if (!assignmentsByTeacher[teacherId]) assignmentsByTeacher[teacherId] = [];
+          assignmentsByTeacher[teacherId].push(courseId);
+        });
+
+        const teacherList = Object.keys(teacherSeedMap).map((teacherId) => {
+          const teacher = teacherSeedMap[teacherId] || {};
+          const user = usersMap[String(teacher?.userId || "").trim()] || {};
+          const teacherDisplayName =
+            String(user?.name || "").trim() ||
+            String(teacher?.name || "").trim() ||
+            String(employeeNameByTeacherId[teacherId] || "").trim() ||
+            "Unknown Teacher";
+          const teacherProfileImage = resolveProfileImage(user?.profileImage);
+
+          const gradesSubjectsRaw = (assignmentsByTeacher[teacherId] || [])
+            .map((courseId) => {
+              const course = coursesData[courseId];
               return course
-                ? { courseId: a.courseId, grade: course.grade, subject: course.subject, section: course.section }
+                ? { courseId, grade: course.grade, subject: course.subject, section: course.section }
                 : null;
             })
             .filter(Boolean);
@@ -396,8 +617,8 @@ useEffect(() => {
 
           return {
             teacherId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
+            name: teacherDisplayName,
+            profileImage: teacherProfileImage,
             gradesSubjects,
             subjectsUnique,
             email: user.email || null,
@@ -426,6 +647,28 @@ useEffect(() => {
           if (prev === "All") return prev;
           return resolvedGrades.includes(String(prev)) ? prev : "All";
         });
+
+        setLoadingTeachers(false);
+
+        setUsersByUserId(usersMap);
+
+        const hydratedTeachers = teacherList.map((teacherItem) => {
+          const user = usersMap[String(teacherItem?.userId || "").trim()] || {};
+          return {
+            ...teacherItem,
+            name: user.name || teacherItem.name,
+            profileImage: resolveProfileImage(user.profileImage),
+            email: user.email || teacherItem.email || null,
+          };
+        });
+
+        setTeachers(hydratedTeachers);
+
+        writeTeachersCache({
+          teacherList: hydratedTeachers,
+          gradeOptions: resolvedGrades,
+          usersMap,
+        });
       } catch (err) {
         console.error("Error fetching teachers:", err);
       } finally {
@@ -434,7 +677,16 @@ useEffect(() => {
     };
 
     fetchTeachers();
-  }, []);
+  }, [teachersRefreshNonce]);
+
+  useEffect(() => {
+    if (!selectedTeacher?.userId) {
+      setSelectedTeacherUser(null);
+      return;
+    }
+
+    setSelectedTeacherUser(usersByUserId[selectedTeacher.userId] || null);
+  }, [selectedTeacher, usersByUserId]);
 
   // ---------------- FILTER TEACHERS ----------------
   const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -1488,87 +1740,75 @@ useEffect(() => {
     const senders = {};
 
     try {
-      // 1) USERS (names & images)
-      const usersData = await readSchoolNode("Users");
+      const [usersData, teachersData, studentsData, parentsData, chatsRes] = await Promise.all([
+        readSchoolNode("Users"),
+        readSchoolNode("Teachers"),
+        readSchoolNode("Students"),
+        readSchoolNode("Parents"),
+        axios.get(`${RTDB_BASE}/Chats.json`).catch(() => ({ data: {} })),
+      ]);
 
-      const findUserByUserId = (userId) => {
-        return Object.values(usersData).find((u) => u.userId === userId);
+      const usersById = Object.values(usersData || {}).reduce((acc, userRecord) => {
+        const userId = String(userRecord?.userId || "").trim();
+        if (!userId) return acc;
+        acc[userId] = userRecord;
+        return acc;
+      }, {});
+
+      const unreadByUser = {};
+      Object.entries(chatsRes?.data || {}).forEach(([chatKey, chatNode]) => {
+        if (!chatNode || typeof chatNode !== "object") return;
+
+        let otherUserId = null;
+        const participants = chatNode?.participants;
+        if (participants && typeof participants === "object") {
+          const participantIds = Object.keys(participants);
+          otherUserId = participantIds.find((id) => String(id) !== String(admin.userId)) || null;
+        }
+
+        if (!otherUserId) {
+          const keyParts = String(chatKey || "").split("_");
+          if (keyParts.length === 2) {
+            otherUserId = keyParts.find((id) => String(id) !== String(admin.userId)) || null;
+          }
+        }
+
+        if (!otherUserId) return;
+
+        const unreadNodeCount = Number(chatNode?.unread?.[admin.userId] || 0);
+        const unreadFromNode = Number.isFinite(unreadNodeCount) ? unreadNodeCount : 0;
+        const unreadCount = unreadFromNode > 0
+          ? unreadFromNode
+          : Object.values(chatNode?.messages || {}).filter(
+              (message) => String(message?.receiverId) === String(admin.userId) && !message?.seen
+            ).length;
+
+        if (unreadCount > 0) {
+          unreadByUser[otherUserId] = (unreadByUser[otherUserId] || 0) + unreadCount;
+        }
+      });
+
+      const appendUnreadSenders = (collection, type, fallbackNameResolver, fallbackImageResolver) => {
+        Object.values(collection || {}).forEach((item) => {
+          const userId = String(item?.userId || "").trim();
+          if (!userId) return;
+
+          const unread = Number(unreadByUser[userId] || 0);
+          if (unread <= 0) return;
+
+          const user = usersById[userId] || {};
+          senders[userId] = {
+            type,
+            name: user?.name || fallbackNameResolver(item),
+            profileImage: user?.profileImage || fallbackImageResolver(item),
+            count: unread,
+          };
+        });
       };
 
-      const getUnreadCount = async (userId) => {
-        const key1 = `${admin.userId}_${userId}`;
-        const key2 = `${userId}_${admin.userId}`;
-
-        const [r1, r2] = await Promise.all([
-          axios.get(
-            `${RTDB_BASE}/Chats/${key1}/messages.json`
-          ),
-          axios.get(
-            `${RTDB_BASE}/Chats/${key2}/messages.json`
-          ),
-        ]);
-
-        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
-
-        return msgs.filter((m) => m.receiverId === admin.userId && !m.seen).length;
-      };
-
-      // TEACHERS
-      const teachersData = await readSchoolNode("Teachers");
-
-      for (const k in teachersData || {}) {
-        const t = teachersData[k];
-        const unread = await getUnreadCount(t.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(t.userId);
-
-          senders[t.userId] = {
-            type: "teacher",
-            name: user?.name || "Teacher",
-            profileImage: user?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      // STUDENTS
-      const studentsData = await readSchoolNode("Students");
-
-      for (const k in studentsData || {}) {
-        const s = studentsData[k];
-        const unread = await getUnreadCount(s.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(s.userId);
-
-          senders[s.userId] = {
-            type: "student",
-            name: user?.name || s.name || "Student",
-            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      // PARENTS
-      const parentsData = await readSchoolNode("Parents");
-
-      for (const k in parentsData || {}) {
-        const p = parentsData[k];
-        const unread = await getUnreadCount(p.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(p.userId);
-
-          senders[p.userId] = {
-            type: "parent",
-            name: user?.name || p.name || "Parent",
-            profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
+      appendUnreadSenders(teachersData, "teacher", () => "Teacher", () => "/default-profile.png");
+      appendUnreadSenders(studentsData, "student", (item) => item?.name || "Student", (item) => item?.profileImage || "/default-profile.png");
+      appendUnreadSenders(parentsData, "parent", (item) => item?.name || "Parent", (item) => item?.profileImage || "/default-profile.png");
 
       setUnreadSenders(senders);
     } catch (err) {
@@ -1650,217 +1890,62 @@ useEffect(() => {
 
   return (
     <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      {/* ---------------- TOP NAVBAR ---------------- */}
-      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
-  <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Admin Portal</h2>
-
-  <div className="nav-right">
-    <div
-      className="icon-circle"
-      style={{ position: "relative", cursor: "pointer" }}
-      onClick={(e) => {
-        e.stopPropagation();
-        setShowPostDropdown(prev => !prev);
-      }}
-    >
-      <FaBell />
-
-      {/* combined notifications count */}
-      {(() => {
-        const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
-        const total = (postNotifications?.length || 0) + messageCount;
-        return total > 0 ? (
-          <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
-        ) : null;
-      })()}
-
-      {showPostDropdown && (
-        <div
-          className="notification-dropdown"
-          style={{ position: "absolute", top: "40px", right: "0", width: "360px", maxHeight: "420px", overflowY: "auto", background: "var(--surface-panel)", borderRadius: 10, boxShadow: "var(--shadow-panel)", border: "1px solid var(--border-soft)", zIndex: 1000, padding: 6 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
-            <p style={{ padding: "12px", textAlign: "center", color: "var(--text-muted)" }}>No new notifications</p>
-          ) : (
-            <div>
-              {/* Posts */}
-              {postNotifications.length > 0 && (
-                <div>
-                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
-                  {postNotifications.map(n => (
-                    <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")} onMouseLeave={(e) => (e.currentTarget.style.background = "") } onClick={() => handleNotificationClick(n)}>
-                      <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                        <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                      </div>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Messages */}
-              {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
-                <div>
-                  <div style={{ padding: '8px 10px', color: 'var(--text-primary)', fontWeight: 700, background: 'var(--surface-muted)', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                  {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                    <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")} onMouseLeave={(e) => (e.currentTarget.style.background = "") } onClick={async () => {
-                      await markMessagesAsSeen(userId);
-                      setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; });
-                      setShowPostDropdown(false);
-                      navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
-                    }}>
-                      <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                        <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-
-
-    {/* ================= MESSENGER ================= */}
-    <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-      <FaFacebookMessenger />
-      {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
-        <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-      )}
-    </div>
-    {/* ============== END MESSENGER ============== */}
-    
-
-
-    <Link className="icon-circle" to="/settings">
-                    <FaCog />
-                  </Link>
-    <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-  </div>
-</nav>
-
-
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div
-          className="google-sidebar"
-          style={{
-            width: "clamp(230px, 16vw, 290px)",
-            minWidth: 230,
-            padding: 14,
-            borderRadius: 24,
-            background: "var(--surface-panel)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow-panel)",
-            height: "calc(100vh - 24px)",
-            overflowY: "auto",
-            alignSelf: "flex-start",
-            position: "sticky",
-            top: 24,
-            scrollbarWidth: "thin",
-            scrollbarColor: "transparent transparent",
-          }}
-        >
-          <div
-            className="sidebar-profile"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 8,
-              padding: "16px 14px",
-              marginBottom: 8,
-              borderRadius: 18,
-              background: "linear-gradient(180deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
-              border: "1px solid var(--border-strong)",
-              boxShadow: "inset 0 1px 0 color-mix(in srgb, white 8%, transparent)",
-            }}
-          >
-            <div className="sidebar-img-circle" style={{ width: 58, height: 58, borderRadius: "50%", overflow: "hidden", border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }}>
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <div style={{ padding: "4px 10px", borderRadius: 999, background: "var(--surface-accent)", border: "1px solid var(--border-strong)", color: "var(--accent)", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>Acadamic Office</div>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "var(--text-primary)", textAlign: "center" }}>{admin?.name || "Admin Name"}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{admin?.adminId || "username"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={getSidebarLinkStyle("/dashboard")}>
-              <FaHome style={{ width: 15, height: 15 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={getSidebarLinkStyle("/my-posts")}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/teachers" style={getSidebarLinkStyle("/teachers")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Teachers
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={getSidebarLinkStyle("/students")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/schedule" style={getSidebarLinkStyle("/schedule")}>
-              <FaCalendarAlt style={{ width: 15, height: 15 }} /> Schedule
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={getSidebarLinkStyle("/parents")}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/registration-form" style={getSidebarLinkStyle("/registration-form")}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> Registration Form
-            </Link>
-            <Link className="sidebar-btn" to="/settings" style={getSidebarLinkStyle("/settings")}>
-              <FaCog style={{ width: 15, height: 15 }} /> Settings
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                localStorage.removeItem("registrar");
-                window.location.href = "/login";
-              }}
-              style={{ ...sidebarLinkBaseStyle, marginLeft: 0, justifyContent: "center", color: "var(--danger)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)", cursor: "pointer" }}
-            >
-              <FaSignOutAlt style={{ width: 15, height: 15 }} /> Logout
-            </button>
-          </div>
-        </div>
+        <Sidebar admin={admin} />
 
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
-          className="main-content"
+          className="main-content google-main"
           style={{
-            padding: "10px 20px 20px",
-            flex: 1,
+            flex: "1.08 1 0",
             minWidth: 0,
+            maxWidth: "none",
+            margin: "0",
             boxSizing: "border-box",
+            alignSelf: "stretch",
             height: "100%",
             overflowY: "auto",
             overflowX: "hidden",
+            scrollbarWidth: "thin",
+            scrollbarColor: "transparent transparent",
+            padding: `0 ${rightSidebarOffset}px 0 2px`,
           }}
         >
-          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
+          <div className="main-inner" style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             <div
               className="section-header-card"
-              style={{
-                ...shellCardStyle,
-                marginBottom: "12px",
-                marginLeft: contentLeft,
-                width: isNarrow ? "92%" : "560px",
-                padding: "12px 14px",
-              }}
+              style={headerCardStyle}
             >
-              <h2 className="section-header-card__title" style={{ fontSize: "20px", margin: 0 }}>Teachers</h2>
-              <div className="section-header-card__meta" style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                <span>Total: {filteredTeachers.length}</span>
-                <span className="section-header-card__chip" style={{ padding: "2px 8px", borderRadius: 999, border: "1px solid var(--border-strong)", background: "var(--surface-accent)", color: "var(--accent-strong)", fontWeight: 700 }}>
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+                <div>
+                  <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em" }}>Teachers</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, position: "relative", zIndex: 1 }}>
+                <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                  Total: {filteredTeachers.length}
+                </div>
+                <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
                   {selectedGrade === "All" ? "All Grades" : `Grade ${selectedGrade}`}
-                </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshTeachers}
+                  style={{
+                    padding: "7px 12px",
+                    borderRadius: 999,
+                    background: "color-mix(in srgb, var(--surface-panel) 72%, white)",
+                    border: "1px solid var(--border-soft)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--text-secondary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Refresh
+                </button>
               </div>
             </div>
 
@@ -1868,7 +1953,7 @@ useEffect(() => {
           <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
             <div
               style={{
-                width: isNarrow ? "92%" : "560px",
+                width: contentWidth,
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
@@ -1923,21 +2008,10 @@ useEffect(() => {
           </div>
 
           {/* Teachers List */}
-          {loadingTeachers ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-              {Array.from({ length: 4 }).map((_, idx) => (
-                <div key={idx} style={{ width: isNarrow ? "92%" : "560px", minHeight: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)", display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--surface-muted)' }} />
-                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--surface-muted)' }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ height: 12, width: '40%', background: 'var(--surface-muted)', borderRadius: 6, marginBottom: 8 }} />
-                    <div style={{ height: 10, width: '60%', background: 'var(--surface-muted)', borderRadius: 6 }} />
-                  </div>
-                </div>
-              ))}
-            </div>
+          {loadingTeachers && filteredTeachers.length === 0 ? (
+            <p style={{ width: contentWidth, textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>Loading teachers...</p>
           ) : filteredTeachers.length === 0 ? (
-            <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>No teachers found for this grade.</p>
+            <p style={{ width: contentWidth, textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>No teachers found for this grade.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
               {filteredTeachers.map((t, i) => (
@@ -1947,19 +2021,19 @@ useEffect(() => {
                   className="teacher-card"
                   style={listCardStyle(selectedTeacher?.teacherId === t.teacherId)}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, paddingRight: 110 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: isNarrow ? 8 : 12, minWidth: 0, flex: 1 }}>
                     <div
                       style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
+                        width: isNarrow ? 30 : 36,
+                        height: isNarrow ? 30 : 36,
+                        borderRadius: isNarrow ? 8 : 10,
                         background: "var(--surface-accent)",
                         color: "var(--accent)",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
                         fontWeight: 800,
-                        fontSize: 13,
+                        fontSize: isNarrow ? 11 : 13,
                         flex: "0 0 auto",
                       }}
                     >
@@ -1969,27 +2043,44 @@ useEffect(() => {
                       src={t.profileImage}
                       alt={t.name}
                       style={{
-                        width: 48,
-                        height: 48,
+                        width: isNarrow ? 40 : 48,
+                        height: isNarrow ? 40 : 48,
                         borderRadius: "50%",
-                        border: selectedTeacher?.teacherId === t.teacherId ? "3px solid var(--accent)" : "3px solid var(--border-soft)",
+                        border: selectedTeacher?.teacherId === t.teacherId ? "2px solid var(--accent)" : "2px solid var(--border-soft)",
                         objectFit: "cover",
                         transition: "all 0.3s ease",
                         flex: "0 0 auto"
                       }}
                     />
-                  </div>
-
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
+                    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <h3 style={{ margin: 0, fontSize: isNarrow ? "12px" : "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
                       {unreadTeachers[t.userId] > 0 && (
-                        <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 12, padding: '2px 6px', fontSize: 11, fontWeight: 700, marginLeft: 8 }}>{unreadTeachers[t.userId]}</span>
+                        <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 12, padding: isNarrow ? '1px 5px' : '2px 6px', fontSize: isNarrow ? 10 : 11, fontWeight: 700, marginLeft: 8 }}>{unreadTeachers[t.userId]}</span>
                       )}
                     </div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: "11px", marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: isNarrow ? "10px" : "11px", marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {t.subjectsUnique?.length > 0 ? t.subjectsUnique.join(', ') : 'No assigned courses'}
                     </div>
+                    </div>
+                  </div>
+
+                  <div style={{ flex: "0 0 auto", marginLeft: isNarrow ? 4 : 8 }}>
+                    <span
+                      style={{
+                        padding: isNarrow ? "4px 8px" : "5px 10px",
+                        borderRadius: 999,
+                        border: "1px solid var(--border-soft)",
+                        background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
+                        color: "var(--text-secondary)",
+                        fontSize: isNarrow ? 9 : 10,
+                        fontWeight: 800,
+                        letterSpacing: "0.2px",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {t.subjectsUnique?.length || 0} Subject{(t.subjectsUnique?.length || 0) === 1 ? "" : "s"}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -1999,7 +2090,6 @@ useEffect(() => {
         </div>
 
         {/* ---------------- RIGHT SIDEBAR ---------------- */}
-      {selectedTeacher && (
     <div
       className="teacher-info-sidebar"
       style={{
@@ -2009,44 +2099,46 @@ useEffect(() => {
       right: 0,
       top: isPortrait ? 0 : "55px",
       height: isPortrait ? "100vh" : "calc(100vh - 55px)",
-      background: "var(--page-bg-secondary)",
+      background: "var(--surface-panel)",
       boxShadow: "var(--shadow-panel)",
       borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
-      fontSize: "10px",
+      fontSize: "12px",
       overflowY: "auto",
       padding: "14px",
     }}
   >
     {/* CLOSE BUTTON */}
-    <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
-      <button
-        onClick={() => setSelectedTeacher(null)}
-        aria-label="Close sidebar"
-        style={{
-          width: 34,
-          height: 34,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "rgba(255,255,255,0.18)",
-          border: "1px solid rgba(255,255,255,0.42)",
-          borderRadius: 999,
-          backdropFilter: "blur(6px)",
-          fontSize: 24,
-          fontWeight: 700,
-          color: "#ffffff",
-          cursor: "pointer",
-          padding: 0,
-          lineHeight: 1,
-          boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
-        }}
-      >
-        ×
-      </button>
-    </div>
+    {selectedTeacher && (
+      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
+        <button
+          onClick={() => setSelectedTeacher(null)}
+          aria-label="Close sidebar"
+          style={{
+            width: 34,
+            height: 34,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255,255,255,0.18)",
+            border: "1px solid rgba(255,255,255,0.42)",
+            borderRadius: 999,
+            backdropFilter: "blur(6px)",
+            fontSize: 24,
+            fontWeight: 700,
+            color: "#ffffff",
+            cursor: "pointer",
+            padding: 0,
+            lineHeight: 1,
+            boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+          }}
+        >
+          ×
+        </button>
+      </div>
+    )}
     {/* ================= SCROLLABLE CONTENT ================= */}
     <div
       style={{
@@ -2064,63 +2156,138 @@ useEffect(() => {
           textAlign: "center"
         }}
       >
-        <div
-          style={{
-            width: "70px",
-            height: "70px",
-            margin: "0 auto 10px",
-            borderRadius: "50%",
-            overflow: "hidden",
-            border: "3px solid rgba(255,255,255,0.8)"
-          }}
-        >
-          <img
-            src={selectedTeacher.profileImage}
-            alt={selectedTeacher.name}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          />
-        </div>
+        {selectedTeacher ? (
+          <>
+            <div
+              style={{
+                width: "70px",
+                height: "70px",
+                margin: "0 auto 10px",
+                borderRadius: "50%",
+                overflow: "hidden",
+                border: "3px solid rgba(255,255,255,0.8)"
+              }}
+            >
+              <img
+                src={sidebarTeacherImage}
+                alt={sidebarTeacherName}
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            </div>
 
-        <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
-          {selectedTeacher.name}
-        </h2>
+            <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+              {sidebarTeacherName}
+            </h2>
 
-        <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>
-          {selectedTeacherUser?.email || selectedTeacher.email || "teacher@example.com"}
-        </p>
+            {sidebarTeacherEmail ? (
+              <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>
+                {sidebarTeacherEmail}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div
+              style={{
+                width: "70px",
+                height: "70px",
+                margin: "0 auto 10px",
+                borderRadius: "50%",
+                border: "3px solid rgba(255,255,255,0.8)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#ffffff",
+                background: "rgba(255,255,255,0.1)"
+              }}
+            >
+              <FaChalkboardTeacher size={30} />
+            </div>
+
+            <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+              {sidebarTeacherName}
+            </h2>
+
+            <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px", fontWeight: 600 }}>
+              Faculty Overview
+            </p>
+          </>
+        )}
       </div>
 
       {/* ================= TABS ================= */}
-      <div
-        style={{
-          display: "flex",
-          borderBottom: "1px solid var(--border-soft)",
-          marginBottom: "10px"
-        }}
-      >
-        {["details", "schedule", "plan"].map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              flex: 1,
-              padding: "6px",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-              color: activeTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
-              fontSize: "10px",
-              borderBottom:
-                activeTab === tab
-                  ? "3px solid var(--accent-strong)"
-                  : "3px solid transparent"
-            }}
-          >
-            {tab.toUpperCase()}
-          </button>
-        ))}
-      </div>
+      {selectedTeacher ? (
+        <div
+          style={{
+            display: "flex",
+            borderBottom: "1px solid var(--border-soft)",
+            marginBottom: "10px"
+          }}
+        >
+          {["details", "schedule", "plan"].map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={tabButtonStyle(tab)}
+            >
+              {tab.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {!selectedTeacher ? (
+        <div
+          style={{
+            padding: "10px",
+            display: "grid",
+            gap: 8,
+            gridTemplateColumns: "1fr 1fr",
+            marginBottom: "10px"
+          }}
+        >
+          {[
+            { label: "Total", value: teachers.length },
+            { label: "Visible", value: filteredTeachers.length },
+            { label: "Grade", value: selectedGrade === "all" ? "All" : `G${selectedGrade}` },
+            { label: "Search", value: searchTerm ? "Active" : "None" }
+          ].map((item) => (
+            <div
+              key={item.label}
+              style={{
+                ...rightDrawerCardStyle,
+                padding: "10px",
+                minHeight: 56,
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center"
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "9px",
+                  fontWeight: 800,
+                  color: "var(--text-muted)",
+                  letterSpacing: "0.3px",
+                  textTransform: "uppercase"
+                }}
+              >
+                {item.label}
+              </div>
+              <div
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  color: "var(--text-primary)",
+                  marginTop: 2
+                }}
+              >
+                {item.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
 
 
@@ -2278,7 +2445,7 @@ useEffect(() => {
       
 {/* ================= SCHEDULE TAB ================= */}
 {/* ================= SCHEDULE TAB ================= */}
-{activeTab === "schedule" && (
+{activeTab === "schedule" && selectedTeacher && (
   <div style={{ padding: "8px", ...rightDrawerCardStyle }}>
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
       <h4
@@ -2351,9 +2518,9 @@ useEffect(() => {
                 style={{
                   borderRadius: "12px",
                   padding: "7px",
-                  background: "#ffffff",
-                  boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
-                  border: isToday ? "1px solid #4b6cb7" : "1px solid #e5e7eb"
+                  background: "var(--surface-panel)",
+                  boxShadow: "var(--shadow-soft)",
+                  border: isToday ? "1px solid var(--accent-strong)" : "1px solid var(--border-soft)"
                 }}
               >
                 {/* Day Header */}
@@ -2369,7 +2536,7 @@ useEffect(() => {
                     style={{
                       fontSize: "12px",
                       fontWeight: "800",
-                      color: "#0f172a"
+                      color: "var(--text-primary)"
                     }}
                   >
                     {day}
@@ -2380,8 +2547,8 @@ useEffect(() => {
                       fontSize: "10px",
                       padding: "4px 6px",
                       borderRadius: "999px",
-                      background: "#f1f5f9",
-                      color: "#334155",
+                      background: "var(--surface-accent)",
+                      color: "var(--text-secondary)",
                       fontWeight: "700"
                     }}
                   >
@@ -2401,8 +2568,8 @@ useEffect(() => {
                       marginBottom: "6px",
                       borderRadius: "12px",
                       padding: "8px",
-                      background: isCurrentPeriod ? "#eef2ff" : "#f8fafc",
-                      border: isCurrentPeriod ? "1px solid #4b6cb7" : "1px solid #e2e8f0"
+                      background: isCurrentPeriod ? "var(--surface-accent)" : "var(--surface-muted)",
+                      border: isCurrentPeriod ? "1px solid var(--accent-strong)" : "1px solid var(--border-soft)"
                     }}
                   >
                     {/* Period Header */}
@@ -2410,7 +2577,7 @@ useEffect(() => {
                       style={{
                         fontSize: "9px",
                         fontWeight: "800",
-                        color: "#1f2937",
+                        color: "var(--text-primary)",
                         marginBottom: "4px"
                       }}
                     >
@@ -2422,7 +2589,7 @@ useEffect(() => {
                             fontSize: "8px",
                             padding: "1px 4px",
                             borderRadius: "999px",
-                            background: "#4b6cb7",
+                            background: "var(--accent-strong)",
                             color: "#ffffff",
                             fontWeight: "700"
                           }}
@@ -2442,14 +2609,14 @@ useEffect(() => {
                           alignItems: "center",
                           padding: "4px 6px",
                           borderRadius: "8px",
-                          background: "#ffffff",
+                          background: "var(--surface-panel)",
                           marginBottom: "4px",
-                          border: "1px solid #eef2f7",
+                          border: "1px solid var(--border-soft)",
                           boxShadow: "none",
                           fontSize: "10px"
                         }}
                       >
-                        <span style={{ fontWeight: "600", color: "#111827" }}>
+                        <span style={{ fontWeight: "600", color: "var(--text-primary)" }}>
                           {e.subject}
                         </span>
                         <span
@@ -2458,8 +2625,8 @@ useEffect(() => {
                             fontWeight: "500",
                             padding: "1px 4px",
                             borderRadius: "999px",
-                            background: "#f1f5f9",
-                            color: "#334155"
+                            background: "var(--surface-accent)",
+                            color: "var(--text-secondary)"
                           }}
                         >
                           {e.class}
@@ -2481,7 +2648,7 @@ useEffect(() => {
 
 
       {/* ================= PLAN TAB ================= */}
-      {activeTab === "plan" && (() => {
+      {activeTab === "plan" && selectedTeacher && (() => {
         const teacherUserId = selectedTeacher?.userId;
         const teacherSubmissionId = String(selectedTeacher?.teacherId || teacherUserId || '').trim();
         const today = new Date();
@@ -3036,7 +3203,7 @@ useEffect(() => {
                   position: 'fixed',
                   inset: 0,
                   zIndex: 5000,
-                  background: 'rgba(15, 23, 42, 0.55)',
+                  background: 'rgba(15, 23, 42, 0.42)',
                   padding: 16,
                 }}
                 onClick={() => setPlanAnnualOpen(false)}
@@ -3046,10 +3213,10 @@ useEffect(() => {
                     position: 'relative',
                     width: '100%',
                     height: '100%',
-                    background: '#f7fafc',
+                    background: 'var(--page-bg)',
                     borderRadius: 16,
                     overflow: 'hidden',
-                    boxShadow: '0 18px 60px rgba(0,0,0,0.35)',
+                    boxShadow: 'var(--shadow-panel)',
                     display: 'flex',
                     flexDirection: 'column',
                   }}
@@ -3060,8 +3227,8 @@ useEffect(() => {
                       position: 'sticky',
                       top: 0,
                       zIndex: 1,
-                      background: '#ffffff',
-                      borderBottom: '1px solid #e5e7eb',
+                      background: 'var(--surface-panel)',
+                      borderBottom: '1px solid var(--border-soft)',
                       padding: 8,
                       display: 'flex',
                       alignItems: 'center',
@@ -3257,7 +3424,7 @@ useEffect(() => {
               </div>
             )}
 
-            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 12 : 6, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 8px 20px rgba(15,23,42,0.06)', display: 'flex', flexDirection: 'column', gap: 8, transition: 'all 220ms ease', borderRadius: 12, fontSize: 12 }}>
+            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 12 : 6, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column', gap: 8, transition: 'all 220ms ease', borderRadius: 12, fontSize: 12 }}>
               
 
               {planSidebarOpen && (
@@ -3279,7 +3446,7 @@ useEffect(() => {
                     Annual Lesson Plan
                   </button>
                 </div>
-                <div style={{ background: '#ffffff', padding: 12, borderRadius: 12, border: '1px solid #eef2f7', boxShadow: 'none' }}>
+                <div style={{ background: 'var(--surface-panel)', padding: 12, borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'none' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div style={{ background: '#f1f5f9', padding: 8, borderRadius: 10, border: '1px solid #e2e8f0' }}><FaCalendarAlt color="#4b6cb7" /></div>
@@ -3404,7 +3571,7 @@ useEffect(() => {
                   </button>
                 </div>
 
-                <div style={{ background: '#ffffff', padding: 12, borderRadius: 12, border: '1px solid #eef2f7', boxShadow: 'none', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
+                <div style={{ background: 'var(--surface-panel)', padding: 12, borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'none', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
                   {renderPlanSidebarContent()}
                 </div>
 
@@ -3425,6 +3592,7 @@ useEffect(() => {
      
 
 {/* ================= FIXED MESSAGE BUTTON ================= */}
+{selectedTeacher && (
 <div
   onClick={() => setTeacherChatOpen(true)}
   style={{
@@ -3483,6 +3651,7 @@ useEffect(() => {
     T
   </span>
 </div>
+) }
 
 
 </div>
@@ -3490,7 +3659,6 @@ useEffect(() => {
 
     </div>
  
-)}
 
       </div>
 

@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
 import { BACKEND_BASE } from "../config.js";
 import EthiopicCalendar from "ethiopic-calendar";
+import Sidebar from "../components/Sidebar";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -149,6 +150,30 @@ function Dashboard() {
       return {};
     }
   })();
+  const hasStoredAdminSession = Boolean(_storedAdmin.userId || _storedAdmin.adminId);
+  const readStoredPostsCache = (schoolCodeValue) => {
+    if (!schoolCodeValue) {
+      return [];
+    }
+
+    try {
+      const rawCache = localStorage.getItem(`dashboard_posts_cache_${schoolCodeValue}`);
+      if (!rawCache) {
+        return [];
+      }
+
+      const parsedCache = JSON.parse(rawCache);
+      if (!Array.isArray(parsedCache)) {
+        return [];
+      }
+
+      return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+    } catch (error) {
+      return [];
+    }
+  };
+  const initialSchoolCode = _storedAdmin.schoolCode || "";
+  const initialCachedPosts = readStoredPostsCache(initialSchoolCode);
 
   const [admin, setAdmin] = useState({
     adminId: _storedAdmin.adminId || "",
@@ -163,14 +188,43 @@ function Dashboard() {
 
   const schoolCode = admin.schoolCode || _storedAdmin.schoolCode || "";
   const DB_ROOT = schoolCode ? `${DB_URL}/Platform1/Schools/${schoolCode}` : DB_URL;
+  const getSafeImageUrl = (value, fallback = "/default-profile.png") => {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      return fallback;
+    }
 
-  const [posts, setPosts] = useState([]);
-  const [postsLoading, setPostsLoading] = useState(false);
+    const lowerValue = normalizedValue.toLowerCase();
+    if (lowerValue.startsWith("file://") || lowerValue.startsWith("content://")) {
+      return fallback;
+    }
+
+    return normalizedValue;
+  };
+
+  const getSafeMediaUrl = (value) => {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      return "";
+    }
+
+    const lowerValue = normalizedValue.toLowerCase();
+    if (lowerValue.startsWith("file://") || lowerValue.startsWith("content://")) {
+      return "";
+    }
+
+    return normalizedValue;
+  };
+
+  const [posts, setPosts] = useState(initialCachedPosts);
+  const [postsLoading, setPostsLoading] = useState(initialCachedPosts.length === 0 && Boolean(initialSchoolCode));
+  const [postsInitialized, setPostsInitialized] = useState(initialCachedPosts.length > 0);
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
   const [targetRole, setTargetRole] = useState("all");
   const [targetOptions, setTargetOptions] = useState(["all"]);
   const fileInputRef = useRef(null);
+  const postsFetchRequestIdRef = useRef(0);
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -191,7 +245,7 @@ function Dashboard() {
   const postId = location.state?.postId;
 
   const [currentChat, setCurrentChat] = useState([]);
-  const [loadingAdmin, setLoadingAdmin] = useState(true);
+  const [loadingAdmin, setLoadingAdmin] = useState(!hasStoredAdminSession);
   const [calendarViewDate, setCalendarViewDate] = useState(() => {
     const now = new Date();
     const currentEthiopicDate = EthiopicCalendar.ge(now.getFullYear(), now.getMonth() + 1, now.getDate());
@@ -227,33 +281,7 @@ function Dashboard() {
   const currentLikeActorId = admin.userId || admin.adminId || "";
 
   const navigate = useNavigate();
-  const currentPath = location.pathname;
-
-  const sidebarLinkBaseStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 10px",
-    marginLeft: 10,
-    fontSize: 11,
-    fontWeight: 700,
-    color: "var(--text-secondary)",
-    borderRadius: 12,
-    background: "var(--surface-muted)",
-    border: "1px solid var(--border-soft)",
-  };
-
-  const sidebarLinkActiveStyle = {
-    background: "var(--accent-strong)",
-    color: "#ffffff",
-    border: "1px solid var(--accent-strong)",
-    boxShadow: "var(--shadow-glow)",
-  };
-
-  const getSidebarLinkStyle = (path) =>
-    currentPath === path
-      ? { ...sidebarLinkBaseStyle, ...sidebarLinkActiveStyle }
-      : sidebarLinkBaseStyle;
+  const shouldShowPostsLoadingState = (postsLoading || !postsInitialized) && posts.length === 0;
 
   const shouldShowPostSeeMore = (message = "") => {
     const normalizedMessage = String(message || "").trim();
@@ -296,6 +324,16 @@ function Dashboard() {
 
     try {
       const adminData = JSON.parse(storedAdmin);
+      setAdmin({
+        adminId: adminData.adminId || "",
+        userId: adminData.userId || adminData.adminId || "",
+        schoolCode: adminData.schoolCode || "",
+        name: adminData.name || adminData.username || "Admin",
+        username: adminData.username || "",
+        role: adminData.role || adminData.userType || "admin",
+        profileImage: adminData.profileImage || "/default-profile.png",
+        isActive: adminData.isActive || false,
+      });
 
       const lookupId = adminData.userId || adminData.adminId;
       if (!lookupId) {
@@ -304,16 +342,16 @@ function Dashboard() {
         return;
       }
 
-      const profileRes = await axios.get(`${API_BASE}/admin/${lookupId}`);
+      setLoadingAdmin(false);
+
+      const profileRes = await axios.get(`${API_BASE}/admin/${lookupId}`, { timeout: 3500 });
       const profile = profileRes.data?.admin;
 
       if (!profileRes.data?.success || !profile) {
-        localStorage.removeItem("admin");
-        setLoadingAdmin(false);
         return;
       }
 
-      setAdmin({
+      const nextAdmin = {
         adminId: profile.adminId || adminData.adminId,
         userId: profile.userId || adminData.userId,
         schoolCode: profile.schoolCode || adminData.schoolCode || "",
@@ -321,13 +359,15 @@ function Dashboard() {
         username: profile.username || "",
         role: profile.role || adminData.role || adminData.userType || "admin",
         profileImage: profile.profileImage || "/default-profile.png",
-      });
+        isActive: profile.isActive ?? adminData.isActive ?? false,
+      };
+
+      setAdmin(nextAdmin);
+      localStorage.setItem("admin", JSON.stringify(nextAdmin));
 
     } catch (e) {
-      localStorage.removeItem("admin");
+      setLoadingAdmin(false);
     }
-
-    setLoadingAdmin(false);
   };
 
   const handleOpenChat = (user, userType) => {
@@ -342,92 +382,210 @@ function Dashboard() {
 
   // ---------------- FETCH POSTS ----------------
   const fetchPosts = async () => {
+    const requestId = postsFetchRequestIdRef.current + 1;
+    postsFetchRequestIdRef.current = requestId;
+
+    const effectiveSchoolCode =
+      schoolCode ||
+      admin.schoolCode ||
+      _storedAdmin.schoolCode ||
+      (() => {
+        try {
+          return JSON.parse(localStorage.getItem("admin") || "{}").schoolCode || "";
+        } catch (e) {
+          return "";
+        }
+      })();
+
+    const effectiveDbRoot = effectiveSchoolCode
+      ? `${DB_URL}/Platform1/Schools/${effectiveSchoolCode}`
+      : DB_URL;
+
+    const cacheKey = `dashboard_posts_cache_${effectiveSchoolCode || "global"}`;
+    const isCurrentRequest = () => postsFetchRequestIdRef.current === requestId;
+
+    if (!effectiveSchoolCode) {
+      setPostsLoading(false);
+      setPostsInitialized(true);
+      return;
+    }
+
     setPostsLoading(true);
 
     try {
+      const isPostLike = (postValue) =>
+        Boolean(
+          postValue &&
+          typeof postValue === "object" &&
+          (postValue.postId || postValue.message || postValue.postUrl || postValue.time || postValue.createdAt)
+        );
+
       const normalizePostsNode = (postsNode) => {
         if (!postsNode || typeof postsNode !== "object") {
           return [];
         }
 
-        if (postsNode.postId && (postsNode.message || postsNode.postUrl)) {
+        if (isPostLike(postsNode)) {
           return [{ postId: postsNode.postId, ...postsNode }];
         }
 
         return Object.entries(postsNode)
           .filter(([, value]) => value && typeof value === "object")
-          .filter(([, value]) => value.postId || value.message || value.postUrl)
+          .filter(([, value]) => isPostLike(value))
           .map(([key, value]) => ({
             postId: value.postId || key,
             ...value,
           }));
       };
 
-      const normalizePostsResponse = (payload) => {
-        if (Array.isArray(payload)) {
-          return payload.filter((postItem) => postItem && typeof postItem === "object");
+      const extractPostsDeep = (payload, depth = 0) => {
+        if (depth > 6 || !payload) {
+          return [];
         }
 
-        if (payload && typeof payload === "object") {
-          return normalizePostsNode(payload);
+        if (Array.isArray(payload)) {
+          const direct = payload
+            .filter((postItem) => isPostLike(postItem))
+            .map((postItem, index) => ({
+              postId: postItem.postId || `array-${depth}-${index}`,
+              ...postItem,
+            }));
+
+          if (direct.length > 0) {
+            return direct;
+          }
+
+          return payload.flatMap((item) => extractPostsDeep(item, depth + 1));
+        }
+
+        if (typeof payload === "object") {
+          const normalizedNodePosts = normalizePostsNode(payload);
+          if (normalizedNodePosts.length > 0) {
+            return normalizedNodePosts;
+          }
+
+          return Object.values(payload)
+            .filter((value) => value && typeof value === "object")
+            .flatMap((value) => extractPostsDeep(value, depth + 1));
         }
 
         return [];
       };
 
-      const res = await axios.get(`${API_BASE}/get_posts`, {
-        params: { schoolCode },
-      });
+      const normalizePostsResponse = (payload) => {
+        const extracted = extractPostsDeep(payload);
+        const uniquePosts = [];
+        const seenPostIds = new Set();
 
-      let sourcePosts = normalizePostsResponse(res.data);
-
-      if (sourcePosts.length === 0 && schoolCode) {
-        const fallbackRes = await axios.get(`${DB_ROOT}/Posts.json`).catch(() => ({ data: {} }));
-        sourcePosts = normalizePostsNode(fallbackRes.data || {});
-      }
-
-      const sortedPosts = sourcePosts.sort(
-        (a, b) => new Date(b.time) - new Date(a.time)
-      );
-
-      const enrichedPosts = await Promise.all(
-        sortedPosts.map(async (postItem) => {
-          let profile = postItem.adminProfile || postItem.adminProfileImage || postItem.profileImage || "";
-
-          try {
-            if (!profile && postItem.userId) {
-              const userRes = await axios.get(`${DB_ROOT}/Users/${postItem.userId}.json`);
-              const userNode = userRes.data || {};
-              profile = userNode.profileImage || userNode.profile || userNode.avatar || "";
-            }
-
-            if (!profile && postItem.adminId) {
-              const schoolAdminRes = await axios.get(`${DB_ROOT}/School_Admins/${postItem.adminId}.json`);
-              const schoolAdminNode = schoolAdminRes.data || {};
-
-              if (schoolAdminNode.userId) {
-                const ownerUserRes = await axios.get(`${DB_ROOT}/Users/${schoolAdminNode.userId}.json`);
-                const ownerUserNode = ownerUserRes.data || {};
-                profile = ownerUserNode.profileImage || ownerUserNode.profile || "";
-              }
-            }
-          } catch (err) {
-            // Keep fallback profile when enrichment fails.
+        extracted.forEach((postItem, index) => {
+          const postId = String(postItem.postId || postItem.id || `derived-${index}`);
+          if (seenPostIds.has(postId)) {
+            return;
           }
+
+          seenPostIds.add(postId);
+          uniquePosts.push({
+            ...postItem,
+            postId,
+          });
+        });
+
+        return uniquePosts;
+      };
+
+      const readCachedPosts = () => {
+        try {
+          const rawCache = localStorage.getItem(cacheKey);
+          if (!rawCache) {
+            return [];
+          }
+
+          const parsedCache = JSON.parse(rawCache);
+          if (!Array.isArray(parsedCache)) {
+            return [];
+          }
+
+          return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+        } catch (error) {
+          return [];
+        }
+      };
+
+      const writeCachedPosts = (postItems) => {
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(postItems.slice(0, 120)));
+        } catch (error) {
+          // Ignore localStorage write issues.
+        }
+      };
+
+      const toFastRenderablePosts = (sourcePosts) => sourcePosts
+        .sort((a, b) => new Date(b.time || b.createdAt || 0) - new Date(a.time || a.createdAt || 0))
+        .map((postItem) => {
+          const profile = postItem.adminProfile || postItem.adminProfileImage || postItem.profileImage || "";
 
           return {
             ...postItem,
-            adminProfile: profile || "/default-profile.png",
-            schoolCode: postItem.schoolCode || schoolCode,
+            adminProfile: getSafeImageUrl(profile, "/default-profile.png"),
+            schoolCode: postItem.schoolCode || effectiveSchoolCode,
           };
-        })
-      );
+        });
 
-      setPosts(enrichedPosts);
+      const cachedPosts = readCachedPosts();
+      if (cachedPosts.length > 0 && isCurrentRequest()) {
+        setPosts(cachedPosts);
+        setPostsLoading(false);
+      }
+
+      const safeGet = async (url, config = {}, fallbackData = null) => {
+        try {
+          const response = await axios.get(url, config);
+          return response;
+        } catch (error) {
+          return { data: fallbackData };
+        }
+      };
+
+      const [apiPostsRes, firebasePostsRes] = await Promise.all([
+        safeGet(
+          `${API_BASE}/get_posts`,
+          {
+            params: effectiveSchoolCode ? { schoolCode: effectiveSchoolCode } : {},
+            timeout: 4500,
+          },
+          []
+        ),
+        safeGet(
+          `${effectiveDbRoot}/Posts.json`,
+          {
+            params: { orderBy: '"$key"', limitToLast: 120 },
+            timeout: 4500,
+          },
+          {}
+        ),
+      ]);
+
+      const apiPosts = normalizePostsResponse(apiPostsRes.data);
+      const firebasePosts = normalizePostsNode(firebasePostsRes.data || {});
+      const sourcePosts = apiPosts.length > 0 ? apiPosts : firebasePosts;
+
+      const fastPosts = toFastRenderablePosts(sourcePosts);
+      if (fastPosts.length > 0) {
+        writeCachedPosts(fastPosts);
+      }
+
+      if (isCurrentRequest()) {
+        setPosts((previousPosts) => (fastPosts.length > 0 ? fastPosts : previousPosts));
+      }
     } catch (err) {
-      console.error("Error fetching posts:", err);
+      if (postsFetchRequestIdRef.current === requestId) {
+        console.error("Error fetching posts:", err);
+      }
     } finally {
-      setPostsLoading(false);
+      if (postsFetchRequestIdRef.current === requestId) {
+        setPostsLoading(false);
+        setPostsInitialized(true);
+      }
     }
   };
 
@@ -483,7 +641,7 @@ function Dashboard() {
           senders[t.userId] = {
             type: "teacher",
             name: user?.name || "Teacher",
-            profileImage: user?.profileImage || "/default-profile.png",
+            profileImage: getSafeImageUrl(user?.profileImage, "/default-profile.png"),
             count: unread
           };
         }
@@ -504,7 +662,7 @@ function Dashboard() {
           senders[s.userId] = {
             type: "student",
             name: user?.name || s.name || "Student",
-            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
+            profileImage: getSafeImageUrl(user?.profileImage || s.profileImage, "/default-profile.png"),
             count: unread
           };
         }
@@ -525,7 +683,7 @@ function Dashboard() {
           senders[p.userId] = {
             type: "parent",
             name: user?.name || p.name || "Parent",
-            profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
+            profileImage: getSafeImageUrl(user?.profileImage || p.profileImage, "/default-profile.png"),
             count: unread
           };
         }
@@ -631,7 +789,7 @@ function Dashboard() {
             return {
               ...postItem,
               adminName: ownerName,
-              adminProfile: profile,
+              adminProfile: getSafeImageUrl(profile, "/default-profile.png"),
             };
           })
         );
@@ -663,7 +821,7 @@ function Dashboard() {
             teacherId: tid,
             userId: teacher.userId,
             name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
+            profileImage: getSafeImageUrl(user.profileImage, "/default-profile.png")
           };
         });
 
@@ -800,10 +958,13 @@ function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!loadingAdmin) {
+    if (!loadingAdmin && schoolCode) {
+      if (posts.length === 0) {
+        setPostsInitialized(false);
+      }
       fetchPosts();
     }
-  }, [loadingAdmin, schoolCode, admin.userId]);
+  }, [loadingAdmin, schoolCode]);
 
   useEffect(() => {
     if (!showCreatePostModal) return;
@@ -1336,295 +1497,22 @@ function Dashboard() {
 
   // ---------------- RENDER ----------------
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
 
-      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-
-        <div className="nav-right">
-          {/* Combined bell: posts + message senders */}
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown((prev) => !prev);
-            }}
-          >
-            <FaBell />
-
-            {totalNotifications > 0 && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: "-5px",
-                  right: "-5px",
-                  background: "red",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  padding: "2px 6px",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                }}
-              >
-                {totalNotifications}
-              </span>
-            )}
-          </div>
-
-          {/* ---------------- POST NOTIFICATION DROPDOWN ---------------- */}
-          {showPostDropdown && (
-            <div
-              className="notification-dropdown"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: "absolute",
-                top: "40px",
-                right: "0",
-                width: "360px",
-                maxHeight: "420px",
-                overflowY: "auto",
-                background: "#fff",
-                borderRadius: 10,
-                boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-                zIndex: 1000,
-                padding: 6,
-              }}
-            >
-              {totalNotifications === 0 ? (
-                <p style={{ padding: "12px", textAlign: "center", color: "#777" }}>
-                  No new notifications
-                </p>
-              ) : (
-                <div>
-                  {/* Posts section */}
-                  {unreadPostList.length > 0 && (
-                    <div>
-                      <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
-                      {unreadPostList.map(post => (
-                        <div
-                          key={post.postId}
-                          onClick={() => openPostFromNotif(post)}
-                          style={{
-                            padding: 10,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 12,
-                            cursor: "pointer",
-                            borderBottom: "1px solid #f0f0f0",
-                            transition: "background 120ms ease",
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                        >
-                          <img
-                            src={post.adminProfile || "/default-profile.png"}
-                            alt=""
-                            style={{
-                              width: 46,
-                              height: 46,
-                              borderRadius: 8,
-                              objectFit: "cover",
-                            }}
-                          />
-
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <strong>{post.adminName}</strong>
-                            <p
-                              style={{
-                                margin: 0,
-                                fontSize: 13,
-                                color: "#555",
-                                display: "-webkit-box",
-                                WebkitLineClamp: 2,
-                                WebkitBoxOrient: "vertical",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {post.message || "New post"}
-                            </p>
-                          </div>
-
-                          <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
-                            {new Date(post.time || post.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Messages section */}
-                  {messageCount > 0 && (
-                    <div>
-                      <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                      {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                        <div
-                          key={userId}
-                          style={{
-                            padding: 10,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 12,
-                            cursor: "pointer",
-                            borderBottom: "1px solid #f0f0f0",
-                            transition: "background 120ms ease",
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = "#f6f8fa")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                          onClick={async () => {
-                            // mark messages seen, remove sender and navigate to all-chat
-                            await markMessagesAsSeen(userId);
-                            setUnreadSenders(prev => {
-                              const copy = { ...prev };
-                              delete copy[userId];
-                              return copy;
-                            });
-                            setShowPostDropdown(false);
-                            navigate("/all-chat", {
-                              state: {
-                                user: {
-                                  userId,
-                                  name: sender.name,
-                                  profileImage: sender.profileImage,
-                                  type: sender.type
-                                }
-                              }
-                            });
-                          }}
-                        >
-                          <img
-                            src={sender.profileImage}
-                            alt={sender.name}
-                            style={{
-                              width: 46,
-                              height: 46,
-                              borderRadius: 8,
-                              objectFit: "cover",
-                            }}
-                          />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                            <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {sender.count} new message{sender.count > 1 && "s"}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Messenger */}
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={() => navigate("/all-chat")}
-          >
-            <FaFacebookMessenger />
-
-            {/* 🔴 MESSAGE COUNT ONLY */}
-            {messageCount > 0 && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: "-5px",
-                  right: "-5px",
-                  background: "red",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  padding: "2px 6px",
-                  fontSize: "10px",
-                  fontWeight: "bold"
-                }}
-              >
-                {messageCount}
-              </span>
-            )}
-          </div>
-
-          {/* Settings */}
-          <Link className="icon-circle" to="/settings">
-            <FaCog />
-          </Link>
-
-          {/* Profile */}
-          <img
-            src={admin.profileImage || "/default-profile.png"}
-            alt="admin"
-            className="profile-img"
-          />
-          {/* <span>{admin.name}</span> */}
-        </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        {/* LEFT SIDEBAR */}
-        <div className="google-sidebar" style={{ width: 'clamp(230px, 16vw, 290px)', minWidth: 230, padding: 14, borderRadius: 24, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', height: 'calc(100vh - 24px)', overflowY: 'auto', alignSelf: 'flex-start', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
-          {/* Sidebar profile */}
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '16px 14px', marginBottom: 8, borderRadius: 18, background: 'linear-gradient(180deg, var(--surface-accent) 0%, var(--surface-panel) 100%)', border: '1px solid var(--border-strong)', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 8%, transparent)' }}>
-            <div className="sidebar-img-circle" style={{ width: 58, height: 58, borderRadius: '50%', overflow: 'hidden', border: '3px solid var(--border-strong)', boxShadow: 'var(--shadow-glow)' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <div style={{ padding: '4px 10px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent)', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Acadamic Office</div>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', textAlign: 'center' }}>{admin?.name || "Admin Name"}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>{admin?.adminId || "username"}</p>
-          </div>
-
-          {/* Sidebar menu */}
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 12 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={getSidebarLinkStyle('/dashboard')}>
-              <FaHome style={{ width: 15, height: 15 }} /> Home
-            </Link>
-
-            <Link className="sidebar-btn" to="/my-posts" style={getSidebarLinkStyle('/my-posts')}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> My Posts
-            </Link>
-
-            <Link className="sidebar-btn" to="/teachers" style={getSidebarLinkStyle('/teachers')}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Teachers
-            </Link>
-
-            <Link className="sidebar-btn" to="/students" style={getSidebarLinkStyle('/students')}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Students
-            </Link>
-
-            <Link className="sidebar-btn" to="/schedule" style={getSidebarLinkStyle('/schedule')}>
-              <FaCalendarAlt style={{ width: 15, height: 15 }} /> Schedule
-            </Link>
-
-            <Link className="sidebar-btn" to="/parents" style={getSidebarLinkStyle('/parents')}>
-              <FaChalkboardTeacher style={{ width: 15, height: 15 }} /> Parents
-            </Link>
-
-            <Link className="sidebar-btn" to="/registration-form" style={getSidebarLinkStyle('/registration-form')}>
-              <FaFileAlt style={{ width: 15, height: 15 }} /> Registration Form
-            </Link>
-
-            <Link className="sidebar-btn" to="/settings" style={getSidebarLinkStyle('/settings')}>
-              <FaCog style={{ width: 15, height: 15 }} /> Settings
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                localStorage.removeItem("registrar");
-                window.location.href = "/login";
-              }}
-              style={{ ...sidebarLinkBaseStyle, marginLeft: 0, justifyContent: 'center', color: 'var(--danger)', background: 'var(--danger-soft)', border: '1px solid var(--danger-border)' }}
-            >
-              <FaSignOutAlt style={{ width: 15, height: 15 }} /> Logout
-            </button>
-          </div>
-        </div>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+        <Sidebar
+          admin={{
+            ...admin,
+            adminId: admin?.adminId || admin?.username || "",
+            profileImage: getSafeImageUrl(admin?.profileImage, "/default-profile.png"),
+          }}
+          top={4}
+          fullHeight
+          dimmed={isOverlayModalOpen}
+        />
 
         {/* MIDDLE FEED COLUMN */}
-        <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'stretch', height: '100%', overflowY: 'auto', overflowX: 'hidden', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Feed header */}
           <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
@@ -1646,7 +1534,7 @@ function Dashboard() {
               }}
             >
               <img
-                src={admin.profileImage || "/default-profile.png"}
+                src={getSafeImageUrl(admin.profileImage, "/default-profile.png")}
                 alt="me"
                 style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-soft)", flexShrink: 0 }}
               />
@@ -1715,7 +1603,7 @@ function Dashboard() {
 
           {/* Posts container */}
           <div className="posts-container" style={{ ...FEED_SECTION_STYLE, maxWidth: "760px", margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            {postsLoading ? (
+            {shouldShowPostsLoadingState ? (
               <div style={{ ...shellCardStyle, borderRadius: 10, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
                 Loading posts...
               </div>
@@ -1792,11 +1680,11 @@ function Dashboard() {
                   );
                 })() : null}
 
-                {post.postUrl && (
+                {getSafeMediaUrl(post.postUrl) && (
                   <div className="facebook-post-media-wrap" style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <img
                       className="facebook-post-media"
-                      src={post.postUrl}
+                      src={getSafeMediaUrl(post.postUrl)}
                       alt="post media"
                       style={{ width: "100%", height: "auto", maxHeight: "min(78vh, 720px)", objectFit: "contain", display: "block", margin: "0 auto" }}
                     />
@@ -1836,7 +1724,7 @@ function Dashboard() {
         </div>
 
         {/* RIGHT WIDGETS COLUMN */}
-        <div className="dashboard-widgets" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="dashboard-widgets" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - 4px)', overflowY: 'auto', position: 'sticky', top: 4, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Quick Statistics */}
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Quick Statistics</h4>
@@ -2157,7 +2045,7 @@ function Dashboard() {
               <div style={{ padding: "16px 16px 18px", display: "flex", flexDirection: "column", gap: 16 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <img
-                    src={admin.profileImage || "/default-profile.png"}
+                    src={getSafeImageUrl(admin.profileImage, "/default-profile.png")}
                     alt="me"
                     style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                   />

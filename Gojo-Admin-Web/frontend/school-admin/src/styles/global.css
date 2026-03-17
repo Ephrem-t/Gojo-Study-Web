@@ -80,25 +80,63 @@ html[data-theme="dark"] {
 .top-navbar {
   width: 100%;
   height: var(--topbar-height);
-  background: hsl(0, 0%, 100%);
-  color: rgb(14, 13, 13);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 18px;
+  padding: 0 14px;
   position: fixed;
   top: 0;
   left: 0;
   z-index: 50;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
 }
 
 .top-navbar h2 {
-  font-size: 24px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.register-shell__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.register-shell__brand-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.register-shell__page-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(40vw, 280px);
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-accent);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
 }
 
 /* Search area (if used) */
@@ -128,22 +166,23 @@ html[data-theme="dark"] {
 .nav-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  position: relative;
 }
 
 .nav-right img {
-  width: 45px;
-  height: 45px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   object-fit: cover;
-  border: 2px solid white;
+  border: 2px solid var(--surface-panel);
 }
 
 /* icon circle common */
 .icon-circle {
-  width: 40px;
-  height: 40px;
-  background-color: #e0e0e4;
+  width: 34px;
+  height: 34px;
+  background-color: #eef2ff;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -152,12 +191,12 @@ html[data-theme="dark"] {
 }
 
 .icon-circle svg {
-  font-size: 22px;
-  color: #000000;
+  font-size: 16px;
+  color: #1e293b;
 }
 
 .icon-circle:hover {
-  background-color: #cfd5e5;
+  background-color: #dbeafe;
 }
 
 /* ---------------- DASHBOARD LAYOUT ---------------- */
@@ -453,10 +492,11 @@ html[data-theme="dark"] {
 
 /* Top navbar profile image styling */
 .profile-img {
-    width: 48px;
-  height: 48px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   object-fit: cover;
+  border: 2px solid var(--surface-panel);
 }
 
 /* Ensure post header avatar matches top-nav profile image exactly */
@@ -1246,12 +1286,19 @@ button.dark-mode:hover {
   position: absolute;
   top: -5px;
   right: -5px;
-  background: red;
+  background: var(--danger);
   color: #fff;
   border-radius: 50%;
-  padding: 3px 7px;
-  font-size: 11px;
-  font-weight: 600;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 6px 16px rgba(220, 38, 38, 0.24);
 }
 
 /* Notification dropdown / rows (used by component) */
@@ -1259,26 +1306,34 @@ button.dark-mode:hover {
   position: absolute;
   top: 40px;
   right: 0;
-  width: 320px;
+  width: 360px;
   max-height: 420px;
   overflow-y: auto;
-  background: #fff;
+  background: var(--surface-panel);
   border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-panel);
   z-index: 1000;
-  padding: 6px 0;
+  padding: 6px;
 }
 
 .notification-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 10px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-soft);
   cursor: pointer;
 }
 
-.notification-row:hover { background: #fafafa; }
+.notification-row:hover { background: var(--surface-muted); }
+
+.notification-section-title {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  font-weight: 700;
+  color: var(--text-primary);
+}
 
 .notif-img {
   width: 42px;

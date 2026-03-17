@@ -12,8 +12,7 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
-import useTopbarNotifications from "../hooks/useTopbarNotifications";
-import RegisterSidebar from "../components/RegisterSidebar";
+import Sidebar from "../components/Sidebar";
 
 
 function StudentsPage() {
@@ -86,6 +85,37 @@ function StudentsPage() {
   const DB_URL = schoolCode
     ? `${DB_BASE}/Platform1/Schools/${schoolCode}`
     : DB_BASE;
+  const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
+
+  const readStudentsCache = () => {
+    try {
+      const rawSession = sessionStorage.getItem(STUDENTS_CACHE_KEY);
+      const rawLocal = localStorage.getItem(STUDENTS_CACHE_KEY);
+      const parsed = JSON.parse(rawSession || rawLocal || "null");
+      if (!parsed || typeof parsed !== "object") return null;
+
+      const cachedAt = Number(parsed.cachedAt || 0);
+      if (!cachedAt || Date.now() - cachedAt > 10 * 60 * 1000) return null;
+
+      if (!rawSession && rawLocal) {
+        sessionStorage.setItem(STUDENTS_CACHE_KEY, rawLocal);
+      }
+
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeStudentsCache = (payload) => {
+    try {
+      const serialized = JSON.stringify({ ...(payload || {}), cachedAt: Date.now() });
+      sessionStorage.setItem(STUDENTS_CACHE_KEY, serialized);
+      localStorage.setItem(STUDENTS_CACHE_KEY, serialized);
+    } catch {
+      // ignore cache write failures
+    }
+  };
 
   const [finance, setFinance] = useState({
     financeId: _storedFinance.financeId || _storedFinance.adminId || "",
@@ -236,7 +266,6 @@ function StudentsPage() {
   const [isNarrow, setIsNarrow] = useState(getIsNarrow());
   const [isPortrait, setIsPortrait] = useState(getIsPortrait());
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
-  const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [expandedCards, setExpandedCards] = useState({});
   const [attendanceView, setAttendanceView] = useState("daily");
   const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
@@ -256,6 +285,20 @@ function StudentsPage() {
 
   const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
+
+  const isWebImageUrl = (value) => {
+    const normalized = String(value || "").trim();
+    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized);
+  };
+
+  const getSafeImage = (...candidates) => {
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const normalized = String(candidate).trim();
+      if (isWebImageUrl(normalized)) return normalized;
+    }
+    return "/default-profile.png";
+  };
 
   const [studentMarks, setStudentMarks] = useState({});
   const studentMarksFlattened = useMemo(() => {
@@ -309,66 +352,33 @@ function StudentsPage() {
     return out;
   }, [studentMarks]);
 
-  const {
-    unreadSenders,
-    setUnreadSenders,
-    unreadPosts: postNotifications,
-    totalNotifications,
-    messageCount,
-    markMessagesAsSeen,
-    markPostAsSeen,
-    setUnreadPosts: setPostNotifications,
-  } = useTopbarNotifications({
-    dbRoot: DB_URL,
-    currentUserId: admin.userId,
-  });
-
-
-const handleNotificationClick = async (notification) => {
-  try {
-    await markPostAsSeen(notification.postId);
-  } catch (err) {
-    console.warn("Failed to mark notification as seen:", err);
-  }
-
-  setPostNotifications((prev) =>
-    prev.filter((n) => n.notificationId !== notification.notificationId)
-  );
-
-  setShowPostDropdown(false);
-  navigate("/dashboard", {
-    state: { postId: notification.postId },
-  });
-};
-useEffect(() => {
-  if (location.state?.postId) {
-    setPostNotifications([]);
-  }
-}, []);
-
   const handleSendMessage = () => {
     // now newMessageText is defined
     console.log("Sending message:", newMessageText);
     // your code to send the message
   };
 
-  useEffect(() => {
-    const closeDropdown = (e) => {
-      if (
-        !e.target.closest(".icon-circle") &&
-        !e.target.closest(".notification-dropdown")
-      ) {
-        setShowPostDropdown(false);
-      }
-    };
-
-    document.addEventListener("click", closeDropdown);
-    return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
   // load finance/admin on mount
   useEffect(() => {
     loadFinanceFromStorage();
+  }, []);
+
+  useEffect(() => {
+    const cached = readStudentsCache();
+    if (!cached) return;
+
+    if (Array.isArray(cached.studentList) && cached.studentList.length) {
+      setStudents(cached.studentList);
+      setStudentsLoading(false);
+    }
+
+    if (Array.isArray(cached.gradeOptions)) {
+      setGradeOptions(cached.gradeOptions);
+    }
+
+    if (typeof cached.currentAcademicYear === "string") {
+      setCurrentAcademicYear(cached.currentAcademicYear);
+    }
   }, []);
 
   // If we have a `finance.userId`, fetch the Users record to ensure
@@ -642,9 +652,6 @@ useEffect(() => {
       if (!e.target.closest(".icon-circle") && !e.target.closest(".messenger-dropdown")) {
         setShowMessageDropdown(false);
       }
-      if (!e.target.closest(".icon-circle") && !e.target.closest(".notification-dropdown")) {
-        setShowPostDropdown(false);
-      }
     };
     document.addEventListener("click", closeDropdown);
     return () => document.removeEventListener("click", closeDropdown);
@@ -708,16 +715,13 @@ useEffect(() => {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        setStudentsLoading(true);
-        const [studentsRes, usersRes, schoolInfoRes, gradesRes] = await Promise.all([
+        const [studentsRes, schoolInfoRes, gradesRes] = await Promise.all([
           axios.get(`${DB_URL}/Students.json`),
-          axios.get(`${DB_URL}/Users.json`),
           axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
           axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
         ]);
 
         const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
         const activeAcademicYear = (schoolInfoRes.data || {}).currentAcademicYear || "";
         const gradesData = gradesRes.data || {};
         setCurrentAcademicYear(activeAcademicYear);
@@ -733,22 +737,56 @@ useEffect(() => {
 
         const studentKeys = Object.keys(studentsData);
 
-        const studentList = studentKeys.map((id) => {
+        const baseStudentList = studentKeys.map((id) => {
           const student = studentsData[id];
-          const user = usersData[student.userId] || {};
           return {
             studentId: id,
             userId: student.userId,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
+            name: student.name || student.studentName || "No Name",
+            profileImage: getSafeImage(
+              student?.basicStudentInformation?.studentPhoto,
+              student?.profileImage
+            ),
             grade: student.grade,
             section: student.section,
             academicYear: student.academicYear || "",
-            email: user.email || ""
+            email: student.email || ""
           };
         });
 
-        setStudents(studentList);
+        setStudents(baseStudentList);
+        setStudentsLoading(false);
+        writeStudentsCache({
+          studentList: baseStudentList,
+          gradeOptions: managedGrades,
+          currentAcademicYear: activeAcademicYear,
+        });
+
+        try {
+          const usersRes = await axios.get(`${DB_URL}/Users.json`);
+          const usersData = usersRes.data || {};
+          const hydratedStudentList = baseStudentList.map((student) => {
+            const user = usersData[student.userId] || {};
+            return {
+              ...student,
+              name: user.name || user.username || student.name || "No Name",
+              profileImage: getSafeImage(
+                user?.profileImage,
+                student?.profileImage
+              ),
+              email: user.email || student.email || "",
+            };
+          });
+
+          setStudents(hydratedStudentList);
+          writeStudentsCache({
+            studentList: hydratedStudentList,
+            gradeOptions: managedGrades,
+            currentAcademicYear: activeAcademicYear,
+          });
+        } catch (userErr) {
+          // keep base list if users node is slow/unavailable
+        }
       } catch (err) {
         console.error("Error fetching students:", err);
       } finally {
@@ -1238,7 +1276,8 @@ useEffect(() => {
 
 
 
-  const contentLeft = isNarrow ? 0 : 90;
+  const contentLeft = 0;
+  const rightSidebarOffset = !isPortrait ? 408 : 2;
 
   const registrationSections = useMemo(() => {
     if (!selectedStudent) return null;
@@ -1615,105 +1654,34 @@ useEffect(() => {
 
  return (
    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
-        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
-        
-        <div className="nav-right">
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown(prev => !prev);
-            }}
-          >
-            <FaBell />
-
-            {(() => {
-              const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
-              const total = (postNotifications?.length || 0) + messageCount;
-              return total > 0 ? (
-                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "var(--danger)", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
-              ) : null;
-            })()}
-
-            {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "var(--surface-panel)", borderRadius: 10, boxShadow: "var(--shadow-panel)", border: "1px solid var(--border-soft)", zIndex: 1000, padding: 6 }}>
-                {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
-                  <p style={{ padding: 12, textAlign: "center", color: "var(--text-muted)" }}>No new notifications</p>
-                ) : (
-                  <div>
-                    {postNotifications.length > 0 && (
-                      <div>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
-                        {postNotifications.map(n => (
-                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                            </div>
-                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
-                      <div>
-                        <div style={{ padding: '8px 10px', color: 'var(--text-primary)', fontWeight: 700, background: 'var(--surface-muted)', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-            <FaFacebookMessenger />
-            {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
-              <span className="badge">{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-            )}
-          </div>
-
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <RegisterSidebar user={admin} sticky fullHeight />
+        <Sidebar admin={admin} />
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
           style={{
-            padding: "10px 20px 20px",
-            flex: 1,
+            flex: "1.08 1 0",
             minWidth: 0,
+            maxWidth: "none",
+            margin: "0",
             boxSizing: "border-box",
+            alignSelf: "stretch",
             height: "100%",
             overflowY: "auto",
             overflowX: "hidden",
+            scrollbarWidth: "thin",
+            scrollbarColor: "transparent transparent",
+            padding: `0 ${rightSidebarOffset}px 0 2px`,
           }}
         >
           <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
             <div
               className="section-header-card"
               style={{
-                marginBottom: "12px",
-                marginLeft: contentLeft,
-                width: isNarrow ? "92%" : "560px",
+                margin: "0 0 12px",
+                marginLeft: 0,
+                width: "min(100%, 1320px)",
               }}
             >
               <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Students</h2>
@@ -1863,15 +1831,15 @@ useEffect(() => {
 
         {/* RIGHT SIDEBAR */}
         {/* RIGHT SIDEBAR */}
-{selectedStudent && (
   <div
     style={{
       width: isPortrait ? "100%" : "380px",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
       position: "fixed",
+      left: isPortrait ? 0 : "auto",
       right: 0,
       top: isPortrait ? 0 : "55px",
-      background: "var(--page-bg-secondary)",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      background: "var(--surface-panel)",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
@@ -1880,63 +1848,67 @@ useEffect(() => {
       boxShadow: "var(--shadow-panel)",
       borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       transition: "all 0.35s ease",
-      fontSize: "10px",
+      fontSize: "12px",
     }}
   >
     {/* Close button */}
-    <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
-      <button
-        onClick={() => {
-          studentSelectionRequestRef.current += 1;
-          setRightSidebarOpen(false);
-          setStudentFullscreenOpen(false);
-          setSelectedStudent(null);
-        }}
-        aria-label="Close sidebar"
-        style={{
-          width: 34,
-          height: 34,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "rgba(255,255,255,0.18)",
-          border: "1px solid rgba(255,255,255,0.42)",
-          borderRadius: 999,
-          backdropFilter: "blur(6px)",
-          fontSize: 24,
-          fontWeight: 700,
-          color: "#ffffff",
-          cursor: "pointer",
-          padding: 0,
-          lineHeight: 1,
-          boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
-        }}
-      >
-        ×
-      </button>
-    </div>
+    {selectedStudent && (
+      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
+        <button
+          onClick={() => {
+            studentSelectionRequestRef.current += 1;
+            setRightSidebarOpen(false);
+            setStudentFullscreenOpen(false);
+            setSelectedStudent(null);
+          }}
+          aria-label="Close sidebar"
+          style={{
+            width: 34,
+            height: 34,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255,255,255,0.18)",
+            border: "1px solid rgba(255,255,255,0.42)",
+            borderRadius: 999,
+            backdropFilter: "blur(6px)",
+            fontSize: 24,
+            fontWeight: 700,
+            color: "#ffffff",
+            cursor: "pointer",
+            padding: 0,
+            lineHeight: 1,
+            boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+          }}
+        >
+          ×
+        </button>
+      </div>
+    )}
 
     {/* Expand button */}
-    <div style={{ position: "absolute", top: 8, right: 14, zIndex: 2000 }}>
-      <button
-        onClick={() => setStudentFullscreenOpen(true)}
-        aria-label="Expand student profile"
-        title="Expand"
-        style={{
-          border: "1px solid var(--border-strong)",
-          background: "var(--surface-panel)",
-          color: "var(--accent-strong)",
-          borderRadius: 8,
-          padding: "4px 8px",
-          fontSize: 14,
-          cursor: "pointer",
-          fontWeight: 800,
-          lineHeight: 1,
-        }}
-      >
-        ⤢
-      </button>
-    </div>
+    {selectedStudent && (
+      <div style={{ position: "absolute", top: 8, right: 14, zIndex: 2000 }}>
+        <button
+          onClick={() => setStudentFullscreenOpen(true)}
+          aria-label="Expand student profile"
+          title="Expand"
+          style={{
+            border: "1px solid var(--border-strong)",
+            background: "var(--surface-panel)",
+            color: "var(--accent-strong)",
+            borderRadius: 8,
+            padding: "4px 8px",
+            fontSize: 14,
+            cursor: "pointer",
+            fontWeight: 800,
+            lineHeight: 1,
+          }}
+        >
+          ⤢
+        </button>
+      </div>
+    )}
 
     {/* Header */}
     <div
@@ -1947,57 +1919,143 @@ useEffect(() => {
         textAlign: "center",
       }}
     >
-      <div
-        style={{
-          width: "70px",
-          height: "70px",
-          margin: "0 auto 10px",
-          borderRadius: "50%",
-          overflow: "hidden",
-          border: "3px solid rgba(255,255,255,0.8)",
-        }}
-      >
-        <img
-          src={selectedStudent.profileImage}
-          alt={selectedStudent.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
+      {selectedStudent ? (
+        <>
+          <div
+            style={{
+              width: "70px",
+              height: "70px",
+              margin: "0 auto 10px",
+              borderRadius: "50%",
+              overflow: "hidden",
+              border: "3px solid rgba(255,255,255,0.8)",
+            }}
+          >
+            <img
+              src={selectedStudent.profileImage}
+              alt={selectedStudent.name}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </div>
 
-      <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedStudent.name}</h2>
-      <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedStudent.studentId}</p>
-      <p style={{ margin: 0, color: "#dbeafe", fontSize: "10px" }}>
-        Grade {selectedStudent.grade} - Section {selectedStudent.section}
-      </p>
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedStudent.name}</h2>
+          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedStudent.studentId}</p>
+          <p style={{ margin: 0, color: "#dbeafe", fontSize: "10px" }}>
+            Grade {selectedStudent.grade} - Section {selectedStudent.section}
+          </p>
+        </>
+      ) : (
+        <>
+          <div
+            style={{
+              width: "70px",
+              height: "70px",
+              margin: "0 auto 10px",
+              borderRadius: "50%",
+              border: "3px solid rgba(255,255,255,0.8)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#ffffff",
+              background: "rgba(255,255,255,0.1)"
+            }}
+          >
+            <FaChalkboardTeacher size={30} />
+          </div>
+
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+            Students Workspace
+          </h2>
+
+          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px", fontWeight: 600 }}>
+            Student Overview
+          </p>
+        </>
+      )}
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
-      {["details", "attendance", "payment"].map((tab) => (
-        <button
-          key={tab}
-          onClick={() => setStudentTab(tab)}
-          style={{
-            flex: 1,
-            padding: "6px",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontWeight: 600,
-            color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
-            fontSize: "10px",
-            borderBottom: studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
-          }}
-        >
-          {tab.toUpperCase()}
-        </button>
-      ))}
-    </div>
+    {selectedStudent ? (
+      <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
+        {["details", "attendance", "payment"].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setStudentTab(tab)}
+            style={{
+              flex: 1,
+              padding: "6px",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+              color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
+              fontSize: "10px",
+              borderBottom: studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
+            }}
+          >
+            {tab.toUpperCase()}
+          </button>
+        ))}
+      </div>
+    ) : null}
+
+    {!selectedStudent ? (
+      <div
+        style={{
+          padding: "10px",
+          display: "grid",
+          gap: 8,
+          gridTemplateColumns: "1fr 1fr",
+          marginBottom: "10px"
+        }}
+      >
+        {[
+          { label: "Total", value: students.length },
+          { label: "Visible", value: filteredStudentsBase.length },
+          { label: "Grade", value: selectedGrade === "All" ? "All" : `G${selectedGrade}` },
+          { label: "Search", value: searchTerm ? "Active" : "None" }
+        ].map((item) => (
+          <div
+            key={item.label}
+            style={{
+              ...rightDrawerCardStyle,
+              padding: "10px",
+              minHeight: 56,
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center"
+            }}
+          >
+            <div
+              style={{
+                fontSize: "9px",
+                fontWeight: 800,
+                color: "var(--text-muted)",
+                letterSpacing: "0.3px",
+                textTransform: "uppercase"
+              }}
+            >
+              {item.label}
+            </div>
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 800,
+                color: "var(--text-primary)",
+                marginTop: 2
+              }}
+            >
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : null}
 
     {/* Tab Content */}
     <div>
       {/* DETAILS TAB */}
-      {studentTab === "details" && (
+      {studentTab === "details" && selectedStudent && (
         <div
           style={{
             padding: "12px",
@@ -2078,6 +2136,10 @@ useEffect(() => {
               </div>
             </div>
 
+            <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
+              ID: <b style={{ color: "var(--text-primary)" }}>{selectedStudent?.studentId || "N/A"}</b>
+            </div>
+
             <div
               style={{
                 display: "grid",
@@ -2086,16 +2148,16 @@ useEffect(() => {
               }}
             >
               {[
-                { label: "Phone", key: "phone" },
-                { label: "Gender", key: "gender" },
-                { label: "Email", key: "email" },
-                { label: "Grade", key: "grade" },
-                { label: "Section", key: "section" },
-                { label: "Age", key: "age" },
-                { label: "Birth Date", key: "dob" },
-                { label: "Parent Name", key: "parentName" },
-                { label: "Parent Phone", key: "parentPhone" },
-              ].map(({ label, key }) => {
+                { label: "Phone", key: "phone", icon: "📱" },
+                { label: "Gender", key: "gender", icon: "⚧" },
+                { label: "Email", key: "email", icon: "📧" },
+                { label: "Grade", key: "grade", icon: "🏫" },
+                { label: "Section", key: "section", icon: "🧩" },
+                { label: "Age", key: "age", icon: "🎂" },
+                { label: "Birth Date", key: "dob", icon: "📅" },
+                { label: "Parent Name", key: "parentName", icon: "👤" },
+                { label: "Parent Phone", key: "parentPhone", icon: "☎️" },
+              ].map(({ label, key, icon }) => {
                 const value = selectedStudent?.[key];
                 return (
                   <div
@@ -2112,6 +2174,21 @@ useEffect(() => {
                       minHeight: 36,
                     }}
                   >
+                    {!editingProfile && (
+                      <span
+                        style={{
+                          fontSize: 14,
+                          marginRight: 8,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {icon}
+                      </span>
+                    )}
+
                     <div style={{ width: "100%" }}>
                       <div
                         style={{
@@ -2130,7 +2207,14 @@ useEffect(() => {
                           style={{
                             fontSize: 10,
                             fontWeight: 600,
-                            color: "var(--text-primary)",
+                            color:
+                              label === "Gender"
+                                ? String(value || "").toLowerCase() === "male"
+                                  ? "var(--success)"
+                                  : String(value || "").toLowerCase() === "female"
+                                  ? "var(--accent-strong)"
+                                  : "var(--text-primary)"
+                                : "var(--text-primary)",
                             marginTop: 2,
                             wordBreak: "break-word",
                           }}
@@ -2178,6 +2262,56 @@ useEffect(() => {
                   </div>
                 );
               })}
+            </div>
+
+            <div
+              style={{
+                background: "var(--surface-panel)",
+                borderRadius: 12,
+                padding: 10,
+                border: "1px solid var(--border-soft)",
+                boxShadow: "none",
+                marginTop: 10,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  letterSpacing: "0.4px",
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  marginBottom: 8,
+                }}
+              >
+                Enrollment Summary
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[
+                  `Grade ${selectedStudent?.grade || "-"}`,
+                  `Section ${selectedStudent?.section || "-"}`,
+                  `Year ${String(selectedStudent?.academicYear || currentAcademicYear || "-").replace("_", "/")}`,
+                  `Status ${(selectedStudent?.status || "Active").toString()}`,
+                  `Parents ${Array.isArray(selectedStudent?.parents) ? selectedStudent.parents.length : 0}`,
+                ].map((item, index) => (
+                  <span
+                    key={`${item}_${index}`}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      border: "1px solid var(--border-soft)",
+                      background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
+                      color: "var(--text-secondary)",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
             </div>
            
           </div>
@@ -2460,7 +2594,7 @@ useEffect(() => {
       )}
     </div>
     {/* Parent Chat Button */}
-    {!studentChatOpen && (
+    {selectedStudent && !studentChatOpen && (
       <div
         onClick={() => {
           if (!selectedStudent?.userId) {
@@ -2543,7 +2677,7 @@ useEffect(() => {
     )}
 
     {/* Student Chat Button (styled like Parent Chat) */}
-    {!studentChatOpen && (
+    {selectedStudent && !studentChatOpen && (
       <div
         onClick={() => {
           if (!selectedStudent?.userId) {
@@ -2811,7 +2945,6 @@ useEffect(() => {
       </div>
     )}
   </div>
-)}
 
 {selectedStudent && studentFullscreenOpen && (
   <div

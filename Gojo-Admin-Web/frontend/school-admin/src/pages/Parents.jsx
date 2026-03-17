@@ -20,7 +20,7 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
-import RegisterSidebar from "../components/RegisterSidebar";
+import Sidebar from "../components/Sidebar";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -117,7 +117,8 @@ function Parent() {
 
   // Portrait detection helper used in sidebar layout
   const isPortrait = windowW <= 600;
-  const contentLeft = isNarrow ? 0 : 90;
+  const contentLeft = 0;
+  const contentWidth = isNarrow ? "92%" : "760px";
 
   const getUserByKeyOrUserId = (usersData, maybeUserId) => {
     if (!maybeUserId) return null;
@@ -1309,154 +1310,8 @@ function Parent() {
 
   return (
     <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh", height: "100vh", overflow: "hidden" }}>
-      <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
-        <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
-
-        <div className="nav-right">
-          {/* Combined bell: shows posts + message senders in one dropdown */}
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown((prev) => !prev);
-            }}
-          >
-            <FaBell />
-            {(
-              postNotifications.length + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)
-            ) > 0 && (
-              <span className="badge">{postNotifications.length + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-            )}
-
-            {showPostDropdown && (
-                <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{
-                  position: "absolute",
-                  top: "45px",
-                  right: "0",
-                  width: "360px",
-                  maxHeight: "420px",
-                  overflowY: "auto",
-                  background: "var(--surface-panel)",
-                  borderRadius: 10,
-                  border: "1px solid var(--border-soft)",
-                  boxShadow: "var(--shadow-panel)",
-                  zIndex: 1000,
-                  padding: 6,
-                }}>
-                {totalNotifications === 0 ? (
-                  <p className="muted">No new notifications</p>
-                ) : (
-                  <div>
-                    {/* Posts section */}
-                    {postNotifications.length > 0 && (
-                      <div>
-                        <div className="notification-section-title">Posts</div>
-                        {postNotifications.map((n) => (
-                          <div
-                            key={n.notificationId}
-                            className="notification-row"
-                            onClick={async () => {
-                              try {
-                                await axios.post(`${API_BASE}/mark_post_notification_read`, {
-                                  notificationId: n.notificationId,
-                                });
-                              } catch (err) {
-                                console.warn("Failed to mark notification:", err);
-                              }
-
-                              setPostNotifications((prev) => prev.filter((notif) => notif.notificationId !== n.notificationId));
-                              setShowPostDropdown(false);
-                              navigate("/dashboard", {
-                                state: {
-                                  postId: n.postId,
-                                  posterName: n.adminName,
-                                  posterProfile: n.adminProfile,
-                                },
-                              });
-                            }}
-                            style={{
-                              padding: 10,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 12,
-                              cursor: "pointer",
-                              borderBottom: "1px solid var(--border-soft)",
-                              transition: "background 120ms ease",
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
-                            onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                          >
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                            </div>
-                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Messages section */}
-                    {messageCount > 0 && (
-                      <div>
-                        <div className="notification-section-title" style={{ padding: '8px 10px', color: 'var(--text-primary)', fontWeight: 700, background: 'var(--surface-muted)', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                              <div
-                                key={userId}
-                                className="notification-row"
-                                onClick={async () => {
-                                  await markMessagesAsSeen(userId);
-                                  setUnreadSenders((prev) => {
-                                    const copy = { ...prev };
-                                    delete copy[userId];
-                                    return copy;
-                                  });
-                                  setShowPostDropdown(false);
-                                  navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
-                                }}
-                                style={{
-                                  padding: 10,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 12,
-                                  cursor: "pointer",
-                                  borderBottom: "1px solid var(--border-soft)",
-                                  transition: "background 120ms ease",
-                                }}
-                                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
-                                onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                              >
-                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                                  <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
-                                </div>
-                              </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Messenger icon: only counts messages and navigates straight to /all-chat */}
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-            <FaFacebookMessenger />
-            {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
-              <span className="badge">{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-            )}
-          </div>
-
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
-        <RegisterSidebar user={admin} sticky fullHeight />
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+        <Sidebar admin={admin} />
 
         {/* MAIN CONTENT */}
         <main className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`} style={mainContentStyle}>
@@ -1466,7 +1321,7 @@ function Parent() {
               style={{
                 marginBottom: "12px",
                 marginLeft: contentLeft,
-                width: isNarrow ? "92%" : "560px",
+                width: contentWidth,
                 ...heroStyle,
               }}
             >
@@ -1477,7 +1332,7 @@ function Parent() {
             <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
               <div
                 style={{
-                  width: isNarrow ? "92%" : "560px",
+                  width: contentWidth,
                   ...searchShellStyle,
                 }}
               >
@@ -1502,7 +1357,7 @@ function Parent() {
             {loadingParents ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {Array.from({ length: 6 }).map((_, idx) => (
-                  <div key={idx} style={{ width: isNarrow ? "92%" : "560px", minHeight: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
+                  <div key={idx} style={{ width: contentWidth, minHeight: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
                       <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
@@ -1515,7 +1370,7 @@ function Parent() {
                 ))}
               </div>
             ) : filteredParents.length === 0 ? (
-              <p style={{ width: isNarrow ? "92%" : "560px", marginLeft: contentLeft, textAlign: "center", color: "var(--text-secondary)" }}>No parents found.</p>
+              <p style={{ width: contentWidth, marginLeft: contentLeft, textAlign: "center", color: "var(--text-secondary)" }}>No parents found.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {filteredParents.map((p, i) => (
@@ -1524,7 +1379,7 @@ function Parent() {
                     onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
                     style={{
                       ...parentCardBase,
-                      width: isNarrow ? "92%" : "560px",
+                      width: contentWidth,
                       background: selectedParent?.userId === p.userId ? "var(--accent-soft)" : "var(--surface-panel)",
                       border: selectedParent?.userId === p.userId ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
                       boxShadow: selectedParent?.userId === p.userId ? "var(--shadow-glow)" : "var(--shadow-soft)",
