@@ -8,17 +8,15 @@ import {
   FaSearch,
   FaFileAlt,
   FaChalkboardTeacher,
-  FaCog,
   FaSignOutAlt,
-  FaBell,
   FaUsers,
   FaClipboardCheck,
   FaStar,
   FaCheckCircle,
   FaCheck,
   FaTimesCircle,
-  FaFacebookMessenger,
   FaCommentDots,
+  FaFacebookMessenger,
    FaUserCheck,
   FaCalendarAlt,
   FaBookOpen,
@@ -26,7 +24,9 @@ import {
 } from "react-icons/fa";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
-import { getTeacherContext } from "../api/teacherApi";
+import { getTeacherContext, getTeacherCourseContext } from "../api/teacherApi";
+import { getRtdbRoot } from "../api/rtdbScope";
+import { resolveProfileImage } from "../utils/profileImage";
 
 // NOTE: we alias `ref` to `dbRef` to avoid confusion with other `ref` variables
 import {
@@ -75,7 +75,7 @@ const formatSubjectName = (courseId = "") => {
 
 };
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const RTDB_BASE = getRtdbRoot();
 
 // compute age helper
 const computeAge = (rawDob) => {
@@ -115,7 +115,18 @@ const formatDateLabel = (ts) => {
 // find user by userId in Users node object
 const findUserByUserId = (usersObj, userId) => {
   if (!usersObj || !userId) return null;
-  return Object.values(usersObj).find((u) => String(u?.userId) === String(userId)) || null;
+  const normalizedUserId = String(userId || "").trim();
+  const directByKey = usersObj?.[normalizedUserId];
+  if (directByKey) return directByKey;
+
+  return (
+    Object.entries(usersObj).find(([userKey, userValue]) => {
+      return (
+        String(userKey || "").trim() === normalizedUserId ||
+        String(userValue?.userId || "").trim() === normalizedUserId
+      );
+    })?.[1] || null
+  );
 };
 
 const StudentItem = ({ student, selected, onClick, number }) => (
@@ -152,6 +163,9 @@ const StudentItem = ({ student, selected, onClick, number }) => (
     <img
       src={student.profileImage || "/default-profile.png"}
       alt={student.name}
+      onError={(event) => {
+        event.currentTarget.src = "/default-profile.png";
+      }}
       style={{
         width: "48px",
         height: "48px",
@@ -189,6 +203,7 @@ function StudentsPage() {
   const [error, setError] = useState("");
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedSection, setSelectedSection] = useState("All");
+  const [assignedGradeSections, setAssignedGradeSections] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [sections, setSections] = useState([]);
 
@@ -485,14 +500,16 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           studentsRes,
           usersRes,
           coursesRes,
-          assignmentsRes,
+          studentCoursesRes,
           teachersRes,
+          courseContext,
         ] = await Promise.all([
           axios.get(`${RTDB_BASE}/Students.json`),
           axios.get(`${RTDB_BASE}/Users.json`),
           axios.get(`${RTDB_BASE}/Courses.json`),
-          axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+          axios.get(`${RTDB_BASE}/StudentCourses.json`),
           axios.get(`${RTDB_BASE}/Teachers.json`),
+          getTeacherCourseContext({ teacher: teacherInfo, rtdbBase: RTDB_BASE }),
         ]);
 
         const teachers = teachersRes.data || {};
@@ -516,9 +533,63 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
         }
         const teacherKey = teacherEntry[0];
 
-        const assignedCourses = Object.values(assignmentsRes.data || {})
-          .filter((a) => a.teacherId === teacherKey)
-          .map((a) => a.courseId);
+        const assignedCourses = courseContext.courseIds || [];
+        const studentCoursesMap = studentCoursesRes.data || {};
+        const assignedCourseIdSet = new Set(assignedCourses.map((courseId) => String(courseId || "").trim()).filter(Boolean));
+
+        const parseGradeSectionFromCourseId = (courseId) => {
+          const raw = String(courseId || "").trim();
+          const body = raw.startsWith("course_") ? raw.slice("course_".length) : raw;
+          const last = body.split("_").filter(Boolean).at(-1) || "";
+          const match = last.match(/^(\d+)([A-Za-z].*)$/);
+          if (!match) return null;
+          return {
+            grade: String(match[1] || "").trim(),
+            section: String(match[2] || "").trim().toUpperCase(),
+          };
+        };
+
+        const taughtGradeSectionSet = new Set(
+          (courseContext.courses || [])
+            .map((course) => ({
+              grade: String(course?.grade || "").trim(),
+              section: String(course?.section || course?.secation || "").trim().toUpperCase(),
+            }))
+            .filter((item) => item.grade && item.section)
+            .map((item) => `${item.grade}|${item.section}`)
+        );
+
+        assignedCourses.forEach((courseId) => {
+          const dbCourse = coursesRes.data?.[courseId];
+          if (dbCourse) {
+            const key = `${String(dbCourse.grade || "").trim()}|${String(dbCourse.section || dbCourse.secation || "").trim().toUpperCase()}`;
+            if (key !== "|") taughtGradeSectionSet.add(key);
+            return;
+          }
+
+          const parsed = parseGradeSectionFromCourseId(courseId);
+          if (!parsed) return;
+          taughtGradeSectionSet.add(`${parsed.grade}|${parsed.section}`);
+        });
+
+        const hasTeacherScope =
+          assignedCourseIdSet.size > 0 || taughtGradeSectionSet.size > 0;
+
+        const assignedPairs = [...taughtGradeSectionSet]
+          .map((value) => {
+            const [grade, section] = String(value || "").split("|");
+            return {
+              grade: String(grade || "").trim(),
+              section: String(section || "").trim().toUpperCase(),
+            };
+          })
+          .filter((item) => item.grade && item.section)
+          .sort((a, b) => {
+            const gradeDiff = Number(a.grade) - Number(b.grade);
+            if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
+            if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
+            return a.section.localeCompare(b.section);
+          });
 
         const usersObj = usersRes.data || {};
         setUsersData(usersObj);
@@ -528,6 +599,33 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
         const studentsArr = Object.entries(studentsRes.data || {}).map(([studentId, s]) => {
           const user = findUser(s.userId);
+
+          const normalizedStudentGrade = String(
+            s.grade || s.basicStudentInformation?.grade || ""
+          ).trim();
+          const normalizedStudentSection = String(
+            s.section || s.basicStudentInformation?.section || ""
+          )
+            .trim()
+            .toUpperCase();
+
+          const studentCourseNode = studentCoursesMap?.[studentId] || {};
+          const studentCourseIds = Object.entries(studentCourseNode)
+            .filter(([, enabled]) => Boolean(enabled))
+            .map(([courseId]) => String(courseId || "").trim())
+            .filter(Boolean);
+
+          const hasAssignedCourseMatch = studentCourseIds.some((courseId) =>
+            assignedCourseIdSet.has(courseId)
+          );
+
+          const hasGradeSectionMatch = taughtGradeSectionSet.has(
+            `${normalizedStudentGrade}|${normalizedStudentSection}`
+          );
+
+          const includeStudent = hasTeacherScope
+            ? hasAssignedCourseMatch || hasGradeSectionMatch
+            : true;
 
           // attempt to resolve parentName/parentPhone from student raw or user record
           const parentName =
@@ -553,24 +651,58 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
             studentId,
             name: user?.name || s.name || "Unknown",
             email: user?.email || s.email || "",
-            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
+            profileImage: resolveProfileImage(
+              user?.profileImage,
+              user?.profile,
+              user?.avatar,
+              s?.profileImage,
+              s?.basicStudentInformation?.studentPhoto,
+              s?.studentPhoto
+            ),
             phone: user?.phone || s.phone || "",
             gender: user?.gender || s.gender || "",
+            grade: normalizedStudentGrade || s.grade || "",
+            section: normalizedStudentSection || s.section || "",
             dob: rawDob,
             age: age,
             parentName: parentName || null,
             parentPhone: parentPhone || null,
+            includeStudent,
             raw: s,
           };
-        }).filter((s) =>
-          assignedCourses.some((cid) => {
-            const c = coursesRes.data?.[cid];
-            return c && c.grade === s.grade && c.section === s.section;
+        }).filter((studentItem) => studentItem.includeStudent);
+
+        const fallbackPairs = [...new Set(
+          studentsArr
+            .map((studentItem) => {
+              const normalizedGrade = String(studentItem.grade || "").trim();
+              const normalizedSection = String(studentItem.section || "").trim().toUpperCase();
+              return normalizedGrade && normalizedSection
+                ? `${normalizedGrade}|${normalizedSection}`
+                : "";
+            })
+            .filter(Boolean)
+        )]
+          .map((value) => {
+            const [grade, section] = String(value || "").split("|");
+            return {
+              grade: String(grade || "").trim(),
+              section: String(section || "").trim().toUpperCase(),
+            };
           })
-        );
+          .filter((item) => item.grade && item.section)
+          .sort((a, b) => {
+            const gradeDiff = Number(a.grade) - Number(b.grade);
+            if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
+            if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
+            return a.section.localeCompare(b.section);
+          });
+
+        const effectiveAssignedPairs = hasTeacherScope ? assignedPairs : fallbackPairs;
 
         if (!cancelled) {
           setStudents(studentsArr);
+          setAssignedGradeSections(effectiveAssignedPairs);
           setError("");
         }
       } catch (err) {
@@ -605,7 +737,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       parentPhone: selectedStudent.parentPhone || selectedStudent.raw?.parentPhone || "—",
       dob: selectedStudent.dob || selectedStudent.raw?.dob || "—",
       age: selectedStudent.age ?? computeAge(selectedStudent.dob || selectedStudent.raw?.dob) ?? "—",
-      profileImage: selectedStudent.profileImage || "/default-profile.png",
+      profileImage: resolveProfileImage(
+        selectedStudent.profileImage,
+        selectedStudent.raw?.profileImage,
+        selectedStudent.raw?.basicStudentInformation?.studentPhoto,
+        selectedStudent.raw?.studentPhoto
+      ),
     };
 
     setSelectedStudentDetails(fallback);
@@ -649,6 +786,17 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
         const email = userRec?.email || selectedStudent.email || "—";
         const dob = userRec?.dob || userRec?.birthDate || selectedStudent.dob || selectedStudent.raw?.dob || null;
         const age = computeAge(dob) ?? selectedStudent.age ?? "—";
+        const parentUserId =
+          parentRec?.userId ||
+          selectedStudent.raw?.parentUserId ||
+          selectedStudent.parentUserId ||
+          null;
+        const parentProfileImage = resolveProfileImage(
+          parentRec?.profileImage,
+          parentRec?.profile,
+          selectedStudent?.raw?.parentProfileImage,
+          selectedStudent?.parentProfileImage
+        );
 
         const details = {
           fullName: userRec?.name || selectedStudent.name || "—",
@@ -659,9 +807,19 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           section: selectedStudent.section || "—",
           parentName,
           parentPhone,
+          parentUserId,
+          parentProfileImage,
           dob: dob || "—",
           age,
-          profileImage: userRec?.profileImage || selectedStudent.profileImage || "/default-profile.png",
+          profileImage: resolveProfileImage(
+            userRec?.profileImage,
+            userRec?.profile,
+            userRec?.avatar,
+            selectedStudent.profileImage,
+            selectedStudent.raw?.profileImage,
+            selectedStudent.raw?.basicStudentInformation?.studentPhoto,
+            selectedStudent.raw?.studentPhoto
+          ),
           userRec,
           parentRec,
         };
@@ -752,6 +910,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
             ...(prev || {}),
             parentName: parentName || prev?.parentName || "—",
             parentPhone: parentPhone || prev?.parentPhone || "—",
+            parentUserId: foundParent?.userId || prev?.parentUserId || null,
+            parentProfileImage: resolveProfileImage(
+              foundParent?.profileImage,
+              foundParent?.profile,
+              prev?.parentProfileImage
+            ),
           }));
         }
       } catch (err) {
@@ -781,9 +945,14 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
         ),
       ];
       setSections(gradeSections);
-      setSelectedSection("All");
+
+      if (!gradeSections.length) {
+        setSelectedSection("All");
+      } else if (selectedSection !== "All" && !gradeSections.includes(selectedSection)) {
+        setSelectedSection(gradeSections[0]);
+      }
     }
-  }, [selectedGrade, students]);
+  }, [selectedGrade, students, selectedSection]);
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredStudents = students.filter((s) => {
@@ -807,6 +976,25 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   });
 
   const grades = [...new Set(students.map((s) => s.grade))].sort();
+  const assignedGrades = [...new Set(assignedGradeSections.map((item) => item.grade))].sort((leftGrade, rightGrade) => {
+    const numericDiff = Number(leftGrade) - Number(rightGrade);
+    if (!Number.isNaN(numericDiff) && numericDiff !== 0) return numericDiff;
+    return String(leftGrade).localeCompare(String(rightGrade));
+  });
+  const assignedSectionsForSelectedGrade =
+    selectedGrade === "All"
+      ? []
+      : [...new Set(
+          assignedGradeSections
+            .filter((item) => String(item.grade) === String(selectedGrade))
+            .map((item) => item.section)
+        )].sort();
+  const selectedFilterLabel =
+    selectedGrade === "All"
+      ? "All grades"
+      : selectedSection === "All"
+      ? `Grade ${selectedGrade} (select section)`
+      : `Grade ${selectedGrade} - Section ${selectedSection}`;
 
 
 
@@ -822,16 +1010,16 @@ useEffect(() => {
     setAttendanceLoading(true);
     try {
       // Fetch attendance + teachers + users to resolve teacher names when available
-      const [attendanceRes, teachersRes, usersRes, assignmentsRes] = await Promise.all([
+      const [attendanceRes, teachersRes, usersRes, courseContext] = await Promise.all([
         axios.get(`${RTDB_BASE}/Attendance.json`),
         axios.get(`${RTDB_BASE}/Teachers.json`),
         axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+        getTeacherCourseContext({ teacher: teacherInfo, rtdbBase: RTDB_BASE }),
       ]);
       const raw = attendanceRes.data || {};
       const teachersObj = teachersRes.data || {};
       const usersObj = usersRes.data || {};
-      const assignmentsObj = assignmentsRes.data || {};
+      const assignmentsObj = courseContext.assignmentsByCourseId || {};
 
       // Normalized list for this student
       const normalized = [];
@@ -905,11 +1093,11 @@ useEffect(() => {
             subject = record.subject || courseId;
           }
 
-          // If teacherName is still missing, try to infer from TeacherAssignments (course -> teacher key -> Teachers -> Users)
+          // If teacherName is still missing, try to infer from resolved teacher-course assignments.
           if (!teacherName) {
-            const assignment = Object.values(assignmentsObj).find((a) => String(a.courseId) === String(courseId));
-            if (assignment && assignment.teacherId) {
-              const assignedTeacherKey = assignment.teacherId;
+            const assignment = assignmentsObj[courseId];
+            const assignedTeacherKey = assignment?.teacherId || assignment?.teacherRecordKey;
+            if (assignedTeacherKey) {
               const tRec = teachersObj[assignedTeacherKey];
               if (tRec) {
                 if (tRec.userId) {
@@ -1066,7 +1254,7 @@ const toggleExpand = (key) => {
     async function fetchTeacherNotes() {
       try {
         const res = await axios.get(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`
+          `${RTDB_BASE}/StudentNotes/${selectedStudent?.userId}.json`
         );
 
         if (!res.data) {
@@ -1106,7 +1294,7 @@ const toggleExpand = (key) => {
 
     try {
       await axios.post(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/StudentNotes/${selectedStudent?.userId}.json`,
+        `${RTDB_BASE}/StudentNotes/${selectedStudent?.userId}.json`,
         noteData
       );
 
@@ -1203,12 +1391,12 @@ const toggleExpand = (key) => {
     };
 
     await axios.post(
-      `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatId}/messages.json`,
+      `${RTDB_BASE}/Chats/${chatId}/messages.json`,
       message
     );
 
     await axios.patch(
-      `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatId}.json`,
+      `${RTDB_BASE}/Chats/${chatId}.json`,
       {
         participants: { [senderId]: true, [receiverId]: true },
         lastMessage: { text: newMessageText, senderId, seen: false, timeStamp },
@@ -1217,6 +1405,46 @@ const toggleExpand = (key) => {
     );
 
     setNewMessageText("");
+  };
+
+  const handleOpenParentChat = () => {
+    const parentUserId = String(selectedStudentDetails?.parentUserId || "").trim();
+    if (!selectedStudent) {
+      alert("Please select a student first.");
+      return;
+    }
+    if (!parentUserId) {
+      alert("No parent found for this student.");
+      return;
+    }
+
+    const parentName = selectedStudentDetails?.parentName || "Parent";
+    const parentProfileImage = resolveProfileImage(
+      selectedStudentDetails?.parentProfileImage,
+      selectedStudentDetails?.parentRec?.profileImage,
+      selectedStudentDetails?.parentRec?.profile,
+      "/default-profile.png"
+    );
+
+    const chatId = getChatId(teacherUserId, parentUserId);
+    navigate("/all-chat", {
+      state: {
+        user: {
+          userId: parentUserId,
+          name: parentName,
+          profileImage: parentProfileImage,
+          type: "parent",
+        },
+        contact: {
+          userId: parentUserId,
+          name: parentName,
+          profileImage: parentProfileImage,
+          type: "parent",
+        },
+        chatId,
+        tab: "parent",
+      },
+    });
   };
 
 const [isPortrait, setIsPortrait] = React.useState(
@@ -1280,210 +1508,50 @@ React.useEffect(() => {
     </div>
   );
 
+  const chipStyle = (active) => ({
+    padding: "6px 12px",
+    borderRadius: "999px",
+    background: active ? "var(--accent-strong)" : "var(--surface-accent)",
+    color: active ? "#fff" : "var(--accent-strong)",
+    cursor: "pointer",
+    border: active ? "1px solid var(--accent-strong)" : "1px solid var(--border-strong)",
+    fontSize: "11px",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    transition: "all 0.2s ease",
+  });
+
+  const listShellWidth = isPortrait ? "92%" : "560px";
+
   return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-        
-        <div className="nav-right">
-          {/* Notification Bell & Popup (shows posts and unread messages) */}
-          <div className="icon-circle">
-            <div
-              onClick={() => setShowNotifications(!showNotifications)}
-              style={{ cursor: "pointer", position: "relative" }}
-              aria-label="Show notifications"
-              tabIndex={0}
-              role="button"
-              onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
-            >
-              <FaBell size={24} />
-              {(notifications.length + totalUnreadMessages) > 0 && (
-                <span
-                  style={{
-                    position: "absolute",
-                    top: -5,
-                    right: -5,
-                    background: "red",
-                    color: "white",
-                    borderRadius: "50%",
-                    width: 18,
-                    height: 18,
-                    fontSize: 12,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {notifications.length + totalUnreadMessages}
-                </span>
-              )}
-            </div>
-
-            {showNotifications && (
-              <>
-                {/* Overlay for closing notification list by clicking outside */}
-                <div
-                  style={{
-                    position: 'fixed',
-                    inset: 0,
-                    background: 'rgba(0,0,0,0.08)',
-                    zIndex: 1999,
-                  }}
-                  onClick={() => setShowNotifications(false)}
-                />
-                <div
-                  className="notification-popup"
-                  style={
-                    typeof window !== 'undefined' && window.innerWidth <= 600
-                      ? {
-                          position: 'fixed',
-                          left: '50%',
-                          top: '8%',
-                          transform: 'translate(-50%, 0)',
-                          width: '90vw',
-                          maxWidth: 340,
-                          zIndex: 2000,
-                          background: '#fff',
-                          borderRadius: 12,
-                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
-                          maxHeight: '70vh',
-                          overflowY: 'auto',
-                          padding: 12,
-                        }
-                      : { zIndex: 2000, position: 'absolute', top: 30, right: 0, width: 300, maxHeight: 400, overflowY: 'auto', background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.2)', borderRadius: 8 }
-                  }
-                  onClick={e => e.stopPropagation()}
-                >
-                  {/* Show post notifications */}
-                  {notifications.length > 0 && notifications.map((post, index) => (
-                    <div
-                      key={post.id || index}
-                      onClick={() => {
-                        setNotifications(prev => prev.filter((_, i) => i !== index));
-                        setShowNotifications(false);
-                        navigate("/dashboard");
-                        setTimeout(() => {
-                          const postElement = postRefs.current[post.id];
-                          if (postElement) {
-                            postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                            setHighlightedPostId(post.id);
-                            setTimeout(() => setHighlightedPostId(null), 3000);
-                          }
-                        }, 150);
-                      }}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "10px 15px",
-                        borderBottom: "1px solid #eee",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <img
-                        src={post.adminProfile}
-                        alt={post.adminName}
-                        style={{
-                          width: 35,
-                          height: 35,
-                          borderRadius: "50%",
-                          marginRight: 10,
-                        }}
-                      />
-                      <div>
-                        <strong>{post.adminName}</strong>
-                        <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
-                      </div>
-                    </div>
-                  ))}
-                  {/* Show unread message notifications */}
-                  {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                    <div
-                      key={conv.chatId || idx}
-                      onClick={() => {
-                        setShowNotifications(false);
-                        navigate("/all-chat");
-                      }}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "10px 15px",
-                        borderBottom: "1px solid #eee",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <img
-                        src={conv.profile || "/default-profile.png"}
-                        alt={conv.displayName}
-                        style={{
-                          width: 35,
-                          height: 35,
-                          borderRadius: "50%",
-                          marginRight: 10,
-                        }}
-                      />
-                      <div>
-                        <strong>{conv.displayName}</strong>
-                        <p style={{ margin: 0, fontSize: 12, color: '#0b78f6', display: 'flex', alignItems: 'center', gap: 8 }}>
-                          {/* show tick only if the last message was sent by me (teacher) */}
-                          {conv.lastMessageSenderId === teacherUserId ? (
-                            <span style={{ color: conv.lastMessageSeen ? '#0bda63' : '#cbd5e1' }}>
-                              {conv.lastMessageSeen ? '✓✓' : '✓'}
-                            </span>
-                          ) : null}
-                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>
-                            {conv.lastMessageText || 'New message'}
-                          </span>
-                          {conv.lastMessageSeenAt && (
-                            <span style={{ marginLeft: 6, color: '#64748b', fontSize: 11 }}>
-                              {new Date(conv.lastMessageSeenAt).toLocaleTimeString()}
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                  {notifications.length === 0 && totalUnreadMessages === 0 && (
-                    <div style={{ padding: 15 }}>No notifications</div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Messenger button: navigates to all-chat, badge only */}
-          <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={() => navigate("/all-chat")}
-                 style={{ cursor: "pointer", position: "relative" }}>
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span style={{
-                  position: "absolute",
-                  top: -6,
-                  right: -6,
-                  background: "#f60b0b",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  minWidth: 18,
-                  height: 18,
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "0 5px"
-                }}>
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} />
-
-        </div>
-      </nav>
-
-      <div className="google-dashboard">
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+        "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <Sidebar
           active="students"
           sidebarOpen={sidebarOpen}
@@ -1491,15 +1559,26 @@ React.useEffect(() => {
           teacher={teacher}
           handleLogout={handleLogout}
         />
+
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         {/* MAIN CONTENT */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
            <div
              className="student-list-card-responsive"
              style={{
-               width: "min(420px, 100%)",
+               width: listShellWidth,
                position: "relative",
-               marginLeft: isPortrait ? 0 : "290px",
-               marginRight: isPortrait ? 0 : "30px",
+               marginLeft: 0,
+               marginRight: isPortrait ? 0 : "24px",
              }}
            >
              <style>{`
@@ -1512,7 +1591,13 @@ React.useEffect(() => {
                  }
                }
              `}</style>
-            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Students</h2>
+            <div className="section-header-card" style={{ marginBottom: 12 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Students</h2>
+              <div className="section-header-card__meta">
+                <span>Total: {filteredStudents.length}</span>
+                <span className="section-header-card__chip">Teacher View</span>
+              </div>
+            </div>
 
             {/* Search */}
             <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
@@ -1522,14 +1607,14 @@ React.useEffect(() => {
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "#fff",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "10px",
-                  padding: "6px 10px",
-                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                  background: "var(--surface-panel)",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: "12px",
+                  padding: "10px 12px",
+                  boxShadow: "var(--shadow-soft)",
                 }}
               >
-                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
@@ -1539,7 +1624,7 @@ React.useEffect(() => {
                     width: "100%",
                     border: "none",
                     outline: "none",
-                    fontSize: 12,
+                    fontSize: 13,
                     background: "transparent",
                   }}
                 />
@@ -1547,31 +1632,68 @@ React.useEffect(() => {
             </div>
 
             {/* Grades */}
-            <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap" }}>
-              <button onClick={() => setSelectedGrade("All")} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedGrade === "All" ? "#4b6cb7" : "#ddd", color: selectedGrade === "All" ? "#fff" : "#000", border: "none", fontSize: 11 }}>All Grades</button>
-              {grades.map(g => (
-                <button key={g} onClick={() => setSelectedGrade(g)} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedGrade === g ? "#4b6cb7" : "#ddd", color: selectedGrade === g ? "#fff" : "#000", border: "none", fontSize: 11 }}>Grade {g}</button>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  setSelectedGrade("All");
+                  setSelectedSection("All");
+                }}
+                style={chipStyle(selectedGrade === "All" && selectedSection === "All")}
+              >
+                All Grades
+              </button>
+              {assignedGrades.map((gradeValue) => (
+                <button
+                  key={`grade-${gradeValue}`}
+                  onClick={() => {
+                    const firstSectionForGrade = assignedGradeSections
+                      .filter((item) => String(item.grade) === String(gradeValue))
+                      .map((item) => item.section)
+                      .find(Boolean);
+
+                    setSelectedGrade(gradeValue);
+                    setSelectedSection(firstSectionForGrade || "All");
+                  }}
+                  style={chipStyle(selectedGrade === gradeValue)}
+                >
+                  {`Grade ${gradeValue}`}
+                </button>
               ))}
             </div>
             {/* Sections */}
             {selectedGrade !== "All" && (
-              <div style={{ display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" }}>
-                <button onClick={() => setSelectedSection("All")} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedSection === "All" ? "#4b6cb7" : "#ddd", color: selectedSection === "All" ? "#fff" : "#000", border: "none", fontSize: 11 }}>All Sections</button>
-                {sections.map(sec => (
-                  <button key={sec} onClick={() => setSelectedSection(sec)} style={{ padding: "4px 10px", borderRadius: "8px", background: selectedSection === sec ? "#4b6cb7" : "#ddd", color: selectedSection === sec ? "#fff" : "#000", border: "none", fontSize: 11 }}>Section {sec}</button>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
+                <button
+                  onClick={() => setSelectedSection("All")}
+                  style={{
+                    ...chipStyle(selectedSection === "All"),
+                    boxShadow: selectedSection === "All" ? "0 0 0 2px var(--accent-soft)" : "none",
+                    transform: selectedSection === "All" ? "translateY(-1px)" : "none",
+                  }}
+                >
+                  All Sections
+                </button>
+                {assignedSectionsForSelectedGrade.map(sec => (
+                  <button key={sec} onClick={() => setSelectedSection(sec)} style={chipStyle(selectedSection === sec)}>Section {sec}</button>
                 ))}
               </div>
             )}
             {/* Student list */}
-            {loading && <p>Loading students...</p>}
-            {error && <p style={{ color: "red" }}>{error}</p>}
-            {!loading && !error && filteredStudents.length === 0 && <p>No students found.</p>}
+            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>
+              {selectedFilterLabel}
+            </div>
+            {loading && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>Loading students...</p>}
+            {error && <p style={{ color: "#dc2626", marginTop: 2 }}>{error}</p>}
+            {!loading && !error && selectedGrade !== "All" && selectedSection === "All" && (
+              <p style={{ color: "var(--text-muted)", marginTop: 2 }}>{`Showing all students in Grade ${selectedGrade}. Select a section to narrow down.`}</p>
+            )}
+            {!loading && !error && filteredStudents.length === 0 && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No students found.</p>}
             <style>{`
-              .student-list-responsive {
+                .student-list-responsive {
                 display: flex;
                 flex-direction: column;
-                margin-top: 10px;
-                gap: 10px;
+                  margin-top: 12px;
+                  gap: 12px;
                 width: 100%;
                 max-width: 100vw;
                 margin-left: 0;
@@ -1642,44 +1764,48 @@ React.useEffect(() => {
           </div>
 
           {/* RIGHT SIDEBAR */}
-          {/* RIGHT SIDEBAR */}
-          {/* RIGHT SIDEBAR */}
-{/* RIGHT SIDEBAR */}
-{selectedStudent && (
+{selectedStudent ? (
   <div
     style={{
-      width: isPortrait ? "100%" : "30%",
-      height: isPortrait ? "100vh" : "calc(100vh - 60px)",
+      width: isPortrait ? "100%" : "380px",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
       position: "fixed",
       right: 0,
-      top: isPortrait ? 0 : "60px",
-      background: "#ffffff",
-      zIndex: 120,
+      top: isPortrait ? 0 : "55px",
+      background: "var(--page-bg-secondary, var(--surface-muted))",
+      zIndex: 1000,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
-      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
-      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+      overflowX: "hidden",
+      boxShadow: "var(--shadow-panel)",
+      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       transition: "all 0.35s ease",
-      fontSize: 10,
-      padding: "12px",
+      fontSize: "10px",
+      padding: "14px",
+      paddingBottom: "130px",
     }}
   >
 
-    {/* Close button (top-right) */}
+    {/* Close button */}
    <button
   onClick={() => setSelectedStudent(null)}
   style={{
     position: "absolute",
-    top: 6,
-    left: 12,
-    border: "none",
-    background: "none",
+    top: 12,
+    left: 14,
+    border: "1px solid rgba(255,255,255,0.42)",
+    background: "rgba(255,255,255,0.18)",
     cursor: "pointer",
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: 700,
-    color: "#3647b7",
+    color: "#ffffff",
     zIndex: 2000,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    lineHeight: 1,
+    boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
   }}
 >
   ×
@@ -1687,7 +1813,7 @@ React.useEffect(() => {
 
 
     {/* Student Info */}
-    <div style={{ textAlign: "center", margin: "-12px -12px 10px", padding: "14px 10px", background: "#e0e7ff" }}>
+    <div style={{ textAlign: "center", margin: "-14px -14px 12px", padding: "16px 10px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
       <div
         style={{
           width: "70px",
@@ -1695,7 +1821,7 @@ React.useEffect(() => {
           margin: "0 auto 10px",
           borderRadius: "50%",
           overflow: "hidden",
-          border: "3px solid #4b6cb7",
+          border: "3px solid rgba(255,255,255,0.8)",
         }}
       >
         <img
@@ -1704,16 +1830,16 @@ React.useEffect(() => {
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       </div>
-      <h2 style={{ margin: 0, fontSize: 14, color: "#111827" }}>{selectedStudent.name}</h2>
-      <p style={{ color: "#6b7280", margin: "4px 0", fontSize: 10 }}>{selectedStudent.studentId}</p>
-      <p style={{ color: "#6b7280", margin: "4px 0", fontSize: 10 }}>
+      <h2 style={{ margin: 0, fontSize: 14, color: "#ffffff", fontWeight: 800 }}>{selectedStudent.name}</h2>
+      <p style={{ color: "#dbeafe", margin: "4px 0", fontSize: 10 }}>{selectedStudent.studentId}</p>
+      <p style={{ color: "#dbeafe", margin: "4px 0", fontSize: 10 }}>
         <strong>Grade:</strong> {selectedStudent.grade}{selectedStudent.section}
       </p>
       
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
+    <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid var(--border-soft)" }}>
       {["details", "attendance", "performance"].map((tab) => (
         <button
           key={tab}
@@ -1726,9 +1852,9 @@ React.useEffect(() => {
             cursor: "pointer",
             fontWeight: 600,
             fontSize: 10,
-            color: studentTab === tab ? "#4b6cb7" : "#6b7280",
+            color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
             borderBottom:
-              studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
+              studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
           }}
         >
           {tab.toUpperCase()}
@@ -1750,9 +1876,9 @@ React.useEffect(() => {
 marginLeft: 0,
 marginRight: 0,
       borderRadius: 12,
-      background: "#ffffff",
-      border: "1px solid #e5e7eb",
-      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      background: "var(--surface-panel)",
+      border: "1px solid var(--border-soft)",
+      boxShadow: "var(--shadow-soft)",
       margin: "0 auto",
       maxWidth: 380,
     }}
@@ -1765,18 +1891,18 @@ marginRight: 0,
           fontSize: 12,
           fontWeight: 800,
           marginBottom: 6,
-          color: "#0f172a",
+          letterSpacing: "0.1px",
+          color: "var(--text-primary)",
         }}
       >
-        Student Details
+        Student Profile
       </div>
 
       <div
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          columnGap: 8,
-          rowGap: 8,
+          gap: 8,
           
         }}
       >
@@ -1794,17 +1920,25 @@ marginRight: 0,
           <div
             key={label}
             style={{
+              alignItems: "center",
+              justifyContent: "flex-start",
+              display: "flex",
               padding: 8,
               borderRadius: 10,
-              border: "1px solid #eef2f7",
+              border: "1px solid var(--border-soft)",
+              background: "var(--surface-panel)",
               boxShadow: "none",
+              minHeight: 36,
             }}
           >
-            <div
+            <div style={{ width: "100%" }}
+            >
+              <div
               style={{
                   fontSize: 9,
                   fontWeight: 700,
-                  color: "#64748b",
+                  letterSpacing: "0.4px",
+                  color: "var(--text-muted)",
                 textTransform: "uppercase",
               }}
             >
@@ -1815,10 +1949,11 @@ marginRight: 0,
                   marginTop: 4,
                   fontSize: 10,
                   fontWeight: 600,
-                  color: "#111827",
+                  color: "var(--text-primary)",
               }}
             >
               {value || "—"}
+            </div>
             </div>
           </div>
         ))}
@@ -1831,7 +1966,7 @@ marginRight: 0,
             fontSize: 12,
             fontWeight: 800,
             marginBottom: 6,
-            color: "#0f172a",
+            color: "var(--text-primary)",
           }}
         >
           Teacher Comments
@@ -1840,10 +1975,10 @@ marginRight: 0,
         {/* NOTE INPUT */}
         <div
           style={{
-            background: "#ffffff",
+            background: "var(--surface-panel)",
             padding: 12,
             borderRadius: 12,
-            border: "1px solid #e5e7eb",
+            border: "1px solid var(--border-soft)",
             boxShadow: "none",
           }}
         >
@@ -1870,7 +2005,7 @@ marginRight: 0,
                 padding: "6px 10px",
                 borderRadius: 10,
                 border: "none",
-                background: "#4b6cb7",
+                background: "var(--accent-strong)",
                 color: "#fff",
                 fontWeight: 800,
                 fontSize: 10,
@@ -1897,10 +2032,10 @@ marginRight: 0,
               style={{
                 textAlign: "center",
                 padding: 12,
-                color: "#64748b",
-                background: "#ffffff",
+                color: "var(--text-muted)",
+                background: "var(--surface-panel)",
                 borderRadius: 10,
-                border: "1px solid #e5e7eb",
+                border: "1px solid var(--border-soft)",
               }}
             >
               No teacher comments yet
@@ -1914,7 +2049,7 @@ marginRight: 0,
                     width: 36,
                     height: 36,
                     borderRadius: "50%",
-                    background: "#4b6cb7",
+                    background: "var(--accent-strong)",
                     color: "#fff",
                     display: "flex",
                     alignItems: "center",
@@ -1935,14 +2070,14 @@ marginRight: 0,
                 <div
                   style={{
                     flex: 1,
-                    background: "#ffffff",
+                    background: "var(--surface-panel)",
                     padding: 10,
                     borderRadius: 12,
-                    border: "1px solid #eef2f7",
+                    border: "1px solid var(--border-soft)",
                     boxShadow: "none",
                   }}
                 >
-                  <div style={{ fontWeight: 800, color: "#1e293b", fontSize: 11 }}>
+                  <div style={{ fontWeight: 800, color: "var(--text-primary)", fontSize: 11 }}>
                     {n.teacherName}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 11 }}>{n.note}</div>
@@ -1950,7 +2085,7 @@ marginRight: 0,
                     style={{
                       marginTop: 4,
                       fontSize: 10,
-                      color: "#64748b",
+                      color: "var(--text-muted)",
                       textAlign: "right",
                     }}
                   >
@@ -1974,10 +2109,10 @@ marginRight: 0,
   <div
     style={{
       padding: 12,
-      background: "#ffffff",
+      background: "var(--surface-panel)",
       borderRadius: 12,
-      border: "1px solid #e5e7eb",
-      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      border: "1px solid var(--border-soft)",
+      boxShadow: "var(--shadow-soft)",
     }}
   >
     {/* ===== VIEW SWITCH ===== */}
@@ -1985,8 +2120,8 @@ marginRight: 0,
       style={{
         display: "flex",
         justifyContent: "center",
-        gap: 8,
-        marginBottom: 12,
+        gap: 6,
+        marginBottom: 10,
       }}
     >
       {["daily", "weekly", "monthly"].map((v) => (
@@ -1994,16 +2129,14 @@ marginRight: 0,
           key={v}
           onClick={() => setAttendanceView(v)}
           style={{
-            padding: "6px 10px",
-            borderRadius: 10,
+            padding: "4px 10px",
+            borderRadius: 8,
             border: "none",
             fontWeight: 700,
             fontSize: 10,
             cursor: "pointer",
-            background: attendanceView === v ? "#4b6cb7" : "#e5e7eb",
-            color: attendanceView === v ? "#fff" : "#111827",
-            boxShadow: "none",
-            transition: "all .3s ease",
+            background: attendanceView === v ? "var(--accent-strong)" : "var(--surface-strong)",
+            color: attendanceView === v ? "#fff" : "var(--text-primary)",
           }}
         >
           {v.toUpperCase()}
@@ -2042,12 +2175,12 @@ marginRight: 0,
             onClick={() => toggleExpand(expandKey)}
             style={{
               cursor: "pointer",
-              background: "#ffffff",
+              background: "var(--surface-panel)",
               borderRadius: 12,
               padding: 12,
-              marginBottom: 12,
-              border: "1px solid #e5e7eb",
-              boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+              marginBottom: 10,
+              border: "1px solid var(--border-soft)",
+              boxShadow: "var(--shadow-soft)",
               position: "relative",
               overflow: "hidden",
             }}
@@ -2068,7 +2201,7 @@ marginRight: 0,
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                marginBottom: 8,
+                marginBottom: 18,
               }}
             >
               <div>
@@ -2077,19 +2210,19 @@ marginRight: 0,
                     margin: 0,
                     fontSize: 12,
                     fontWeight: 800,
-                    color: "#0f172a",
+                    color: "var(--text-primary)",
                   }}
                 >
-                  📚 {formatSubjectName(course)}
+                  {formatSubjectName(course)}
                 </h3>
                 <p
                   style={{
                     margin: "6px 0 0",
                     fontSize: 10,
-                    color: "#64748b",
+                    color: "var(--text-muted)",
                   }}
                 >
-                  👨‍🏫 {records[0]?.teacherName}
+                  {records[0]?.teacherName}
                 </p>
               </div>
 
@@ -2099,9 +2232,9 @@ marginRight: 0,
                   borderRadius: 999,
                   fontSize: 10,
                   fontWeight: 800,
-                  background: "#e0e7ff",
-                  color: "#1e40af",
-                  border: "1px solid #c7d2fe",
+                  background: "var(--accent-soft)",
+                  color: "var(--accent-strong)",
+                  border: "1px solid var(--border-strong)",
                 }}
               >
                 {progress}%
@@ -2113,7 +2246,7 @@ marginRight: 0,
               onClick={() => toggleExpand(expandKey)}
               style={{
                 height: 8,
-                background: "#e5e7eb",
+                background: "var(--surface-strong)",
                 borderRadius: 999,
                 cursor: "pointer",
                 overflow: "hidden",
@@ -2124,7 +2257,7 @@ marginRight: 0,
                 style={{
                   height: "100%",
                   width: `${progress}%`,
-                  background: "#4b6cb7",
+                  background: "var(--accent-strong)",
                   transition: "width .3s ease",
                 }}
               />
@@ -2134,7 +2267,7 @@ marginRight: 0,
               style={{
                 fontSize: 9,
                 fontWeight: 700,
-                color: "#475569",
+                color: "var(--text-secondary)",
                 marginBottom: 8,
                 letterSpacing: 0.3,
               }}
@@ -2147,7 +2280,7 @@ marginRight: 0,
               <div
                 style={{
                   marginTop: 8,
-                  background: "#f8fafc",
+                  background: "var(--surface-muted)",
                   borderRadius: 12,
                   padding: 10,
                 }}
@@ -2162,12 +2295,12 @@ marginRight: 0,
                       padding: "8px 6px",
                       borderBottom:
                         i !== displayRecords.length - 1
-                          ? "1px solid #e5e7eb"
+                          ? "1px solid var(--border-soft)"
                           : "none",
                     }}
                   >
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      <span style={{ fontSize: 10, color: "#1f2937" }}>
+                      <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
                         📅 {new Date(r.date).toDateString()}
                       </span>
                      
@@ -2208,7 +2341,7 @@ marginRight: 0,
                   {/* PERFORMANCE TAB */}
              {/* PERFORMANCE TAB */}
                 {studentTab === "performance" && (
-                  <div style={{ position: "relative", paddingBottom: "30px", background: "#ffffff", borderRadius: 12, border: "1px solid #e5e7eb", boxShadow: "0 8px 20px rgba(15,23,42,0.06)", padding: 12 }}>
+                  <div style={{ position: "relative", paddingBottom: "30px", background: "var(--surface-panel)", borderRadius: 12, border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)", padding: 12 }}>
 
                     {/* Semester Tabs */}
                     <div
@@ -2217,7 +2350,7 @@ marginRight: 0,
                         justifyContent: "center",
                         gap: "12px",
                         marginBottom: "12px",
-                        borderBottom: "1px solid #e5e7eb",
+                        borderBottom: "1px solid var(--border-soft)",
                         paddingBottom: "6px",
                       }}
                     >
@@ -2233,9 +2366,9 @@ marginRight: 0,
                               cursor: "pointer",
                               fontSize: "10px",
                               fontWeight: 700,
-                              color: isActive ? "#4b6cb7" : "#64748b",
+                              color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
                               padding: "6px 8px",
-                              borderBottom: isActive ? "2px solid #4b6cb7" : "2px solid transparent",
+                              borderBottom: isActive ? "2px solid var(--accent-strong)" : "2px solid transparent",
                             }}
                           >
                             {sem === "semester1" ? "Semester 1" : "Semester 2"}
@@ -2254,7 +2387,7 @@ marginRight: 0,
                       }}
                     >
                       {loading ? (
-                        <div style={{ textAlign: "center", gridColumn: "1 / -1", padding: 12, color: "#64748b", fontSize: 11 }}>
+                        <div style={{ textAlign: "center", gridColumn: "1 / -1", padding: 12, color: "var(--text-muted)", fontSize: 11 }}>
                           Loading performance...
                         </div>
                       ) : Object.keys(studentMarksFlattened || {}).length === 0 ? (
@@ -2263,11 +2396,11 @@ marginRight: 0,
                             textAlign: "center",
                             padding: 12,
                             borderRadius: 12,
-                            background: "#ffffff",
-                            color: "#475569",
+                            background: "var(--surface-panel)",
+                            color: "var(--text-secondary)",
                             fontSize: 11,
                             fontWeight: 600,
-                            border: "1px solid #e5e7eb",
+                            border: "1px solid var(--border-soft)",
                             gridColumn: "1 / -1",
                           }}
                         >
@@ -2310,9 +2443,9 @@ marginRight: 0,
                               style={{
                                 padding: 12,
                                 borderRadius: 12,
-                                background: "#ffffff",
-                                border: "1px solid #e5e7eb",
-                                boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+                                background: "var(--surface-panel)",
+                                border: "1px solid var(--border-soft)",
+                                boxShadow: "var(--shadow-soft)",
                               }}
                             >
                               {/* Course Name */}
@@ -2321,7 +2454,7 @@ marginRight: 0,
                                   fontSize: 11,
                                   fontWeight: 800,
                                   marginBottom: 10,
-                                  color: "#0f172a",
+                                  color: "var(--text-primary)",
                                   textAlign: "left",
                                 }}
                               >
@@ -2409,29 +2542,125 @@ marginRight: 0,
                   </div>
                 )}
                      </div>
-              {/* Chat Button */}
+              {/* Parent Chat Button */}
+              {!chatOpen && (
+                <div
+                  onClick={handleOpenParentChat}
+                  title="Chat with student's parent"
+                  style={{
+                    position: "fixed",
+                    bottom: "20px",
+                    right: "220px",
+                    width: "140px",
+                    height: "48px",
+                    background: "linear-gradient(135deg, color-mix(in srgb, var(--success, #22c55e) 78%, #0f172a), var(--success, #22c55e))",
+                    borderRadius: "28px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "flex-start",
+                    gap: 10,
+                    padding: "0 12px",
+                    color: "#fff",
+                    cursor: "pointer",
+                    zIndex: 1100,
+                    boxShadow: "var(--shadow-glow)",
+                    transition: "transform 0.16s ease",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      background: "rgba(255,255,255,0.14)",
+                    }}
+                  >
+                    <FaFacebookMessenger size={18} />
+                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+                    <span style={{ fontWeight: 800, fontSize: 13 }}>Parent Chat</span>
+                  </div>
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: -8,
+                      right: 8,
+                      background: "color-mix(in srgb, var(--success, #22c55e) 42%, #04130b)",
+                      color: "#fff",
+                      borderRadius: "999px",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      padding: "2px 6px",
+                      border: "2px solid #fff",
+                      lineHeight: 1,
+                    }}
+                  >
+                    P
+                  </span>
+                </div>
+              )}
+
+              {/* Student Chat Button */}
               {!chatOpen && (
                 <div
                   onClick={() => setChatOpen(true)}
+                  title="Chat with student"
                   style={{
                     position: "fixed",
                     bottom: "20px",
                     right: "20px",
-                    width: "60px",
-                    height: "60px",
-                    background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
-                    borderRadius: "50%",
+                    width: "140px",
+                    height: "48px",
+                    background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
+                    borderRadius: "28px",
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
+                    justifyContent: "flex-start",
+                    gap: 10,
+                    padding: "0 12px",
                     color: "#fff",
                     cursor: "pointer",
                     zIndex: 1000,
-                    boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
-                    transition: "transform 0.2s ease",
+                    boxShadow: "var(--shadow-glow)",
+                    transition: "transform 0.16s ease",
                   }}
                 >
-                  <FaCommentDots size={30} />
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      background: "rgba(255,255,255,0.14)",
+                    }}
+                  >
+                    <FaCommentDots size={18} />
+                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+                    <span style={{ fontWeight: 800, fontSize: 13 }}>Student Chat</span>
+                  </div>
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: -8,
+                      right: 8,
+                      background: "color-mix(in srgb, var(--accent-strong) 28%, #020617)",
+                      color: "#fff",
+                      borderRadius: "999px",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      padding: "2px 6px",
+                      border: "2px solid #fff",
+                      lineHeight: 1,
+                    }}
+                  >
+                    S
+                  </span>
                 </div>
               )}
               {/* Chat Popup */}
@@ -2606,6 +2835,65 @@ marginRight: 0,
                   </div>
                 </div>
               )}
+            </div>
+          ) : (
+            <div
+              style={{
+                width: isPortrait ? "100%" : "380px",
+                height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+                position: "fixed",
+                right: 0,
+                top: isPortrait ? 0 : "55px",
+                background: "var(--surface-muted)",
+                zIndex: 90,
+                display: "flex",
+                flexDirection: "column",
+                overflowY: "auto",
+                overflowX: "hidden",
+                boxShadow: "var(--shadow-panel)",
+                borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+                transition: "all 0.35s ease",
+                fontSize: 10,
+                padding: "14px",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: 360,
+                  borderRadius: 12,
+                  border: "1px solid var(--border-soft)",
+                  background: "var(--surface-panel)",
+                  boxShadow: "var(--shadow-soft)",
+                  padding: "18px 14px",
+                  textAlign: "center",
+                }}
+              >
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: "50%",
+                    margin: "0 auto 10px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "var(--accent-soft)",
+                    color: "var(--accent-strong)",
+                    fontSize: 24,
+                  }}
+                >
+                  <FaUsers />
+                </div>
+                <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
+                  Student Details
+                </h3>
+                <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
+                  Select a student from the list to view profile, attendance, performance, and chat.
+                </p>
+              </div>
             </div>
           )}
         </div>

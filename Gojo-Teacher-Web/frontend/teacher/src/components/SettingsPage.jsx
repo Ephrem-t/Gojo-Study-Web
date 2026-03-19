@@ -3,20 +3,13 @@ import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import useDarkMode from "../hooks/useDarkMode";
 import {
-  FaHome,
-  FaUsers,
-  FaClipboardCheck,
-  FaCog,
-  FaSignOutAlt,
-  FaBell,
-  FaSearch,
-  FaChalkboardTeacher,
-  FaFacebookMessenger,
 } from "react-icons/fa";
 import "../styles/global.css";
+import { getRtdbRoot } from "../api/rtdbScope";
+import Sidebar from "./Sidebar";
 
 const API_BASE = "http://127.0.0.1:5000/api";
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const RTDB_BASE = getRtdbRoot();
 
 function SettingsPage() {
   const [teacher, setTeacher] = useState(null);
@@ -29,6 +22,7 @@ function SettingsPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const navigate = useNavigate();
 
@@ -358,149 +352,49 @@ function saveSeenPost(teacherId, postId) {
   const totalUnreadMessages = notifications.filter((n) => n.type === "message").reduce((sum, n) => sum + (n.unreadForMe || 0), 0);
 
   return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-       
-        <div className="nav-right">
-          <div className="icon-circle">
-            <div
-              onClick={() => setShowNotifications(!showNotifications)}
-              style={{ cursor: "pointer", position: "relative" }}
-            >
-              <FaBell size={24} />
-              {notifications.length > 0 && (
-                <span style={{
-                  position: "absolute",
-                  top: -5,
-                  right: -5,
-                  background: "red",
-                  color: "white",
-                  borderRadius: "50%",
-                  width: 18,
-                  height: 18,
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}>{notifications.length}</span>
-              )}
-            </div>
-            {showNotifications && (
-              <div style={{
-                position: "absolute",
-                top: 30,
-                right: 0,
-                width: 300,
-                maxHeight: 400,
-                overflowY: "auto",
-                background: "#fff",
-                boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
-                borderRadius: 8,
-                zIndex: 100,
-              }}>
-                {notifications.length > 0 ? (
-                  notifications.map((notif, index) => (
-                    notif.type === "post" ? (
-                      <div
-                        key={notif.id || index}
-                        onClick={() => handleNotificationClick(notif)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          padding: "10px 15px",
-                          borderBottom: "1px solid #eee",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                        <div>
-                          <strong>{notif.adminName}</strong>
-                          <p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        key={notif.chatId || index}
-                        onClick={() => handleNotificationClick(notif)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          padding: "10px 15px",
-                          borderBottom: "1px solid #eee",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <img src={notif.profile || "/default-profile.png"} alt={notif.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                        <div><strong>{notif.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                      </div>
-                    )
-                  ))
-                ) : (
-                  <div style={{ padding: 15 }}>No notifications</div>
-                )}
-              </div>
-            )}
-          </div>
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 12, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+        <Sidebar
+          active="settings"
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          teacher={teacher}
+          handleLogout={handleLogout}
+        />
 
-          {/* Messenger: navigates to all-chat, badge only */}
-          <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={() => navigate("/all-chat")}
-                 style={{ cursor: "pointer", position: "relative" }}>
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span style={{
-                  position: "absolute",
-                  top: -6,
-                  right: -6,
-                  background: "#f60b0b",
-                  color: "#fff",
-                  borderRadius: "50%",
-                  minWidth: 18,
-                  height: 18,
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "0 5px"
-                }}>
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <Link className="icon-circle" to="/settings">
-            <FaCog />
-          </Link>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard">
-        {/* Sidebar */}
-        <div className="google-sidebar">
-          {teacher && (
-            <div className="sidebar-profile">
-              <div className="sidebar-img-circle">
-                <img src={teacher.profileImage || "/default-profile.png"} alt="profile" />
-              </div>
-              <h3>{teacher.name}</h3>
-              <p>{teacher.username}</p>
-            </div>
-          )}
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard"><FaHome /> Home</Link>
-            <Link className="sidebar-btn" to="/students"><FaUsers /> Students</Link>
-            <Link className="sidebar-btn" to="/admins"><FaUsers /> Admins</Link>
-            <Link className="sidebar-btn" to="/parents"><FaChalkboardTeacher /> Parents</Link>
-            <Link className="sidebar-btn" to="/marks"><FaClipboardCheck /> Marks</Link>
-            <Link className="sidebar-btn" to="/attendance"><FaUsers /> Attendance</Link>
-            <Link className="sidebar-btn" to="/schedule"><FaUsers /> Schedule</Link>
-            <button className="sidebar-btn logout-btn" onClick={handleLogout}><FaSignOutAlt /> Logout</button>
-          </div>
-        </div>
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         {/* Main content */}
         <div
@@ -508,99 +402,107 @@ function saveSeenPost(teacherId, postId) {
           style={{
             display: "flex",
             flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            marginTop: "10px",
-            padding: "10px",
+            alignItems: "stretch",
+            justifyContent: "flex-start",
+            padding: "0",
             width: "100%",
-            gap: "30px",
+            minWidth: 0,
+            height: "100%",
+            overflowY: "auto",
           }}
         >
-          <h2>Settings</h2>
+          <div style={{ padding: "16px 18px 20px", width: "100%", maxWidth: 1320, margin: 0 }}>
+            <div className="section-header-card" style={{ marginBottom: 14 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Settings</h2>
+              <div className="section-header-card__meta">
+                <span>{teacher?.name || "Teacher"}</span>
+                <span className="section-header-card__chip">Account</span>
+              </div>
+            </div>
 
-          {/* Profile Image */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <img
-              src={profileImage}
-              alt="profile"
+            <div
               style={{
-                width: "150px",
-                height: "150px",
-                borderRadius: "50%",
-                objectFit: "cover",
-                marginBottom: "15px",
-                border: "3px solid #4b6cb7"
+                marginBottom: 14,
+                background: "linear-gradient(135deg, #eff6ff, #f8fafc)",
+                border: "1px solid var(--border-soft)",
+                borderRadius: 14,
+                padding: "12px 14px",
+                color: "var(--text-secondary)",
+                fontWeight: 600,
+                fontSize: 13,
               }}
-            />
-            <input type="file" onChange={handleFileChange} />
-            <button onClick={handleProfileSubmit} style={{
-              marginTop: "15px", padding: "10px 20px", borderRadius: "8px",
-              border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer"
-            }}>
-              Update Profile Image
-            </button>
-          </div>
+            >
+              Manage your profile image, account details, password, and preferences.
+            </div>
 
-          {/* Name / Username */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <input type="text" placeholder="Name" value={name} onChange={e => setName(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <button onClick={handleInfoUpdate} style={{
-              padding: "10px 20px", borderRadius: "8px",
-              border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer"
-            }}>Update Info</button>
-          </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+                gap: 14,
+              }}
+            >
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: 16, boxShadow: "var(--shadow-soft)" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "var(--text-secondary)" }}>Profile Image</h3>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <img
+                    src={profileImage}
+                    alt="profile"
+                    style={{
+                      width: "130px",
+                      height: "130px",
+                      borderRadius: "50%",
+                      objectFit: "cover",
+                      marginBottom: "12px",
+                      border: "3px solid #4b6cb7"
+                    }}
+                  />
+                  <input type="file" onChange={handleFileChange} style={{ width: "100%", marginBottom: 10 }} />
+                  <button onClick={handleProfileSubmit} style={{
+                    padding: "10px 14px", borderRadius: "999px",
+                    border: "none", background: "var(--accent-strong)", color: "#fff", cursor: "pointer", fontWeight: 700
+                  }}>
+                    Update Profile Image
+                  </button>
+                </div>
+              </div>
 
-          {/* Password */}
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-            padding: "30px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <input type="password" placeholder="New Password" value={password} onChange={e => setPassword(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
-              style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} />
-            <button onClick={handlePasswordChange} style={{
-              padding: "10px 20px", borderRadius: "8px",
-              border: "none", background: "#4b6cb7", color: "#fff", cursor: "pointer"
-            }}>Change Password</button>
-          </div>
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: 16, boxShadow: "var(--shadow-soft)" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "var(--text-secondary)" }}>Basic Info</h3>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <input type="text" placeholder="Name" value={name} onChange={e => setName(e.target.value)}
+                    style={{ padding: "10px", borderRadius: "10px", border: "1px solid var(--border-strong)", background: "#f8fafc" }} />
+                  <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)}
+                    style={{ padding: "10px", borderRadius: "10px", border: "1px solid var(--border-strong)", background: "#f8fafc" }} />
+                  <button onClick={handleInfoUpdate} style={{
+                    padding: "10px 14px", borderRadius: "999px",
+                    border: "none", background: "var(--accent-strong)", color: "#fff", cursor: "pointer", fontWeight: 700
+                  }}>Update Info</button>
+                </div>
+              </div>
 
-          {/* Dark Mode */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "15px",
-            padding: "20px",
-            borderRadius: "12px",
-            background: darkMode ? "#3a3a3a" : "#fff",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.1)"
-          }}>
-            <label style={{ fontSize: "18px", fontWeight: "500" }}>Dark Mode</label>
-            <input type="checkbox" checked={darkMode} onChange={toggleDarkMode} />
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: 16, boxShadow: "var(--shadow-soft)" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "var(--text-secondary)" }}>Password</h3>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <input type="password" placeholder="New Password" value={password} onChange={e => setPassword(e.target.value)}
+                    style={{ padding: "10px", borderRadius: "10px", border: "1px solid var(--border-strong)", background: "#f8fafc" }} />
+                  <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                    style={{ padding: "10px", borderRadius: "10px", border: "1px solid var(--border-strong)", background: "#f8fafc" }} />
+                  <button onClick={handlePasswordChange} style={{
+                    padding: "10px 14px", borderRadius: "999px",
+                    border: "none", background: "var(--accent-strong)", color: "#fff", cursor: "pointer", fontWeight: 700
+                  }}>Change Password</button>
+                </div>
+              </div>
+
+              <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: 16, boxShadow: "var(--shadow-soft)" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "var(--text-secondary)" }}>Preferences</h3>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <label style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-secondary)" }}>Dark Mode</label>
+                  <input type="checkbox" checked={darkMode} onChange={toggleDarkMode} style={{ width: 18, height: 18 }} />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -1178,6 +1178,15 @@ function Dashboard() {
     }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 6);
+  const adminRightSidebarLinks = [
+    { to: "/dashboard", label: "Dashboard", icon: FaHome },
+    { to: "/overview", label: "Overview", icon: FaFileAlt },
+    { to: "/my-posts", label: "My Posts", icon: FaBell },
+    { to: "/teachers", label: "Teachers", icon: FaChalkboardTeacher },
+    { to: "/students", label: "Students", icon: FaFacebookMessenger },
+    { to: "/academic-year", label: "Calendar", icon: FaCalendarAlt },
+    { to: "/settings", label: "Settings", icon: FaCog },
+  ];
   const myPostsCount = posts.filter((post) =>
     post.userId === admin.userId || post.adminId === admin.adminId
   ).length;
@@ -1725,6 +1734,27 @@ function Dashboard() {
 
         {/* RIGHT WIDGETS COLUMN */}
         <div className="dashboard-widgets" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - 4px)', overflowY: 'auto', position: 'sticky', top: 4, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+          <div style={widgetCardStyle}>
+            <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Admin Quick Menu</h4>
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              {adminRightSidebarLinks.map((menuLink) => {
+                const MenuIcon = menuLink.icon;
+                return (
+                  <Link
+                    key={menuLink.to}
+                    to={menuLink.to}
+                    style={{ display: 'flex', alignItems: 'center', gap: 7, minHeight: 38, borderRadius: 10, padding: '7px 8px', background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', color: 'var(--text-secondary)', textDecoration: 'none', fontSize: 10, fontWeight: 800, boxShadow: 'var(--shadow-soft)' }}
+                  >
+                    <span style={{ width: 24, height: 24, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-muted)', color: 'var(--accent-strong)', border: '1px solid var(--border-soft)', flexShrink: 0 }}>
+                      <MenuIcon style={{ width: 11, height: 11 }} />
+                    </span>
+                    <span style={{ lineHeight: 1.2 }}>{menuLink.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Quick Statistics */}
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Quick Statistics</h4>

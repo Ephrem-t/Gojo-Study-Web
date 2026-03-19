@@ -14,6 +14,8 @@ import Parents from "../components/Parents";
 import SettingsPage from "../components/SettingsPage";
 import Schedule from "../components/Schedule";
 import LessonPlan from "../components/LessonPlan";
+import TeacherExam from "../components/TeacherExam";
+import TeacherAppLayout from "../components/TeacherAppLayout";
 // ✅ Chat Pages
 import AllChat from "../components/AllChat";
 
@@ -27,19 +29,20 @@ export default function AppRoutes() {
         <Route path="/register" element={<Register />} />
        
 
-        {/* Dashboard & Pages */}
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/students" element={<Students />} />
-        <Route path="/admins" element={<AdminPage />} />
-        <Route path="/marks" element={<Marks />} />
-        <Route path="/attendance" element={<Attendance />} />
-     
-        <Route path="/parents" element={<Parents />} /> 
-         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="all-chat" element={<AllChat />} />
-        <Route path="schedule" element={<Schedule />} />
-          <Route path="lesson-plan" element={<LessonPlan />} />
-        {/* Chat */}
+        {/* Teacher App (persistent topbar layout) */}
+        <Route element={<TeacherAppLayout />}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/students" element={<Students />} />
+          <Route path="/admins" element={<AdminPage />} />
+          <Route path="/marks" element={<Marks />} />
+          <Route path="/attendance" element={<Attendance />} />
+          <Route path="/parents" element={<Parents />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/all-chat" element={<AllChat />} />
+          <Route path="/schedule" element={<Schedule />} />
+          <Route path="/lesson-plan" element={<LessonPlan />} />
+          <Route path="/exam" element={<TeacherExam />} />
+        </Route>
         
       </Routes>
     </Router>

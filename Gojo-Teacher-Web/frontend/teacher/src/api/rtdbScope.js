@@ -19,6 +19,8 @@ const SCOPED_ROOTS = new Set([
   "StudentNotes",
   "LessonPlans",
   "LessonPlanSubmissions",
+  "GradeManagement",
+  "StudentCourses",
   "Presence",
   "Curriculum",
   "Exams",

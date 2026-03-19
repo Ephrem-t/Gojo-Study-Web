@@ -7,12 +7,9 @@ import {
   FaHome,
   FaUsers,
   FaClipboardCheck,
-  FaCog,
   FaSignOutAlt,
-  FaBell,
   FaSearch,
   FaChalkboardTeacher,
-  FaFacebookMessenger,
   FaCommentDots,
   FaCheck,
   FaPaperPlane,
@@ -48,7 +45,8 @@ const formatDateLabel = (ts) => {
 };
 
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import { getRtdbRoot } from "../api/rtdbScope";
+const RTDB_BASE = getRtdbRoot();
 
 // Admin item component
 const AdminItem = ({ admin, selected, onClick, number }) => (
@@ -62,8 +60,8 @@ const AdminItem = ({ admin, selected, onClick, number }) => (
       alignItems: "center",
       gap: "12px",
       cursor: "pointer",
-      background: selected ? "#e0e7ff" : "#fff",
-      border: selected ? "2px solid #4b6cb7" : "1px solid #ddd",
+      background: selected ? "#e0e7ff" : "var(--surface-panel)",
+      border: selected ? "2px solid #4b6cb7" : "1px solid var(--border-soft)",
       boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
       transition: "all 0.3s ease",
     }}
@@ -85,6 +83,9 @@ const AdminItem = ({ admin, selected, onClick, number }) => (
     <img
       src={admin.profileImage || "/default-profile.png"}
       alt={admin.name}
+      onError={(event) => {
+        event.currentTarget.src = "/default-profile.png";
+      }}
       style={{
         width: "48px",
         height: "48px",
@@ -485,13 +486,10 @@ function saveSeenPost(teacherId, postId) {
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
 const [isPortrait, setIsPortrait] = React.useState(window.innerWidth < window.innerHeight);
-const [screenWidth, setScreenWidth] = React.useState(window.innerWidth);
 
 React.useEffect(() => {
   const handleResize = () => {
-    const w = window.innerWidth;
-    setIsPortrait(w < window.innerHeight);
-    setScreenWidth(w);
+    setIsPortrait(window.innerWidth < window.innerHeight);
   };
 
   // initialize
@@ -501,13 +499,7 @@ React.useEffect(() => {
   return () => window.removeEventListener("resize", handleResize);
 }, []);
 
-// compute admin list main column width: keep small-device default, expand on larger screens
-const mainListWidth = (() => {
-  if (screenWidth >= 1800) return "1000px";
-  if (screenWidth >= 1500) return "800px";
-  if (screenWidth >= 1200) return "600px";
-  return "400px"; // default for small and medium screens (wider than before)
-})();
+const listShellWidth = isPortrait ? "92%" : "560px";
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredAdmins = admins.filter((a) => {
@@ -530,130 +522,34 @@ const mainListWidth = (() => {
 
 
   return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-      
-
-        <div className="nav-right">
-          {/* Notification Bell & Popup (shows posts and unread messages) */}
-          <div className="icon-circle" style={{ position: "relative" }}>
-            <div
-              onClick={() => setShowNotifications(!showNotifications)}
-              style={{ cursor: "pointer", position: "relative" }}
-              aria-label="Show notifications"
-              tabIndex={0}
-              role="button"
-              onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
-            >
-              <FaBell size={24} />
-              {(notifications.length + totalUnreadMessages) > 0 && (
-                <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {notifications.length + totalUnreadMessages}
-                </span>
-              )}
-            </div>
-
-            {showNotifications && (
-              <>
-                {/* Overlay for closing notification list by clicking outside */}
-                <div
-                  style={{
-                    position: 'fixed',
-                    inset: 0,
-                    background: 'rgba(0,0,0,0.08)',
-                    zIndex: 1999,
-                  }}
-                  onClick={() => setShowNotifications(false)}
-                />
-                <div
-                  className="notification-popup"
-                  style={
-                    typeof window !== 'undefined' && window.innerWidth <= 600
-                      ? {
-                          position: 'fixed',
-                          left: '50%',
-                          top: '8%',
-                          transform: 'translate(-50%, 0)',
-                          width: '90vw',
-                          maxWidth: 340,
-                          zIndex: 2000,
-                          background: '#fff',
-                          borderRadius: 12,
-                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
-                          maxHeight: '70vh',
-                          overflowY: 'auto',
-                          padding: 12,
-                        }
-                      : {
-                          position: 'absolute',
-                          top: 30,
-                          right: 0,
-                          width: 300,
-                          maxHeight: 400,
-                          overflowY: 'auto',
-                          background: '#fff',
-                          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-                          borderRadius: 8,
-                          zIndex: 100,
-                        }
-                  }
-                >
-                  {/* Show post notifications */}
-                  {notifications.length > 0 && notifications.map((post, index) => (
-                    <div key={post.id || index} onClick={() => {
-                      navigate("/dashboard");
-                      setTimeout(() => {
-                        const postElement = postRefs.current[post.id];
-                        if (postElement) {
-                          postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                          setHighlightedPostId(post.id);
-                          setTimeout(() => setHighlightedPostId(null), 3000);
-                        }
-                      }, 150);
-                      setNotifications(prev => prev.filter((_, i) => i !== index));
-                      setShowNotifications(false);
-                    }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                      <img src={post.adminProfile} alt={post.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                      <div><strong>{post.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{post.title}</p></div>
-                    </div>
-                  ))}
-                  {/* Show unread message notifications */}
-                  {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                    <div key={conv.chatId || idx} onClick={() => {
-                      setShowNotifications(false);
-                      navigate("/all-chat");
-                    }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                      <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                      <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                    </div>
-                  ))}
-                  {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Messenger button: navigates to all-chat, badge only */}
-          <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={() => navigate("/all-chat")}
-                 style={{ cursor: "pointer", position: "relative" }}>
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span style={{ position: "absolute", top: -6, right: -6, background: "#f60b0b", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-          </div>
-
-         <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard">
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+        "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <Sidebar
           active="admins"
           sidebarOpen={sidebarOpen}
@@ -662,15 +558,25 @@ const mainListWidth = (() => {
           handleLogout={handleLogout}
         />
 
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         {/* MAIN */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
           <div
             className="admin-list-card-responsive"
             style={{
-              width: "min(420px, 100%)",
+              width: listShellWidth,
               position: "relative",
-              marginLeft: isPortrait ? 0 : "290px",
-              marginRight: isPortrait ? 0 : "30px",
+              marginLeft: 0,
+              marginRight: isPortrait ? 0 : "24px",
             }}
           >
             <style>{`
@@ -678,12 +584,18 @@ const mainListWidth = (() => {
                 .admin-list-card-responsive {
                   margin-left: -16px !important;
                   margin-right: auto !important;
-                  width: 70vw !important;
-                  max-width: 70vw !important;
+                  width: 80vw !important;
+                  max-width: 80vw !important;
                 }
               }
             `}</style>
-            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Admins</h2>
+            <div className="section-header-card" style={{ marginBottom: 12 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Admins</h2>
+              <div className="section-header-card__meta">
+                <span>Total: {filteredAdmins.length}</span>
+                <span className="section-header-card__chip">Teacher View</span>
+              </div>
+            </div>
 
             {/* Search */}
             <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
@@ -693,14 +605,14 @@ const mainListWidth = (() => {
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "#fff",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "10px",
-                  padding: "6px 10px",
-                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                  background: "var(--surface-panel)",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: "12px",
+                  padding: "10px 12px",
+                  boxShadow: "var(--shadow-soft)",
                 }}
               >
-                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
@@ -710,7 +622,7 @@ const mainListWidth = (() => {
                     width: "100%",
                     border: "none",
                     outline: "none",
-                    fontSize: 12,
+                    fontSize: 13,
                     background: "transparent",
                   }}
                 />
@@ -736,187 +648,453 @@ const mainListWidth = (() => {
             </div>
           </div>
 
-          {/* RIGHT SIDEBAR (selected admin detail & chat toggle) */}
-{selectedAdmin && (
-  <div
-    style={{
-      width: isPortrait ? "100%" : "30%",
-      height: isPortrait ? "100vh" : "calc(100vh - 60px)",
-      position: "fixed",
-      right: 0,
-      top: isPortrait ? 0 : "60px",
-      background: "#ffffff",
-      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
-      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
-      zIndex: 120,
-      display: "flex",
-      flexDirection: "column",
-      overflowY: "auto",
-      padding: "12px",
-      transition: "all 0.35s ease",
-      fontSize: 10,
-    }}
-  >
+          {selectedAdmin ? (
+            <>
+              <div
+                className="admin-sidebar-overlay"
+                onClick={() => setSelectedAdmin(null)}
+                style={{ display: "none", position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 999 }}
+              />
 
-    {/* Close button (top-right) */}
-<button
-  onClick={() => setSelectedAdmin(null)}
-  aria-label="Close admin details"
-  title="Close"
-  style={{
-    position: "absolute",
-    top: 6,
-    left: 12,
-    border: "none",
-    background: "none",
-    cursor: "pointer",
-    fontSize: 26,
-    fontWeight: 700,
-    color: "#3647b7",
-    zIndex: 2000,
-  }}
->
-  ×
-</button>
+              <aside
+                className="admin-sidebar"
+                style={{
+                  width: isPortrait ? "100%" : "380px",
+                  height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+                  position: "fixed",
+                  right: 0,
+                  top: isPortrait ? 0 : "55px",
+                  background: "var(--page-bg-secondary, var(--surface-muted))",
+                  boxShadow: "var(--shadow-panel)",
+                  borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+                  zIndex: 1000,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  padding: "14px",
+                  paddingBottom: "130px",
+                  transition: "all 0.35s ease",
+                  fontSize: "10px",
+                }}
+                role="dialog"
+                aria-modal="true"
+              >
+                <button
+                  onClick={() => setSelectedAdmin(null)}
+                  style={{
+                    position: "absolute",
+                    top: 12,
+                    left: 14,
+                    border: "1px solid rgba(255,255,255,0.42)",
+                    background: "rgba(255,255,255,0.18)",
+                    cursor: "pointer",
+                    fontSize: 24,
+                    fontWeight: 700,
+                    color: "#ffffff",
+                    zIndex: 2000,
+                    width: 34,
+                    height: 34,
+                    borderRadius: 999,
+                    lineHeight: 1,
+                    boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+                  }}
+                >
+                  ×
+                </button>
 
-
-    <div style={{ textAlign: "center", margin: "-12px -12px 10px", padding: "14px 10px", background: "#e0e7ff" }}>
-      <div style={{ width: "70px", height: "70px", margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid #4b6cb7" }}>
-        <img src={selectedAdmin.profileImage || "/default-profile.png"} alt={selectedAdmin.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-      <h2 style={{ margin: 0, fontSize: 14, color: "#111827" }}>{selectedAdmin.name}</h2>
-      <p style={{ margin: "4px 0", color: "#6b7280", fontSize: 10 }}>{selectedAdmin.username}</p>
-    </div>
-
-              <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
-                {["details", "Plan", "Report"].map((tab) => (
-                  <button key={tab} onClick={() => setAdminTab(tab)} style={{ flex: 1, padding: "6px", border: "none", background: "none", cursor: "pointer", fontWeight: 600, fontSize: 10, color: adminTab === tab ? "#4b6cb7" : "#6b7280", borderBottom: adminTab === tab ? "3px solid #4b6cb7" : "3px solid transparent" }}>{tab.toUpperCase()}</button>
-                ))}
-              </div>
-
-              {adminTab === "details" && selectedAdmin && (
-  <div
-    style={{
-      display: "flex",
-      flexDirection: "column",
-      gap: 12,
-      padding: 12,
-      marginLeft: 0,
-      marginRight: 0,
-      borderRadius: 12,
-      background: "#ffffff",
-      border: "1px solid #e5e7eb",
-      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
-      margin: "0 auto",
-      maxWidth: 380,
-    }}
-  >
-    <div>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 800,
-          marginBottom: 6,
-          color: "#0f172a",
-        }}
-      >
-        Administrator Details
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          columnGap: 8,
-          rowGap: 8,
-        }}
-      >
-        {[
-          ["Admin ID", selectedAdmin.adminId || selectedAdmin.userId],
-          ["Email", selectedAdmin.email],
-          ["Phone", selectedAdmin.phone],
-          ["Gender", selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase() + selectedAdmin.gender.slice(1)) : null],
-          ["Title", selectedAdmin.title],
-          ["Status", selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : null],
-        ].map(([label, value]) => (
-          <div
-            key={label}
-            style={{
-              padding: 8,
-              borderRadius: 10,
-              border: "1px solid #eef2f7",
-              boxShadow: "none",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 9,
-                fontWeight: 700,
-                color: "#64748b",
-                textTransform: "uppercase",
-              }}
-            >
-              {label}
-            </div>
-            <div
-              style={{
-                marginTop: 4,
-                fontSize: 10,
-                fontWeight: 600,
-                color: "#111827",
-              }}
-            >
-              {value || "—"}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  </div>
-)}
-              {adminTab === "Plan" && <p>Plan data here.</p>}
-              {adminTab === "Report" && <p>Report data here.</p>}
-
-              {!adminChatOpen && selectedAdmin && (
-                <div onClick={() => setAdminChatOpen(true)} style={{ position: "fixed", bottom: "20px", right: "20px", width: "60px", height: "60px", background: "linear-gradient(135deg, #833ab4, #202ef3, #395a8b)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", cursor: "pointer", zIndex: 1000, boxShadow: "0 8px 18px rgba(0,0,0,0.25)" }}>
-                  <FaCommentDots size={30} />
-                </div>
-              )}
-
-              {/* Admin Chat Popup */}
-              {adminChatOpen && selectedAdmin && teacher && (
-                <div style={{ position: "fixed", bottom: "20px", right: "20px", width: "360px", height: "480px", background: "#fff", borderRadius: "16px", boxShadow: "0 12px 30px rgba(0,0,0,0.25)", zIndex: 2000, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                  <div style={{ padding: "14px", borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fafafa" }}>
-                    <strong>{selectedAdmin.name}</strong>
-                    <div style={{ display: "flex", gap: "10px" }}>
-                      <button onClick={() => { setAdminChatOpen(false); navigate("/all-chat", { state: { contact: selectedAdmin, tab: "admin" } }); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px" }}>⤢</button>
-                      <button onClick={() => setAdminChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>×</button>
-                    </div>
+                <div style={{ textAlign: "center", margin: "-14px -14px 12px", padding: "16px 10px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
+                  <div style={{ width: 70, height: 70, margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid rgba(255,255,255,0.8)" }}>
+                    <img
+                      src={selectedAdmin.profileImage || "/default-profile.png"}
+                      alt={selectedAdmin.name}
+                      onError={(event) => {
+                        event.currentTarget.src = "/default-profile.png";
+                      }}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
                   </div>
+                  <h3 style={{ margin: 0, fontSize: 14, color: "#ffffff", fontWeight: 800 }}>{selectedAdmin.name}</h3>
+                  <div style={{ color: "#dbeafe", marginTop: 6, fontSize: 10 }}>{selectedAdmin.username || selectedAdmin.email}</div>
+                </div>
 
-                  <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "#f9f9f9" }}>
-                    {messages.length === 0 ? (
-                      <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedAdmin.name}</p>
-                    ) : messages.map((m) => (
-                      <div key={m.id} style={{ display: "flex", flexDirection: m.isTeacher ? "row-reverse" : "row", alignItems: "flex-end", marginBottom: 10 }}>
-                        <div style={{ background: m.isTeacher ? "#4facfe" : "#fff", color: m.isTeacher ? "#fff" : "#000", padding: "10px 14px", borderRadius: 18, maxWidth: "65%", position: "relative", boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
-                          {m.text}
-                          <div style={{ fontSize: 10, color: "#888", marginTop: 4, display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 4 }}>
-                            {formatTime(m.timeStamp)}
-                            {m.isTeacher && <FaCheck size={10} color={m.seen ? "#4facfe" : "#ccc"} />}
-                          </div>
+                <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid var(--border-soft)" }}>
+                  {["details", "Plan", "Report"].map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setAdminTab(tab)}
+                      style={{
+                        flex: 1,
+                        padding: "6px",
+                        border: "none",
+                        background: "none",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                        fontSize: 10,
+                        color: adminTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
+                        borderBottom: adminTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
+                      }}
+                    >
+                      {tab.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ paddingBottom: 40 }}>
+                  {adminTab === "details" && (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                        padding: 12,
+                        marginLeft: 0,
+                        marginRight: 0,
+                        borderRadius: 12,
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
+                        boxShadow: "var(--shadow-soft)",
+                        margin: "0 auto",
+                        maxWidth: 380,
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 800,
+                            marginBottom: 6,
+                            color: "var(--text-primary)",
+                          }}
+                        >
+                          Administrator Details
+                        </div>
+
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            columnGap: 8,
+                            rowGap: 8,
+                          }}
+                        >
+                          {[
+                            ["Admin ID", selectedAdmin.adminId || selectedAdmin.userId],
+                            ["Email", selectedAdmin.email],
+                            ["Phone", selectedAdmin.phone],
+                            ["Gender", selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase() + selectedAdmin.gender.slice(1)) : null],
+                            ["Title", selectedAdmin.title],
+                            ["Status", selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : null],
+                          ].map(([label, value]) => (
+                            <div
+                              key={label}
+                              style={{
+                                padding: 8,
+                                borderRadius: 10,
+                                background: "var(--surface-panel)",
+                                border: "1px solid var(--border-soft)",
+                                boxShadow: "none",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: 9,
+                                  fontWeight: 700,
+                                  color: "var(--text-muted)",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.6px",
+                                }}
+                              >
+                                {label}
+                              </div>
+                              <div
+                                style={{
+                                  marginTop: 4,
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {value || "—"}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </div>
+                    </div>
+                  )}
 
-                  <div style={{ padding: "10px", borderTop: "1px solid #eee", display: "flex", gap: "8px", background: "#fff" }}>
-                    <input value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: "10px 14px", borderRadius: "999px", border: "1px solid #ccc", outline: "none" }} onKeyDown={(e) => { if (e.key === "Enter") sendMessage(); }} />
-                    <button onClick={sendMessage} style={{ background: "linear-gradient(135deg, #0751f1, #0e35e4, #0f5afc)", border: "none", borderRadius: "50%", width: "42px", height: "42px", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>➤</button>
-                  </div>
+                  {adminTab === "Plan" && (
+                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
+                      <p>Plan data here.</p>
+                    </div>
+                  )}
+                  {adminTab === "Report" && (
+                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
+                      <p>Report data here.</p>
+                    </div>
+                  )}
                 </div>
-              )}
+
+                {!adminChatOpen && selectedAdmin && (
+                  <div
+                    onClick={() => setAdminChatOpen(true)}
+                    style={{
+                      position: "fixed",
+                      bottom: "20px",
+                      right: "20px",
+                      width: "140px",
+                      height: "48px",
+                      background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
+                      borderRadius: "28px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "flex-start",
+                      gap: 10,
+                      padding: "0 12px",
+                      color: "#fff",
+                      cursor: "pointer",
+                      zIndex: 1000,
+                      boxShadow: "var(--shadow-glow)",
+                      transition: "transform 0.16s ease",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 34,
+                        height: 34,
+                        borderRadius: 10,
+                        background: "rgba(255,255,255,0.14)",
+                      }}
+                    >
+                      <FaCommentDots size={18} />
+                    </span>
+                    <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+                      <span style={{ fontWeight: 800, fontSize: 13 }}>Admin Chat</span>
+                    </div>
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: -8,
+                        right: 8,
+                        background: "color-mix(in srgb, var(--accent-strong) 28%, #020617)",
+                        color: "#fff",
+                        borderRadius: "999px",
+                        fontSize: 10,
+                        fontWeight: 800,
+                        padding: "2px 6px",
+                        border: "2px solid #fff",
+                        lineHeight: 1,
+                      }}
+                    >
+                      A
+                    </span>
+                  </div>
+                )}
+
+                {adminChatOpen && selectedAdmin && teacher && (
+                  <div
+                    style={{
+                      position: "fixed",
+                      bottom: "20px",
+                      right: "20px",
+                      width: "360px",
+                      height: "480px",
+                      background: "var(--surface-panel)",
+                      borderRadius: "16px",
+                      boxShadow: "var(--shadow-panel)",
+                      zIndex: 2000,
+                      display: "flex",
+                      flexDirection: "column",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: "14px",
+                        borderBottom: "1px solid var(--border-soft)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        background: "var(--surface-muted)",
+                      }}
+                    >
+                      <strong>{selectedAdmin.name}</strong>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        <button
+                          onClick={() => {
+                            setAdminChatOpen(false);
+                            navigate("/all-chat", { state: { contact: selectedAdmin, tab: "admin" } });
+                          }}
+                          style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px" }}
+                        >
+                          ⤢
+                        </button>
+                        <button onClick={() => setAdminChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>
+                          ×
+                        </button>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        flex: 1,
+                        padding: "12px",
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "6px",
+                        background: "var(--surface-muted)",
+                      }}
+                    >
+                      {messages.length === 0 ? (
+                        <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedAdmin.name}</p>
+                      ) : (
+                        messages.map((m) => (
+                          <div key={m.id} style={{ display: "flex", flexDirection: m.isTeacher ? "row-reverse" : "row", alignItems: "flex-end", marginBottom: 10 }}>
+                            <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.isTeacher ? "flex-end" : "flex-start" }}>
+                              <div
+                                style={{
+                                  background: m.isTeacher ? "#4b6cb7" : "#fff",
+                                  color: m.isTeacher ? "#fff" : "#0f172a",
+                                  padding: "10px 14px",
+                                  borderRadius: 18,
+                                  boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
+                                  wordBreak: "break-word",
+                                  position: "relative",
+                                  paddingBottom: "26px",
+                                }}
+                              >
+                                <div>{m.text}</div>
+                                <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.isTeacher ? "rgba(255,255,255,0.9)" : "#64748b" }}>
+                                  <span style={{ fontSize: 11 }}>{formatTime(m.timeStamp)}</span>
+                                  {m.isTeacher && <FaCheck size={12} color={m.seen ? "#10b981" : "#94a3b8"} />}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    <div
+                      style={{
+                        padding: "10px",
+                        borderTop: "1px solid var(--border-soft)",
+                        display: "flex",
+                        gap: "8px",
+                        background: "var(--surface-panel)",
+                      }}
+                    >
+                      <input
+                        value={newMessageText}
+                        onChange={(e) => setNewMessageText(e.target.value)}
+                        placeholder="Type a message..."
+                        style={{
+                          flex: 1,
+                          padding: "10px 14px",
+                          borderRadius: "999px",
+                          border: "1px solid var(--border-strong)",
+                          outline: "none",
+                          background: "var(--surface-panel)",
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") sendMessage();
+                        }}
+                      />
+                      <button
+                        onClick={sendMessage}
+                        style={{
+                          background: "var(--accent-strong)",
+                          border: "none",
+                          borderRadius: "50%",
+                          width: "42px",
+                          height: "42px",
+                          color: "#fff",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "18px",
+                        }}
+                      >
+                        ➤
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <style>{`
+                  @media (max-width: 900px), (orientation: portrait) {
+                    .admin-sidebar { width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important; border-radius: 0 !important; padding: 14px !important; }
+                    .admin-sidebar-overlay { display: block !important; }
+                    body.sidebar-open { overflow: hidden !important; }
+                  }
+                `}</style>
+              </aside>
+            </>
+          ) : (
+            <div
+              style={{
+                width: isPortrait ? "100%" : "380px",
+                height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+                position: "fixed",
+                right: 0,
+                top: isPortrait ? 0 : "55px",
+                background: "var(--surface-muted)",
+                zIndex: 90,
+                display: "flex",
+                flexDirection: "column",
+                overflowY: "auto",
+                overflowX: "hidden",
+                boxShadow: "var(--shadow-panel)",
+                borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+                transition: "all 0.35s ease",
+                fontSize: 10,
+                padding: "14px",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: 360,
+                  borderRadius: 12,
+                  border: "1px solid var(--border-soft)",
+                  background: "var(--surface-panel)",
+                  boxShadow: "var(--shadow-soft)",
+                  padding: "18px 14px",
+                  textAlign: "center",
+                }}
+              >
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: "50%",
+                    margin: "0 auto 10px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "var(--accent-soft)",
+                    color: "var(--accent-strong)",
+                    fontSize: 24,
+                  }}
+                >
+                  <FaUsers />
+                </div>
+                <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
+                  Admin Details
+                </h3>
+                <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
+                  Select an admin from the list to view details, plan, report, and chat.
+                </p>
+              </div>
             </div>
           )}
         </div>

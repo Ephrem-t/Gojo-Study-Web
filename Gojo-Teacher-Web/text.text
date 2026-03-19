@@ -1,6 +1,4 @@
-
-
-echo "ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json" >> .gitignore
+echo "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json" >> .gitignore
 git add .gitignore
 
 git status
@@ -26,7 +24,7 @@ python -m pip install firebase-admin
 git log --oneline
 git reset --soft c369a7a
 git reset --mixed c369a7a
-git rm --cached ethiostore-17d9f-firebase-adminsdk-5e87k-ff766d2648.json
+git rm --cached bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json
 
 
 

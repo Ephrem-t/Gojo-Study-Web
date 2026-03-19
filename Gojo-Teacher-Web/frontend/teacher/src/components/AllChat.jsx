@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck } from "react-icons/fa";
 import { ref, onValue, push, runTransaction, update } from "firebase/database";
 import { db, schoolPath } from "../firebase";
+import { getRtdbRoot } from "../api/rtdbScope";
 
 // NOTE: This codebase uses two chat-key conventions:
 // - Students/Parents: teacherUserId_otherUserId (teacher first)
@@ -33,6 +34,8 @@ const getChatIdForTab = (tab, teacherUserId, otherUserId) => {
     ? sortedChatId(teacherUserId, otherUserId)
     : teacherFirstChatId(teacherUserId, otherUserId);
 };
+
+const RTDB_BASE = getRtdbRoot();
 
 /* ================= FIREBASE ================= */
 
@@ -76,10 +79,10 @@ export default function TeacherAllChat() {
     const fetchUsers = async () => {
       try {
         const [studentsRes, parentsRes, adminsRes, usersRes] = await Promise.all([
-          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json").then((r) => r.json()),
-          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json").then((r) => r.json()),
-          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/School_Admins.json").then((r) => r.json()),
-          fetch("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json").then((r) => r.json()),
+          fetch(`${RTDB_BASE}/Students.json`).then((r) => r.json()),
+          fetch(`${RTDB_BASE}/Parents.json`).then((r) => r.json()),
+          fetch(`${RTDB_BASE}/School_Admins.json`).then((r) => r.json()),
+          fetch(`${RTDB_BASE}/Users.json`).then((r) => r.json()),
         ]);
 
         const users = usersRes || {};
@@ -421,7 +424,7 @@ export default function TeacherAllChat() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#eef2f7', fontFamily: 'sans-serif', position: 'relative' }}>
+    <div style={{ display: 'flex', height: 'calc(100dvh - var(--topbar-height, 0px))', marginTop: 'var(--topbar-height, 0px)', background: 'radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 38%), linear-gradient(180deg, #f6f9ff 0%, #eef4ff 100%)', fontFamily: 'Inter, sans-serif', position: 'relative', padding: isMobile ? 0 : 14, gap: isMobile ? 0 : 12 }}>
       {/* ===== SIDEBAR / USER LIST ===== */}
       <div
         style={{
@@ -433,10 +436,10 @@ export default function TeacherAllChat() {
               : 'flex',
           alignItems: 'stretch',
           position: isMobile && !selectedChatUser ? 'fixed' : 'static',
-          top: 0,
+          top: isMobile && !selectedChatUser ? 'var(--topbar-height, 0px)' : 0,
           left: 0,
           width: isMobile && !selectedChatUser ? '100vw' : undefined,
-          height: isMobile && !selectedChatUser ? '100vh' : undefined,
+          height: isMobile && !selectedChatUser ? 'calc(100dvh - var(--topbar-height, 0px))' : undefined,
           background: isMobile && !selectedChatUser ? '#fff' : undefined,
           zIndex: isMobile && !selectedChatUser ? 100 : undefined,
         }}
@@ -444,21 +447,23 @@ export default function TeacherAllChat() {
         <div
           style={{
             width: isMobile && !selectedChatUser ? '100vw' : sidebarOpen ? (isMobile ? 220 : 280) : 0,
-            height: isMobile && !selectedChatUser ? '100vh' : 'auto',
-            background: '#fff',
+            height: isMobile && !selectedChatUser ? 'calc(100dvh - var(--topbar-height, 0px))' : 'auto',
+            background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
             padding: sidebarOpen || (isMobile && !selectedChatUser) ? 16 : 0,
-            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? '2px 0 10px rgba(0,0,0,0.1)' : 'none',
+            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? '0 16px 30px rgba(15, 23, 42, 0.12)' : 'none',
+            border: sidebarOpen || (isMobile && !selectedChatUser) ? '1px solid rgba(191, 219, 254, 0.9)' : 'none',
+            borderRadius: isMobile ? 0 : 14,
             display: sidebarOpen || (isMobile && !selectedChatUser) ? 'flex' : 'none',
             flexDirection: 'column',
             transition: 'width 180ms ease',
             overflowY: isMobile && !selectedChatUser ? 'auto' : 'visible',
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <button onClick={() => navigate(-1)} style={{ border: "none", background: "none", padding: 4, cursor: "pointer" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <button onClick={() => navigate(-1)} style={{ border: "1px solid #bfdbfe", background: "linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%)", padding: 6, cursor: "pointer", borderRadius: 999, color: "#1e40af", boxShadow: "0 8px 16px rgba(30, 64, 175, 0.15)" }}>
               <FaArrowLeft size={18} />
             </button>
-          <div style={{ display: "flex", gap: 6, margin: "12px 0", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, margin: "12px 0", alignItems: "center", background: "#ffffff", border: "1px solid #dbeafe", borderRadius: 999, padding: 4, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 6px 14px rgba(15,23,42,0.05)" }}>
             {["student", "parent", "admin"].map((t) => (
               <button
                 key={t}
@@ -472,10 +477,12 @@ export default function TeacherAllChat() {
                   padding: 8,
                   borderRadius: 20,
                   border: "none",
-                  background: selectedTab === t ? "#4facfe" : "#ddd",
-                  color: selectedTab === t ? "#fff" : "#000",
+                  background: selectedTab === t ? "linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%)" : "transparent",
+                  color: selectedTab === t ? "#fff" : "#475569",
                   cursor: "pointer",
-                  fontSize: 14,
+                  fontSize: 13,
+                  fontWeight: 800,
+                  boxShadow: selectedTab === t ? "0 8px 16px rgba(37,99,235,0.25)" : "none",
                 }}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -502,8 +509,9 @@ export default function TeacherAllChat() {
                   borderRadius: 14,
                   cursor: 'pointer',
                   marginBottom: 8,
-                  background: selectedChatUser?.userId === u.userId ? '#dbeafe' : '#f9fafb',
-                  boxShadow: selectedChatUser?.userId === u.userId ? '0 2px 10px rgba(0,0,0,0.1)' : 'none',
+                  background: selectedChatUser?.userId === u.userId ? 'linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%)' : '#ffffff',
+                  border: selectedChatUser?.userId === u.userId ? '1px solid #93c5fd' : '1px solid #e2e8f0',
+                  boxShadow: selectedChatUser?.userId === u.userId ? '0 10px 20px rgba(37, 99, 235, 0.20)' : '0 4px 10px rgba(15,23,42,0.05)',
                   fontSize: isMobile ? 18 : 15,
                 }}
               >
@@ -513,7 +521,7 @@ export default function TeacherAllChat() {
                       src={u.profileImage}
                       alt={u.name}
                       onError={(e) => (e.target.src = "/default-profile.png")}
-                      style={{ width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: "50%", objectFit: "cover" }}
+                      style={{ width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: "50%", objectFit: "cover", border: '2px solid #ffffff', boxShadow: '0 4px 10px rgba(15,23,42,0.12)' }}
                     />
                     {/* online dot */}
                     <span style={{
@@ -545,14 +553,14 @@ export default function TeacherAllChat() {
 
         {/* small toggle bar visible when sidebar is closed */}
         <div style={{ width: 28, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-          <button onClick={() => setSidebarOpen((s) => !s)} style={{ border: 'none', background: '#fff', borderRadius: 4, padding: 4, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', cursor: 'pointer', marginTop: 8 }} aria-label="Toggle sidebar">
+          <button onClick={() => setSidebarOpen((s) => !s)} style={{ border: '1px solid #bfdbfe', background: 'linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%)', borderRadius: 10, padding: 4, boxShadow: '0 8px 16px rgba(15, 23, 42, 0.12)', cursor: 'pointer', marginTop: 8, color: '#1e40af' }} aria-label="Toggle sidebar">
             {sidebarOpen ? '‹' : '›'}
           </button>
         </div>
       </div>
 
       {/* ===== CHAT ===== */}
-      <div style={{ flex: 1, padding: 16, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, padding: isMobile ? 10 : 14, display: "flex", flexDirection: "column", background: 'linear-gradient(180deg, #ffffff 0%, #f9fbff 100%)', border: '1px solid #dbeafe', borderRadius: isMobile ? 0 : 16, boxShadow: '0 16px 30px rgba(15, 23, 42, 0.10)' }}>
         {selectedChatUser ? (
           <>
             {/* ===== CHAT HEADER ===== */}
@@ -561,11 +569,11 @@ export default function TeacherAllChat() {
                 display: "flex",
                 alignItems: "center",
                 gap: 12,
-                padding: "12px 0",
-                borderBottom: "1px solid #ccc",
-                boxShadow: "0 2px 6px rgba(0,0,0,0.05)",
-                background: "#fff",
-                borderRadius: 8,
+                padding: "10px 12px",
+                borderBottom: "1px solid #e2e8f0",
+                boxShadow: "0 8px 18px rgba(15, 23, 42, 0.08)",
+                background: "linear-gradient(180deg, #ffffff 0%, #f1f5ff 100%)",
+                borderRadius: 10,
                 marginBottom: 8,
               }}
             >
@@ -589,7 +597,7 @@ export default function TeacherAllChat() {
                 src={selectedChatUser.profileImage}
                 alt={selectedChatUser.name}
                 onError={(e) => (e.target.src = "/default-profile.png")}
-                style={{ width: isMobile ? 40 : 50, height: isMobile ? 40 : 50, borderRadius: "50%", objectFit: "cover" }}
+                style={{ width: isMobile ? 40 : 50, height: isMobile ? 40 : 50, borderRadius: "50%", objectFit: "cover", border: '2px solid #ffffff', boxShadow: '0 4px 10px rgba(15,23,42,0.12)' }}
               />
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <span style={{ fontWeight: 600, fontSize: 16 }}>{selectedChatUser.name}</span>
@@ -600,7 +608,7 @@ export default function TeacherAllChat() {
             </div>
 
             {/* ===== CHAT MESSAGES ===== */}
-            <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", background: 'linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%)', borderRadius: 12, border: '1px solid #e2e8f0' }}>
               {messages.map((m) => {
                 const isTeacher = m.isTeacher;
                 const isEditing = !!editingMessages[m.id];
@@ -612,13 +620,14 @@ export default function TeacherAllChat() {
                       onClick={() => setClickedMessageId(m.id)}
                       style={{
                         maxWidth: isMobile ? "85%" : "70%",
-                        background: isTeacher ? "#4facfe" : "#fff",
-                        color: isTeacher ? "#fff" : "#000",
+                        background: isTeacher ? "linear-gradient(135deg, #1d4ed8, #2563eb 55%, #3b82f6)" : "#ffffff",
+                        color: isTeacher ? "#fff" : "#0f172a",
                         padding: "10px 14px",
                         borderRadius: 18,
                         borderTopRightRadius: isTeacher ? 0 : 18,
                         borderTopLeftRadius: isTeacher ? 18 : 0,
-                        boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                        boxShadow: isTeacher ? "0 10px 18px rgba(37, 99, 235, 0.28)" : "0 6px 12px rgba(15, 23, 42, 0.10)",
+                        border: isTeacher ? "none" : "1px solid #e2e8f0",
                         wordBreak: "break-word",
                         cursor: "pointer",
                         position: "relative",
@@ -641,8 +650,8 @@ export default function TeacherAllChat() {
                     {/* Edit/Delete controls for teacher's message */}
                     {isClicked && isTeacher && !m.deleted && !isEditing && (
                       <div style={{ display: "flex", gap: 6, marginTop: 4, fontSize: 12, justifyContent: isTeacher ? "flex-end" : "flex-start" }}>
-                        <button onClick={() => startEditing(m.id, m.text)} style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid #ccc", cursor: "pointer", background: "#f1f1f1" }}>Edit</button>
-                        <button onClick={() => handleDeleteMessage(m.id)} style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid #ccc", cursor: "pointer", background: "#f1f1f1", color: "red" }}>Delete</button>
+                        <button onClick={() => startEditing(m.id, m.text)} style={{ padding: "3px 8px", borderRadius: 999, border: "1px solid #cbd5e1", cursor: "pointer", background: "#f8fafc", color: "#334155", fontWeight: 600 }}>Edit</button>
+                        <button onClick={() => handleDeleteMessage(m.id)} style={{ padding: "3px 8px", borderRadius: 999, border: "1px solid #fecaca", cursor: "pointer", background: "#fef2f2", color: "#b91c1c", fontWeight: 600 }}>Delete</button>
                       </div>
                     )}
                   </div>
@@ -652,21 +661,26 @@ export default function TeacherAllChat() {
             </div>
 
             {/* ===== INPUT ===== */}
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, padding: 8, borderRadius: 12, background: "#ffffff", border: "1px solid #dbeafe", boxShadow: "0 8px 18px rgba(15,23,42,0.08)" }}>
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && sendMessage()}
                 placeholder="Type a message..."
-                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 25, border: "1px solid #ccc", outline: "none" }}
+                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 999, border: "1px solid #cbd5e1", outline: "none", background: "#f8fafc", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.06)" }}
               />
-              <button onClick={sendMessage} style={{ width: isMobile ? 40 : 45, height: isMobile ? 40 : 45, borderRadius: "50%", background: "#4facfe", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center" }}>
+              <button onClick={sendMessage} style={{ width: isMobile ? 40 : 45, height: isMobile ? 40 : 45, borderRadius: "50%", background: "linear-gradient(135deg, #1d4ed8, #2563eb 60%, #3b82f6)", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", boxShadow: "0 10px 22px rgba(37, 99, 235, 0.32)" }}>
                 <FaPaperPlane />
               </button>
             </div>
           </>
         ) : (
-          <h3 style={{ textAlign: "center", marginTop: 50 }}>Select a user to start chatting 💬</h3>
+          <div style={{ display: "grid", placeItems: "center", flex: 1 }}>
+            <div style={{ textAlign: "center", padding: 24, borderRadius: 16, border: "1px solid #dbeafe", background: "linear-gradient(180deg, #ffffff 0%, #eff6ff 100%)", boxShadow: "0 14px 28px rgba(15,23,42,0.10)" }}>
+              <h3 style={{ margin: 0, color: "#0f172a" }}>Select a user to start chatting 💬</h3>
+              <div style={{ marginTop: 8, color: "#475569", fontSize: 13 }}>Choose a student, parent, or admin from the left panel.</div>
+            </div>
+          </div>
         )}
       </div>
     </div>
