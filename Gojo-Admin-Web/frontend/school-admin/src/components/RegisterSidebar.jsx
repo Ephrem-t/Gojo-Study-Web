@@ -7,6 +7,7 @@ import {
   FaCalendarAlt,
   FaCog,
   FaSignOutAlt,
+  FaFolderOpen,
 } from "react-icons/fa";
 
 function RegisterSidebar({
@@ -181,6 +182,42 @@ function RegisterSidebar({
         <Link className="sidebar-btn" to="/registration-form" style={getSidebarLinkStyle("/registration-form")}>
           <FaFileAlt style={{ width: 15, height: 15 }} /> Registration Form
         </Link>
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            marginLeft: 0,
+            padding: "8px",
+            borderRadius: 12,
+            border: "1px solid var(--border-strong)",
+            background: "linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 11,
+              fontWeight: 800,
+              color: "var(--text-primary)",
+              padding: "2px 4px",
+            }}
+          >
+            <FaFolderOpen style={{ width: 14, height: 14, color: "var(--accent-strong)" }} />
+            Message Group
+          </div>
+
+          <Link className="sidebar-btn" to="/all-chat" style={getSidebarLinkStyle("/all-chat")}>
+            <FaFileAlt style={{ width: 15, height: 15 }} /> Chat
+          </Link>
+
+          <Link className="sidebar-btn" to="/message-control" style={getSidebarLinkStyle("/message-control")}>
+            <FaCog style={{ width: 15, height: 15 }} /> Message Control
+          </Link>
+        </div>
 
         <Link className="sidebar-btn" to="/settings" style={getSidebarLinkStyle("/settings")}>
           <FaCog style={{ width: 15, height: 15 }} /> Settings

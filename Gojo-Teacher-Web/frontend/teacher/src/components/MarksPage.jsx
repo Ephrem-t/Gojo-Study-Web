@@ -2,10 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  FaPlus,
-  FaTrash,
   FaSave,
-  FaEdit,
   FaHome,
   FaSignOutAlt,
   FaUsers,
@@ -32,6 +29,13 @@ const formatStudentName = (rawName) => {
     .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ""))
     .join(" ");
 };
+
+const toSubjectKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
 
 export default function MarksPage() {
   // Sidebar toggle state for mobile (like Dashboard)
@@ -107,9 +111,19 @@ export default function MarksPage() {
     if (!selectedCourseId) return;
     const loadCourseData = async () => {
       try {
-        const marksRes = await axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`);
         const course = courses.find((c) => c.id === selectedCourseId);
         if (!course) return;
+
+        const subjectKey = toSubjectKey(course.subject || course.name || "");
+        const [marksRes, templateRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`),
+          axios.get(
+            `${RTDB_BASE}/AssesmentTemplates/${encodeURIComponent(course.grade)}/${encodeURIComponent(subjectKey)}/${activeSemester}.json`
+          ).catch(() => ({ data: {} })),
+        ]);
+
+        const templateSemNode =
+          templateRes.data && typeof templateRes.data === "object" ? templateRes.data : {};
 
         const filteredStudents = students.filter(
           (s) => s.grade === course.grade && s.section === course.section
@@ -125,6 +139,9 @@ export default function MarksPage() {
               if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
             });
           }
+        });
+        Object.keys(templateSemNode || {}).forEach((k) => {
+          if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
         });
 
         const quartersArrRaw = Array.from(quarterSet);
@@ -167,6 +184,19 @@ export default function MarksPage() {
             if (semData && semData[selectedQuarter] && semData[selectedQuarter].assessments) {
               initMarks[s.id] = semData[selectedQuarter].assessments;
               if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData[selectedQuarter].assessments);
+            } else if (semData && semData.assessments) {
+              initMarks[s.id] = semData.assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData.assessments);
+            } else if (
+              templateSemNode &&
+              templateSemNode[selectedQuarter] &&
+              templateSemNode[selectedQuarter].assessments
+            ) {
+              initMarks[s.id] = templateSemNode[selectedQuarter].assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode[selectedQuarter].assessments);
+            } else if (templateSemNode && templateSemNode.assessments) {
+              initMarks[s.id] = templateSemNode.assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode.assessments);
             } else {
               // No per-quarter assessments for this student
               initMarks[s.id] = {};
@@ -215,56 +245,6 @@ export default function MarksPage() {
     fetchStudents();
   }, [teacherUserId]);
 
-  // Assessment structure handling
-  const addAssessment = () => setAssessmentList((p) => [...p, { name: "", max: "" }]);
-  const updateAssessment = (i, field, value) => {
-    const copy = [...assessmentList];
-    copy[i][field] = value;
-    setAssessmentList(copy);
-  };
-  const removeAssessment = (i) =>
-    setAssessmentList((p) => p.filter((_, idx) => idx !== i));
-  const submitStructure = async () => {
-    if (assessmentList.reduce((sum, a) => sum + Number(a.max || 0), 0) !== 100) {
-      alert("Total MAX must be exactly 100");
-      return;
-    }
-    const structureObj = {};
-    assessmentList.forEach((a, idx) => {
-      structureObj[`a${idx + 1}`] = {
-        name: a.name,
-        max: Number(a.max),
-        score: 0,
-      };
-    });
-    try {
-      const course = courses.find((c) => c.id === selectedCourseId);
-      if (!course) return;
-      const filteredStudents = students.filter((s) => s.grade === course.grade && s.section === course.section);
-      // Persist structure into the currently selected quarter for each student
-      await Promise.all(
-        filteredStudents.map((s) =>
-          axios.put(
-            `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${s.id}/${activeSemester}/${selectedQuarter}.json`,
-            {
-              teacherName: teacher?.name || "",
-              assessments: structureObj,
-            }
-          )
-        )
-      );
-      const initMarks = {};
-      filteredStudents.forEach((s) => {
-        initMarks[s.id] = structureObj;
-      });
-      setStudentMarks(initMarks);
-      setStructureSubmitted(true);
-      alert("Assessment structure saved!");
-    } catch (err) {
-      console.error("Error submitting structure:", err);
-      alert("Failed to submit structure");
-    }
-  };
   const updateScore = (sid, key, value) => {
     // allow empty string while editing (treat as no input), otherwise store numeric
     setStudentMarks((p) => ({
@@ -272,7 +252,14 @@ export default function MarksPage() {
       [sid]: { ...p[sid], [key]: { ...p[sid][key], score: value === '' ? '' : Number(value) } },
     }));
   };
+  const templateMissingMessage =
+    "Assessment template is not available. Ask admin to create it first in AssessmentTemplates.";
+
   const saveMarks = async (sid) => {
+    if (!structureSubmitted || !assessmentList.length) {
+      alert(templateMissingMessage);
+      return;
+    }
     try {
       // Save into the currently selected quarter (per-quarter model)
       await axios.put(
@@ -291,6 +278,10 @@ export default function MarksPage() {
 
   // Save all students' marks at once for the selected course/semester/quarter
   const saveAllMarks = async () => {
+    if (!structureSubmitted || !assessmentList.length) {
+      alert(templateMissingMessage);
+      return;
+    }
     if (!selectedCourseId || selectedQuarter === 'avg') {
       alert('Please select a valid course and quarter');
       return;
@@ -886,27 +877,6 @@ export default function MarksPage() {
         {structureSubmitted ? (
           <>
             <button
-              style={{
-                marginBottom: "0px",
-                padding: "10px 14px",
-                background: "var(--surface-panel)",
-                color: "var(--text-primary)",
-                borderRadius: "10px",
-                border: "1px solid var(--border-soft)",
-                fontWeight: "600",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-              }}
-              onClick={() => {
-                setStructureSubmitted(false);
-                setStudentMarks({});
-              }}
-            >
-              <FaEdit /> Edit Assessment Structure
-            </button>
-            <button
               onClick={() => downloadExcel()}
               style={{
                 padding: "10px 16px",
@@ -926,9 +896,10 @@ export default function MarksPage() {
             </button>
             <button
               onClick={() => saveAllMarks()}
+              disabled={!structureSubmitted || !assessmentList.length || selectedQuarter === 'avg'}
               style={{
                 padding: "10px 16px",
-                background: "var(--accent-strong)",
+                background: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "var(--surface-strong)" : "var(--accent-strong)",
                 color: "#fff",
                 border: "none",
                 borderRadius: "10px",
@@ -936,7 +907,7 @@ export default function MarksPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: "pointer"
+                cursor: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "not-allowed" : "pointer"
               }}
               title="Save all marks for current quarter"
             >
@@ -947,7 +918,7 @@ export default function MarksPage() {
       </div>
     )}
 
-            {/* Assessment Builder */}
+            {/* Template Required Notice */}
             {selectedCourseId && !structureSubmitted && (
               <div
                 style={{
@@ -960,105 +931,12 @@ export default function MarksPage() {
                 }}
               >
                 <h3 style={{ marginBottom: "16px", color: "var(--text-primary)", fontWeight: "700", fontSize: "18px" }}>
-                  Assessment Structure
+                  Assessment Template Not Found
                 </h3>
-                {assessmentList.map((a, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      gap: "12px",
-                      marginBottom: "12px",
-                      alignItems: "center",
-                      flexWrap: isMobile ? "wrap" : "nowrap",
-                    }}
-                  >
-                    <input
-                      placeholder="Assessment Name"
-                      value={a.name}
-                      onChange={(e) => updateAssessment(i, "name", e.target.value)}
-                      style={{
-                        flex: 2,
-                        minWidth: isMobile ? "100%" : undefined,
-                        padding: "10px 12px",
-                        borderRadius: "12px",
-                        border: "1px solid var(--border-strong)",
-                        outline: "none",
-                        background: "var(--surface-panel)",
-                        fontWeight: "500",
-                      }}
-                    />
-                    <input
-                      type="number"
-                      placeholder="Max"
-                      value={a.max}
-                      onChange={(e) => updateAssessment(i, "max", e.target.value)}
-                      style={{
-                        flex: 1,
-                        minWidth: isMobile ? "calc(100% - 54px)" : undefined,
-                        padding: "10px 12px",
-                        borderRadius: "12px",
-                        border: "1px solid var(--border-strong)",
-                        outline: "none",
-                        background: "var(--surface-panel)",
-                        fontWeight: "500",
-                      }}
-                    />
-                    <button
-                      onClick={() => removeAssessment(i)}
-                      style={{
-                        background: "#dc2626",
-                        color: "#fff",
-                        padding: "10px 12px",
-                        borderRadius: "10px",
-                        border: "none",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <FaTrash />
-                    </button>
-                  </div>
-                ))}
-                <div style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "14px", flexWrap: "wrap" }}>
-                  <button
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      background: "var(--accent)",
-                      color: "#fff",
-                      border: "none",
-                      cursor: "pointer",
-                      fontWeight: "700",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                    }}
-                    onClick={addAssessment}
-                  >
-                    <FaPlus /> Add Assessment
-                  </button>
-                  <span style={{ fontWeight: "700", color: "var(--text-secondary)", fontSize: "13px", background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 999, padding: "7px 10px" }}>
-                    Total Max: {assessmentList.reduce((sum, a) => sum + Number(a.max || 0), 0)} / 100
-                  </span>
-                </div>
-                <button
-                  style={{
-                    marginTop: "14px",
-                    padding: "11px 16px",
-                    borderRadius: "10px",
-                    background: "var(--accent-strong)",
-                    color: "#fff",
-                    border: "none",
-                    fontWeight: "700",
-                    cursor: "pointer",
-                    fontSize: "14px",
-                  }}
-                  onClick={submitStructure}
-                >
-                  Submit Structure
-                </button>
-
-                
+                <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  Admin has not created an assessment template for this course and semester/quarter yet.
+                  Teachers can only enter marks based on admin-created templates.
+                </p>
               </div>
             )}
 

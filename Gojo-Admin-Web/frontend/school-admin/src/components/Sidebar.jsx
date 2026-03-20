@@ -34,6 +34,7 @@ const SIDEBAR_SECTIONS = [
     items: [
       { to: "/academic-year", label: "Academic Year", icon: FaCalendarAlt },
       { to: "/subject-management", label: "Subject Management", icon: FaBook },
+      { to: "/assessment", label: "Assessment", icon: FaClipboardList },
     ],
   },
   {
@@ -51,6 +52,15 @@ const SIDEBAR_SECTIONS = [
     items: [
       { to: "/students", label: "Students", icon: FaUsers },
       { to: "/schedule", label: "Timetable", icon: FaCalendarAlt },
+    ],
+  },
+  {
+    key: "message-group",
+    title: "Message",
+    icon: FaFolderOpen,
+    items: [
+      { to: "/all-chat", label: "Chat", icon: FaFileAlt },
+      { to: "/message-control", label: "Message Control", icon: FaUserCog },
     ],
   },
   {

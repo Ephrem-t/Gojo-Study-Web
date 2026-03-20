@@ -114,11 +114,13 @@ function TeachersPage() {
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState('');
   const [planSubmittedKeys, setPlanSubmittedKeys] = useState([]);
+  const [planSubmittedEntries, setPlanSubmittedEntries] = useState([]);
   const [planSidebarOpen, setPlanSidebarOpen] = useState(true);
   const [planRefreshKey, setPlanRefreshKey] = useState(0);
   const [planSelectedCourseId, setPlanSelectedCourseId] = useState('all');
   const [planCourseLabelMap, setPlanCourseLabelMap] = useState({});
   const [planAnnualOpen, setPlanAnnualOpen] = useState(false);
+  const [planShowSubmittedTable, setPlanShowSubmittedTable] = useState(false);
 
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
 
@@ -498,7 +500,7 @@ useEffect(() => {
           return {
             ...teacherItem,
             name: shouldReplaceWithUserName ? (user.name || teacherItem.name || "Unknown Teacher") : teacherItem.name,
-            profileImage: resolveProfileImage(user.profileImage),
+            profileImage: resolveProfileImage(teacherItem?.profileImage, user.profileImage),
           };
         });
         setTeachers(cachedTeacherList);
@@ -537,15 +539,31 @@ useEffect(() => {
             .find((value) => Boolean(value)) || "";
         };
 
-        const usersMap = Object.values(usersData || {}).reduce((acc, userRecord) => {
-          const userId = String(userRecord?.userId || "").trim();
+        const buildEmployeeProfileImage = (employee) => {
+          const profileData = employee?.profileData || {};
+          return resolveProfileImage(
+            employee?.profileImage,
+            profileData?.profileImage,
+            profileData?.photoUrl,
+            profileData?.avatar,
+            employee?.photoUrl,
+            employee?.avatar
+          );
+        };
+
+        const usersMap = Object.entries(usersData || {}).reduce((acc, [userKey, userRecord]) => {
+          const userId = String(userRecord?.userId || userKey || "").trim();
           if (!userId) return acc;
-          acc[userId] = userRecord;
+          acc[userId] = {
+            ...(userRecord || {}),
+            userId,
+          };
           return acc;
         }, {});
 
         const teacherSeedMap = { ...(teachersData || {}) };
         const employeeNameByTeacherId = {};
+        const employeeProfileImageByTeacherId = {};
         Object.entries(employeesData || {}).forEach(([employeeId, employee]) => {
           const teacherId = String(employee?.teacherId || "").trim();
           if (!teacherId) return;
@@ -554,6 +572,10 @@ useEffect(() => {
           const employeeDisplayName = buildEmployeeDisplayName(employee);
           if (employeeDisplayName) {
             employeeNameByTeacherId[teacherId] = employeeDisplayName;
+          }
+          const employeeProfileImage = buildEmployeeProfileImage(employee);
+          if (employeeProfileImage && employeeProfileImage !== "/default-profile.png") {
+            employeeProfileImageByTeacherId[teacherId] = employeeProfileImage;
           }
 
           teacherSeedMap[teacherId] = {
@@ -565,13 +587,72 @@ useEffect(() => {
           };
         });
 
+        const toSubjectKey = (value) => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+        const toSectionKey = (value) => String(value || "").trim().toUpperCase();
+        const toGradeKey = (value) => String(value || "").trim();
+
+        const courseLookupByTuple = {};
+        Object.entries(coursesData || {}).forEach(([courseId, course]) => {
+          const grade = toGradeKey(course?.grade);
+          const section = toSectionKey(course?.section);
+          const subject = toSubjectKey(course?.subject || course?.name);
+          if (!grade || !section || !subject) return;
+          const tupleKey = `${grade}__${section}__${subject}`;
+          if (!courseLookupByTuple[tupleKey]) {
+            courseLookupByTuple[tupleKey] = courseId;
+          }
+        });
+
         const assignmentsByTeacher = {};
+        const pushTeacherAssignment = (teacherIdValue, assignmentValue) => {
+          const teacherId = String(teacherIdValue || "").trim();
+          if (!teacherId) return;
+          if (!assignmentsByTeacher[teacherId]) assignmentsByTeacher[teacherId] = [];
+          assignmentsByTeacher[teacherId].push(assignmentValue);
+        };
+
         Object.values(assignmentsData || {}).forEach((assignment) => {
           const teacherId = String(assignment?.teacherId || "").trim();
           const courseId = String(assignment?.courseId || "").trim();
           if (!teacherId || !courseId) return;
-          if (!assignmentsByTeacher[teacherId]) assignmentsByTeacher[teacherId] = [];
-          assignmentsByTeacher[teacherId].push(courseId);
+          const course = coursesData?.[courseId] || {};
+          pushTeacherAssignment(teacherId, {
+            courseId,
+            grade: course?.grade,
+            section: course?.section,
+            subject: course?.subject || course?.name,
+          });
+        });
+
+        Object.entries(gradesData || {}).forEach(([gradeKey, gradeNode]) => {
+          const sectionSubjectTeachers = gradeNode?.sectionSubjectTeachers;
+          if (!sectionSubjectTeachers || typeof sectionSubjectTeachers !== "object") return;
+
+          Object.entries(sectionSubjectTeachers).forEach(([sectionKey, subjectsNode]) => {
+            if (!subjectsNode || typeof subjectsNode !== "object") return;
+
+            Object.entries(subjectsNode).forEach(([subjectKey, assignment]) => {
+              if (!assignment || typeof assignment !== "object") return;
+
+              const teacherId = String(
+                assignment?.teacherId || assignment?.teacherRecordKey || ""
+              ).trim();
+              if (!teacherId) return;
+
+              const subjectName = String(assignment?.subject || subjectKey || "").trim();
+              const grade = toGradeKey(assignment?.grade || gradeKey);
+              const section = toSectionKey(assignment?.section || sectionKey);
+              const tupleKey = `${grade}__${section}__${toSubjectKey(subjectName)}`;
+              const resolvedCourseId = courseLookupByTuple[tupleKey] || "";
+
+              pushTeacherAssignment(teacherId, {
+                courseId: resolvedCourseId,
+                grade,
+                section,
+                subject: subjectName,
+              });
+            });
+          });
         });
 
         const teacherList = Object.keys(teacherSeedMap).map((teacherId) => {
@@ -582,16 +663,30 @@ useEffect(() => {
             String(teacher?.name || "").trim() ||
             String(employeeNameByTeacherId[teacherId] || "").trim() ||
             "Unknown Teacher";
-          const teacherProfileImage = resolveProfileImage(user?.profileImage);
+          const teacherProfileImage = resolveProfileImage(
+            teacher?.profileImage,
+            employeeProfileImageByTeacherId[teacherId],
+            user?.profileImage
+          );
 
           const gradesSubjectsRaw = (assignmentsByTeacher[teacherId] || [])
-            .map((courseId) => {
-              const course = coursesData[courseId];
-              return course
-                ? { courseId, grade: course.grade, subject: course.subject, section: course.section }
-                : null;
+            .map((entry) => {
+              const courseId = String(entry?.courseId || "").trim();
+              const course = courseId ? coursesData?.[courseId] : null;
+              return {
+                courseId,
+                grade: entry?.grade ?? course?.grade,
+                subject: entry?.subject ?? course?.subject ?? course?.name,
+                section: entry?.section ?? course?.section,
+              };
             })
-            .filter(Boolean);
+            .filter((entry) => {
+              return Boolean(
+                String(entry?.grade || "").trim() &&
+                  String(entry?.section || "").trim() &&
+                  String(entry?.subject || "").trim()
+              );
+            });
 
           // Deduplicate: show each course only once (prevents repeated subjects)
           const seenCourseKeys = new Set();
@@ -657,7 +752,7 @@ useEffect(() => {
           return {
             ...teacherItem,
             name: user.name || teacherItem.name,
-            profileImage: resolveProfileImage(user.profileImage),
+            profileImage: resolveProfileImage(teacherItem?.profileImage, user.profileImage),
             email: user.email || teacherItem.email || null,
           };
         });
@@ -776,9 +871,11 @@ useEffect(() => {
     setPlanCurrentWeeks([]);
     setPlanCurrentWeekIndex(null);
     setPlanSubmittedKeys([]);
+    setPlanSubmittedEntries([]);
     setPlanSelectedCourseId('all');
     setPlanCourseLabelMap({});
     setPlanAnnualOpen(false);
+    setPlanShowSubmittedTable(false);
     setPlanError('');
     setPlanLoading(false);
     return;
@@ -980,7 +1077,18 @@ useEffect(() => {
           if (directKey) return { node: root[directKey], path: [directKey] };
         }
 
-        // 3) heuristic: pick first object-ish node
+        // 3) if preferred was not found, choose the latest top-level key as year node
+        // (new structure commonly uses keys like 2027_2028)
+        const topLevelKeys = Object.keys(root || {});
+        if (topLevelKeys.length) {
+          const latestKey = topLevelKeys.sort().slice(-1)[0];
+          const latestNode = root?.[latestKey];
+          if (latestNode && typeof latestNode === 'object') {
+            return { node: latestNode, path: [latestKey] };
+          }
+        }
+
+        // 4) heuristic: pick first object-ish node
         for (const k of Object.keys(root || {})) {
           const v = root?.[k];
           if (v && typeof v === 'object') {
@@ -1006,27 +1114,47 @@ useEffect(() => {
         return ALL_MONTHS[dt.getMonth()] || '';
       };
 
-      // Load teacher's LessonPlans root.
-      // IMPORTANT: LessonPlans may be keyed by teacherId (Teachers node key) or by userId (legacy).
+      const schoolInfo = await readSchoolNode("schoolInfo");
+      const currentAcademicYear = String(schoolInfo?.currentAcademicYear || '').trim();
+      const preferredAcademicYear = currentAcademicYear || '2025/26';
+
+      // Load teacher lesson-plan root from both normalized and legacy structures.
+      // IMPORTANT: keys may be teacherId (Teachers node key) or userId (legacy).
       const candidatePlanKeys = Array.from(new Set([
         String(teacherId || '').trim(),
         String(teacherUserId || '').trim(),
       ].filter(Boolean)));
 
-      let teacherPlansRoot = {};
+      const candidatePlanRoots = [];
       for (const k of candidatePlanKeys) {
         // eslint-disable-next-line no-await-in-loop
-        const res = await axios
-          .get(`${SCHOOL_DB_ROOT}/LessonPlans/${encodeURIComponent(k)}.json`)
-          .catch(async () => axios.get(`${RTDB_BASE}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })));
-        if (res && res.data && typeof res.data === 'object') {
-          teacherPlansRoot = res.data;
-          // Prefer the first non-empty object
-          if (Object.keys(teacherPlansRoot || {}).length) break;
-        }
+        const results = await Promise.all([
+          axios.get(`${SCHOOL_DB_ROOT}/schoolLessonPlan/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${RTDB_BASE}/schoolLessonPlan/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${RTDB_BASE}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+        ]);
+
+        results.forEach((res) => {
+          if (res && res.data && typeof res.data === 'object' && Object.keys(res.data).length) {
+            candidatePlanRoots.push(res.data);
+          }
+        });
       }
 
-      const preferredAcademicYear = '2025/26';
+      let teacherPlansRoot = {};
+      for (const rootCandidate of candidatePlanRoots) {
+        const resolvedCandidate = resolveAcademicYearNode(rootCandidate, preferredAcademicYear);
+        const coursesCandidate = resolvedCandidate?.node?.courses;
+        if (coursesCandidate && typeof coursesCandidate === 'object' && Object.keys(coursesCandidate).length) {
+          teacherPlansRoot = rootCandidate;
+          break;
+        }
+      }
+      if (!Object.keys(teacherPlansRoot).length && candidatePlanRoots.length) {
+        teacherPlansRoot = candidatePlanRoots[0] || {};
+      }
+
       const resolvedPlans = resolveAcademicYearNode(teacherPlansRoot, preferredAcademicYear);
       const coursesNode = (resolvedPlans.node && resolvedPlans.node.courses && typeof resolvedPlans.node.courses === 'object') ? resolvedPlans.node.courses : {};
 
@@ -1037,6 +1165,7 @@ useEffect(() => {
       // Support both node names: LessonPlanSubmissions (legacy) and LessonPlanSubmission (current)
       // Support both teacher key styles: selectedTeacher.userId and selectedTeacher.teacherId
       let submittedKeySet = new Set();
+      const submittedEntriesByKey = {};
       try {
         const candidateTeacherKeys = Array.from(new Set([
           String(teacherUserId || '').trim(),
@@ -1062,8 +1191,25 @@ useEffect(() => {
           });
         }
 
+        const preferYearCandidates = Array.from(new Set([
+          preferredAcademicYear,
+          preferredAcademicYear.replaceAll('/', '_'),
+          preferredAcademicYear.replaceAll('/', '-'),
+          preferredAcademicYear.replaceAll('/', ''),
+        ].filter(Boolean)));
+
         submissionRoots.forEach((submissionsRoot) => {
-          const resolvedSubs = resolveAcademicYearNodeAny(submissionsRoot, preferredAcademicYear);
+          const rootKeys = Object.keys(submissionsRoot || {});
+          const matchedYearKey = preferYearCandidates.find((candidate) => rootKeys.includes(candidate));
+          const fallbackYearKey = rootKeys.sort().slice(-1)[0] || null;
+          const yearNodeFromKey = matchedYearKey
+            ? submissionsRoot?.[matchedYearKey]
+            : (fallbackYearKey ? submissionsRoot?.[fallbackYearKey] : null);
+
+          const resolvedSubs = yearNodeFromKey && typeof yearNodeFromKey === 'object'
+            ? { node: yearNodeFromKey }
+            : resolveAcademicYearNodeAny(submissionsRoot, preferredAcademicYear);
+
           const submissionsYearNode = resolvedSubs.node || {};
           Object.values(submissionsYearNode || {}).forEach((courseSubNode) => {
             if (!courseSubNode || typeof courseSubNode !== 'object') return;
@@ -1076,15 +1222,35 @@ useEffect(() => {
                 const parts = raw.split('::');
                 if (parts.length >= 4) {
                   const [tId, cId, wk, dn] = parts.map((p) => String(p ?? '').trim());
-                  submittedKeySet.add(canonicalSubmissionKey(tId, cId, wk, dn));
+                  const canonical = canonicalSubmissionKey(tId, cId, wk, dn);
+                  submittedKeySet.add(canonical);
+                  const submittedAt = String(sub.submittedAt || sub.createdAt || sub.updatedAt || '').trim();
+                  submittedEntriesByKey[canonical] = {
+                    key: canonical,
+                    teacherId: tId,
+                    courseId: cId,
+                    week: normalizeWeekForKey(wk),
+                    dayName: dn,
+                    submittedAt,
+                    childKey: sub.childKey || '',
+                  };
                 }
               }
 
               // Also derive the canonical key from structured fields (preferred, matches your DB sample)
               if (sub.teacherId || sub.courseId || sub.week || sub.dayName) {
-                submittedKeySet.add(
-                  canonicalSubmissionKey(sub.teacherId, sub.courseId, sub.week, sub.dayName)
-                );
+                const canonical = canonicalSubmissionKey(sub.teacherId, sub.courseId, sub.week, sub.dayName);
+                submittedKeySet.add(canonical);
+                const submittedAt = String(sub.submittedAt || sub.createdAt || sub.updatedAt || '').trim();
+                submittedEntriesByKey[canonical] = {
+                  key: canonical,
+                  teacherId: String(sub.teacherId || '').trim() || teacherSubmissionId,
+                  courseId: String(sub.courseId || '').trim(),
+                  week: normalizeWeekForKey(sub.week),
+                  dayName: normalizeDayForKey(sub.dayName),
+                  submittedAt,
+                  childKey: sub.childKey || '',
+                };
               }
 
               // If childKey exists like teacherId__courseId__week__Monday, derive from it too
@@ -1093,10 +1259,76 @@ useEffect(() => {
                 const parts = ck.split('__').map((p) => String(p ?? '').trim());
                 if (parts.length >= 4) {
                   const [tId, cId, wk, dn] = parts;
-                  submittedKeySet.add(canonicalSubmissionKey(tId, cId, wk, dn));
+                  const canonical = canonicalSubmissionKey(tId, cId, wk, dn);
+                  submittedKeySet.add(canonical);
+                  const submittedAt = String(sub.submittedAt || sub.createdAt || sub.updatedAt || '').trim();
+                  submittedEntriesByKey[canonical] = {
+                    key: canonical,
+                    teacherId: tId,
+                    courseId: cId,
+                    week: normalizeWeekForKey(wk),
+                    dayName: normalizeDayForKey(dn),
+                    submittedAt,
+                    childKey: ck,
+                  };
                 }
               }
             });
+          });
+        });
+
+        // Also collect submissions embedded in normalized plan structure:
+        // schoolLessonPlan/<teacher>/<year>/courses/<courseId>/submissions/entries
+        Object.entries(coursesNode || {}).forEach(([courseId, courseEntry]) => {
+          const entriesNode = courseEntry?.submissions?.entries;
+          if (!entriesNode) return;
+
+          const entries = Array.isArray(entriesNode)
+            ? entriesNode.filter(Boolean)
+            : (typeof entriesNode === 'object' ? Object.values(entriesNode).filter(Boolean) : []);
+
+          entries.forEach((sub) => {
+            if (!sub || typeof sub !== 'object') return;
+
+            const subTeacherId = String(sub.teacherId || teacherSubmissionId || '').trim();
+            const subCourseId = String(sub.courseId || courseId || '').trim();
+            const subWeek = normalizeWeekForKey(sub.week);
+            const subDayName = normalizeDayForKey(sub.dayName || sub.day || '');
+            const submittedAt = String(sub.submittedAt || sub.createdAt || sub.updatedAt || '').trim();
+
+            if (subTeacherId && subCourseId && subWeek && subDayName) {
+              const canonical = canonicalSubmissionKey(subTeacherId, subCourseId, subWeek, subDayName);
+              submittedKeySet.add(canonical);
+              submittedEntriesByKey[canonical] = {
+                key: canonical,
+                teacherId: subTeacherId,
+                courseId: subCourseId,
+                week: subWeek,
+                dayName: subDayName,
+                submittedAt,
+                childKey: sub.childKey || '',
+              };
+            }
+
+            if (sub.key) {
+              const raw = String(sub.key).trim();
+              submittedKeySet.add(raw);
+              const parts = raw.split('::').map((p) => String(p ?? '').trim());
+              if (parts.length >= 4) {
+                const [tId, cId, wk, dn] = parts;
+                const canonical = canonicalSubmissionKey(tId, cId, wk, dn);
+                submittedKeySet.add(canonical);
+                submittedEntriesByKey[canonical] = {
+                  key: canonical,
+                  teacherId: tId,
+                  courseId: cId,
+                  week: normalizeWeekForKey(wk),
+                  dayName: normalizeDayForKey(dn),
+                  submittedAt,
+                  childKey: sub.childKey || '',
+                };
+              }
+            }
           });
         });
       } catch (e) {
@@ -1105,6 +1337,15 @@ useEffect(() => {
       }
 
       setPlanSubmittedKeys(Array.from(submittedKeySet));
+      const submittedEntries = Object.values(submittedEntriesByKey).sort((a, b) => {
+        const aTs = a?.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+        const bTs = b?.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+        if (aTs !== bTs) return bTs - aTs;
+        const aw = Number(String(a?.week ?? '').match(/\d+/)?.[0] ?? 0);
+        const bw = Number(String(b?.week ?? '').match(/\d+/)?.[0] ?? 0);
+        return bw - aw;
+      });
+      setPlanSubmittedEntries(submittedEntries);
 
       const extractWeeksFromCourse = (courseId, courseEntry) => {
         if (!courseEntry) return [];
@@ -1129,8 +1370,20 @@ useEffect(() => {
         };
 
         // annual rows
-        if (courseEntry.annual && Array.isArray(courseEntry.annual.annualRows)) {
-          courseEntry.annual.annualRows.forEach((r) => pushWeek(r, r.week || ''));
+        if (courseEntry.annual && typeof courseEntry.annual === 'object') {
+          const annualRows = Array.isArray(courseEntry.annual.annualRows)
+            ? courseEntry.annual.annualRows
+            : (Array.isArray(courseEntry.annual.rows) ? courseEntry.annual.rows : []);
+          annualRows.forEach((r) => pushWeek(r, r.week || ''));
+        }
+
+        // normalized weeks node: courses/<courseId>/weeks/<weekKey>
+        if (courseEntry.weeks && typeof courseEntry.weeks === 'object') {
+          Object.entries(courseEntry.weeks).forEach(([wkKey, wkObj]) => {
+            if (!wkObj || typeof wkObj !== 'object') return;
+            const fallback = String(wkKey || '').replace(/^week_?/i, '');
+            pushWeek(wkObj, wkObj.week || fallback);
+          });
         }
 
         // week_{x}
@@ -1242,6 +1495,7 @@ useEffect(() => {
       setPlanCurrentWeeks([]);
       setPlanCurrentWeekIndex(null);
       setPlanSubmittedKeys([]);
+      setPlanSubmittedEntries([]);
       setPlanError('Failed to load lesson plans from database.');
     } finally {
       setPlanLoading(false);
@@ -2042,6 +2296,10 @@ useEffect(() => {
                     <img
                       src={t.profileImage}
                       alt={t.name}
+                      onError={(event) => {
+                        event.currentTarget.onerror = null;
+                        event.currentTarget.src = "/default-profile.png";
+                      }}
                       style={{
                         width: isNarrow ? 40 : 48,
                         height: isNarrow ? 40 : 48,
@@ -2122,17 +2380,17 @@ useEffect(() => {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(255,255,255,0.18)",
-            border: "1px solid rgba(255,255,255,0.42)",
+            background: "color-mix(in srgb, var(--surface-panel) 22%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--surface-panel) 45%, transparent)",
             borderRadius: 999,
             backdropFilter: "blur(6px)",
             fontSize: 24,
             fontWeight: 700,
-            color: "#ffffff",
+            color: "var(--on-accent)",
             cursor: "pointer",
             padding: 0,
             lineHeight: 1,
-            boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+            boxShadow: "var(--shadow-soft)",
           }}
         >
           ×
@@ -2165,22 +2423,26 @@ useEffect(() => {
                 margin: "0 auto 10px",
                 borderRadius: "50%",
                 overflow: "hidden",
-                border: "3px solid rgba(255,255,255,0.8)"
+                border: "3px solid color-mix(in srgb, var(--surface-panel) 78%, transparent)"
               }}
             >
               <img
                 src={sidebarTeacherImage}
                 alt={sidebarTeacherName}
+                onError={(event) => {
+                  event.currentTarget.onerror = null;
+                  event.currentTarget.src = "/default-profile.png";
+                }}
                 style={{ width: "100%", height: "100%", objectFit: "cover" }}
               />
             </div>
 
-            <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+            <h2 style={{ margin: 0, color: "var(--on-accent)", fontSize: 14, fontWeight: 800 }}>
               {sidebarTeacherName}
             </h2>
 
             {sidebarTeacherEmail ? (
-              <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>
+              <p style={{ margin: "4px 0", color: "color-mix(in srgb, var(--on-accent) 82%, transparent)", fontSize: "10px" }}>
                 {sidebarTeacherEmail}
               </p>
             ) : null}
@@ -2193,22 +2455,22 @@ useEffect(() => {
                 height: "70px",
                 margin: "0 auto 10px",
                 borderRadius: "50%",
-                border: "3px solid rgba(255,255,255,0.8)",
+                border: "3px solid color-mix(in srgb, var(--surface-panel) 78%, transparent)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: "#ffffff",
-                background: "rgba(255,255,255,0.1)"
+                color: "var(--on-accent)",
+                background: "color-mix(in srgb, var(--surface-panel) 16%, transparent)"
               }}
             >
               <FaChalkboardTeacher size={30} />
             </div>
 
-            <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+            <h2 style={{ margin: 0, color: "var(--on-accent)", fontSize: 14, fontWeight: 800 }}>
               {sidebarTeacherName}
             </h2>
 
-            <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px", fontWeight: 600 }}>
+            <p style={{ margin: "4px 0", color: "color-mix(in srgb, var(--on-accent) 82%, transparent)", fontSize: "10px", fontWeight: 600 }}>
               Faculty Overview
             </p>
           </>
@@ -2654,6 +2916,7 @@ useEffect(() => {
         const today = new Date();
         const todayISO = today.toISOString().slice(0, 10);
         const todayIndex = today.getDay();
+        const todayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
         const currentMonthName = today.toLocaleDateString('en-US', { month: 'long' });
         const normalizeWeekForKey = (val) => {
           if (val === undefined || val === null) return '';
@@ -2713,45 +2976,102 @@ useEffect(() => {
           ? (planWeeks || [])
           : (planWeeks || []).filter((w) => String(w?.courseId || '') === String(planSelectedCourseId));
 
+        const fetchedPlanRows = (visiblePlanWeeks || [])
+          .slice()
+          .sort((a, b) => {
+            const aw = Number(String(a?.week ?? '').match(/\d+/)?.[0] ?? 0);
+            const bw = Number(String(b?.week ?? '').match(/\d+/)?.[0] ?? 0);
+            if (aw !== bw) return bw - aw;
+            const am = String(a?.month || '').toLowerCase();
+            const bm = String(b?.month || '').toLowerCase();
+            return am.localeCompare(bm);
+          })
+          .slice(0, 8);
+
         const getScheduledIndex = (dayName) => {
           const lname = (dayName || '').toString().toLowerCase();
           return Object.prototype.hasOwnProperty.call(dayOrder, lname) ? dayOrder[lname] : null;
         };
 
-        const buildSubmissionKey = (courseId, weekVal, dayName) => {
-          return canonicalSubmissionKey(teacherSubmissionId || 'anon', courseId || 'unknown', weekVal || '', dayName || '');
+        const buildSubmissionKeyCandidates = (courseId, weekVal, dayName, dayIdx = null) => {
+          const teacherToken = teacherSubmissionId || 'anon';
+          const courseToken = courseId || 'nocourse';
+          const dayToken = String(dayName || dayIdx || '').trim();
+          const raw = `${teacherToken}::${courseToken}::${weekVal || ''}::${dayToken}`;
+          const canonical = canonicalSubmissionKey(teacherToken, courseToken, weekVal || '', dayToken);
+          return Array.from(new Set([raw, canonical].filter(Boolean)));
         };
 
-        const getDayStatus = (courseId, weekVal, day) => {
+        const buildSubmissionKey = (courseId, weekVal, dayName, dayIdx = null) => {
+          const candidates = buildSubmissionKeyCandidates(courseId, weekVal, dayName, dayIdx);
+          return candidates[1] || candidates[0] || '';
+        };
+
+        const getDayStatus = (courseId, weekVal, day, dayIdx = null) => {
           const dayName = (day?.dayName || '').toString();
           const iso = (day?.date || '').toString().slice(0, 10);
           const scheduledIndex = getScheduledIndex(dayName);
-          const key = buildSubmissionKey(courseId, weekVal, dayName);
-          const submitted = submittedKeySet.has(key);
-          if (submitted) return { status: 'submitted', key };
+          const candidateKeys = buildSubmissionKeyCandidates(courseId, weekVal, dayName, dayIdx);
+          const matchedKey = candidateKeys.find((k) => submittedKeySet.has(k)) || buildSubmissionKey(courseId, weekVal, dayName, dayIdx);
+          const submitted = candidateKeys.some((k) => submittedKeySet.has(k));
+          if (submitted) return { status: 'submitted', key: matchedKey };
 
           // Prefer ISO date if present, otherwise fallback to weekday ordering
-          if (iso && iso < todayISO) return { status: 'missed', key };
-          if (scheduledIndex !== null && scheduledIndex < todayIndex) return { status: 'missed', key };
-          return { status: 'pending', key };
+          if (iso && iso < todayISO) return { status: 'missed', key: matchedKey };
+          if (scheduledIndex !== null && scheduledIndex < todayIndex) return { status: 'missed', key: matchedKey };
+          return { status: 'pending', key: matchedKey };
         };
+
+        const activeWeekBlock = (visibleCurrentWeeks || [])[0] || null;
+        const activeWeekDays = activeWeekBlock?.weekDays || [];
 
         const weekStats = (() => {
           const stats = { submitted: 0, missed: 0, pending: 0, total: 0 };
-          (visibleCurrentWeeks || []).forEach((wk) => {
-            (wk?.weekDays || []).forEach((d) => {
-              const ds = getDayStatus(wk?.courseId, wk?.week, d);
-              stats[ds.status] = (stats[ds.status] || 0) + 1;
-              stats.total += 1;
-            });
+          (activeWeekDays || []).forEach((d, di) => {
+            const ds = getDayStatus(activeWeekBlock?.courseId, activeWeekBlock?.week, d, di);
+            stats[ds.status] = (stats[ds.status] || 0) + 1;
+            stats.total += 1;
           });
           return stats;
         })();
 
-        const currentMonthWeeks = (visiblePlanWeeks || []).filter((w) => {
-          const m = (w?.month || '').toString().trim().toLowerCase();
-          return m && m === currentMonthName.toLowerCase();
-        });
+        const monthIndexFromLabel = (label) => {
+          if (!label) return null;
+          const raw = String(label).trim();
+          if (!raw) return null;
+
+          const digits = raw.replace(/[^0-9]/g, '');
+          if (digits) {
+            const m = parseInt(digits, 10);
+            if (m >= 1 && m <= 12) return m - 1;
+          }
+
+          const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+          const idx = monthNames.findIndex((m) => m.toLowerCase() === raw.toLowerCase());
+          if (idx !== -1) return idx;
+
+          const tryDt = new Date(`${raw} 1, 2026`);
+          if (!Number.isNaN(tryDt.getTime())) return tryDt.getMonth();
+          return null;
+        };
+
+        const monthlyGroups = (visiblePlanWeeks || []).reduce((acc, row) => {
+          const monthKey = String(row?.month || '').trim() || 'Unspecified';
+          if (!acc[monthKey]) acc[monthKey] = [];
+          acc[monthKey].push(row);
+          return acc;
+        }, {});
+
+        const currentMonthKey = (() => {
+          const keys = Object.keys(monthlyGroups || {});
+          if (!keys.length) return null;
+          const nowIdx = new Date().getMonth();
+          const exact = keys.find((k) => k.toLowerCase().trim() === currentMonthName.toLowerCase());
+          if (exact) return exact;
+          return keys.find((k) => monthIndexFromLabel(k) === nowIdx) || null;
+        })();
+
+        const currentMonthWeeks = currentMonthKey ? (monthlyGroups?.[currentMonthKey] || []) : [];
 
         const monthlyCount = currentMonthWeeks.length;
 
@@ -2759,8 +3079,8 @@ useEffect(() => {
           const stats = { submitted: 0, missed: 0, pending: 0, total: 0, topics: [] };
           (currentMonthWeeks || []).forEach((w) => {
             if (w?.topic) stats.topics.push(w.topic);
-            (w?.weekDays || []).forEach((d) => {
-              const ds = getDayStatus(w?.courseId, w?.week, d);
+            (w?.weekDays || []).forEach((d, di) => {
+              const ds = getDayStatus(w?.courseId, w?.week, d, di);
               stats[ds.status] = (stats[ds.status] || 0) + 1;
               stats.total += 1;
               if (d?.topic) stats.topics.push(d.topic);
@@ -2772,6 +3092,39 @@ useEffect(() => {
         })();
 
         const monthPct = monthStats.total ? Math.round((monthStats.submitted / monthStats.total) * 100) : 0;
+        const weekCompletionRate = weekStats.total ? Math.round((weekStats.submitted / weekStats.total) * 100) : 0;
+
+        const submittedByKeyLookup = (() => {
+          const out = {};
+          (planSubmittedEntries || []).forEach((entry) => {
+            const key = String(entry?.key || '').trim();
+            if (!key) return;
+            out[key] = entry;
+          });
+          return out;
+        })();
+
+        const planMetaByKey = (() => {
+          const out = {};
+          (planWeeks || []).forEach((wk) => {
+            const courseId = String(wk?.courseId || '').trim();
+            (wk?.weekDays || []).forEach((d, di) => {
+              const keys = buildSubmissionKeyCandidates(courseId, wk?.week, d?.dayName || '', di);
+              keys.forEach((key) => {
+                if (out[key]) return;
+                out[key] = {
+                  topic: d?.topic || wk?.topic || '',
+                  method: d?.method || wk?.method || '',
+                  aids: d?.aids || wk?.material || wk?.materials || wk?.aids || '',
+                  assessment: d?.assessment || wk?.assessment || '',
+                  date: d?.date || '',
+                  month: wk?.month || '',
+                };
+              });
+            });
+          });
+          return out;
+        })();
 
         const monthIndexMap = {
           january: 1,
@@ -2984,28 +3337,39 @@ useEffect(() => {
         const renderPlanSidebarContent = () => {
           if (planSidebarTab === 'daily') {
             const submittedDailyPlans = (() => {
-              const out = [];
-              (visiblePlanWeeks || []).forEach((wk) => {
-                (wk?.weekDays || []).forEach((d) => {
-                  const ds = getDayStatus(wk?.courseId, wk?.week, d);
-                  if (ds.status !== 'submitted') return;
-                  out.push({
-                    ...d,
-                    courseId: wk?.courseId,
-                    week: wk?.week,
-                    month: wk?.month,
-                    key: ds.key,
+              const out = (planSubmittedEntries || [])
+                .filter((entry) => {
+                  if (planSelectedCourseId === 'all') return true;
+                  return String(entry?.courseId || '') === String(planSelectedCourseId);
+                })
+                .map((entry) => {
+                  const key = String(entry?.key || '').trim();
+                  const meta = planMetaByKey[key] || {};
+                  const fallbackDayName = String(entry?.dayName || '').trim();
+                  const displayDay = fallbackDayName
+                    ? `${fallbackDayName.charAt(0).toUpperCase()}${fallbackDayName.slice(1)}`
+                    : '';
+                  return {
+                    key,
+                    courseId: entry?.courseId || '',
+                    week: entry?.week || '',
+                    month: meta?.month || '',
+                    dayName: displayDay || 'Submitted',
+                    date: meta?.date || '',
+                    topic: meta?.topic || '',
+                    method: meta?.method || '',
+                    aids: meta?.aids || '',
+                    assessment: meta?.assessment || '',
+                    submittedAt: entry?.submittedAt || '',
                     status: 'submitted',
-                    topic: d?.topic || wk?.topic || '',
-                    method: d?.method || wk?.method || '',
-                    aids: d?.aids || wk?.material || wk?.materials || wk?.aids || '',
-                    assessment: d?.assessment || wk?.assessment || '',
-                  });
+                  };
                 });
-              });
 
               // Prefer sorting by ISO date (desc), then week (desc)
               out.sort((a, b) => {
+                const aSubmit = a?.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+                const bSubmit = b?.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+                if (aSubmit !== bSubmit) return bSubmit - aSubmit;
                 const aISO = (a?.date || '').toString().slice(0, 10);
                 const bISO = (b?.date || '').toString().slice(0, 10);
                 if (aISO && bISO && aISO !== bISO) return bISO.localeCompare(aISO);
@@ -3018,75 +3382,161 @@ useEffect(() => {
             })();
 
             return (
-              <div className="space-y-3">
-                <div style={{ background: '#fff', borderRadius: 8, padding: 6, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
+              <div className="space-y-3" style={{ width: '100%', minWidth: 0 }}>
+                <div style={{ background: 'var(--surface-panel)', borderRadius: 14, padding: 12, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 className="font-semibold" style={{ margin: 0, fontSize: 11 }}>Submitted Daily Plans</h3>
+                    <h3 className="font-semibold" style={{ margin: 0, fontSize: 15, color: 'var(--text-primary)' }}>Fetched Plans</h3>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 9, color: '#666' }}>Total</div>
-                      <div style={{ fontWeight: 800, color: '#16a34a' }}>{submittedDailyPlans.length}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Loaded</div>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{visiblePlanWeeks.length}</div>
                     </div>
                   </div>
 
-                  {submittedDailyPlans.length ? (
-                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                      {submittedDailyPlans.slice(0, 10).map((p, idx) => (
-                        <div key={p?.key || idx} style={{ display: 'flex', gap: 6, padding: 6, borderRadius: 8, background: '#ecfdf5', border: '1px solid #bbf7d0', alignItems: 'center' }}>
-                          <div style={{ width: 5, height: 30, borderRadius: 6, background: '#16a34a' }} />
-                          <div style={{ flex: 1 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontWeight: 800, fontSize: 10 }}>{p.dayName || `Submitted ${idx + 1}`}</div>
-                              <div style={{ fontSize: 9, color: '#166534' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}{p?.date ? ` • ${String(p.date).slice(0, 10)}` : ''}</div>
+                  {fetchedPlanRows.length ? (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {fetchedPlanRows.map((w, idx) => {
+                        const dayCount = Array.isArray(w?.weekDays) ? w.weekDays.length : 0;
+                        const label = planCourseLabelMap?.[String(w?.courseId || '')] || String(w?.courseId || '');
+                        return (
+                          <div key={`${w?.courseId || 'course'}-${w?.week || idx}-${idx}`} style={{ padding: 10, borderRadius: 12, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                              <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 12 }}>{label || 'Course'}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w?.week ? `Week ${w.week}` : 'Week -'}{w?.month ? ` • ${w.month}` : ''}</div>
                             </div>
-                            <div style={{ fontSize: 10, color: '#14532d', marginTop: 3 }}>{p.topic || 'No topic provided'}</div>
-                            <div style={{ fontSize: 9, color: '#166534', marginTop: 3 }}>
-                              {p.method ? `Method: ${p.method}` : p.aids ? `Material: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
-                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 5 }}>{w?.topic || 'No topic set'}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{dayCount} day(s) fetched</div>
                           </div>
-                          <div style={{ background: '#16a34a', color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 800 }}>
-                            Submitted
-                          </div>
-                        </div>
-                      ))}
-                      {submittedDailyPlans.length > 10 && (
-                        <div style={{ fontSize: 9, color: '#166534', textAlign: 'center' }}>
-                          Showing latest 10 submitted daily plans.
+                        );
+                      })}
+                      {visiblePlanWeeks.length > fetchedPlanRows.length && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+                          Showing latest {fetchedPlanRows.length} fetched plans.
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div style={{ marginTop: 6, textAlign: 'center', color: '#666', fontSize: 9 }}>No submitted daily plans yet.</div>
+                    <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '16px 10px', borderRadius: 12, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)', marginTop: 10 }}>
+                      No fetched plans found for this subject.
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ background: 'var(--surface-panel)', borderRadius: 8, padding: 6, boxShadow: 'var(--shadow-soft)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="font-semibold" style={{ margin: 0, fontSize: 11 }}>Submitted Daily Plans</h3>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Total</div>
+                      <div style={{ fontWeight: 800, color: 'var(--success)' }}>{submittedDailyPlans.length}</div>
+                    </div>
+                  </div>
+
+                  {submittedDailyPlans.length ? (
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {submittedDailyPlans.map((p, idx) => (
+                          <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 14, background: 'color-mix(in srgb, var(--success) 12%, var(--surface-panel))', border: '1px solid color-mix(in srgb, var(--success) 35%, var(--border-soft))', alignItems: 'center', boxShadow: 'var(--shadow-soft)' }}>
+                            <div style={{ width: 8, height: 48, borderRadius: 6, background: 'var(--success)' }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{p.dayName || `Submitted ${idx + 1}`}</div>
+                                  <div style={{ fontSize: 11, color: 'var(--success)' }}>
+                                  {p.week ? `Week: ${p.week}` : 'Week: -'}
+                                  {p?.date ? ` • ${String(p.date).slice(0, 10)}` : ''}
+                                  {p?.submittedAt ? ` • ${new Date(p.submittedAt).toLocaleString()}` : ''}
+                                </div>
+                            </div>
+                              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
+                              <div style={{ fontSize: 12, color: 'var(--success)', marginTop: 6 }}>
+                              {p.method ? `Method: ${p.method}` : p.aids ? `Material: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
+                            </div>
+                          </div>
+                            <div style={{ background: 'var(--success)', color: 'var(--on-accent)', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
+                            Submitted
+                          </div>
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => setPlanShowSubmittedTable((prev) => !prev)}
+                          style={{
+                            border: '1px solid color-mix(in srgb, var(--success) 40%, var(--border-soft))',
+                            background: 'var(--surface-panel)',
+                            color: 'var(--success)',
+                            borderRadius: 8,
+                            padding: '4px 8px',
+                            fontSize: 9,
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {planShowSubmittedTable ? 'Hide Submitted Details' : 'Show Submitted Details'}
+                        </button>
+                      </div>
+
+                      {planShowSubmittedTable && (
+                        <div style={{ marginTop: 8, border: '1px solid color-mix(in srgb, var(--success) 40%, var(--border-soft))', borderRadius: 14, overflowX: 'auto', background: 'var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 680 }}>
+                            <thead>
+                              <tr style={{ background: 'color-mix(in srgb, var(--success) 12%, var(--surface-panel))' }}>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Subject</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Week</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Day</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Plan Date</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Submitted At</th>
+                                <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 9, color: 'var(--success)', borderBottom: '1px solid color-mix(in srgb, var(--success) 24%, var(--border-soft))' }}>Topic</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {submittedDailyPlans.map((p, idx) => (
+                                <tr key={`${p?.key || 'submitted'}-${idx}`} style={{ background: idx % 2 ? 'var(--surface-panel)' : 'color-mix(in srgb, var(--success) 6%, var(--surface-panel))' }}>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>
+                                    {planCourseLabelMap?.[String(p?.courseId || '')] || String(p?.courseId || '-')} 
+                                  </td>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{p?.week ? `Week ${p.week}` : '-'}</td>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{p?.dayName || '-'}</td>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{p?.date ? String(p.date).slice(0, 10) : '-'}</td>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{p?.submittedAt ? new Date(p.submittedAt).toLocaleString() : '-'}</td>
+                                  <td style={{ padding: '6px 8px', fontSize: 9, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{p?.topic || '-'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '18px 12px', borderRadius: 14, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)' }}>No submitted daily plans yet.</div>
                   )}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <h3 className="font-semibold" style={{ fontSize: 11 }}>Today's Plan</h3>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 9, color: '#666' }}>Today</div>
+                    <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Today</div>
                     <div style={{ fontWeight: 700 }}>{(visibleDailyPlans || []).length}</div>
                   </div>
                 </div>
 
                 {(visibleDailyPlans && visibleDailyPlans.length > 0) ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {visibleDailyPlans.map((p, idx) => {
                       const status = p?.status || 'pending';
-                      const color = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
+                      const color = status === 'submitted' ? 'var(--success)' : status === 'missed' ? 'var(--danger)' : 'var(--text-muted)';
                       return (
-                        <div key={p?.key || idx} style={{ display: 'flex', gap: 6, padding: 6, borderRadius: 8, background: '#fff', boxShadow: '0 4px 10px rgba(11,20,30,0.04)', alignItems: 'center' }}>
-                          <div style={{ width: 5, height: 30, borderRadius: 6, background: color }} />
+                        <div key={p?.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 14, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)', alignItems: 'center' }}>
+                          <div style={{ width: 8, height: 48, borderRadius: 6, background: color }} />
                           <div style={{ flex: 1 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontWeight: 700, fontSize: 10 }}>{p.dayName || `Plan ${idx + 1}`}</div>
-                              <div style={{ fontSize: 9, color: '#666' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}</div>
+                              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{p.dayName || `Plan ${idx + 1}`}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.week ? `Week: ${p.week}` : 'Week: -'}</div>
                             </div>
-                            <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>{p.topic || 'No topic provided'}</div>
-                            <div style={{ fontSize: 9, color: '#666', marginTop: 3 }}>
+                            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
                               {p.method ? `Method: ${p.method}` : p.aids ? `Aids: ${p.aids}` : p.assessment ? `Assessment: ${p.assessment}` : 'Quick note: -'}
                             </div>
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                            <div style={{ background: color, color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 700 }}>
+                            <div style={{ background: color, color: 'var(--on-accent)', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>
                               {status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}
                             </div>
                           </div>
@@ -3095,51 +3545,69 @@ useEffect(() => {
                     })}
                   </div>
                 ) : (
-                  <div style={{ textAlign: 'center', color: '#666', fontSize: 9 }}>No plans for today.</div>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '18px 12px', borderRadius: 14, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)' }}>No plans for today.</div>
                 )}
               </div>
             );
           }
 
           if (planSidebarTab === 'weekly') {
-            const blocks = Array.isArray(visibleCurrentWeeks) ? visibleCurrentWeeks : [];
-            if (!blocks.length) return (<div style={{ textAlign: 'center', color: '#666' }}>No weekly plan found.</div>);
+            const weekDays = Array.isArray(activeWeekDays) ? activeWeekDays : [];
+            if (!weekDays.length) return (<div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No weekly plan found.</div>);
 
             return (
-              <div className="sidebar-week-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <h3 className="font-semibold" style={{ fontSize: 11 }}>Week Plan</h3>
-                {blocks.map((wk, bi) => {
-                  const days = wk?.weekDays || [];
-                  if (!days.length) return null;
-                  return (
-                    <div key={bi} style={{ background: '#fff', padding: 6, borderRadius: 8, boxShadow: '0 4px 10px rgba(11,20,30,0.04)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                        <div style={{ fontWeight: 800 }}>{wk.courseId || 'Course'}</div>
-                        <div style={{ fontSize: 9, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                        {days.map((d, i) => {
-                          const ds = getDayStatus(wk.courseId, wk.week, d);
-                          const status = ds.status;
-                          const statusColor = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
-                          const cardBg = status === 'submitted' ? '#d9f8d5' : status === 'missed' ? '#ffe4e4' : '#ffffff';
-                          return (
-                            <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 10, color: '#333', padding: 6, borderRadius: 8, background: cardBg, alignItems: 'center', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
-                              <div style={{ width: 6, height: 30, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,#9ae6b4,#2f855a)' : status === 'missed' ? 'linear-gradient(180deg,#feb2b2,#c53030)' : 'linear-gradient(180deg,#e2e8f0,#4a5568)' }} />
-                              <div style={{ flex: 1 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <div style={{ fontWeight: 700, fontSize: 10 }}>{d.dayName || `Day ${i + 1}`}</div>
-                                  <div style={{ fontSize: 9, color: '#666' }}>{wk.week ? `Week ${wk.week}` : ''}</div>
-                                </div>
-                                <div style={{ fontSize: 10, color: '#333', marginTop: 3 }}>{d.topic || wk.topic || 'No topic set'}</div>
-                                {d?.date ? (<div style={{ fontSize: 9, color: '#666', marginTop: 3 }}>Date: {d.date}</div>) : null}
-                              </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                                <div style={{ background: statusColor, color: '#fff', padding: '3px 6px', borderRadius: 999, fontSize: 9, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
-                              </div>
+              <div className="sidebar-week-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', minWidth: 0 }}>
+                <div style={{ background: 'var(--surface-panel)', borderRadius: 14, padding: 12, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="font-semibold" style={{ margin: 0, fontSize: 15, color: 'var(--text-primary)' }}>Fetched Plans</h3>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Loaded</div>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{visiblePlanWeeks.length}</div>
+                    </div>
+                  </div>
+
+                  {fetchedPlanRows.length ? (
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {fetchedPlanRows.slice(0, 5).map((w, idx) => {
+                        const dayCount = Array.isArray(w?.weekDays) ? w.weekDays.length : 0;
+                        const label = planCourseLabelMap?.[String(w?.courseId || '')] || String(w?.courseId || '');
+                        return (
+                          <div key={`weekly-${w?.courseId || 'course'}-${w?.week || idx}-${idx}`} style={{ padding: 10, borderRadius: 12, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                              <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 12 }}>{label || 'Course'}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w?.week ? `Week ${w.week}` : 'Week -'}{w?.month ? ` • ${w.month}` : ''}</div>
                             </div>
-                          );
-                        })}
+                            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 5 }}>{w?.topic || 'No topic set'}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{dayCount} day(s) fetched</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '16px 10px', borderRadius: 12, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)', marginTop: 10 }}>
+                      No fetched plans found for this subject.
+                    </div>
+                  )}
+                </div>
+
+                <h3 className="font-semibold" style={{ margin: 0, marginBottom: 10, fontSize: 15, color: 'var(--text-primary)' }}>Week Plan</h3>
+                {weekDays.map((d, i) => {
+                  const ds = getDayStatus(activeWeekBlock?.courseId, activeWeekBlock?.week, d, i);
+                  const status = ds.status;
+                  const statusColor = status === 'submitted' ? 'var(--success)' : status === 'missed' ? 'var(--danger)' : 'var(--text-muted)';
+                  const cardBg = status === 'submitted' ? 'color-mix(in srgb, var(--success) 12%, var(--surface-panel))' : status === 'missed' ? 'color-mix(in srgb, var(--danger) 12%, var(--surface-panel))' : 'var(--surface-panel)';
+                  return (
+                    <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 18, color: 'var(--text-secondary)', padding: 12, borderRadius: 14, background: cardBg, alignItems: 'center', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
+                      <div style={{ width: 10, height: 46, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,color-mix(in srgb, var(--success) 45%, var(--surface-panel)),var(--success))' : status === 'missed' ? 'linear-gradient(180deg,color-mix(in srgb, var(--danger) 45%, var(--surface-panel)),var(--danger))' : 'linear-gradient(180deg,var(--border-soft),var(--text-muted))' }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{d.dayName || `Day ${i + 1}`}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{activeWeekBlock?.week ? `Week ${activeWeekBlock.week}` : ''}</div>
+                        </div>
+                        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>{d.topic || activeWeekBlock?.topic || 'No topic set'}</div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                        <div style={{ background: statusColor, color: 'var(--on-accent)', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
                       </div>
                     </div>
                   );
@@ -3150,40 +3618,73 @@ useEffect(() => {
 
           // monthly
           return (
-            <div className="space-y-2">
-              <h3 className="font-semibold" style={{ fontSize: 11 }}>This Month</h3>
-              {!currentMonthWeeks.length && <div className="text-xs text-gray-500" style={{ color: '#666', fontSize: 9 }}>No plans for this month.</div>}
+            <div className="space-y-2" style={{ width: '100%', minWidth: 0 }}>
+              <div style={{ background: 'var(--surface-panel)', borderRadius: 14, padding: 12, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="font-semibold" style={{ margin: 0, fontSize: 15, color: 'var(--text-primary)' }}>Fetched Plans</h3>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Loaded</div>
+                    <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{visiblePlanWeeks.length}</div>
+                  </div>
+                </div>
+
+                {fetchedPlanRows.length ? (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {fetchedPlanRows.slice(0, 5).map((w, idx) => {
+                      const dayCount = Array.isArray(w?.weekDays) ? w.weekDays.length : 0;
+                      const label = planCourseLabelMap?.[String(w?.courseId || '')] || String(w?.courseId || '');
+                      return (
+                        <div key={`monthly-${w?.courseId || 'course'}-${w?.week || idx}-${idx}`} style={{ padding: 10, borderRadius: 12, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                            <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 12 }}>{label || 'Course'}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w?.week ? `Week ${w.week}` : 'Week -'}{w?.month ? ` • ${w.month}` : ''}</div>
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 5 }}>{w?.topic || 'No topic set'}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{dayCount} day(s) fetched</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '16px 10px', borderRadius: 12, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)', marginTop: 10 }}>
+                    No fetched plans found for this subject.
+                  </div>
+                )}
+              </div>
+
+              <h3 className="font-semibold" style={{ margin: 0, marginBottom: 10, fontSize: 15, color: 'var(--text-primary)' }}>This Month</h3>
+              {!currentMonthWeeks.length && <div className="text-xs text-gray-500" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '18px 12px', borderRadius: 14, background: 'var(--surface-soft)', border: '1px dashed var(--border-soft)' }}>No plans for this month.</div>}
 
               {!!currentMonthWeeks.length && (
-                <div style={{ padding: 6, borderRadius: 8, background: '#fff', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 6 }}>
+                <div style={{ padding: 12, borderRadius: 14, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)', marginBottom: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <div style={{ fontWeight: 800, fontSize: 10 }}>{currentMonthName}</div>
-                      <div style={{ fontSize: 9, color: '#666' }}>{currentMonthWeeks.length} week(s) • {monthStats.total} day(s)</div>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{currentMonthName}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{currentMonthWeeks.length} week(s) • {monthStats.total} day(s)</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 9, color: '#666' }}>Completed</div>
-                      <div style={{ fontWeight: 700 }}>{monthPct}%</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Completed</div>
+                      <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{monthPct}%</div>
                     </div>
                   </div>
 
-                  <div style={{ height: 5, background: '#edf2f7', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}>
-                    <div style={{ width: `${monthPct}%`, height: '100%', background: 'linear-gradient(90deg,#67e8f9,#4b6cb7)' }} />
+                  <div style={{ height: 8, background: 'var(--surface-strong)', borderRadius: 999, marginTop: 10, overflow: 'hidden' }}>
+                    <div style={{ width: `${monthPct}%`, height: '100%', background: 'linear-gradient(90deg,var(--accent),var(--accent-strong))' }} />
                   </div>
 
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <div style={{ fontSize: 9, color: '#2f855a' }}>Submitted: <strong>{monthStats.submitted}</strong></div>
-                      <div style={{ fontSize: 9, color: '#c53030' }}>Missed: <strong>{monthStats.missed}</strong></div>
-                      <div style={{ fontSize: 9, color: '#4a5568' }}>Pending: <strong>{monthStats.pending}</strong></div>
+                      <div style={{ fontSize: 12, color: 'var(--success)' }}>Submitted: <strong>{monthStats.submitted}</strong></div>
+                      <div style={{ fontSize: 12, color: 'var(--danger)' }}>Missed: <strong>{monthStats.missed}</strong></div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Pending: <strong>{monthStats.pending}</strong></div>
                     </div>
                   </div>
 
                   {monthStats.topics && monthStats.topics.length > 0 && (
-                    <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 9, color: '#666', marginBottom: 3 }}>Topics this month</div>
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Topics this month</div>
                       <ul style={{ margin: 0, paddingLeft: 16 }}>
-                        {monthStats.topics.slice(0, 3).map((t, i) => (<li key={i} style={{ fontSize: 10, color: '#333' }}>{t}</li>))}
+                        {monthStats.topics.slice(0, 3).map((t, i) => (<li key={i} style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t}</li>))}
                       </ul>
                     </div>
                   )}
@@ -3203,7 +3704,7 @@ useEffect(() => {
                   position: 'fixed',
                   inset: 0,
                   zIndex: 5000,
-                  background: 'rgba(15, 23, 42, 0.42)',
+                  background: 'color-mix(in srgb, var(--text-primary) 38%, transparent)',
                   padding: 16,
                 }}
                 onClick={() => setPlanAnnualOpen(false)}
@@ -3237,14 +3738,14 @@ useEffect(() => {
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 900, fontSize: 12, color: '#0f172a' }}>Annual Lesson Plan</div>
-                      <div style={{ fontSize: 9, color: '#64748b' }}>
-                        Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
+                      <div style={{ fontWeight: 900, fontSize: 12, color: 'var(--text-primary)' }}>Annual Lesson Plan</div>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>
+                        Showing: <strong style={{ color: 'var(--text-primary)' }}>{selectedCourseLabel}</strong>
                       </div>
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'center' }}>
-                      <div style={{ fontSize: 9, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
                       <select
                         value={planSelectedCourseId}
                         onChange={(e) => setPlanSelectedCourseId(e.target.value)}
@@ -3252,11 +3753,11 @@ useEffect(() => {
                           width: 'min(520px, 100%)',
                           padding: '5px 6px',
                           borderRadius: 10,
-                          border: '1px solid #e5e7eb',
-                          background: '#f8fafc',
+                          border: '1px solid var(--border-soft)',
+                          background: 'var(--surface-soft)',
                           outline: 'none',
                           fontSize: 10,
-                          color: '#111827',
+                          color: 'var(--text-primary)',
                         }}
                       >
                         {courseOptions.map((o) => (
@@ -3272,8 +3773,8 @@ useEffect(() => {
                         disabled={!annualWeeks.length}
                         style={{
                           borderRadius: 12,
-                          background: annualWeeks.length ? 'linear-gradient(135deg,#16a34a,#22c55e)' : '#e5e7eb',
-                          color: annualWeeks.length ? '#fff' : '#94a3b8',
+                          background: annualWeeks.length ? 'linear-gradient(135deg,var(--success), color-mix(in srgb, var(--success) 75%, var(--surface-panel)))' : 'var(--surface-strong)',
+                          color: annualWeeks.length ? 'var(--on-accent)' : 'var(--text-muted)',
                           padding: '6px 8px',
                           fontSize: 10,
                           fontWeight: 900,
@@ -3288,8 +3789,8 @@ useEffect(() => {
                         onClick={() => setPlanAnnualOpen(false)}
                         style={{
                           borderRadius: 12,
-                          background: '#0f172a',
-                          color: '#fff',
+                          background: 'var(--text-primary)',
+                          color: 'var(--on-accent)',
                           padding: '6px 8px',
                           fontSize: 10,
                         }}
@@ -3301,7 +3802,7 @@ useEffect(() => {
 
                   <div style={{ padding: 10, overflowY: 'auto', flex: 1 }}>
                     {!annualWeeks.length && (
-                      <div style={{ padding: 8, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', color: '#64748b', fontSize: 10 }}>
+                      <div style={{ padding: 8, borderRadius: 8, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', color: 'var(--text-muted)', fontSize: 10 }}>
                         No annual lesson plan found for this selection.
                       </div>
                     )}
@@ -3322,17 +3823,17 @@ useEffect(() => {
                           };
 
                           return (
-                            <div key={mKey} style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', boxShadow: '0 10px 28px rgba(14,30,37,0.06)' }}>
-                              <div style={{ padding: 8, borderBottom: '1px solid #eef2f7', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-                                <div style={{ fontWeight: 900, fontSize: 12, color: '#0f172a' }}>{mKey}</div>
-                                <div style={{ fontSize: 9, color: '#64748b' }}>{monthWeeks.length} week(s)</div>
+                            <div key={mKey} style={{ background: 'var(--surface-panel)', borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
+                              <div style={{ padding: 8, borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                                <div style={{ fontWeight: 900, fontSize: 12, color: 'var(--text-primary)' }}>{mKey}</div>
+                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{monthWeeks.length} week(s)</div>
                               </div>
 
                               <div style={{ padding: 8 }}>
-                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 10, border: '1px solid #e5e7eb' }}>
-                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 700, background: '#fff' }}>
+                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
+                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 700, background: 'var(--surface-panel)' }}>
                                     <thead>
-                                      <tr style={{ background: '#f8fafc' }}>
+                                      <tr style={{ background: 'var(--surface-soft)' }}>
                                         {['Week', 'Topic', 'Objective', 'Method', 'Material', 'Assessment'].map((h) => (
                                           <th
                                             key={h}
@@ -3340,12 +3841,12 @@ useEffect(() => {
                                               textAlign: 'left',
                                               padding: '6px 8px',
                                               fontSize: 9,
-                                              color: '#475569',
+                                              color: 'var(--text-muted)',
                                               fontWeight: 900,
-                                              borderBottom: '1px solid #e5e7eb',
+                                              borderBottom: '1px solid var(--border-soft)',
                                               position: 'sticky',
                                               top: 0,
-                                              background: '#f8fafc',
+                                              background: 'var(--surface-soft)',
                                               zIndex: 1,
                                             }}
                                           >
@@ -3386,27 +3887,27 @@ useEffect(() => {
                                         const isSubmitted = !isMissed && agg.submitted > 0;
 
                                         const rowBg = isMissed
-                                          ? '#fff1f2'
+                                          ? 'color-mix(in srgb, var(--danger) 12%, var(--surface-panel))'
                                           : isSubmitted
-                                            ? '#ecfdf5'
-                                            : (wi % 2 === 0 ? '#ffffff' : '#fcfcfd');
+                                            ? 'color-mix(in srgb, var(--success) 10%, var(--surface-panel))'
+                                            : (wi % 2 === 0 ? 'var(--surface-panel)' : 'color-mix(in srgb, var(--surface-soft) 58%, var(--surface-panel))');
 
                                         const accent = isMissed
-                                          ? '#dc2626'
+                                          ? 'var(--danger)'
                                           : isSubmitted
-                                            ? '#16a34a'
-                                            : '#e2e8f0';
+                                            ? 'var(--success)'
+                                            : 'var(--border-soft)';
 
                                         return (
                                           <tr key={`${wk?.courseId || 'c'}-${wk?.week || 'w'}-${wi}`} style={{ background: rowBg }}>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#0f172a', borderBottom: '1px solid #eef2f7', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-soft)', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
                                               {weekLabel}
                                             </td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{topic || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{objective || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{method || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{material || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: '#334155', borderBottom: '1px solid #eef2f7' }}>{assessment || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{topic || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{objective || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{method || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{material || '-'}</td>
+                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{assessment || '-'}</td>
                                           </tr>
                                         );
                                       })}
@@ -3424,21 +3925,41 @@ useEffect(() => {
               </div>
             )}
 
-            <div className="right-sidebar" style={{ padding: planSidebarOpen ? 12 : 6, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column', gap: 8, transition: 'all 220ms ease', borderRadius: 12, fontSize: 12 }}>
-              
-
-              {planSidebarOpen && (
+            <div className="right-sidebar" style={{ width: '100%', minWidth: 320, padding: 14, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)', borderRadius: 20, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0, fontSize: 12 }}>
+              {planSidebarOpen ? (
                 <>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    aria-label="Close plan sidebar"
+                    onClick={() => setPlanSidebarOpen(false)}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 999,
+                      border: '1px solid var(--border-soft)',
+                      background: 'var(--surface-panel)',
+                      color: 'var(--text-secondary)',
+                      boxShadow: 'var(--shadow-soft)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <FaChevronRight />
+                  </button>
+                </div>
                 <div style={{ position: 'sticky', top: 8, zIndex: 250, display: 'flex', justifyContent: 'flex-end', paddingBottom: 6 }}>
                   <button
                     onClick={() => setPlanAnnualOpen(true)}
                     style={{
-                      borderRadius: 10,
-                      padding: '8px 12px',
-                      background: '#4b6cb7',
-                      color: '#ffffff',
-                      border: 'none',
-                      fontWeight: 800,
+                      borderRadius: 999,
+                      padding: '10px 14px',
+                      background: 'var(--surface-panel)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border-soft)',
+                      boxShadow: 'var(--shadow-panel)',
+                      fontWeight: 700,
                       fontSize: 12,
                       cursor: 'pointer'
                     }}
@@ -3446,37 +3967,38 @@ useEffect(() => {
                     Annual Lesson Plan
                   </button>
                 </div>
-                <div style={{ background: 'var(--surface-panel)', padding: 12, borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'none' }}>
+                <div style={{ background: 'var(--surface-panel)', padding: 16, borderRadius: 16, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ background: '#f1f5f9', padding: 8, borderRadius: 10, border: '1px solid #e2e8f0' }}><FaCalendarAlt color="#4b6cb7" /></div>
+                      <div style={{ background: 'color-mix(in srgb, var(--accent) 14%, var(--surface-panel))', padding: 9, borderRadius: 10 }}><FaCalendarAlt color="var(--accent-strong)" /></div>
                       <div>
-                        <div style={{ fontWeight: 800, color: '#0f172a' }}>Lesson Overview</div>
-                        <div style={{ fontSize: 11, color: '#64748b' }}>{today.toLocaleDateString()}</div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Lesson Overview</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{today.toLocaleDateString()}</div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 11, color: '#64748b' }}>This Week</div>
-                        <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.total}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>This Week</div>
+                        <div style={{ fontWeight: 800, fontSize: 22, color: 'var(--text-primary)' }}>{weekStats.total}</div>
                       </div>
                     </div>
                   </div>
 
                   <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
                     <select
                       value={planSelectedCourseId}
                       onChange={(e) => setPlanSelectedCourseId(e.target.value)}
                       style={{
                         flex: 1,
-                        padding: '8px 10px',
+                        padding: '10px 12px',
                         borderRadius: 10,
-                        border: '1px solid #e5e7eb',
-                        background: '#f8fafc',
+                        border: '1px solid var(--border-soft)',
+                        background: 'var(--surface-soft)',
                         outline: 'none',
                         fontSize: 12,
-                        color: '#111827',
+                        color: 'var(--text-primary)',
+                        fontWeight: 600,
                       }}
                     >
                       {courseOptions.map((o) => (
@@ -3485,54 +4007,67 @@ useEffect(() => {
                     </select>
                   </div>
 
-                  <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
-                    Showing: <strong style={{ color: '#111827' }}>{selectedCourseLabel}</strong>
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                    Showing: <strong style={{ color: 'var(--text-primary)' }}>{selectedCourseLabel}</strong>
+                  </div>
+
+                  <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>Weekly progress</span>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' }}>{weekCompletionRate}%</span>
+                    </div>
+                    <div style={{ height: 8, borderRadius: 999, background: 'var(--surface-strong)', overflow: 'hidden' }}>
+                      <div style={{ width: `${weekCompletionRate}%`, height: '100%', background: 'linear-gradient(90deg, var(--text-primary), var(--accent-strong))' }} />
+                    </div>
                   </div>
 
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
-                      <div style={{ fontSize: 12, color: '#16a34a' }}><FaCheckCircle /></div>
-                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.submitted}</div>
-                      <div style={{ fontSize: 10, color: '#64748b' }}>Submitted</div>
+                    <div style={{ flex: 1, padding: 10, borderRadius: 12, textAlign: 'center', border: '1px solid color-mix(in srgb, var(--success) 35%, var(--border-soft))', boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-panel) 20%, transparent)', background: 'color-mix(in srgb, var(--success) 12%, var(--surface-panel))' }}>
+                      <div style={{ fontSize: 12, color: 'var(--success)' }}><FaCheckCircle /></div>
+                      <div style={{ fontWeight: 800, color: 'var(--success)' }}>{weekStats.submitted}</div>
+                      <div style={{ fontSize: 11, color: 'var(--success)' }}>Submitted</div>
                     </div>
-                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
-                      <div style={{ fontSize: 12, color: '#dc2626' }}><FaClock /></div>
-                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.missed}</div>
-                      <div style={{ fontSize: 10, color: '#64748b' }}>Missed</div>
+                    <div style={{ flex: 1, padding: 10, borderRadius: 12, textAlign: 'center', border: '1px solid color-mix(in srgb, var(--danger) 35%, var(--border-soft))', boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-panel) 20%, transparent)', background: 'color-mix(in srgb, var(--danger) 10%, var(--surface-panel))' }}>
+                      <div style={{ fontSize: 12, color: 'var(--danger)' }}><FaClock /></div>
+                      <div style={{ fontWeight: 800, color: 'var(--danger)' }}>{weekStats.missed}</div>
+                      <div style={{ fontSize: 11, color: 'var(--danger)' }}>Missed</div>
                     </div>
-                    <div style={{ flex: 1, background: '#ffffff', padding: 8, borderRadius: 10, textAlign: 'center', border: '1px solid #eef2f7' }}>
-                      <div style={{ fontSize: 12, color: '#64748b' }}>•</div>
-                      <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.pending}</div>
-                      <div style={{ fontSize: 10, color: '#64748b' }}>Pending</div>
+                    <div style={{ flex: 1, padding: 10, borderRadius: 12, textAlign: 'center', border: '1px solid var(--border-soft)', boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-panel) 20%, transparent)', background: 'var(--surface-soft)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>•</div>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{weekStats.pending}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Pending</div>
                     </div>
                   </div>
 
                   {planError && (
-                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: '#fff7f7', color: '#991b1b', fontSize: 13 }}>
+                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: 'color-mix(in srgb, var(--danger) 10%, var(--surface-panel))', color: 'var(--danger)', fontSize: 13 }}>
                       {planError}
                     </div>
                   )}
 
                   {planLoading && (
-                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: '#f3f4f6', color: '#6b7280', fontSize: 13 }}>
+                    <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: 'var(--surface-soft)', color: 'var(--text-muted)', fontSize: 13 }}>
                       Loading lesson plans...
                     </div>
                   )}
                 </div>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 16, boxShadow: 'var(--shadow-soft)', display: 'flex', gap: 6, alignItems: 'center', padding: 4, width: '100%', minWidth: 0 }}>
                   <button
                     onClick={() => setPlanSidebarTab('daily')}
                     className={"btn " + (planSidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')}
                     style={{
                       flex: 1,
-                      borderRadius: 10,
-                      padding: '8px 10px',
+                      borderRadius: 999,
+                      padding: '9px 10px',
                       fontSize: 11,
-                      fontWeight: 800,
-                      background: planSidebarTab === 'daily' ? '#4b6cb7' : '#ffffff',
-                      color: planSidebarTab === 'daily' ? '#ffffff' : '#0f172a',
-                      border: '1px solid ' + (planSidebarTab === 'daily' ? '#4b6cb7' : '#e5e7eb'),
+                      fontWeight: 700,
+                      background: planSidebarTab === 'daily' ? 'var(--text-primary)' : 'transparent',
+                      color: planSidebarTab === 'daily' ? 'var(--on-accent)' : 'var(--text-muted)',
+                      border: 'none',
+                      boxShadow: planSidebarTab === 'daily' ? 'var(--shadow-soft)' : 'none',
+                      minWidth: 0,
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     Daily
@@ -3542,13 +4077,16 @@ useEffect(() => {
                     className={"btn " + (planSidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')}
                     style={{
                       flex: 1,
-                      borderRadius: 10,
-                      padding: '8px 10px',
+                      borderRadius: 999,
+                      padding: '9px 10px',
                       fontSize: 11,
-                      fontWeight: 800,
-                      background: planSidebarTab === 'weekly' ? '#4b6cb7' : '#ffffff',
-                      color: planSidebarTab === 'weekly' ? '#ffffff' : '#0f172a',
-                      border: '1px solid ' + (planSidebarTab === 'weekly' ? '#4b6cb7' : '#e5e7eb'),
+                      fontWeight: 700,
+                      background: planSidebarTab === 'weekly' ? 'var(--text-primary)' : 'transparent',
+                      color: planSidebarTab === 'weekly' ? 'var(--on-accent)' : 'var(--text-muted)',
+                      border: 'none',
+                      boxShadow: planSidebarTab === 'weekly' ? 'var(--shadow-soft)' : 'none',
+                      minWidth: 0,
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     Weekly
@@ -3558,30 +4096,59 @@ useEffect(() => {
                     className={"btn " + (planSidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')}
                     style={{
                       flex: 1,
-                      borderRadius: 10,
-                      padding: '8px 10px',
+                      borderRadius: 999,
+                      padding: '9px 10px',
                       fontSize: 11,
-                      fontWeight: 800,
-                      background: planSidebarTab === 'monthly' ? '#4b6cb7' : '#ffffff',
-                      color: planSidebarTab === 'monthly' ? '#ffffff' : '#0f172a',
-                      border: '1px solid ' + (planSidebarTab === 'monthly' ? '#4b6cb7' : '#e5e7eb'),
+                      fontWeight: 700,
+                      background: planSidebarTab === 'monthly' ? 'var(--text-primary)' : 'transparent',
+                      color: planSidebarTab === 'monthly' ? 'var(--on-accent)' : 'var(--text-muted)',
+                      border: 'none',
+                      boxShadow: planSidebarTab === 'monthly' ? 'var(--shadow-soft)' : 'none',
+                      minWidth: 0,
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     Monthly
                   </button>
                 </div>
 
-                <div style={{ background: 'var(--surface-panel)', padding: 12, borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'none', overflowY: 'auto', maxHeight: isPortrait ? '56vh' : '56vh' }}>
+                <div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 16, boxShadow: 'var(--shadow-soft)', padding: 12, overflowY: 'auto', overflowX: 'hidden', maxHeight: isPortrait ? '56vh' : '56vh', width: '100%', minWidth: 0 }}>
                   {renderPlanSidebarContent()}
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: 11, color: '#64748b' }}>Monthly entries: <strong style={{ color: '#0f172a' }}>{monthlyCount}</strong></div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Monthly entries: <strong style={{ color: 'var(--text-primary)' }}>{monthlyCount}</strong></div>
                   <div>
                     <button className="btn btn-ghost" onClick={() => setPlanRefreshKey((k) => k + 1)}>Refresh</button>
                   </div>
                 </div>
               </>
+              ) : (
+                <button
+                  aria-label="Open plan sidebar"
+                  onClick={() => setPlanSidebarOpen(true)}
+                  style={{
+                    minWidth: 92,
+                    height: 42,
+                    padding: '0 14px',
+                    borderRadius: 999,
+                    border: '1px solid var(--border-soft)',
+                    background: 'var(--surface-panel)',
+                    color: 'var(--text-primary)',
+                    boxShadow: 'var(--shadow-panel)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    alignSelf: 'flex-end',
+                  }}
+                >
+                  <span>Plan</span>
+                  <FaChevronLeft />
+                </button>
               )}
             </div>
           </>

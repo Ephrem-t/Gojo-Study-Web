@@ -47,6 +47,7 @@ export default function OverviewPage() {
   const [students, setStudents] = useState(cachedOverview?.students || []);
   const [parentsCount, setParentsCount] = useState(cachedOverview?.parentsCount || 0);
   const [postsCount, setPostsCount] = useState(cachedOverview?.postsCount || 0);
+  const [showAllRecent, setShowAllRecent] = useState(false);
 
   useEffect(() => {
     const onResize = () => setIsNarrow(getIsNarrow());
@@ -153,10 +154,23 @@ export default function OverviewPage() {
       gradeCounts[gradeKey] = (gradeCounts[gradeKey] || 0) + 1;
     });
 
-    const topGrades = Object.entries(gradeCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([grade, count]) => ({ grade, count }));
+    const gradeAnalytics = Object.entries(gradeCounts)
+      .map(([grade, count]) => ({ grade, count }))
+      .sort((first, second) => {
+        const firstNum = Number(first.grade);
+        const secondNum = Number(second.grade);
+        const firstIsNum = Number.isFinite(firstNum);
+        const secondIsNum = Number.isFinite(secondNum);
+        if (firstIsNum && secondIsNum) return firstNum - secondNum;
+        if (firstIsNum) return -1;
+        if (secondIsNum) return 1;
+        return String(first.grade).localeCompare(String(second.grade));
+      });
+
+    const maxGradeCount = gradeAnalytics.reduce(
+      (maxValue, row) => Math.max(maxValue, Number(row.count || 0)),
+      0
+    );
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -174,12 +188,36 @@ export default function OverviewPage() {
         const x = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const y = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return y - x;
-      })
-      .slice(0, 8);
+      });
 
     const thisMonthRegistrationRate = totalStudents
       ? Math.round((thisMonthRegistrations.length / totalStudents) * 100)
       : 0;
+
+    const monthlyTrendMap = new Map();
+    const monthlyTrend = [];
+    for (let index = 5; index >= 0; index -= 1) {
+      const date = new Date(currentYear, currentMonth - index, 1);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const label = date.toLocaleDateString(undefined, { month: "short" });
+      const bucket = { key, label, count: 0 };
+      monthlyTrend.push(bucket);
+      monthlyTrendMap.set(key, bucket);
+    }
+
+    students.forEach((student) => {
+      if (!student.createdAt) return;
+      const registeredDate = new Date(student.createdAt);
+      if (Number.isNaN(registeredDate.getTime())) return;
+      const key = `${registeredDate.getFullYear()}-${String(registeredDate.getMonth() + 1).padStart(2, "0")}`;
+      const target = monthlyTrendMap.get(key);
+      if (target) target.count += 1;
+    });
+
+    const monthlyTrendMax = monthlyTrend.reduce(
+      (maxValue, row) => Math.max(maxValue, Number(row.count || 0)),
+      0
+    );
 
     return {
       totalStudents,
@@ -187,10 +225,13 @@ export default function OverviewPage() {
       inactiveStudents,
       maleCount,
       femaleCount,
-      topGrades,
+      gradeAnalytics,
+      maxGradeCount,
       recentStudents,
       thisMonthRegistrationCount: thisMonthRegistrations.length,
       thisMonthRegistrationRate,
+      monthlyTrend,
+      monthlyTrendMax,
     };
   }, [students]);
 
@@ -249,7 +290,7 @@ export default function OverviewPage() {
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
         <Sidebar admin={stored} />
         <div className="main-content google-main" style={{ flex: "1.08 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "stretch", height: "100%", overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 2px" }}>
-            <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
           <div style={headerCardStyle}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
@@ -292,7 +333,7 @@ export default function OverviewPage() {
             ))}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "1.4fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "1.4fr 1fr", gap: 12, alignItems: "start" }}>
             <div style={{ ...shellCardStyle, borderRadius: 14, padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
                 <div>
@@ -310,7 +351,7 @@ export default function OverviewPage() {
                 <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No registrations found for this month yet.</div>
               ) : (
                 <div style={{ display: "grid", gap: 8 }}>
-                  {summary.recentStudents.map((student) => (
+                  {(showAllRecent ? summary.recentStudents : summary.recentStudents.slice(0, 5)).map((student) => (
                     <div key={student.studentId} style={{ ...softRowStyle, gridTemplateColumns: isNarrow ? "42px 1fr" : "42px 1fr auto" }}>
                       <img src={student.profileImage} alt={student.name} style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)" }} />
                       <div>
@@ -323,23 +364,122 @@ export default function OverviewPage() {
                       </div>
                     </div>
                   ))}
+
+                  {summary.recentStudents.length > 5 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllRecent((prev) => !prev)}
+                      style={{
+                        marginTop: 2,
+                        alignSelf: "flex-start",
+                        border: "1px solid var(--border-soft)",
+                        borderRadius: 999,
+                        background: "var(--surface-panel)",
+                        color: "var(--accent-strong)",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        padding: "7px 12px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {showAllRecent ? "See less" : `See more (${summary.recentStudents.length - 5})`}
+                    </button>
+                  ) : null}
                 </div>
               )}
+
+              <div style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 10, marginTop: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>Monthly Registration Trend</div>
+                {(() => {
+                  const trend = summary.monthlyTrend || [];
+                  const maxValue = Math.max(summary.monthlyTrendMax || 0, 1);
+                  const chartWidth = 100;
+                  const chartHeight = 34;
+                  const step = trend.length > 1 ? chartWidth / (trend.length - 1) : 0;
+                  const points = trend
+                    .map((row, index) => {
+                      const x = trend.length > 1 ? index * step : chartWidth / 2;
+                      const y = chartHeight - (Number(row.count || 0) / maxValue) * chartHeight;
+                      return `${x},${y}`;
+                    })
+                    .join(" ");
+
+                  return (
+                    <>
+                      <svg viewBox={`0 0 ${chartWidth} 42`} style={{ width: "100%", height: 140, display: "block" }}>
+                        <line x1="0" y1={chartHeight} x2={chartWidth} y2={chartHeight} stroke="var(--border-strong)" strokeWidth="0.5" />
+                        <polyline fill="none" stroke="var(--accent-strong)" strokeWidth="1.2" points={points} />
+                        {trend.map((row, index) => {
+                          const x = trend.length > 1 ? index * step : chartWidth / 2;
+                          const y = chartHeight - (Number(row.count || 0) / maxValue) * chartHeight;
+                          return (
+                            <g key={`${row.key}-point`}>
+                              <circle cx={x} cy={y} r="1.1" fill="var(--accent)" />
+                              <text x={x} y={chartHeight + 5.5} textAnchor="middle" fontSize="2.6" fill="var(--text-secondary)">{row.label}</text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 6, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
+                        {trend.map((row) => (
+                          <span key={`${row.key}-meta`}>{row.label}: {row.count}</span>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             </div>
 
             <div style={{ ...shellCardStyle, borderRadius: 14, padding: 14 }}>
               <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>Grade Distribution</div>
-                <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)" }}>Highest-enrollment grades and gender balance.</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>All Grade Analytics Graph</div>
+                <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)" }}>Full-grade enrollment graph and gender split.</div>
               </div>
               {loading ? (
                 <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading distribution...</div>
-              ) : summary.topGrades.length === 0 ? (
+              ) : summary.gradeAnalytics.length === 0 ? (
                 <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No distribution data.</div>
               ) : (
                 <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ ...softRowStyle, gridTemplateColumns: "1fr", padding: "10px 10px 12px" }}>
+                    {(() => {
+                      const data = summary.gradeAnalytics;
+                      const maxValue = Math.max(summary.maxGradeCount || 0, 1);
+                      const barGap = 6;
+                      const barWidth = data.length ? (100 - barGap * (data.length - 1)) / data.length : 0;
+
+                      return (
+                        <>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>Students by Grade (Bar Graph)</div>
+                          <svg viewBox="0 0 100 44" style={{ width: "100%", height: 170, display: "block" }}>
+                            <line x1="0" y1="40" x2="100" y2="40" stroke="var(--border-strong)" strokeWidth="0.5" />
+                            {data.map((row, index) => {
+                              const height = Math.max(1.2, (Number(row.count || 0) / maxValue) * 34);
+                              const x = index * (barWidth + barGap);
+                              const y = 40 - height;
+                              return (
+                                <g key={`${row.grade}-bar`}>
+                                  <rect x={x} y={y} width={barWidth} height={height} rx="0.8" fill="url(#gradeBarGradient)" />
+                                  <text x={x + barWidth / 2} y={y - 1.5} textAnchor="middle" fontSize="2.6" fill="var(--text-primary)">{row.count}</text>
+                                  <text x={x + barWidth / 2} y="43" textAnchor="middle" fontSize="2.6" fill="var(--text-secondary)">{row.grade}</text>
+                                </g>
+                              );
+                            })}
+                            <defs>
+                              <linearGradient id="gradeBarGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="var(--accent-strong)" />
+                                <stop offset="100%" stopColor="var(--accent)" />
+                              </linearGradient>
+                            </defs>
+                          </svg>
+                        </>
+                      );
+                    })()}
+                  </div>
+
                   <div style={{ display: "grid", gap: 8 }}>
-                    {summary.topGrades.map((row) => {
+                    {summary.gradeAnalytics.map((row) => {
                       const pct = summary.totalStudents ? Math.round((row.count / summary.totalStudents) * 100) : 0;
                       return (
                         <div key={row.grade}>
@@ -375,6 +515,7 @@ export default function OverviewPage() {
                       );
                     })}
                   </div>
+
                 </div>
               )}
             </div>

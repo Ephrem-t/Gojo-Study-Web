@@ -28,6 +28,7 @@ function AssagninTeacher() {
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [selectedTeacherId, setSelectedTeacherId] = useState("");
   const [editingAssignmentId, setEditingAssignmentId] = useState(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
   const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
@@ -103,6 +104,18 @@ function AssagninTeacher() {
     map[grade].add(section);
   };
 
+  const normalizeSubjectKey = (value) =>
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "_");
+
+  const normalizeTupleSubject = (value) =>
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -172,14 +185,16 @@ function AssagninTeacher() {
         const teachersNode =
           teachersRaw && typeof teachersRaw === "object" ? teachersRaw : {};
 
+        const usersById = Object.entries(usersNode).reduce((acc, [userKey, userValue]) => {
+          const id = String(userValue?.userId || userKey || "").trim();
+          if (!id) return acc;
+          acc[id] = { ...(userValue || {}), userId: id };
+          return acc;
+        }, {});
+
         const teacherList = Object.entries(teachersNode)
           .map(([teacherId, teacher]) => {
-            const user =
-              usersNode?.[teacher?.userId] ||
-              Object.values(usersNode).find(
-                (u) => String(u?.userId) === String(teacher?.userId)
-              ) ||
-              {};
+            const user = usersById[String(teacher?.userId || "").trim()] || {};
 
             return {
               teacherId,
@@ -191,15 +206,83 @@ function AssagninTeacher() {
 
         const assignmentsNode =
           assignmentsRaw && typeof assignmentsRaw === "object" ? assignmentsRaw : {};
-        const assignmentList = Object.entries(assignmentsNode)
+        const legacyAssignments = Object.entries(assignmentsNode)
           .map(([assignmentId, assignment]) => ({
             assignmentId,
             courseId: assignment?.courseId || "",
             teacherId: assignment?.teacherId || "",
             createdAt: assignment?.createdAt || "",
             updatedAt: assignment?.updatedAt || "",
+            source: "legacy",
           }))
           .filter((a) => a.courseId && a.teacherId);
+
+        const tupleFromParts = (grade, section, subject) => {
+          const gradeValue = String(grade || "").trim();
+          const sectionValue = String(section || "").trim().toUpperCase();
+          const subjectValue = normalizeTupleSubject(subject);
+          return `${gradeValue}__${sectionValue}__${subjectValue}`;
+        };
+
+        const coursesByTuple = {};
+        const coursesById = {};
+        courseList.forEach((course) => {
+          coursesById[course.courseId] = course;
+          const tuple = tupleFromParts(course?.grade, course?.section, course?.subject || course?.name);
+          if (!coursesByTuple[tuple]) {
+            coursesByTuple[tuple] = course.courseId;
+          }
+        });
+
+        const mergedMap = {};
+        legacyAssignments.forEach((assignment) => {
+          const course = coursesById[assignment.courseId] || {};
+          const tuple = tupleFromParts(course?.grade, course?.section, course?.subject || course?.name);
+          const key = tuple !== "____" ? tuple : `legacy__${assignment.assignmentId}`;
+          mergedMap[key] = {
+            ...assignment,
+            grade: course?.grade || "",
+            section: course?.section || "",
+            subject: course?.subject || course?.name || "",
+          };
+        });
+
+        Object.entries(gradeMgmt?.grades || {}).forEach(([gradeKey, gradeNode]) => {
+          const bySection = gradeNode?.sectionSubjectTeachers;
+          if (!bySection || typeof bySection !== "object") return;
+
+          Object.entries(bySection).forEach(([sectionKey, subjectsNode]) => {
+            if (!subjectsNode || typeof subjectsNode !== "object") return;
+
+            Object.entries(subjectsNode).forEach(([subjectKey, assignment]) => {
+              if (!assignment || typeof assignment !== "object") return;
+
+              const teacherId = String(assignment?.teacherId || assignment?.teacherRecordKey || "").trim();
+              if (!teacherId) return;
+
+              const grade = String(assignment?.grade || gradeKey || "").trim();
+              const section = String(assignment?.section || sectionKey || "").trim().toUpperCase();
+              const subject = String(assignment?.subject || subjectKey || "").trim();
+              const tuple = tupleFromParts(grade, section, subject);
+              const resolvedCourseId = coursesByTuple[tuple] || "";
+
+              mergedMap[tuple] = {
+                assignmentId: `gm::${grade}::${section}::${normalizeSubjectKey(subject || subjectKey)}`,
+                courseId: resolvedCourseId,
+                teacherId,
+                grade,
+                section,
+                subject,
+                subjectKey: normalizeSubjectKey(subject || subjectKey),
+                createdAt: assignment?.assignedAt || assignment?.createdAt || "",
+                updatedAt: assignment?.assignedAt || assignment?.updatedAt || "",
+                source: "gradeMgmt",
+              };
+            });
+          });
+        });
+
+        const assignmentList = Object.values(mergedMap);
 
         const normalizedClassMap = {};
         Object.entries(classMap).forEach(([grade, sectionsSet]) => {
@@ -219,7 +302,7 @@ function AssagninTeacher() {
     };
 
     fetchData();
-  }, []);
+  }, [reloadNonce]);
 
   const gradeOptions = useMemo(
     () =>
@@ -271,6 +354,17 @@ function AssagninTeacher() {
     [assignments, selectedCourseId]
   );
 
+  const courseIdByTuple = useMemo(() => {
+    const output = {};
+    (courses || []).forEach((course) => {
+      const key = `${String(course?.grade || "").trim()}__${String(course?.section || "").trim().toUpperCase()}__${normalizeTupleSubject(course?.subject || course?.name)}`;
+      if (!output[key]) {
+        output[key] = course.courseId;
+      }
+    });
+    return output;
+  }, [courses]);
+
   const assignmentRows = useMemo(
     () =>
       (assignments || [])
@@ -280,9 +374,9 @@ function AssagninTeacher() {
 
           return {
             ...assignment,
-            grade: course?.grade || "N/A",
-            section: course?.section || "N/A",
-            subject: course?.subject || course?.name || assignment.courseId,
+            grade: assignment?.grade || course?.grade || "N/A",
+            section: assignment?.section || course?.section || "N/A",
+            subject: assignment?.subject || course?.subject || course?.name || assignment.courseId,
             teacherName: teacher?.name || assignment.teacherId,
           };
         })
@@ -330,27 +424,53 @@ function AssagninTeacher() {
   };
 
   const handleEdit = (row) => {
+    const resolvedCourseId =
+      row.courseId ||
+      courseIdByTuple[
+        `${String(row.grade || "").trim()}__${String(row.section || "").trim().toUpperCase()}__${normalizeTupleSubject(row.subject)}`
+      ] ||
+      "";
+
     setSelectedGrade(String(row.grade || ""));
     setSelectedSection(String(row.section || ""));
-    setSelectedCourseId(row.courseId);
+    setSelectedCourseId(resolvedCourseId);
     setSelectedTeacherId(row.teacherId);
     setEditingAssignmentId(row.assignmentId);
     setMessage("");
     setError("");
   };
 
-  const handleDelete = async (assignmentId) => {
-    if (!assignmentId) return;
+  const handleDelete = async (row) => {
+    if (!row?.assignmentId) return;
 
     setError("");
     setMessage("");
 
     try {
-      await deleteNodeWithFallback(`TeacherAssignments/${assignmentId}`);
-      setAssignments((prev) => prev.filter((item) => item.assignmentId !== assignmentId));
-      if (editingAssignmentId === assignmentId) {
+      const subjectKey = row.subjectKey || normalizeSubjectKey(row.subject);
+      const grade = String(row.grade || "").trim();
+      const section = String(row.section || "").trim().toUpperCase();
+
+      if (grade && section && subjectKey) {
+        await deleteNodeWithFallback(`GradeManagement/grades/${grade}/sectionSubjectTeachers/${section}/${subjectKey}`);
+      }
+
+      if (row.assignmentId && !String(row.assignmentId).startsWith("gm::")) {
+        await deleteNodeWithFallback(`TeacherAssignments/${row.assignmentId}`);
+      } else if (row.courseId) {
+        const legacyMatch = assignments.find(
+          (item) => item.source === "legacy" && String(item.courseId) === String(row.courseId)
+        );
+        if (legacyMatch?.assignmentId) {
+          await deleteNodeWithFallback(`TeacherAssignments/${legacyMatch.assignmentId}`);
+        }
+      }
+
+      if (editingAssignmentId === row.assignmentId) {
         resetForm();
       }
+
+      setReloadNonce((prev) => prev + 1);
       setMessage("Assignment removed successfully.");
     } catch (err) {
       console.error("Failed to delete assignment:", err);
@@ -368,6 +488,18 @@ function AssagninTeacher() {
       return;
     }
 
+    const selectedCourse = courseMap?.[selectedCourseId] || null;
+    if (!selectedCourse) {
+      setError("Selected subject course was not found.");
+      return;
+    }
+
+    const selectedTeacher = teacherMap?.[selectedTeacherId] || {};
+    const grade = String(selectedCourse?.grade || selectedGrade || "").trim();
+    const section = String(selectedCourse?.section || selectedSection || "").trim().toUpperCase();
+    const subject = String(selectedCourse?.subject || selectedCourse?.name || "").trim();
+    const subjectKey = normalizeSubjectKey(subject);
+
     const payload = {
       courseId: selectedCourseId,
       teacherId: selectedTeacherId,
@@ -377,10 +509,30 @@ function AssagninTeacher() {
     setSaving(true);
 
     try {
+      await putNodeWithFallback(
+        `GradeManagement/grades/${grade}/sectionSubjectTeachers/${section}/${subjectKey}`,
+        {
+          assignedAt: payload.updatedAt,
+          assignedBy: admin?.username || admin?.adminId || admin?.userId || "",
+          grade,
+          section,
+          subject,
+          teacherId: selectedTeacherId,
+          teacherName: selectedTeacher?.name || selectedTeacherId,
+          teacherRecordKey: selectedTeacherId,
+          teacherUserId: selectedTeacher?.userId || "",
+        }
+      );
+
       let targetAssignmentId = editingAssignmentId;
+      if (String(targetAssignmentId || "").startsWith("gm::")) {
+        targetAssignmentId = null;
+      }
 
       if (!targetAssignmentId) {
-        const matched = assignments.find((assignment) => assignment.courseId === selectedCourseId);
+        const matched = assignments.find(
+          (assignment) => assignment.source === "legacy" && assignment.courseId === selectedCourseId
+        );
         if (matched) {
           targetAssignmentId = matched.assignmentId;
         }
@@ -394,19 +546,6 @@ function AssagninTeacher() {
           createdAt: existing?.createdAt || new Date().toISOString(),
           updatedAt: payload.updatedAt,
         });
-
-        setAssignments((prev) =>
-          prev.map((item) =>
-            item.assignmentId === targetAssignmentId
-              ? {
-                  ...item,
-                  courseId: selectedCourseId,
-                  teacherId: selectedTeacherId,
-                  updatedAt: payload.updatedAt,
-                }
-              : item
-          )
-        );
 
         setMessage("Assignment updated successfully.");
       } else {
@@ -422,20 +561,10 @@ function AssagninTeacher() {
           throw new Error("Could not create assignment key.");
         }
 
-        setAssignments((prev) => [
-          ...prev,
-          {
-            assignmentId: newId,
-            courseId: selectedCourseId,
-            teacherId: selectedTeacherId,
-            createdAt,
-            updatedAt: createdAt,
-          },
-        ]);
-
         setMessage("Teacher assigned successfully.");
       }
 
+      setReloadNonce((prev) => prev + 1);
       resetForm();
     } catch (err) {
       console.error("Failed to save assignment:", err);
@@ -695,7 +824,7 @@ function AssagninTeacher() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleDelete(row.assignmentId)}
+                              onClick={() => handleDelete(row)}
                               style={{
                                 border: "1px solid var(--danger-border)",
                                 background: "var(--danger-soft)",

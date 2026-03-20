@@ -14,6 +14,7 @@ import SettingsPage from "../pages/SettingsPage";
 import SchedulePage from "../pages/SchedulePage";
 import AssagninTeacher from "../pages/AssagninTeacher";
 import AllChat from "../pages/AllChat";
+import MessageControl from "../pages/messageControl";
 import StudentChatPage from "../pages/StudentChatPage";
 import TeacherRegister from "../pages/TeacherRegister"; // NEW
 import StudentRegister from "../pages/StudentRegister"; // NEW
@@ -21,6 +22,7 @@ import ParentRegister from "../pages/ParentRegister"; // NEW
 import Register from "../pages/Register"; // NEW
 import AcademicYearPage from "../pages/AcademicYearPage";
 import SubjectManagementPage from "../pages/SubjectManagement";
+import AssessmentPage from "../pages/Assessment";
 import ExamsPage from "../pages/ExamsPage";
 import ResultsPage from "../pages/ResultsPage";
 import ReportCardsPage from "../pages/ReportCardsPage";
@@ -71,6 +73,7 @@ export default function AppRoutes() {
 
           <Route path="academic-year" element={<AcademicYearPage />} />
           <Route path="subject-management" element={<SubjectManagementPage />} />
+          <Route path="assessment" element={<AssessmentPage />} />
           <Route path="grade-and-section" element={<Navigate to="/subject-management" replace />} />
           <Route path="grades" element={<Navigate to="/subject-management" replace />} />
           <Route path="sections" element={<Navigate to="/subject-management" replace />} />
@@ -82,6 +85,7 @@ export default function AppRoutes() {
 
           {/* Chat */}
           <Route path="all-chat" element={<AllChat />} />
+          <Route path="message-control" element={<MessageControl />} />
           <Route path="student-chat" element={<StudentChatPage />} />
           {/* registration-form removed */}
           <Route path="teacher-register" element={<TeacherRegister />} /> {/* NEW */}

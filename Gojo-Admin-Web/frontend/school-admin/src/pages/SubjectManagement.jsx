@@ -417,10 +417,46 @@ export default function SubjectManagementPage() {
         createdBy: admin.adminId || admin.userId || "admin",
       };
 
-      await putNodeWithFallback(
-        `GradeManagement/grades/${encodeURIComponent(gradeKey)}/subjects/${encodeURIComponent(subjectKey)}`,
-        payload
-      );
+      const writeRequests = [
+        putNodeWithFallback(
+          `GradeManagement/grades/${encodeURIComponent(gradeKey)}/subjects/${encodeURIComponent(subjectKey)}`,
+          payload
+        ),
+      ];
+
+      const gradeValue = String(gradeItem.grade || gradeKey || "").trim();
+      const sections = Array.isArray(gradeItem.sections) ? gradeItem.sections : [];
+
+      sections.forEach((sectionItem) => {
+        const sectionKey = String(sectionItem.key || sectionItem.name || "").trim();
+        const sectionName = String(sectionItem.name || sectionKey || "").trim().toUpperCase();
+        if (!sectionKey || !sectionName || !gradeValue) return;
+
+        const courseId = `course_${subjectKey}_${gradeValue}${sectionName}`;
+        writeRequests.push(
+          putNodeWithFallback(
+            `GradeManagement/grades/${encodeURIComponent(gradeKey)}/sections/${encodeURIComponent(sectionKey)}/courses/${encodeURIComponent(courseId)}`,
+            true
+          )
+        );
+
+        writeRequests.push(
+          putNodeWithFallback(
+            `Courses/${encodeURIComponent(courseId)}`,
+            {
+              courseId,
+              grade: gradeValue,
+              section: sectionName,
+              subject: draftValue,
+              name: draftValue,
+              createdAt: new Date().toISOString(),
+              createdBy: admin.adminId || admin.userId || "admin",
+            }
+          )
+        );
+      });
+
+      await Promise.all(writeRequests);
 
       const newSubject = { key: subjectKey, name: draftValue };
       setGrades((prev) =>
@@ -433,7 +469,12 @@ export default function SubjectManagementPage() {
       setSubjectInputs((prev) => ({ ...prev, [gradeKey]: "" }));
       setMessageByGrade((prev) => ({
         ...prev,
-        [gradeKey]: { type: "success", text: "Subject added." },
+        [gradeKey]: {
+          type: "success",
+          text: sections.length
+            ? `Subject added and linked to ${sections.length} section course slot(s).`
+            : "Subject added.",
+        },
       }));
     } catch (writeError) {
       setMessageByGrade((prev) => ({

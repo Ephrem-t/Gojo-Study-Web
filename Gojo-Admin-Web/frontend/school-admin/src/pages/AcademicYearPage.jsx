@@ -476,24 +476,19 @@ export default function AcademicYearPage() {
 
             <div style={{ ...cardStyle, overflow: "hidden" }}>
               <div style={{ padding: "12px 14px", fontWeight: 800, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)" }}>Academic Years</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.7fr", padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
                 <div>Year</div>
                 <div>Status</div>
                 <div>Current</div>
-                <div>Actions</div>
               </div>
 
               {loading ? (
                 <div style={{ padding: 14, display: "grid", gap: 10 }}>
                   {Array.from({ length: 4 }).map((_, index) => (
-                    <div key={`academic-year-skeleton-${index}`} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", gap: 12, alignItems: "center" }}>
+                    <div key={`academic-year-skeleton-${index}`} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.7fr", gap: 12, alignItems: "center" }}>
                       {renderSkeletonLine("72%", 16)}
                       {renderSkeletonLine("48%", 16)}
                       {renderSkeletonLine("28px", 16)}
-                      <div style={{ display: "flex", gap: 8 }}>
-                        {renderSkeletonLine("72px", 28, { borderRadius: 8 })}
-                        {renderSkeletonLine("70px", 28, { borderRadius: 8 })}
-                      </div>
                     </div>
                   ))}
                 </div>
@@ -509,7 +504,7 @@ export default function AcademicYearPage() {
                     <div key={yearKey} style={{ borderTop: "1px solid var(--border-soft)" }}>
                       <div
                         onClick={() => fetchYearHistoryStudents(yearKey)}
-                        style={{ display: "grid", gridTemplateColumns: "1.2fr 0.9fr 0.7fr 1.2fr", padding: "10px 14px", alignItems: "center", cursor: "pointer", background: isExpanded ? "var(--surface-muted)" : "transparent" }}
+                        style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.7fr", padding: "10px 14px", alignItems: "center", cursor: "pointer", background: isExpanded ? "var(--surface-muted)" : "transparent" }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                           <span
@@ -524,28 +519,6 @@ export default function AcademicYearPage() {
                         </div>
                         <div style={{ fontSize: 12, fontWeight: 700, color: status === "active" ? "#166534" : status === "archived" ? "#9a3412" : "#475569" }}>{status}</div>
                         <div style={{ fontSize: 13 }}>{isCurrent ? "✅" : "—"}</div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleActivateYear(yearKey);
-                            }}
-                            disabled={working || isCurrent}
-                            style={{ border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || isCurrent ? "not-allowed" : "pointer", opacity: working || isCurrent ? 0.6 : 1 }}
-                          >
-                            Activate
-                          </button>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleArchiveYear(yearKey);
-                            }}
-                            disabled={working || status === "archived"}
-                            style={{ border: "1px solid var(--warning)", background: "var(--warning)", color: "#fff", borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: working || status === "archived" ? "not-allowed" : "pointer", opacity: working || status === "archived" ? 0.6 : 1 }}
-                          >
-                            Archive
-                          </button>
-                        </div>
                       </div>
 
                       {isExpanded ? (

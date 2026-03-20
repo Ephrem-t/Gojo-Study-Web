@@ -25,6 +25,7 @@ const PAGE_TITLES = {
   "/report-cards": "Report Cards",
   "/settings": "Settings",
   "/all-chat": "All Chat",
+  "/message-control": "Message Control",
   "/student-chat": "Student Chat",
   "/teacher-register": "Teacher Register",
   "/student-register": "Student Register",
