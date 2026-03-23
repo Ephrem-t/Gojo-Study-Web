@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, has_request_context
@@ -13,14 +14,9 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # ---------------- FIREBASE ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-default_shared_cred = os.path.abspath(
-    os.path.join(BASE_DIR, "..", "Gojo-Register-Web", "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
-)
 default_local_cred = os.path.join(BASE_DIR, "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
 
-firebase_json = os.getenv("FIREBASE_CREDENTIALS") or default_shared_cred
-if not os.path.exists(firebase_json) and os.path.exists(default_local_cred):
-    firebase_json = default_local_cred
+firebase_json = os.getenv("FIREBASE_CREDENTIALS") or default_local_cred
 
 if not os.path.exists(firebase_json):
     print("Firebase JSON missing")
@@ -99,6 +95,337 @@ def school_reference(path, school_code=None):
 
 def _normalize_short_name(value):
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _normalize_course_fragment(value):
+    cleaned = "".join(
+        ch.lower() if ch.isalnum() else "_"
+        for ch in str(value or "").strip()
+    )
+    return "_".join(part for part in cleaned.split("_") if part)
+
+
+def _normalize_teacher_ref(value):
+    return str(value or "").strip().lstrip("-").upper()
+
+
+def _course_matches(course_data, grade, section, subject):
+    course_grade = str(course_data.get("grade") or "").strip()
+    course_section = str(course_data.get("section") or course_data.get("secation") or "").strip().upper()
+    course_subject = _normalize_course_fragment(course_data.get("subject") or course_data.get("name") or "")
+    return (
+        course_grade == str(grade or "").strip()
+        and course_section == str(section or "").strip().upper()
+        and course_subject == _normalize_course_fragment(subject)
+    )
+
+
+def _lesson_plan_week_key(week):
+    return f"week_{str(week)}"
+
+
+def _lesson_plan_normalize_annual_rows(rows):
+    if not isinstance(rows, list):
+        return []
+    normalized = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(row)
+    return normalized
+
+
+def _lesson_plan_extract_weeks_from_course_node(course_node):
+    weeks_node = course_node.get('weeks') if isinstance(course_node, dict) else {}
+    if not isinstance(weeks_node, dict):
+        weeks_node = {}
+
+    legacy_week_nodes = {}
+    if isinstance(course_node, dict):
+        legacy_week_nodes = {
+            key: value
+            for key, value in course_node.items()
+            if str(key).startswith('week_') and isinstance(value, dict)
+        }
+
+    return weeks_node or legacy_week_nodes
+
+
+def _lesson_plan_normalize_course_node(course_node, teacher_id, course_id, academic_year):
+    if not isinstance(course_node, dict):
+        course_node = {}
+
+    meta = course_node.get('meta') if isinstance(course_node.get('meta'), dict) else {}
+    annual_node = course_node.get('annual') if isinstance(course_node.get('annual'), dict) else {}
+    weeks_node = _lesson_plan_extract_weeks_from_course_node(course_node)
+
+    annual_rows = (
+        annual_node.get('rows')
+        or annual_node.get('annualRows')
+        or course_node.get('annualRows')
+        or []
+    )
+    annual_rows = _lesson_plan_normalize_annual_rows(annual_rows)
+
+    normalized_meta = {
+        **meta,
+        'teacherId': meta.get('teacherId') or course_node.get('teacherId') or teacher_id,
+        'courseId': meta.get('courseId') or course_node.get('courseId') or course_id,
+        'academicYear': meta.get('academicYear') or course_node.get('academicYear') or academic_year,
+        'updatedAt': meta.get('updatedAt') or annual_node.get('updatedAt') or course_node.get('updatedAt'),
+    }
+
+    normalized_annual = {
+        **annual_node,
+        'teacherId': annual_node.get('teacherId') or normalized_meta['teacherId'],
+        'courseId': annual_node.get('courseId') or normalized_meta['courseId'],
+        'academicYear': annual_node.get('academicYear') or normalized_meta['academicYear'],
+        'rows': annual_rows,
+        'annualRows': annual_rows,
+        'rowCount': len(annual_rows),
+        'updatedAt': annual_node.get('updatedAt') or normalized_meta.get('updatedAt'),
+    }
+
+    normalized = {
+        'teacherId': normalized_meta['teacherId'],
+        'courseId': normalized_meta['courseId'],
+        'academicYear': normalized_meta['academicYear'],
+        'updatedAt': normalized_meta.get('updatedAt'),
+        'meta': normalized_meta,
+        'annual': normalized_annual,
+        'annualRows': annual_rows,
+        'weeks': weeks_node,
+    }
+
+    for week_key, week_value in weeks_node.items():
+        normalized[week_key] = week_value
+
+    return normalized
+
+
+def _lesson_plan_migrate_course_node(course_ref, course_node, teacher_id, course_id, academic_year):
+    normalized = _lesson_plan_normalize_course_node(course_node, teacher_id, course_id, academic_year)
+    mutated = False
+
+    if not isinstance(course_node, dict):
+        course_node = {}
+
+    stored_weeks = course_node.get('weeks') if isinstance(course_node.get('weeks'), dict) else {}
+    normalized_weeks = normalized.get('weeks') or {}
+    if normalized_weeks and stored_weeks != normalized_weeks:
+        course_ref.child('weeks').set(normalized_weeks)
+        mutated = True
+
+    stored_annual = course_node.get('annual') if isinstance(course_node.get('annual'), dict) else {}
+    normalized_annual = normalized.get('annual') or {}
+    if normalized_annual and stored_annual != normalized_annual:
+        course_ref.child('annual').set(normalized_annual)
+        mutated = True
+
+    stored_meta = course_node.get('meta') if isinstance(course_node.get('meta'), dict) else {}
+    normalized_meta = normalized.get('meta') or {}
+    if normalized_meta and stored_meta != normalized_meta:
+        course_ref.child('meta').set(normalized_meta)
+        mutated = True
+
+    legacy_week_keys = [
+        key for key, value in course_node.items()
+        if str(key).startswith('week_') and isinstance(value, dict)
+    ] if isinstance(course_node, dict) else []
+    for legacy_week_key in legacy_week_keys:
+        course_ref.child(legacy_week_key).delete()
+        mutated = True
+
+    if isinstance(course_node, dict) and 'annualRows' in course_node:
+        course_ref.child('annualRows').delete()
+        mutated = True
+
+    return normalized, mutated
+
+
+def _lesson_plan_migrate_submission_entries(base_ref, raw_data, teacher_id, course_id, academic_year):
+    if not isinstance(raw_data, dict):
+        raw_data = {}
+
+    entries_node = raw_data.get('entries') if isinstance(raw_data.get('entries'), dict) else {}
+    meta_node = raw_data.get('meta') if isinstance(raw_data.get('meta'), dict) else {}
+
+    legacy_entries = {
+        key: value
+        for key, value in raw_data.items()
+        if key not in {'entries', 'meta'} and isinstance(value, dict)
+    }
+
+    normalized_entries = entries_node or legacy_entries
+    mutated = False
+
+    if normalized_entries and entries_node != normalized_entries:
+        base_ref.child('entries').set(normalized_entries)
+        mutated = True
+
+    normalized_meta = {
+        **meta_node,
+        'teacherId': meta_node.get('teacherId') or teacher_id,
+        'courseId': meta_node.get('courseId') or course_id,
+        'academicYear': meta_node.get('academicYear') or academic_year,
+        'updatedAt': meta_node.get('updatedAt') or datetime.utcnow().isoformat(),
+    }
+    if normalized_entries and meta_node != normalized_meta:
+        base_ref.child('meta').set(normalized_meta)
+        mutated = True
+
+    for legacy_key in legacy_entries.keys():
+        base_ref.child(legacy_key).delete()
+        mutated = True
+
+    return normalized_entries, mutated
+
+
+def _build_virtual_course_id(grade, section, subject):
+    normalized_subject = _normalize_course_fragment(subject)
+    return f"course_{normalized_subject}_{str(grade or '').strip()}{str(section or '').strip().upper()}"
+
+
+def _humanize_course_subject(value):
+    words = [part for part in _normalize_course_fragment(value).split("_") if part]
+    if not words:
+        return ""
+    return " ".join(word.capitalize() for word in words)
+
+
+def _parse_course_defaults(course_id):
+    normalized = str(course_id or "").strip()
+    if not normalized.startswith("course_"):
+        return {}
+
+    body = normalized[len("course_"):]
+    parts = [part for part in body.split("_") if part]
+    if len(parts) < 2:
+        return {}
+
+    grade_section = parts[-1]
+    match = re.match(r"^(\d+)([A-Za-z].*)$", grade_section)
+    if not match:
+        return {}
+
+    subject_fragment = "_".join(parts[:-1])
+    return {
+        "subject": _humanize_course_subject(subject_fragment),
+        "name": _humanize_course_subject(subject_fragment),
+        "grade": match.group(1),
+        "section": match.group(2).upper(),
+    }
+
+
+def _resolve_course_id_from_grade_assignment(courses, grade, section, subject):
+    fallback_id = _build_virtual_course_id(grade, section, subject)
+    if not isinstance(courses, dict):
+        return fallback_id
+
+    if fallback_id in courses:
+        return fallback_id
+
+    for course_id, course_data in courses.items():
+        if isinstance(course_data, dict) and _course_matches(course_data, grade, section, subject):
+            return course_id
+
+    return fallback_id
+
+
+def _resolve_teacher_course_entries(school_code, teacher_identifiers=None, teacher_record_key=None):
+    resolved_school = str(school_code or "").strip()
+    if not resolved_school:
+        return []
+
+    normalized_identifiers = {
+        _normalize_teacher_ref(value)
+        for value in (teacher_identifiers or [])
+        if str(value or "").strip()
+    }
+    if teacher_record_key:
+        normalized_identifiers.add(_normalize_teacher_ref(teacher_record_key))
+
+    courses = school_reference("Courses", resolved_school).get() or {}
+    assignments = school_reference("TeacherAssignments", resolved_school).get() or {}
+    entries = []
+    seen = set()
+
+    def add_entry(course_id, assignment=None):
+        if not course_id or course_id in seen:
+            return
+        seen.add(course_id)
+
+        course_data = courses.get(course_id) if isinstance(courses, dict) else None
+        if isinstance(course_data, dict):
+            merged = {
+                "courseId": course_id,
+                "subject": course_data.get("subject") or course_data.get("name") or "",
+                "name": course_data.get("name") or course_data.get("subject") or "",
+                "grade": course_data.get("grade") or "",
+                "section": course_data.get("section") or course_data.get("secation") or "",
+                "virtual": False,
+            }
+        else:
+            defaults = _parse_course_defaults(course_id)
+            merged = {
+                "courseId": course_id,
+                "subject": defaults.get("subject") or _humanize_course_subject((assignment or {}).get("subject") or course_id),
+                "name": defaults.get("name") or _humanize_course_subject((assignment or {}).get("subject") or course_id),
+                "grade": defaults.get("grade") or str((assignment or {}).get("grade") or ""),
+                "section": defaults.get("section") or str((assignment or {}).get("section") or "").upper(),
+                "virtual": True,
+            }
+
+        if assignment:
+            merged["teacherId"] = assignment.get("teacherId") or assignment.get("teacherRecordKey")
+        entries.append(merged)
+
+    for assignment in assignments.values():
+        if not isinstance(assignment, dict):
+            continue
+        assignment_teacher = _normalize_teacher_ref(assignment.get("teacherId"))
+        if assignment_teacher in normalized_identifiers:
+            course_id = str(assignment.get("courseId") or "").strip()
+            add_entry(course_id, assignment)
+
+    grade_management = _raw_db_reference(
+        f"Platform1/Schools/{resolved_school}/GradeManagement/grades"
+    ).get() or {}
+
+    for grade_key, grade_data in grade_management.items():
+        section_subject_teachers = (grade_data or {}).get("sectionSubjectTeachers") or {}
+        for section_key, subject_map in section_subject_teachers.items():
+            for subject_key, assignment in (subject_map or {}).items():
+                if not isinstance(assignment, dict):
+                    continue
+
+                assignment_refs = {
+                    _normalize_teacher_ref(assignment.get("teacherId")),
+                    _normalize_teacher_ref(assignment.get("teacherRecordKey")),
+                    _normalize_teacher_ref(assignment.get("teacherUserId")),
+                    _normalize_teacher_ref(assignment.get("userId")),
+                }
+
+                if not assignment_refs.intersection(normalized_identifiers):
+                    continue
+
+                course_id = _resolve_course_id_from_grade_assignment(
+                    courses,
+                    grade_key,
+                    assignment.get("section") or section_key,
+                    assignment.get("subject") or subject_key,
+                )
+                add_entry(course_id, {
+                    **assignment,
+                    "grade": grade_key,
+                    "section": assignment.get("section") or section_key,
+                    "subject": assignment.get("subject") or subject_key,
+                })
+
+    return entries
+
+
+def _resolve_teacher_course_ids(school_code, teacher_identifiers=None, teacher_record_key=None):
+    return [entry.get("courseId") for entry in _resolve_teacher_course_entries(school_code, teacher_identifiers, teacher_record_key)]
 
 
 def _extract_short_name_from_teacher_id(teacher_id):
@@ -695,6 +1022,7 @@ def teacher_login():
 
     teacher_user = None
     teacher_key = None
+    teacher_user_id = ""
     school_code = ""
     all_teachers = {}
 
@@ -723,6 +1051,7 @@ def teacher_login():
         if teacher_key:
             school_code = candidate_school_code
             all_teachers = candidate_teachers
+            teacher_user_id = str(teacher_user.get("userId") or found_user_key or "").strip()
             break
 
         teacher_user = None
@@ -733,13 +1062,20 @@ def teacher_login():
     if teacher_user.get("password") != password:
         return jsonify({"success": False, "message": "Invalid password"}), 401
 
-    profile_image = all_teachers.get(teacher_key, {}).get("profileImage", "/default-profile.png")
+    teacher_record = all_teachers.get(teacher_key, {}) or {}
+    profile_image = (
+        teacher_user.get("profileImage")
+        or teacher_user.get("profile")
+        or teacher_record.get("profileImage")
+        or teacher_record.get("profile")
+        or "/default-profile.png"
+    )
 
     return jsonify({
         "success": True,
         "teacher": {
             "teacherKey": teacher_key,
-            "userId": teacher_user["userId"],
+            "userId": teacher_user_id,
             "name": teacher_user.get("name"),
             "username": teacher_user.get("username"),
             "profileImage": profile_image,
@@ -773,7 +1109,7 @@ def teacher_context():
             if user_id and teacher_user_id != user_id:
                 continue
 
-            teacher_user = next(
+            teacher_user = users.get(teacher_user_id) or next(
                 (user for user in users.values() if str(user.get("userId") or "").strip() == teacher_user_id),
                 {},
             )
@@ -797,23 +1133,27 @@ def teacher_context():
 # ===================== GET TEACHER COURSES =====================
 @app.route('/api/teacher/<teacher_key>/courses', methods=['GET'])
 def get_teacher_courses(teacher_key):
-    assignments_ref = school_reference('TeacherAssignments')
     courses_ref = school_reference('Courses')
+    teacher_identifiers = {teacher_key}
+    teachers_ref = school_reference('Teachers')
+    teacher_record = teachers_ref.child(teacher_key).get() or {}
+    if teacher_record:
+        teacher_identifiers.add(teacher_record.get('teacherId'))
+        teacher_identifiers.add(teacher_record.get('userId'))
 
-    all_assignments = assignments_ref.get() or {}
+    course_entries = _resolve_teacher_course_entries(_read_school_code_from_request(), teacher_identifiers, teacher_key)
     courses_list = []
 
-    for assign in all_assignments.values():
-        if assign.get('teacherId') == teacher_key:
-            course_id = assign.get('courseId')
-            course_data = courses_ref.child(course_id).get()
-            if course_data:
-                courses_list.append({
-                    'courseId': course_id,
-                    'subject': course_data.get('subject'),
-                    'grade': course_data.get('grade'),
-                    'section': course_data.get('section')
-                })
+    for course_entry in course_entries:
+        course_id = course_entry.get('courseId')
+        course_data = courses_ref.child(course_id).get() or {}
+        courses_list.append({
+            'courseId': course_id,
+            'subject': course_data.get('subject') or course_entry.get('subject'),
+            'grade': course_data.get('grade') or course_entry.get('grade'),
+            'section': course_data.get('section') or course_data.get('secation') or course_entry.get('section'),
+            'virtual': course_entry.get('virtual', False),
+        })
 
     return jsonify({'courses': courses_list})
 
@@ -822,7 +1162,6 @@ def get_teacher_courses(teacher_key):
 @app.route("/api/teacher/<user_id>/students", methods=["GET"])
 def get_teacher_students(user_id):
     teachers_ref = school_reference("Teachers")
-    assignments_ref = school_reference("TeacherAssignments")
     courses_ref = school_reference("Courses")
     students_ref = school_reference("Students")
     users_ref = school_reference("Users")
@@ -839,22 +1178,21 @@ def get_teacher_students(user_id):
     if not teacher_key:
         return jsonify({"courses": [], "message": "Teacher not found"})
 
-    # 2️⃣ Get all assignments for this teacher
-    all_assignments = assignments_ref.get() or {}
+    teacher_identifiers = {teacher_key, user_id}
+    teacher_record = all_teachers.get(teacher_key) or {}
+    teacher_identifiers.add(teacher_record.get("teacherId"))
+    course_entries = _resolve_teacher_course_entries(_read_school_code_from_request(), teacher_identifiers, teacher_key)
     course_students = []
 
-    for assign in all_assignments.values():
-        if assign.get("teacherId") != teacher_key:
-            continue
+    for course_entry in course_entries:
+        course_id = course_entry.get("courseId")
+        course_data = courses_ref.child(course_id).get() or {}
 
-        course_id = assign.get("courseId")
-        course_data = courses_ref.child(course_id).get()
-        if not course_data:
+        grade = course_data.get("grade") or course_entry.get("grade")
+        section = course_data.get("section") or course_data.get("secation") or course_entry.get("section")
+        subject = course_data.get("subject") or course_entry.get("subject")
+        if not grade or not section:
             continue
-
-        grade = course_data.get("grade")
-        section = course_data.get("section")
-        subject = course_data.get("subject")
 
         # 3️⃣ Fetch students in this grade + section
         students_list = []
@@ -1200,10 +1538,11 @@ def save_week_lesson_plan():
             return jsonify({'success': False, 'message': 'courseId is required'}), 400
 
         # Normalize week key (string)
-        week_key = f"week_{str(week)}"
+        week_key = _lesson_plan_week_key(week)
 
-        # Save per-course under courses/<course_id>/<week_key>
-        lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id).child(week_key)
+        # Save under a clean course-centric structure: courses/<course_id>/weeks/<week_key>
+        course_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id)
+        lesson_ref = course_ref.child('weeks').child(week_key)
 
         # Structure to save
         obj = {
@@ -1211,12 +1550,21 @@ def save_week_lesson_plan():
             'courseId': course_id,
             'academicYear': academic_year,
             'week': week,
+            'weekKey': week_key,
             'weekTopic': week_topic,
             'days': days,
+            'dayCount': len(days),
             'updatedAt': datetime.utcnow().isoformat()
         }
 
         lesson_ref.set(obj)
+        course_ref.child('meta').update({
+            'teacherId': teacher_id,
+            'courseId': course_id,
+            'academicYear': academic_year,
+            'lastUpdatedWeek': week,
+            'updatedAt': obj['updatedAt'],
+        })
 
         return jsonify({'success': True, 'message': 'Week plan saved', 'data': obj}), 200
     except Exception as e:
@@ -1241,18 +1589,26 @@ def save_annual_lesson_plan():
         if not course_id:
             return jsonify({'success': False, 'message': 'courseId is required'}), 400
 
-        # Save per-course annual under courses/<course_id>/annual
+        # Save under a clean course-centric structure: courses/<course_id>/annual
         lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year).child('courses').child(course_id)
 
         obj = {
             'teacherId': teacher_id,
             'courseId': course_id,
             'academicYear': academic_year,
+            'rows': annual_rows,
             'annualRows': annual_rows,
+            'rowCount': len(annual_rows),
             'updatedAt': datetime.utcnow().isoformat()
         }
 
         lesson_ref.child('annual').set(obj)
+        lesson_ref.child('meta').update({
+            'teacherId': teacher_id,
+            'courseId': course_id,
+            'academicYear': academic_year,
+            'updatedAt': obj['updatedAt'],
+        })
 
         return jsonify({'success': True, 'message': 'Annual plan saved', 'data': obj}), 200
     except Exception as e:
@@ -1271,11 +1627,75 @@ def get_lesson_plans(teacher_id):
         course_id = request.args.get('courseId')
         if course_id:
             course_node = lesson_ref.child('courses').child(course_id).get() or {}
-            return jsonify({'success': True, 'data': course_node}), 200
+            course_ref = lesson_ref.child('courses').child(course_id)
+            normalized, _ = _lesson_plan_migrate_course_node(course_ref, course_node, teacher_id, course_id, academic_year)
+
+            return jsonify({'success': True, 'data': normalized}), 200
 
         # If no courseId provided, return entire academic year tree
         data = lesson_ref.get() or {}
         return jsonify({'success': True, 'data': data}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/lesson-plans/migrate', methods=['POST'])
+def migrate_lesson_plans():
+    try:
+        data = request.get_json() or {}
+        teacher_id = data.get('teacherId')
+        academic_year = data.get('academicYear') or _get_default_academic_year()
+        course_id = data.get('courseId')
+
+        if not teacher_id:
+            return jsonify({'success': False, 'message': 'teacherId is required'}), 400
+
+        lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year)
+        migrated_courses = []
+        migrated_submissions = []
+
+        if course_id:
+            course_ref = lesson_ref.child('courses').child(course_id)
+            course_node = course_ref.get() or {}
+            _, course_changed = _lesson_plan_migrate_course_node(course_ref, course_node, teacher_id, course_id, academic_year)
+            if course_changed:
+                migrated_courses.append(course_id)
+
+            submissions_ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
+            submission_node = submissions_ref.get() or {}
+            _, submissions_changed = _lesson_plan_migrate_submission_entries(submissions_ref, submission_node, teacher_id, course_id, academic_year)
+            if submissions_changed:
+                migrated_submissions.append(course_id)
+        else:
+            courses_node = lesson_ref.child('courses').get() or {}
+            if isinstance(courses_node, dict):
+                for current_course_id, course_node in courses_node.items():
+                    if not isinstance(course_node, dict):
+                        continue
+                    course_ref = lesson_ref.child('courses').child(current_course_id)
+                    _, course_changed = _lesson_plan_migrate_course_node(course_ref, course_node, teacher_id, current_course_id, academic_year)
+                    if course_changed:
+                        migrated_courses.append(current_course_id)
+
+                    submissions_ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(current_course_id)
+                    submission_node = submissions_ref.get() or {}
+                    _, submissions_changed = _lesson_plan_migrate_submission_entries(submissions_ref, submission_node, teacher_id, current_course_id, academic_year)
+                    if submissions_changed:
+                        migrated_submissions.append(current_course_id)
+
+        return jsonify({
+            'success': True,
+            'message': 'Lesson plan migration completed',
+            'data': {
+                'teacherId': teacher_id,
+                'academicYear': academic_year,
+                'courseId': course_id,
+                'migratedCourses': migrated_courses,
+                'migratedSubmissions': migrated_submissions,
+            }
+        }), 200
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1294,7 +1714,9 @@ def get_lesson_plan_submissions():
             return jsonify({'success': False, 'message': 'teacherId and courseId are required'}), 400
 
         ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
-        data = ref.get() or {}
+        raw_data = ref.get() or {}
+        data, _ = _lesson_plan_migrate_submission_entries(ref, raw_data, teacher_id, course_id, academic_year)
+        data = data or {}
 
         results = []
         for child_key, val in (data.items() if isinstance(data, dict) else []):
@@ -1326,10 +1748,12 @@ def submit_daily_lesson_plan():
             return jsonify({'success': False, 'message': 'teacherId, courseId and key are required'}), 400
 
         # sanitize child key for RTDB node name
-        import re
         child = re.sub(r'[^A-Za-z0-9_\-]', '_', str(key))
 
-        ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id).child(child)
+        base_ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
+        existing_root = base_ref.get() or {}
+        _lesson_plan_migrate_submission_entries(base_ref, existing_root, teacher_id, course_id, academic_year)
+        ref = base_ref.child('entries').child(child)
 
         existing = ref.get()
         if existing:
@@ -1347,6 +1771,12 @@ def submit_daily_lesson_plan():
         }
 
         ref.set(obj)
+        base_ref.child('meta').update({
+            'teacherId': teacher_id,
+            'courseId': course_id,
+            'academicYear': academic_year,
+            'updatedAt': submitted_at,
+        })
 
         return jsonify({'success': True, 'message': 'Submission saved', 'data': obj}), 200
     except Exception as e:

@@ -2,13 +2,10 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   FaHome,
   FaChalkboardTeacher,
-  FaCog,
   FaSignOutAlt,
   FaSearch,
-  FaBell,
   FaClipboardCheck,
   FaUsers,
-  FaFacebookMessenger,
   FaCommentDots,
   FaCheck,
    FaUserCheck,
@@ -20,6 +17,8 @@ import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import { ref, onValue, off } from "firebase/database";
 import { db, schoolPath } from "../firebase"; // adjust path if needed
+import { getTeacherCourseContext } from "../api/teacherApi";
+import { resolveProfileImage } from "../utils/profileImage";
 import "../styles/global.css";
 
 /**
@@ -40,7 +39,8 @@ const getChatId = (teacherUserId, parentUserId) => {
   return `${t}_${p}`;
 };
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import { getRtdbRoot } from "../api/rtdbScope";
+const RTDB_BASE = getRtdbRoot();
 
 const formatTime = (ts) => {
   if (!ts) return "";
@@ -48,6 +48,22 @@ const formatTime = (ts) => {
   const hh = d.getHours().toString().padStart(2, "0");
   const mm = d.getMinutes().toString().padStart(2, "0");
   return `${hh}:${mm}`;
+};
+
+const findUserByUserId = (usersObj, userId) => {
+  if (!usersObj || !userId) return null;
+  const normalizedUserId = String(userId || "").trim();
+  const directByKey = usersObj?.[normalizedUserId];
+  if (directByKey) return directByKey;
+
+  return (
+    Object.entries(usersObj).find(([userKey, userValue]) => {
+      return (
+        String(userKey || "").trim() === normalizedUserId ||
+        String(userValue?.userId || "").trim() === normalizedUserId
+      );
+    })?.[1] || null
+  );
 };
 
 function TeacherParent() {
@@ -113,30 +129,19 @@ const [children, setChildren] = useState([]);
       try {
         setLoading(true);
 
-        const [assignmentsRes, coursesRes, studentsRes, usersRes, parentsRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
+        const [courseContext, coursesRes, studentsRes, usersRes, parentsRes] = await Promise.all([
+          getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE }),
           axios.get(`${RTDB_BASE}/Courses.json`),
           axios.get(`${RTDB_BASE}/Students.json`),
           axios.get(`${RTDB_BASE}/Users.json`),
           axios.get(`${RTDB_BASE}/Parents.json`),
         ]);
 
-        const assignments = assignmentsRes.data || {};
         const courses = coursesRes.data || {};
         const students = studentsRes.data || {};
         const users = usersRes.data || {};
         const parentsData = parentsRes.data || {};
-
-        const teacherIdentifiers = new Set([
-          String(teacher.teacherId || "").trim(),
-          String(teacher.teacherKey || "").trim(),
-          String(teacher.userId || "").trim(),
-        ].filter(Boolean));
-
-        const teacherCourseIds = Object.values(assignments)
-          .filter((a) => teacherIdentifiers.has(String(a.teacherId || "").trim()))
-          .map((a) => a.courseId)
-          .filter(Boolean);
+        const teacherCourseIds = courseContext.courseIds || [];
 
         const allowedStudentIds = new Set(
           Object.entries(students)
@@ -177,14 +182,32 @@ const [children, setChildren] = useState([]);
         Object.entries(students).forEach(([studentId, student]) => {
           if (allowedStudentIds.size && !allowedStudentIds.has(studentId)) return;
 
-          const studentUser = Object.values(users).find((u) => String(u.userId) === String(student.userId));
+          const studentUser = findUserByUserId(users, student.userId);
           const studentName = studentUser?.name || "No Name";
-          const studentProfileImage = studentUser?.profileImage || "/default-profile.png";
+          const studentProfileImage = resolveProfileImage(
+            studentUser?.profileImage,
+            studentUser?.profile,
+            studentUser?.avatar,
+            student?.profileImage,
+            student?.basicStudentInformation?.studentPhoto,
+            student?.studentPhoto,
+            "/default-profile.png"
+          );
 
           const parentEntries = studentToParentMap[studentId] || [];
-          parentEntries.forEach(({ parentId, relationship }) => {
+          const uniqueParentEntries = [...new Map(
+            parentEntries
+              .filter((entry) => entry?.parentId)
+              .map((entry) => [String(entry.parentId), entry])
+          ).values()];
+
+          uniqueParentEntries.forEach(({ parentId, relationship }) => {
             if (!parentChildrenMap[parentId]) parentChildrenMap[parentId] = [];
-            parentChildrenMap[parentId].push({
+            const existingChildIndex = parentChildrenMap[parentId].findIndex(
+              (childItem) => String(childItem.studentId) === String(studentId)
+            );
+
+            const nextChild = {
               studentId,
               name: studentName,
               grade: student.grade,
@@ -197,13 +220,24 @@ const [children, setChildren] = useState([]);
                 citizenship: student.citizenship || studentUser?.citizenship || student.nationality || null,
                 address: student.address || studentUser?.address || null,
                 status: student.status || "Active",
-            });
+            };
+
+            if (existingChildIndex === -1) {
+              parentChildrenMap[parentId].push(nextChild);
+            } else {
+              const existingChild = parentChildrenMap[parentId][existingChildIndex];
+              parentChildrenMap[parentId][existingChildIndex] = {
+                ...existingChild,
+                ...nextChild,
+                relationship: existingChild.relationship || nextChild.relationship || "—",
+              };
+            }
           });
         });
 
         const finalParents = Object.keys(parentChildrenMap).map((pid) => {
           const parent = parentsData[pid] || {};
-          const parentUser = Object.values(users).find((u) => String(u.userId) === String(parent.userId)) || {};
+          const parentUser = findUserByUserId(users, parent.userId) || {};
           const childrenList = parentChildrenMap[pid] || [];
           const relationships = Array.from(new Set(childrenList.map((c) => c.relationship).filter(Boolean)));
           return {
@@ -212,7 +246,14 @@ const [children, setChildren] = useState([]);
             name: parentUser.name || parent.name || "No Name",
             email: parentUser.email || parent.email || "N/A",
             phone: parentUser.phone || parent.phone || "",
-            profileImage: parentUser.profileImage || parent.profileImage || "/default-profile.png",
+            profileImage: resolveProfileImage(
+              parentUser.profileImage,
+              parentUser.profile,
+              parentUser.avatar,
+              parent.profileImage,
+              parent.profile,
+              "/default-profile.png"
+            ),
             children: childrenList,
             relationships,
             age: parent.age || parentUser.age || null,
@@ -480,133 +521,38 @@ const [children, setChildren] = useState([]);
     });
   }, [parents, normalizedSearch]);
 
+  const listShellWidth = isPortrait ? "92%" : "560px";
+
   // Render
   return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-
-         <div className="nav-right">
-                  {/* Notification Bell & Popup (shows posts and unread messages) */}
-                  <div className="icon-circle" style={{ position: "relative" }}>
-                    <div
-                      onClick={() => setShowNotifications(!showNotifications)}
-                      style={{ cursor: "pointer", position: "relative" }}
-                      aria-label="Show notifications"
-                      tabIndex={0}
-                      role="button"
-                      onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
-                    >
-                      <FaBell size={24} />
-                      {(notifications.length + totalUnreadMessages) > 0 && (
-                        <span style={{ position: "absolute", top: -5, right: -5, background: "red", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {notifications.length + totalUnreadMessages}
-                        </span>
-                      )}
-                    </div>
-
-                    {showNotifications && (
-                      <>
-                        {/* Overlay for closing notification list by clicking outside */}
-                        <div
-                          style={{
-                            position: 'fixed',
-                            inset: 0,
-                            background: 'rgba(0,0,0,0.08)',
-                            zIndex: 1999,
-                          }}
-                          onClick={() => setShowNotifications(false)}
-                        />
-                        <div
-                          className="notification-popup"
-                          style={
-                            typeof window !== 'undefined' && window.innerWidth <= 600
-                              ? {
-                                  position: 'fixed',
-                                  left: '50%',
-                                  top: '8%',
-                                  transform: 'translate(-50%, 0)',
-                                  width: '90vw',
-                                  maxWidth: 340,
-                                  zIndex: 2000,
-                                  background: '#fff',
-                                  borderRadius: 12,
-                                  boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
-                                  maxHeight: '70vh',
-                                  overflowY: 'auto',
-                                  padding: 12,
-                                }
-                              : {
-                                  position: 'absolute',
-                                  top: 30,
-                                  right: 0,
-                                  width: 300,
-                                  maxHeight: 400,
-                                  overflowY: 'auto',
-                                  background: '#fff',
-                                  boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-                                  borderRadius: 8,
-                                  zIndex: 100,
-                                }
-                          }
-                        >
-                          {/* Show post notifications */}
-                          {notifications.length > 0 && notifications.map((notif, index) => (
-                            notif.type === "post" ? (
-                              <div key={notif.id || index} onClick={() => {
-                                navigate("/dashboard");
-                                setTimeout(() => {
-                                  const postElement = postRefs?.current?.[notif.id];
-                                  if (postElement) {
-                                    postElement.scrollIntoView({ behavior: "smooth", block: "center" });
-                                    setHighlightedPostId(notif.id);
-                                    setTimeout(() => setHighlightedPostId(null), 3000);
-                                  }
-                                }, 150);
-                                setNotifications(prev => prev.filter((_, i) => i !== index));
-                                setShowNotifications(false);
-                              }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                                <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                                <div><strong>{notif.adminName}</strong><p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p></div>
-                              </div>
-                            ) : null
-                          ))}
-                          {/* Show unread message notifications */}
-                          {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                            <div key={conv.chatId || idx} onClick={() => {
-                              setShowNotifications(false);
-                              navigate("/all-chat");
-                            }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                              <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                              <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                            </div>
-                          ))}
-                          {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
-                        </div>
-                      </>
-                    )}
-                  </div>
-        
-                  {/* Messenger button: navigates to all-chat, badge only */}
-                  <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-                    <div onClick={() => navigate("/all-chat")}
-                         style={{ cursor: "pointer", position: "relative" }}>
-                      <FaFacebookMessenger size={22} />
-                      {totalUnreadMessages > 0 && (
-                        <span style={{ position: "absolute", top: -6, right: -6, background: "#f60b0b", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                          {totalUnreadMessages}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-        
-                 <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-                  <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
-                </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+        "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <Sidebar
           active="parents"
           sidebarOpen={sidebarOpen}
@@ -615,15 +561,25 @@ const [children, setChildren] = useState([]);
           handleLogout={handleLogout}
         />
 
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         {/* MAIN CONTENT */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
           <div
             className="parent-list-card-responsive"
             style={{
-              width: "min(420px, 100%)",
+              width: listShellWidth,
               position: "relative",
-              marginLeft: isPortrait ? 0 : "290px",
-              marginRight: isPortrait ? 0 : "30px",
+              marginLeft: 0,
+              marginRight: isPortrait ? 0 : "24px",
             }}
           >
             <style>{`
@@ -631,34 +587,40 @@ const [children, setChildren] = useState([]);
                 .parent-list-card-responsive {
                   margin-left: -16px !important;
                   margin-right: auto !important;
-                  width: 70vw !important;
-                  max-width: 70vw !important;
+                  width: 80vw !important;
+                  max-width: 80vw !important;
                 }
               }
             `}</style>
-            <h2 style={{ textAlign: "left", marginBottom: "10px", fontSize: 20 }}>Parents</h2>
+            <div className="section-header-card" style={{ marginBottom: 12 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Parents</h2>
+              <div className="section-header-card__meta">
+                <span>Total: {filteredParents.length}</span>
+                <span className="section-header-card__chip">Teacher View</span>
+              </div>
+            </div>
 
             <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
               <div
                 style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
                   gap: 8,
-                  background: '#fff',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '10px',
-                  padding: '6px 10px',
-                  boxShadow: '0 4px 10px rgba(0,0,0,0.06)',
+                  background: "var(--surface-panel)",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: "12px",
+                  padding: "10px 12px",
+                  boxShadow: "var(--shadow-soft)",
                 }}
               >
-                <FaSearch style={{ color: '#6b7280', fontSize: 14 }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search parents..."
-                  style={{ width: '100%', border: 'none', outline: 'none', fontSize: 12, background: 'transparent' }}
+                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent" }}
                 />
               </div>
             </div>
@@ -726,17 +688,17 @@ const [children, setChildren] = useState([]);
                         onClick={() => setSelectedParent(p)}
                         className="parent-list-item-responsive"
                         style={{
-                          width: '100%',
-                          borderRadius: '12px',
-                          padding: '10px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '12px',
-                          cursor: 'pointer',
-                          background: selectedParent?.id === p.id ? '#e0e7ff' : '#fff',
-                          border: selectedParent?.id === p.id ? '2px solid #4b6cb7' : '1px solid #ddd',
-                          boxShadow: selectedParent?.id === p.id ? '0 6px 15px rgba(75,108,183,0.3)' : '0 2px 6px rgba(0,0,0,0.06)',
-                          transition: 'all 0.3s ease',
+                          width: "100%",
+                          borderRadius: "12px",
+                          padding: "10px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "12px",
+                          cursor: "pointer",
+                          background: selectedParent?.id === p.id ? "#e0e7ff" : "#fff",
+                          border: selectedParent?.id === p.id ? "2px solid #4b6cb7" : "1px solid #ddd",
+                          boxShadow: selectedParent?.id === p.id ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
+                          transition: "all 0.3s ease",
                         }}
                       >
                         <div style={{
@@ -753,7 +715,14 @@ const [children, setChildren] = useState([]);
                           flexShrink: 0,
                         }}>{index + 1}</div>
 
-                        <img src={p.profileImage} alt={p.name} style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #4b6cb7' : '3px solid #ddd' }} />
+                        <img
+                          src={p.profileImage}
+                          alt={p.name}
+                          onError={(event) => {
+                            event.currentTarget.src = "/default-profile.png";
+                          }}
+                          style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #4b6cb7' : '3px solid #ddd' }}
+                        />
                         <div>
                           <h3 style={{ margin: 0, fontSize: 14 }}>{p.name}</h3>
                           <p style={{ margin: '4px 0', color: '#555', fontSize: 11 }}>{p.email}</p>
@@ -765,7 +734,7 @@ const [children, setChildren] = useState([]);
               )}
 
             {/* Responsive Right Sidebar */}
-            {selectedParent && (
+            {selectedParent ? (
               <>
                 {/* overlay for mobile/portrait */}
                 <div
@@ -777,21 +746,23 @@ const [children, setChildren] = useState([]);
                 <aside
                   className="parent-sidebar"
                   style={{
-                    width: isPortrait ? "100%" : "30%",
-                    height: isPortrait ? "100vh" : "calc(100vh - 60px)",
+                    width: isPortrait ? "100%" : "380px",
+                    height: isPortrait ? "100vh" : "calc(100vh - 55px)",
                     position: "fixed",
                     right: 0,
-                    top: isPortrait ? 0 : 60,
-                    background: "#fff",
-                    boxShadow: isPortrait ? "none" : "0 0 18px rgba(0,0,0,0.08)",
-                    borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+                    top: isPortrait ? 0 : "55px",
+                    background: "var(--page-bg-secondary, var(--surface-muted))",
+                    boxShadow: "var(--shadow-panel)",
+                    borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
                     zIndex: 1000,
                     display: "flex",
                     flexDirection: "column",
                     overflowY: "auto",
-                    padding: isPortrait ? 18 : 24,
-                    transition: "all 0.32s ease",
-                    fontSize: 10,
+                    overflowX: "hidden",
+                    padding: "14px",
+                    paddingBottom: "130px",
+                    transition: "all 0.35s ease",
+                    fontSize: "10px",
                   }}
                   role="dialog"
                   aria-modal="true"
@@ -800,30 +771,42 @@ const [children, setChildren] = useState([]);
                   <button
                     onClick={() => setSelectedParent(null)}
                     style={{
-                      position: 'absolute',
-                      top: 6,
-                      left: 12,
-                      border: 'none',
-                      background: 'none',
-                      cursor: 'pointer',
-                      fontSize: 26,
+                      position: "absolute",
+                      top: 12,
+                      left: 14,
+                      border: "1px solid rgba(255,255,255,0.42)",
+                      background: "rgba(255,255,255,0.18)",
+                      cursor: "pointer",
+                      fontSize: 24,
                       fontWeight: 700,
-                      color: '#3647b7',
+                      color: "#ffffff",
                       zIndex: 2000,
+                      width: 34,
+                      height: 34,
+                      borderRadius: 999,
+                      lineHeight: 1,
+                      boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
                     }}
                   >
                     ×
                   </button>
 
-                  <div style={{ textAlign: 'center', margin: '-12px -12px 10px', padding: '14px 10px', background: '#e0e7ff' }}>
-                    <div style={{ width: 70, height: 70, margin: '0 auto 10px', borderRadius: '50%', overflow: 'hidden', border: '3px solid #4b6cb7' }}>
-                      <img src={selectedParent.profileImage} alt={selectedParent.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <div style={{ textAlign: "center", margin: "-14px -14px 12px", padding: "16px 10px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
+                    <div style={{ width: 70, height: 70, margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid rgba(255,255,255,0.8)" }}>
+                      <img
+                        src={selectedParent.profileImage}
+                        alt={selectedParent.name}
+                        onError={(event) => {
+                          event.currentTarget.src = "/default-profile.png";
+                        }}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
                     </div>
-                    <h3 style={{ margin: 0 }}>{selectedParent.name}</h3>
-                    <div style={{ color: '#666', marginTop: 6 }}>{selectedParent.email}</div>
+                    <h3 style={{ margin: 0, fontSize: 14, color: "#ffffff", fontWeight: 800 }}>{selectedParent.name}</h3>
+                    <div style={{ color: "#dbeafe", marginTop: 6, fontSize: 10 }}>{selectedParent.email}</div>
                   </div>
 
-                  <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid #e5e7eb" }}>
+                  <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid var(--border-soft)" }}>
                     {["Details", "Children", "Status"].map((t) => (
                       <button
                         key={t}
@@ -836,8 +819,8 @@ const [children, setChildren] = useState([]);
                           cursor: "pointer",
                           fontWeight: 600,
                           fontSize: 10,
-                          color: activeTab === t ? "#4b6cb7" : "#6b7280",
-                          borderBottom: activeTab === t ? "3px solid #4b6cb7" : "3px solid transparent",
+                          color: activeTab === t ? "var(--accent-strong)" : "var(--text-muted)",
+                          borderBottom: activeTab === t ? "3px solid var(--accent-strong)" : "3px solid transparent",
                         }}
                       >
                         {t.toUpperCase()}
@@ -856,9 +839,9 @@ const [children, setChildren] = useState([]);
       marginLeft: 0,
       marginRight: 0,
       borderRadius: 12,
-      background: "#ffffff",
-      border: "1px solid #e5e7eb",
-      boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+      background: "var(--surface-panel)",
+      border: "1px solid var(--border-soft)",
+      boxShadow: "var(--shadow-soft)",
       margin: "0 auto",
       maxWidth: 380,
     }}
@@ -871,7 +854,7 @@ const [children, setChildren] = useState([]);
           fontSize: 12,
           fontWeight: 800,
           marginBottom: 6,
-          color: "#0f172a",
+          color: "var(--text-primary)",
         }}
       >
         Parent Details
@@ -901,8 +884,8 @@ const [children, setChildren] = useState([]);
             style={{
               padding: 8,
               borderRadius: 10,
-              background: "#ffffff",
-              border: "1px solid #eef2f7",
+              background: "var(--surface-panel)",
+              border: "1px solid var(--border-soft)",
               boxShadow: "none",
               gridColumn: span ? "span 2" : "span 1",
             }}
@@ -911,7 +894,7 @@ const [children, setChildren] = useState([]);
               style={{
                 fontSize: 9,
                 fontWeight: 700,
-                color: "#64748b",
+                color: "var(--text-muted)",
                 textTransform: "uppercase",
                 letterSpacing: "0.6px",
               }}
@@ -923,7 +906,7 @@ const [children, setChildren] = useState([]);
                 marginTop: 4,
                 fontSize: 10,
                 fontWeight: 600,
-                color: "#111827",
+                color: "var(--text-primary)",
               }}
             >
               {value}
@@ -943,9 +926,11 @@ const [children, setChildren] = useState([]);
       display: "flex",
       flexDirection: "column",
       gap: 20,
-      background: "#f5f7fa",
-      padding: 18,
-      borderRadius: 10,
+      background: "var(--surface-panel)",
+      border: "1px solid var(--border-soft)",
+      boxShadow: "var(--shadow-soft)",
+      padding: 12,
+      borderRadius: 12,
     }}
   >
     {selectedParent.children.map((c) => (
@@ -955,11 +940,11 @@ const [children, setChildren] = useState([]);
           display: "flex",
           alignItems: "center",
           gap: 12,
-          background: "#fff",
+          background: "var(--surface-panel)",
           borderRadius: 12,
           padding: "12px",
-          boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
-          border: "1px solid #e5e7eb",
+          boxShadow: "none",
+          border: "1px solid var(--border-soft)",
           transition: "box-shadow 0.15s, transform 0.12s",
           cursor: "pointer",
         }}
@@ -970,31 +955,34 @@ const [children, setChildren] = useState([]);
         <img
           src={c.profileImage}
           alt={c.name}
+          onError={(event) => {
+            event.currentTarget.src = "/default-profile.png";
+          }}
           style={{
             width: 48,
             height: 48,
             borderRadius: "50%",
-            border: "3px solid #4b6cb7",
+            border: "3px solid var(--accent-strong)",
             objectFit: "cover",
-            background: "#fff",
+            background: "var(--surface-panel)",
             flexShrink: 0,
           }}
         />
         {/* User Info */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{c.name}</span>
+          <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text-primary)" }}>{c.name}</span>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-            <div style={{ fontSize: 12, color: "#374151", padding: "4px 10px", borderRadius: 999, background: "#f8fafc" }}>Grade: {c.grade}</div>
-            <div style={{ fontSize: 12, color: "#374151", padding: "4px 8px", borderRadius: 999, background: "#f8fafc" }}>Section: {c.section}</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 10px", borderRadius: 999, background: "var(--surface-muted)" }}>Grade: {c.grade}</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 999, background: "var(--surface-muted)" }}>Section: {c.section}</div>
           </div>
-          <span style={{ fontSize: 12, color: "#6b7280" }}>{c.relationship && `Relation: ${c.relationship}`}</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{c.relationship && `Relation: ${c.relationship}`}</span>
         </div>
       </div>
     ))}
   </div>
 )}
                     {activeTab === "Status" && (
-                      <div>
+                      <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
                         <p><strong>Status:</strong> {selectedParent.status || "Active"}</p>
                         <p><strong>Created:</strong> {selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—"}</p>
                       </div>
@@ -1010,21 +998,55 @@ const [children, setChildren] = useState([]);
             position: "fixed",
             bottom: "20px",
             right: "20px",
-            width: "60px",
-            height: "60px",
-            background: "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
-            borderRadius: "50%",
+            width: "140px",
+            height: "48px",
+            background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
+            borderRadius: "28px",
             display: "flex",
             alignItems: "center",
-            justifyContent: "center",
+            justifyContent: "flex-start",
+            gap: 10,
+            padding: "0 12px",
             color: "#fff",
             cursor: "pointer",
             zIndex: 1000,
-            boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
-            transition: "transform 0.2s ease",
+            boxShadow: "var(--shadow-glow)",
+            transition: "transform 0.16s ease",
           }}
         >
-          <FaCommentDots size={30} />
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 34,
+              height: 34,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.14)",
+            }}
+          >
+            <FaCommentDots size={18} />
+          </span>
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+            <span style={{ fontWeight: 800, fontSize: 13 }}>Parent Chat</span>
+          </div>
+          <span
+            style={{
+              position: "absolute",
+              top: -8,
+              right: 8,
+              background: "color-mix(in srgb, var(--accent-strong) 28%, #020617)",
+              color: "#fff",
+              borderRadius: "999px",
+              fontSize: 10,
+              fontWeight: 800,
+              padding: "2px 6px",
+              border: "2px solid #fff",
+              lineHeight: 1,
+            }}
+          >
+            P
+          </span>
         </div>
       )}
 
@@ -1037,9 +1059,9 @@ const [children, setChildren] = useState([]);
             right: "20px",
             width: "360px",
             height: "480px",
-            background: "#fff",
+            background: "var(--surface-panel)",
             borderRadius: "16px",
-            boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+            boxShadow: "var(--shadow-panel)",
             zIndex: 2000,
             display: "flex",
             flexDirection: "column",
@@ -1050,11 +1072,11 @@ const [children, setChildren] = useState([]);
           <div
             style={{
               padding: "14px",
-              borderBottom: "1px solid #eee",
+              borderBottom: "1px solid var(--border-soft)",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              background: "#fafafa",
+              background: "var(--surface-muted)",
             }}
           >
             <strong>{selectedParent.name}</strong>
@@ -1109,7 +1131,7 @@ const [children, setChildren] = useState([]);
               display: "flex",
               flexDirection: "column",
               gap: "6px",
-              background: "#f9f9f9",
+              background: "var(--surface-muted)",
             }}
           >
             {messages.length === 0 ? (
@@ -1155,10 +1177,10 @@ const [children, setChildren] = useState([]);
           <div
             style={{
               padding: "10px",
-              borderTop: "1px solid #eee",
+              borderTop: "1px solid var(--border-soft)",
               display: "flex",
               gap: "8px",
-              background: "#fff",
+              background: "var(--surface-panel)",
             }}
           >
             <input
@@ -1169,8 +1191,9 @@ const [children, setChildren] = useState([]);
                 flex: 1,
                 padding: "10px 14px",
                 borderRadius: "999px",
-                border: "1px solid #ccc",
+                border: "1px solid var(--border-strong)",
                 outline: "none",
+                background: "var(--surface-panel)",
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") sendMessage(newMessageText);
@@ -1179,8 +1202,7 @@ const [children, setChildren] = useState([]);
             <button
               onClick={() => sendMessage(newMessageText)}
               style={{
-                background:
-                  "linear-gradient(135deg, #3a65b4, #2c4fee, #458efc)",
+                background: "var(--accent-strong)",
                 border: "none",
                 borderRadius: "50%",
                 width: "42px",
@@ -1207,12 +1229,71 @@ const [children, setChildren] = useState([]);
                 {/* component-scoped CSS for responsive behavior */}
                 <style>{`
                   @media (max-width: 900px), (orientation: portrait) {
-                    .parent-sidebar { width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important; border-radius: 0 !important; padding: 16px !important; }
+                    .parent-sidebar { width: 100vw !important; height: 100vh !important; left: 0 !important; top: 0 !important; border-radius: 0 !important; padding: 14px !important; }
                     .parent-sidebar-overlay { display: block !important; }
                     body.sidebar-open { overflow: hidden !important; }
                   }
                 `}</style>
               </>
+            ) : (
+              <div
+                style={{
+                  width: isPortrait ? "100%" : "380px",
+                  height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+                  position: "fixed",
+                  right: 0,
+                  top: isPortrait ? 0 : "55px",
+                  background: "var(--surface-muted)",
+                  zIndex: 90,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  boxShadow: "var(--shadow-panel)",
+                  borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+                  transition: "all 0.35s ease",
+                  fontSize: 10,
+                  padding: "14px",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <div
+                  style={{
+                    width: "100%",
+                    maxWidth: 360,
+                    borderRadius: 12,
+                    border: "1px solid var(--border-soft)",
+                    background: "var(--surface-panel)",
+                    boxShadow: "var(--shadow-soft)",
+                    padding: "18px 14px",
+                    textAlign: "center",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 56,
+                      height: 56,
+                      borderRadius: "50%",
+                      margin: "0 auto 10px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "var(--accent-soft)",
+                      color: "var(--accent-strong)",
+                      fontSize: 24,
+                    }}
+                  >
+                    <FaUsers />
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
+                    Parent Details
+                  </h3>
+                  <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
+                    Select a parent from the list to view details, children, status, and chat.
+                  </p>
+                </div>
+              </div>
             )}
           </div>
         </div>

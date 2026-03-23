@@ -44,8 +44,8 @@ export default function Profile(){
   return (
     <div className="container">
       <div className="card"><Navbar /></div>
-      <div className="app-layout" style={{marginTop:16}}>
-        <Sidebar adminId={adminId} />
+      <div className="app-layout" style={{marginTop:4}}>
+        <Sidebar admin={admin} />
         <div style={{flex:1}}>
           <div className="card">
             <h2>{admin.name}</h2>

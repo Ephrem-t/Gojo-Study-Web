@@ -1,15 +1,16 @@
 import React, { useEffect, useState,useRef } from "react";
 import axios from "axios";
 
-import { FaHome, FaFileAlt, FaUpload, FaCog, FaSignOutAlt, FaSearch, FaBell, FaUsers, FaClipboardCheck, FaUserCheck,
-  
-  FaBookOpen, FaChalkboardTeacher, FaFacebookMessenger, FaPlus, FaTrash, FaSave, FaChevronDown, FaChevronUp, FaChevronLeft, FaChevronRight, FaCalendarAlt, FaCheckCircle, FaClock } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaUpload, FaSignOutAlt, FaSearch, FaUsers, FaClipboardCheck, FaUserCheck,
+
+  FaBookOpen, FaChalkboardTeacher, FaPlus, FaTrash, FaSave, FaChevronDown, FaChevronUp, FaChevronLeft, FaChevronRight, FaCalendarAlt, FaCheckCircle, FaClock } from "react-icons/fa";
 import { Link, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, getSchoolCode } from "../api/rtdbScope";
-const RTDB_BASE = 'https://bale-house-rental-default-rtdb.firebaseio.com';
+import { getTeacherCourseContext } from "../api/teacherApi";
+const RTDB_BASE = getRtdbRoot();
 
 const ALL_MONTHS = [
   'January',
@@ -277,32 +278,16 @@ const [annualRows, setAnnualRows] = useState([
     setDailyPlans(plansForToday);
   }, [annualRows, activeSidebarWeekIndex, selectedCourseId, teacher, teacherSubmissionId, submittedKeys, todayISODate]);
 
-  // Fetch teacher daily lesson plans from RTDB LessonPlans node and normalize
+  // Fetch teacher daily lesson plans from the normalized lesson plan API
   useEffect(() => {
-    if (!teacher || !teacher.userId) return setDbDailyPlans([]);
+    if (!teacherSubmissionId || !selectedCourseId) return setDbDailyPlans([]);
 
-    const fetchLessonPlansFromRTDB = async () => {
+    const fetchLessonPlansFromApi = async () => {
       try {
-        const res = await axios.get(`${RTDB_BASE}/LessonPlans.json`);
-        const data = res.data || {};
-
-        // Try direct key by teacher.userId
-        let teacherNode = null;
-        if (data[teacher.userId]) {
-          teacherNode = data[teacher.userId];
-        } else {
-          // Otherwise find entries where teacherId or teacherUserId matches
-          const candidates = Object.values(data).filter((v) => {
-            if (!v) return false;
-            if (v.teacherId && String(v.teacherId) === String(teacher.userId)) return true;
-            if (v.teacherUserId && String(v.teacherUserId) === String(teacher.userId)) return true;
-            return false;
-          });
-          if (candidates.length === 1) teacherNode = candidates[0];
-          else if (candidates.length > 1) {
-            teacherNode = candidates.reduce((acc, cur) => ({ ...acc, ...cur }), {});
-          }
-        }
+        const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, {
+          params: { academicYear: activeAcademicYear, courseId: selectedCourseId }
+        });
+        const teacherNode = res.data?.data || {};
 
         const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
         const todayIndex = new Date().getDay();
@@ -329,18 +314,18 @@ const [annualRows, setAnnualRows] = useState([
 
         let foundDays = [];
         if (teacherNode) {
-          if (Array.isArray(teacherNode.daily)) {
+          if (teacherNode.weeks && typeof teacherNode.weeks === 'object') {
+            Object.entries(teacherNode.weeks).forEach(([wk, wkObj]) => {
+              const arr = wkObj?.weekDays || wkObj?.days || wkObj?.daily || [];
+              const normalized = normalizeDaysArray(arr, wkObj?.week || wk);
+              if (normalized.length) foundDays = foundDays.concat(normalized);
+            });
+          } else if (Array.isArray(teacherNode.daily)) {
             foundDays = normalizeDaysArray(teacherNode.daily, teacherNode.week);
           } else if (Array.isArray(teacherNode.days)) {
             foundDays = normalizeDaysArray(teacherNode.days, teacherNode.week);
           } else if (Array.isArray(teacherNode.weekDays)) {
             foundDays = normalizeDaysArray(teacherNode.weekDays, teacherNode.week);
-          } else if (teacherNode.weeks && typeof teacherNode.weeks === 'object') {
-            Object.entries(teacherNode.weeks).forEach(([wk, wkObj]) => {
-              const arr = wkObj.weekDays || wkObj.days || wkObj.daily || [];
-              const normalized = normalizeDaysArray(arr, wkObj.week || wk);
-              if (normalized && normalized.length) foundDays = foundDays.concat(normalized);
-            });
           } else {
             Object.keys(teacherNode).forEach((k) => {
               if (k.startsWith('week_') || k.startsWith('week')) {
@@ -351,28 +336,17 @@ const [annualRows, setAnnualRows] = useState([
             });
           }
         }
-
-        if (!foundDays.length) {
-          Object.values(data).forEach((entry) => {
-            if (!entry) return;
-            const arr = entry.weekDays || entry.days || entry.daily || [];
-            if (Array.isArray(arr) && arr.length) {
-              foundDays = foundDays.concat(normalizeDaysArray(arr, entry.week || entry.weekNumber || null));
-            }
-          });
-        }
-
         const activeWeekFiltered = activeWeekVal ? foundDays.filter((p) => String(p.week) === String(activeWeekVal)) : foundDays;
         const todaysPlans = activeWeekFiltered.filter(p => p.scheduledIndex === todayIndex || (p.dayName && p.dayName.toLowerCase() === todayName.toLowerCase()));
         setDbDailyPlans(todaysPlans);
       } catch (err) {
-        console.error('Failed to fetch LessonPlans from RTDB', err);
+        console.error('Failed to fetch lesson plans from API', err);
         setDbDailyPlans([]);
       }
     };
 
-    fetchLessonPlansFromRTDB();
-  }, [teacher, selectedCourseId, submittedKeys, annualRows, activeSidebarWeekIndex]);
+    fetchLessonPlansFromApi();
+  }, [teacherSubmissionId, selectedCourseId, submittedKeys, annualRows, activeSidebarWeekIndex, activeAcademicYear]);
 
   // Fetch previously submitted daily plans from backend
   // fetchSubmissions is callable so we can re-run after a submit to confirm DB write
@@ -503,20 +477,14 @@ const postRefs = useRef({});
         if (res.data && res.data.success) {
           const data = res.data.data || {};
 
-          // Try to read annualRows saved under data.annual.annualRows or data.annualRows
-          let annualStored = null;
-          if (data.annual && Array.isArray(data.annual.annualRows)) annualStored = data.annual.annualRows;
-          else if (Array.isArray(data.annualRows)) annualStored = data.annualRows;
+          const annualStored = getLessonPlanAnnualRows(data);
 
           if (Array.isArray(annualStored) && annualStored.length > 0) {
             setAnnualRows(normalizeAnnualRows(annualStored));
             // ensure we fetch submission statuses after loading the plan
             try { await fetchSubmissions(); } catch (e) { /* ignore */ }
           } else {
-            // if no annualRows, look for week_x entries and build preview rows
-            const built = buildRowsFromData(data);
-            if (built.length) setAnnualRows(normalizeAnnualRows(built));
-            else setAnnualRows([]);
+            setAnnualRows([]);
             // fetch submissions after attempting to build rows
             try { await fetchSubmissions(); } catch (e) { /* ignore */ }
           }
@@ -538,16 +506,9 @@ const postRefs = useRef({});
 
     const fetchCourses = async () => {
       try {
-        const base = 'https://bale-house-rental-default-rtdb.firebaseio.com';
-        const [coursesRes, assignmentsRes, teachersRes] = await Promise.all([
-          axios.get(`${base}/Courses.json`),
-          axios.get(`${base}/TeacherAssignments.json`),
-          axios.get(`${base}/Teachers.json`),
-        ]);
-
-        const teacherKeyEntry = Object.entries(teachersRes.data || {}).find(([key, t]) => t.userId === teacher.userId);
-        if (!teacherKeyEntry) return;
-        const teacherKey = teacherKeyEntry[0];
+        const context = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        const teacherKey = context.teacherKey;
+        if (!teacherKey) return;
 
         setTeacherKey(teacherKey);
         if (teacherKey && String(teacher?.teacherId || '') !== String(teacherKey)) {
@@ -560,9 +521,7 @@ const postRefs = useRef({});
           }
         }
 
-        const teacherAssignments = Object.values(assignmentsRes.data || {}).filter(a => a.teacherId === teacherKey);
-
-        const teacherCourses = teacherAssignments.map(a => ({ id: a.courseId, ...(coursesRes.data ? coursesRes.data[a.courseId] : {}) }));
+        const teacherCourses = context.courses || [];
 
         setCourses(teacherCourses);
         if (!selectedCourseId && teacherCourses.length) setSelectedCourseId(teacherCourses[0].id);
@@ -666,6 +625,33 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
       material: r.aids || r.material || r.materials || "",
       assessment: r.assessment || r.assess || "",
     }));
+  };
+
+  const getLessonPlanWeeksMap = (data) => {
+    if (data?.weeks && typeof data.weeks === 'object') return data.weeks;
+
+    return Object.keys(data || {}).reduce((acc, key) => {
+      if (key.startsWith('week_') && data[key] && typeof data[key] === 'object') {
+        acc[key] = data[key];
+      }
+      return acc;
+    }, {});
+  };
+
+  const getLessonPlanAnnualRows = (data) => {
+    if (Array.isArray(data?.annual?.rows)) return data.annual.rows;
+    if (Array.isArray(data?.annual?.annualRows)) return data.annual.annualRows;
+    if (Array.isArray(data?.annualRows)) return data.annualRows;
+    return buildRowsFromData(data);
+  };
+
+  const getLessonPlanWeek = (data, weekVal) => {
+    const weekKey = `week_${weekVal}`;
+    const weeksMap = getLessonPlanWeeksMap(data);
+    if (weeksMap[weekKey]) return weeksMap[weekKey];
+
+    const annualPlanRows = getLessonPlanAnnualRows(data);
+    return annualPlanRows.find((row) => String(row?.week || row?.weekNumber || row?.weekId) === String(weekVal)) || null;
   };
 
   const normalizeWeekDays = (input) => {
@@ -793,14 +779,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
         if (!res.data || !res.data.success) return;
         const data = res.data.data || {};
 
-        const weekKey = `week_${weekVal}`;
-        let weekObj = null;
-        if (data[weekKey]) weekObj = data[weekKey];
-        else if (data.annual && Array.isArray(data.annual.annualRows)) {
-          weekObj = data.annual.annualRows.find(r => String(r.week || r.weekNumber) === String(weekVal));
-        } else if (Array.isArray(data.annualRows)) {
-          weekObj = data.annualRows.find(r => String(r.week || r.weekNumber) === String(weekVal));
-        }
+        const weekObj = getLessonPlanWeek(data, weekVal);
 
         if (!weekObj) return;
         const normalized = normalizeWeekDays(weekObj.days || weekObj.weekDays || weekObj.week_days || []);
@@ -954,11 +933,11 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
     if (sidebarTab === 'daily') {
       return (
         <div className="space-y-3">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 className="font-semibold">Today's Plan</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <h3 className="font-semibold" style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Today's Plan</h3>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 12, color: '#666' }}>Today</div>
-              <div style={{ fontWeight: 700 }}>{todayStats.total}</div>
+              <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Today</div>
+              <div style={{ fontWeight: 800, color: '#0f172a' }}>{todayStats.total}</div>
             </div>
           </div>
 
@@ -968,22 +947,22 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
                 const status = p.status || 'pending';
                 const color = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
                 return (
-                  <div key={p.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 4px 10px rgba(11,20,30,0.04)', alignItems: 'center' }}>
+                  <div key={p.key || idx} style={{ display: 'flex', gap: 12, padding: 12, borderRadius: 14, background: '#fff', border: '1px solid #e2e8f0', boxShadow: '0 6px 16px rgba(11,20,30,0.04)', alignItems: 'center' }}>
                     <div style={{ width: 8, height: 48, borderRadius: 6, background: color }} />
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ fontWeight: 700 }}>{p.dayName || `Plan ${idx + 1}`}</div>
-                        <div style={{ fontSize: 12, color: '#666' }}>Week: {p.week || '-'}</div>
+                        <div style={{ fontWeight: 700, color: '#0f172a' }}>{p.dayName || `Plan ${idx + 1}`}</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>Week {p.week || '-'}</div>
                       </div>
-                      <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
-                      <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>Quick note: {p.note || p.description || '-'}</div>
+                      <div style={{ fontSize: 13, color: '#334155', marginTop: 6 }}>{p.topic || 'No topic provided'}</div>
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Quick note: {p.note || p.description || '-'}</div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
                       <div style={{ background: color, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
                       {status === 'pending' ? (
-                        <button onClick={() => handleSubmitPlan(p)} className="btn btn-primary" style={{ padding: '6px 10px', borderRadius: 8 }}>Submit</button>
+                        <button onClick={() => handleSubmitPlan(p)} className="btn btn-primary" style={{ padding: '7px 12px', borderRadius: 999 }}>Submit</button>
                       ) : status === 'missed' ? (
-                        <button className="btn" disabled style={{ padding: '6px 10px', borderRadius: 8, background: '#c53030', color: '#fff' }}>Missed</button>
+                        <button className="btn" disabled style={{ padding: '7px 12px', borderRadius: 999, background: '#c53030', color: '#fff' }}>Missed</button>
                       ) : null}
                     </div>
                   </div>
@@ -991,7 +970,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
               })}
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: '#666' }}>No plans for today.</div>
+            <div style={{ textAlign: 'center', color: '#64748b', padding: '18px 12px', borderRadius: 14, background: '#f8fafc', border: '1px dashed #cbd5e1' }}>No plans for today.</div>
           )}
         </div>
       );
@@ -1000,26 +979,26 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
     if (sidebarTab === 'weekly') {
       return (
         <div className="sidebar-week-list">
-          <h3 className="font-semibold">Week Plan</h3>
+          <h3 className="font-semibold" style={{ margin: 0, marginBottom: 10, fontSize: 15, color: '#0f172a' }}>Week Plan</h3>
           {(currentWeekDays || []).map((d, i) => {
             const ds = getDayStatus(d, i);
             const status = ds.status;
             const statusColor = status === 'submitted' ? '#2f855a' : status === 'missed' ? '#c53030' : '#4a5568';
             const cardBg = status === 'submitted' ? '#d9f8d5' : status === 'missed' ? '#ffe4e4' : '#ffffff';
               return (
-              <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 22, color: '#333', padding: 12, borderRadius: 10, background: cardBg, alignItems: 'center', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
+              <div key={i} className={`sidebar-week-card ${status}`} style={{ display: 'flex', gap: 18, color: '#333', padding: 12, borderRadius: 14, background: cardBg, alignItems: 'center', border: '1px solid #e2e8f0', boxShadow: '0 6px 14px rgba(11,20,30,0.04)' }}>
                 <div style={{ width: 10, height: 46, borderRadius: 6, background: status === 'submitted' ? 'linear-gradient(180deg,#9ae6b4,#2f855a)' : status === 'missed' ? 'linear-gradient(180deg,#feb2b2,#c53030)' : 'linear-gradient(180deg,#e2e8f0,#4a5568)' }} />
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontWeight: 700 }}>{d.dayName || `Day ${i+1}`}</div>
-                    <div style={{ fontSize: 12, color: '#666' }}>{currentWeekPlan?.week ? `Week ${currentWeekPlan.week}` : ''}</div>
+                    <div style={{ fontWeight: 700, color: '#0f172a' }}>{d.dayName || `Day ${i+1}`}</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>{currentWeekPlan?.week ? `Week ${currentWeekPlan.week}` : ''}</div>
                   </div>
-                  <div style={{ fontSize: 13, color: '#333', marginTop: 6 }}>{d.topic || currentWeekPlan?.topic || 'No topic set'}</div>
+                  <div style={{ fontSize: 13, color: '#334155', marginTop: 6 }}>{d.topic || currentWeekPlan?.topic || 'No topic set'}</div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
                   <div style={{ background: statusColor, color: '#fff', padding: '6px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700 }}>{status === 'submitted' ? 'Submitted' : status === 'missed' ? 'Missed' : 'Pending'}</div>
                   {status === 'pending' && (
-                    <button onClick={() => handleSubmitPlan({ key: ds.key, week: currentWeekPlan?.week, dayName: d.dayName, status })} className="btn btn-primary" style={{ padding: '6px 10px', borderRadius: 8 }}>Submit</button>
+                    <button onClick={() => handleSubmitPlan({ key: ds.key, week: currentWeekPlan?.week, dayName: d.dayName, status })} className="btn btn-primary" style={{ padding: '7px 12px', borderRadius: 999 }}>Submit</button>
                   )}
                 </div>
               </div>
@@ -1032,7 +1011,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
     // monthly
     return (
       <div className="space-y-2">
-        <h3 className="font-semibold">This Month</h3>
+        <h3 className="font-semibold" style={{ margin: 0, marginBottom: 10, fontSize: 15, color: '#0f172a' }}>This Month</h3>
         {!currentMonthKey && <div className="text-xs text-gray-500">No plans for this month.</div>}
         {currentMonthKey && (() => {
           const month = currentMonthKey;
@@ -1040,15 +1019,15 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
           const s = monthlyStats[month] || { total: 0, submitted: 0, missed: 0, pending: 0, topics: [] };
           const pct = s.total ? Math.round((s.submitted / s.total) * 100) : 0;
           return (
-            <div key={month} style={{ padding: 12, borderRadius: 10, background: '#fff', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 8 }}>
+            <div key={month} style={{ padding: 12, borderRadius: 14, background: '#fff', border: '1px solid #e2e8f0', boxShadow: '0 6px 14px rgba(12,20,30,0.04)', marginBottom: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <div style={{ fontWeight: 800 }}>{month}</div>
-                  <div style={{ fontSize: 12, color: '#666' }}>{rows.length} week(s) • {s.total} day(s)</div>
+                  <div style={{ fontWeight: 800, color: '#0f172a' }}>{month}</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>{rows.length} week(s) • {s.total} day(s)</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 12, color: '#666' }}>Completed</div>
-                  <div style={{ fontWeight: 700 }}>{pct}%</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Completed</div>
+                  <div style={{ fontWeight: 700, color: '#0f172a' }}>{pct}%</div>
                 </div>
               </div>
 
@@ -1083,9 +1062,8 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
 
   const buildRowsFromData = (data) => {
     const built = [];
-    Object.keys(data).forEach((k) => {
+    Object.entries(getLessonPlanWeeksMap(data)).forEach(([k, w]) => {
       if (k.startsWith('week_')) {
-        const w = data[k] || {};
         built.push({
           month: w.month || '',
           week: w.week || k.replace('week_', ''),
@@ -1229,15 +1207,7 @@ const handleSaveWeekPlan = async (rowIndex = null) => {
           const res = await axios.get(`${API_BASE}/lesson-plans/${teacherSubmissionId}`, { params: { academicYear: activeAcademicYear, courseId: selectedCourseId } });
           if (res.data && res.data.success) {
             const data = res.data.data || {};
-            const weekKey = `week_${row.week || row.weekNumber || row.weekId || rowIndex}`;
-            const w = data[weekKey] || (data.annual && Array.isArray(data.annual.week) ? {} : null);
-            // prefer direct week entry, else try to find by matching week value
-            let weekObj = null;
-            if (data[weekKey]) weekObj = data[weekKey];
-            else if (data.annual && data.annual.annualRows) {
-              // if annual stored as rows, try find
-              weekObj = data.annual.annualRows.find(r => String(r.week) === String(row.week));
-            }
+            const weekObj = getLessonPlanWeek(data, row.week || row.weekNumber || row.weekId || rowIndex);
 
             if (weekObj) {
               const normalized = normalizeWeekDays(weekObj.days || weekObj.weekDays || weekObj.weekDays || []);
@@ -1546,128 +1516,103 @@ function saveSeenPost(teacherId, postId) {
   // ---------------- Guard ----------------
   if (!teacher) return null;
 
-  return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-        
-        <div className="nav-right">
-                  <div className="icon-circle">
-                    <div
-                      onClick={() => setShowNotifications(!showNotifications)}
-                      style={{ cursor: "pointer", position: "relative" }}
-                    >
-                      <FaBell size={24} />
-                      {notifications.length > 0 && (
-                        <span style={{
-                          position: "absolute",
-                          top: -5,
-                          right: -5,
-                          background: "red",
-                          color: "white",
-                          borderRadius: "50%",
-                          width: 18,
-                          height: 18,
-                          fontSize: 12,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}>{notifications.length}</span>
-                      )}
-                    </div>
-                    {showNotifications && (
-                      <div style={{
-                        position: "absolute",
-                        top: 30,
-                        right: 0,
-                        width: 300,
-                        maxHeight: 400,
-                        overflowY: "auto",
-                        background: "#fff",
-                        boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
-                        borderRadius: 8,
-                        zIndex: 100,
-                      }}>
-                        {notifications.length > 0 ? (
-                          notifications.map((notif, index) => (
-                            notif.type === "post" ? (
-                              <div
-                                key={notif.id || index}
-                                onClick={() => handleNotificationClick(notif)}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  padding: "10px 15px",
-                                  borderBottom: "1px solid #eee",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                                <div>
-                                  <strong>{notif.adminName}</strong>
-                                  <p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p>
-                                </div>
-                              </div>
-                            ) : (
-                              <div
-                                key={notif.chatId || index}
-                                onClick={() => handleNotificationClick(notif)}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  padding: "10px 15px",
-                                  borderBottom: "1px solid #eee",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <img src={notif.profile || "/default-profile.png"} alt={notif.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                                <div><strong>{notif.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                              </div>
-                            )
-                          ))
-                        ) : (
-                          <div style={{ padding: 15 }}>No notifications</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-        
-                  {/* Messenger: navigates to all-chat, badge only */}
-                  <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-                    <div onClick={() => navigate("/all-chat")}
-                         style={{ cursor: "pointer", position: "relative" }}>
-                      <FaFacebookMessenger size={22} />
-                      {totalUnreadMessages > 0 && (
-                        <span style={{
-                          position: "absolute",
-                          top: -6,
-                          right: -6,
-                          background: "#f60b0b",
-                          color: "#fff",
-                          borderRadius: "50%",
-                          minWidth: 18,
-                          height: 18,
-                          fontSize: 12,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          padding: "0 5px"
-                        }}>
-                          {totalUnreadMessages}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-        
-                  <Link className="icon-circle" to="/settings">
-                    <FaCog />
-                  </Link>
-                  <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
-                </div>
-      </nav>
+  const lessonHeaderMetaPillStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "5px 10px",
+    borderRadius: 999,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#334155",
+    fontWeight: 700,
+    fontSize: 12,
+  };
 
-      <div className="google-dashboard">
+  const lessonSurfaceCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    boxShadow: "var(--shadow-soft)",
+  };
+
+  const lessonStatCardStyle = {
+    flex: 1,
+    padding: 10,
+    borderRadius: 12,
+    textAlign: "center",
+    border: "1px solid #e2e8f0",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4)",
+  };
+
+  const lessonSidebarShellStyle = {
+    width: '25%',
+    minWidth: 320,
+    padding: 14,
+    background: '#f8fbff',
+    border: '1px solid #dbe5f0',
+    borderRadius: 20,
+    boxShadow: '0 18px 36px rgba(15, 23, 42, 0.08)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    flexShrink: 0,
+  };
+
+  const lessonSidebarCardStyle = {
+    background: '#ffffff',
+    border: '1px solid #e2e8f0',
+    borderRadius: 16,
+    boxShadow: '0 8px 20px rgba(15, 23, 42, 0.05)',
+  };
+
+  const lessonSidebarTabStyle = (active) => ({
+    flex: 1,
+    borderRadius: 999,
+    padding: '10px 12px',
+    border: 'none',
+    background: active ? '#0f172a' : 'transparent',
+    color: active ? '#ffffff' : '#475569',
+    fontWeight: 700,
+    fontSize: 12,
+    boxShadow: active ? '0 8px 18px rgba(15, 23, 42, 0.14)' : 'none',
+  });
+
+  const weekCompletionRate = weekStats.total ? Math.round((weekStats.submitted / weekStats.total) * 100) : 0;
+
+  const annualPlannerMeta = [
+    `${annualRows.length} Week Rows`,
+    `${currentWeekDays.length} Active Days`,
+    `Sidebar: ${sidebarTab.charAt(0).toUpperCase()}${sidebarTab.slice(1)}`,
+  ];
+
+  return (
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 12, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <Sidebar
           active="lesson-plan"
           sidebarOpen={leftSidebarOpen}
@@ -1676,54 +1621,104 @@ function saveSeenPost(teacherId, postId) {
           handleLogout={handleLogout}
         />
 
-        <div className="lesson-layout">
-          {/* Main Content */}
-          <div className="lesson-main lesson-main--inline">
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
-  <div className="lesson-card-header">
-  <div className="lesson-title">
-    <h2>Annual Lesson Plan</h2>
-    <p className="muted">Create your course roadmap — add rows, expand weeks and save.</p>
-    {selectedCourse ? (
-      <div className="course-info">
-        <div className="course-name">{selectedCourse.title || selectedCourse.name || selectedCourse.subject || 'Selected Course'}</div>
-        <div className="course-meta">
-          {selectedCourse.grade && <span className="meta-badge">Grade {selectedCourse.grade}</span>}
-          {selectedCourse.section && <span className="meta-badge">Section {selectedCourse.section}</span>}
-          {selectedCourse.subject && <span className="meta-badge">{selectedCourse.subject}</span>}
-          <span className="meta-badge">Academic Year: {activeAcademicYear}</span>
+        <div className="lesson-layout" style={{ display: "flex", flex: 1, minWidth: 0, gap: 14, marginLeft: 0, height: "100%" }}>
+          {/* Main Content */}
+          <div className="lesson-main lesson-main--inline" style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", background: "transparent", padding: "16px 18px 20px" }}>
+
+  <div className="section-header-card" style={{ marginBottom: 14 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+      <div className="lesson-title">
+        <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Annual Lesson Plan</h2>
+        <p className="section-header-card__subtitle">Create your course roadmap, expand weeks, and save daily plans.</p>
+        <div className="section-header-card__meta">
+          {selectedCourse?.grade && <span style={lessonHeaderMetaPillStyle}>Grade {selectedCourse.grade}</span>}
+          {selectedCourse?.section && <span style={lessonHeaderMetaPillStyle}>Section {selectedCourse.section}</span>}
+          <span style={lessonHeaderMetaPillStyle}>Academic Year: {activeAcademicYear}</span>
+          <span className="section-header-card__chip">Teacher View</span>
         </div>
       </div>
-    ) : (
-      <div style={{ marginTop: 8, color: '#666', fontSize: 13 }}>Please select a course to view its lesson plan.</div>
-    )}
-  </div>
-  <div className="lesson-actions">
-    <div className="lesson-course">
-      <label className="lesson-course-label">Course</label>
-      <select
-        value={selectedCourseId}
-        onChange={(e) => setSelectedCourseId(e.target.value)}
-        className="lesson-course-select"
-      >
-        <option value="">-- Select Course --</option>
-        {courses.map((c, i) => (
-          <option key={c.id || i} value={c.id}>
-            {c.title || c.name || c.subject || c.courseName || (`Course ${i+1}`)}
-          </option>
-        ))}
-      </select>
-    </div>
- 
-    <div className="lesson-actions-buttons">
-      <button onClick={handleSaveAnnualPlan} className="btn btn-success"><FaSave style={{marginRight:8}} />Save Annual</button>
-     
-      
-    </div>
-  </div>
-</div>
+      <div className="lesson-actions" style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+        <div className="lesson-course" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label className="lesson-course-label" style={{ fontWeight: 700, color: "var(--text-secondary)", fontSize: 13 }}>Course</label>
+          <select
+            value={selectedCourseId}
+            onChange={(e) => setSelectedCourseId(e.target.value)}
+            className="lesson-course-select"
+            style={{ minWidth: 280, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-strong)", background: "#f8fafc", fontWeight: 600, color: "var(--text-primary)" }}
+          >
+            <option value="">-- Select Course --</option>
+            {courses.map((c, i) => (
+              <option key={c.id || i} value={c.id}>
+                {c.title || c.name || c.subject || c.courseName || (`Course ${i+1}`)}
+              </option>
+            ))}
+          </select>
+        </div>
 
-  <div className="lesson-card" ref={tableContainerRef} style={{marginTop:16, overflowX:'hidden', marginLeft: 0}}>
+        <div className="lesson-actions-buttons">
+          <button onClick={handleSaveAnnualPlan} className="btn btn-success" style={{ borderRadius: 999, padding: "11px 18px", boxShadow: "0 10px 22px rgba(16, 185, 129, 0.18)" }}><FaSave style={{marginRight:8}} />Save Annual</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {selectedCourse ? (
+    <div style={{ marginBottom: 14, background: "linear-gradient(135deg, #eff6ff, #f8fafc)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: "12px 14px", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+      <span style={{ fontWeight: 800, color: "#1e3a8a", fontSize: 12, letterSpacing: "0.02em" }}>ACTIVE COURSE</span>
+      <span style={{ background: "#ffffff", border: "1px solid #dbeafe", color: "#1e40af", borderRadius: 999, padding: "6px 11px", fontWeight: 700, fontSize: 12 }}>
+        {selectedCourse.title || selectedCourse.name || selectedCourse.subject || 'Selected Course'}
+      </span>
+      {selectedCourse.subject && <span style={lessonHeaderMetaPillStyle}>{selectedCourse.subject}</span>}
+    </div>
+  ) : (
+    <div style={{ marginBottom: 14, background: "linear-gradient(135deg, #fff7ed, #ffffff)", border: "1px solid #fed7aa", borderRadius: 14, padding: "12px 14px", color: "#9a3412", fontWeight: 600, fontSize: 13 }}>
+      Please select a course to view its lesson plan.
+    </div>
+  )}
+
+  <div style={{ ...lessonSurfaceCardStyle, marginBottom: 14, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+    <div>
+      <div style={{ fontWeight: 800, color: "var(--text-primary)", fontSize: 14, marginBottom: 4 }}>Planner Workspace</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {annualPlannerMeta.map((item) => (
+          <span key={item} style={lessonHeaderMetaPillStyle}>{item}</span>
+        ))}
+      </div>
+    </div>
+    <button
+      onClick={() =>
+        setAnnualRows([
+          ...annualRows,
+          {
+            month: "",
+            week: "",
+            days: "",
+            topic: "",
+            objective: "",
+            method: "",
+            aids: "",
+            assessment: "",
+          },
+        ])
+      }
+      className="btn btn-primary"
+      style={{ borderRadius: 999, padding: '11px 18px' }}
+    >
+      <FaPlus style={{ marginRight: 6 }} /> Add Row
+    </button>
+  </div>
+
+  <div className="lesson-card" ref={tableContainerRef} style={{marginTop:16, overflowX:'auto', marginLeft: 0, border: "1px solid var(--border-soft)", borderRadius: 16, boxShadow: "var(--shadow-soft)", padding: 12, background: "var(--surface-panel)"}}>
 
   {isLoadingPlans ? (
     <div style={{ padding: 24, textAlign: 'center' }}>Loading lesson plan for selected course...</div>
@@ -1731,20 +1726,20 @@ function saveSeenPost(teacherId, postId) {
     <>
     
 
-    <table className="lesson-table" style={{ width: '100%' }}>
+    <table className="lesson-table" style={{ width: '100%', background: '#fff', borderRadius: 12, overflow: 'hidden' }}>
     <thead>
-      <tr>
+      <tr style={{ background: 'linear-gradient(135deg, #1d4ed8, #2563eb)', color: '#fff' }}>
         {["Month", "Week", "Days", "Topic", "Objective", "Method", "Materials", "Assessment"].map((head) => (
-          <th key={head}>{head}</th>
+          <th key={head} style={{ color: '#fff', background: 'transparent', borderTop: 'none', borderBottom: '1px solid rgba(255,255,255,0.18)' }}>{head}</th>
         ))}
-        <th style={{ width: 48 }} />
+        <th style={{ width: 48, color: '#fff', background: 'transparent', borderTop: 'none', borderBottom: '1px solid rgba(255,255,255,0.18)' }} />
       </tr>
     </thead>
 
     <tbody>
       {annualRows.map((row, index) => (
         <React.Fragment key={index}>
-          <tr>
+          <tr style={{ background: index % 2 === 0 ? '#ffffff' : '#f8fafc' }}>
             {(() => {
               const fieldsOrder = ['month','week','days','topic','objective','method','material','assessment'];
               return fieldsOrder.map((field) => {
@@ -1842,17 +1837,23 @@ function saveSeenPost(teacherId, postId) {
             })()}
             
 
-            <td style={{ border: "1px solid #e6eaf0", padding: 5, textAlign: "center" }}>
-              <button onClick={() => removeAnnualRow(index)} title="Remove Row" className="btn btn-danger"><FaTrash /></button>
+            <td style={{ border: "1px solid #e6eaf0", padding: 5, textAlign: "center", background: index % 2 === 0 ? '#ffffff' : '#f8fafc' }}>
+              <button onClick={() => removeAnnualRow(index)} title="Remove Row" className="btn btn-danger" style={{ borderRadius: 999, padding: '8px 10px' }}><FaTrash /></button>
             </td>
           </tr>
 
           {expandedWeeks.includes(index) && (
             <tr>
-              <td colSpan={9} style={{ background: "#fafafa", padding: 12 }}>
-                <div className="expand-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <strong>Daily Plan for Week {row.week || index}</strong>
+              <td colSpan={9} style={{ background: "#eef4ff", padding: 12 }}>
+                <div className="expand-panel" style={{ display: "flex", flexDirection: "column", gap: 12, background: '#ffffff', border: '1px solid #dbeafe', borderRadius: 14, padding: 14, boxShadow: '0 10px 20px rgba(15, 23, 42, 0.06)' }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: 'wrap' }}>
+                    <div>
+                      <strong style={{ color: '#1e3a8a', fontSize: 15 }}>Daily Plan for Week {row.week || index}</strong>
+                      <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={lessonHeaderMetaPillStyle}>{days.length} Days</span>
+                        <span style={lessonHeaderMetaPillStyle}>{row.month || 'No Month'}</span>
+                      </div>
+                    </div>
                   
                   </div>
 
@@ -1861,20 +1862,20 @@ function saveSeenPost(teacherId, postId) {
                     <div />
                     <div style={{ flex: 1 }} />
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => handleSaveWeekPlan(index)} className="btn btn-primary">Save Week Plan</button>
+                      <button onClick={() => handleSaveWeekPlan(index)} className="btn btn-primary" style={{ borderRadius: 999, padding: '9px 14px' }}>Save Week Plan</button>
                     
                     </div>
                   </div>
 
                   {days.length === 0 && (
-                    <div className="muted" style={{ padding: 12 }}>No days yet. Click "Add Day" to create a day.</div>
+                    <div className="muted" style={{ padding: 12, background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: 12 }}>No days yet. Click "Add Day" to create a day.</div>
                   )}
 
                   {days.length > 0 && (
                     <div style={{ overflowX: 'auto', marginTop: 6 }}>
-                      <table className="mini-day-table" style={{ width: '100%', marginBottom: 10 }}>
+                      <table className="mini-day-table" style={{ width: '100%', marginBottom: 10, borderRadius: 12, overflow: 'hidden' }}>
                         <thead>
-                          <tr>
+                          <tr style={{ background: 'linear-gradient(135deg, #eff6ff, #dbeafe)' }}>
                             <th style={{ minWidth: 100 }}>Day/Date</th>
                             <th>Sub Topic</th>
                             <th>Method</th>
@@ -1970,7 +1971,7 @@ function saveSeenPost(teacherId, postId) {
                     </div>
                   )}
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <button onClick={() => addDay()} className="btn btn-primary"><FaPlus style={{marginRight:6}}/>Add Day</button>
+                      <button onClick={() => addDay()} className="btn btn-primary" style={{ borderRadius: 999, padding: '9px 14px' }}><FaPlus style={{marginRight:6}}/>Add Day</button>
                     </div>
                 </div>
               </td>
@@ -1984,32 +1985,35 @@ function saveSeenPost(teacherId, postId) {
   )}
 
   {!isLoadingPlans && annualRows.length === 0 && (
-    <div style={{ padding: 16, color: '#666' }}>
+    <div style={{ padding: 16, color: '#666', background: '#f8fafc', borderRadius: 12, border: '1px solid #e2e8f0' }}>
       No lesson plan found for the selected course. Use "Add Row" to start creating one.
     </div>
   )}
 
-  <button
-    onClick={() =>
-      setAnnualRows([
-        ...annualRows,
-        {
-          month: "",
-          week: "",
-          days: "",
-          topic: "",
-          objective: "",
-          method: "",
-          aids: "",
-          assessment: "",
-        },
-      ])
-    }
-    className="btn btn-primary"
-    style={{ marginTop: 15 }}
-  >
-    + Add Row
-  </button>
+  <div style={{ marginTop: 15, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: 12 }}>Build the annual roadmap, then expand each week to add daily entries.</span>
+    <button
+      onClick={() =>
+        setAnnualRows([
+          ...annualRows,
+          {
+            month: "",
+            week: "",
+            days: "",
+            topic: "",
+            objective: "",
+            method: "",
+            aids: "",
+            assessment: "",
+          },
+        ])
+      }
+      className="btn btn-primary"
+      style={{ borderRadius: 999, padding: '11px 18px' }}
+    >
+      + Add Row
+    </button>
+  </div>
 </div>
 
 
@@ -2017,65 +2021,69 @@ function saveSeenPost(teacherId, postId) {
       </div>
 
   {sidebarOpen ? (
-    <div className="right-sidebar" style={{ width: '26%', padding: 16, background: '#f7fafc', borderLeft: '1px solid #eee', display:'flex', flexDirection:'column', gap:12, transition: 'width 220ms ease', flexShrink: 0 }}>
+    <div className="right-sidebar" style={lessonSidebarShellStyle}>
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} style={{ width: 36, height: 36, borderRadius: 8, border: 'none', background: '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.08)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <button aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} style={{ width: 36, height: 36, borderRadius: 999, border: '1px solid #dbe5f0', background: '#ffffff', color: '#334155', boxShadow: '0 6px 14px rgba(15,23,42,0.06)', display:'flex', alignItems:'center', justifyContent:'center' }}>
           <FaChevronRight />
         </button>
       </div>
 
-      <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.06)' }}>
+      <div style={{ ...lessonSidebarCardStyle, padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ background: '#eef2ff', padding: 8, borderRadius: 8 }}><FaCalendarAlt color="#4b6cb7" /></div>
+            <div style={{ background: '#eff6ff', padding: 9, borderRadius: 10 }}><FaCalendarAlt color="#1d4ed8" /></div>
             <div>
-              <div style={{ fontWeight: 700 }}>Lesson Overview</div>
-              <div style={{ fontSize: 12, color: '#666' }}>{new Date().toLocaleDateString()}</div>
+              <div style={{ fontWeight: 800, color: '#0f172a' }}>Lesson Overview</div>
+              <div style={{ fontSize: 12, color: '#64748b' }}>{new Date().toLocaleDateString()}</div>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 12, color: '#666' }}>This Week</div>
-              <div style={{ fontWeight: 700 }}>{weekStats.total}</div>
+              <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>This Week</div>
+              <div style={{ fontWeight: 800, fontSize: 22, color: '#0f172a' }}>{weekStats.total}</div>
             </div>
           </div>
         </div>
 
+        <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>Weekly progress</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: '#0f172a' }}>{weekCompletionRate}%</span>
+          </div>
+          <div style={{ height: 8, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
+            <div style={{ width: `${weekCompletionRate}%`, height: '100%', background: 'linear-gradient(90deg, #0f172a, #2563eb)' }} />
+          </div>
+        </div>
+
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-          <div style={{ flex: 1, background: '#f0fff4', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-            <div style={{ fontSize: 12, color: '#2f855a' }}><FaCheckCircle /></div>
-            <div style={{ fontWeight: 700 }}>{weekStats.submitted}</div>
-            <div style={{ fontSize: 11, color: '#555' }}>Submitted</div>
+          <div style={{ ...lessonStatCardStyle, background: '#f0fff4', border: '1px solid #dcfce7' }}>
+            <div style={{ fontSize: 12, color: '#15803d' }}><FaCheckCircle /></div>
+            <div style={{ fontWeight: 800, color: '#14532d' }}>{weekStats.submitted}</div>
+            <div style={{ fontSize: 11, color: '#166534' }}>Submitted</div>
           </div>
-          <div style={{ flex: 1, background: '#fff7f7', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-            <div style={{ fontSize: 12, color: '#c53030' }}><FaClock /></div>
-            <div style={{ fontWeight: 700 }}>{weekStats.missed}</div>
-            <div style={{ fontSize: 11, color: '#555' }}>Missed</div>
+          <div style={{ ...lessonStatCardStyle, background: '#fff7f7', border: '1px solid #fecaca' }}>
+            <div style={{ fontSize: 12, color: '#b91c1c' }}><FaClock /></div>
+            <div style={{ fontWeight: 800, color: '#7f1d1d' }}>{weekStats.missed}</div>
+            <div style={{ fontSize: 11, color: '#991b1b' }}>Missed</div>
           </div>
-          <div style={{ flex: 1, background: '#f7fafc', padding: 8, borderRadius: 8, textAlign: 'center' }}>
-            <div style={{ fontSize: 12, color: '#4a5568' }}>•</div>
-            <div style={{ fontWeight: 700 }}>{weekStats.pending}</div>
-            <div style={{ fontSize: 11, color: '#555' }}>Pending</div>
+          <div style={{ ...lessonStatCardStyle, background: '#f8fafc' }}>
+            <div style={{ fontSize: 12, color: '#475569' }}>•</div>
+            <div style={{ fontWeight: 800, color: '#0f172a' }}>{weekStats.pending}</div>
+            <div style={{ fontSize: 11, color: '#475569' }}>Pending</div>
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button onClick={() => setSidebarTab('daily')} className={"btn " + (sidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Daily</button>
-        <button onClick={() => setSidebarTab('weekly')} className={"btn " + (sidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Weekly</button>
-        <button onClick={() => setSidebarTab('monthly')} className={"btn " + (sidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')} style={{ flex: 1, borderRadius: 999 }}>Monthly</button>
+      <div style={{ ...lessonSidebarCardStyle, display: 'flex', gap: 6, alignItems: 'center', padding: 4, borderRadius: 999 }}>
+        <button onClick={() => setSidebarTab('daily')} className={"btn " + (sidebarTab === 'daily' ? 'btn-primary' : 'btn-ghost')} style={lessonSidebarTabStyle(sidebarTab === 'daily')}>Daily</button>
+        <button onClick={() => setSidebarTab('weekly')} className={"btn " + (sidebarTab === 'weekly' ? 'btn-primary' : 'btn-ghost')} style={lessonSidebarTabStyle(sidebarTab === 'weekly')}>Weekly</button>
+        <button onClick={() => setSidebarTab('monthly')} className={"btn " + (sidebarTab === 'monthly' ? 'btn-primary' : 'btn-ghost')} style={lessonSidebarTabStyle(sidebarTab === 'monthly')}>Monthly</button>
       </div>
 
-      <div style={{ background: '#fff', padding: 12, borderRadius: 12, boxShadow: '0 6px 18px rgba(14,30,37,0.04)', overflowY: 'auto', maxHeight: '56vh' }}>
+      <div style={{ ...lessonSidebarCardStyle, padding: 12, overflowY: 'auto', maxHeight: '56vh' }}>
         {renderSidebarContent()}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
-        <div style={{ fontSize: 12, color: '#666' }}>Monthly entries: <strong>{monthlyCount}</strong></div>
-        <div>
-          <button className="btn btn-ghost" onClick={() => { setSubmittedKeys([]); fetchSubmissions(); }}>Refresh</button>
-        </div>
-      </div>
     </div>
   ) : (
     <button
@@ -2085,19 +2093,25 @@ function saveSeenPost(teacherId, postId) {
         position: 'fixed',
         top: 76,
         right: 12,
-        width: 40,
-        height: 40,
-        borderRadius: 10,
-        border: 'none',
-        background: '#fff',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+        minWidth: 78,
+        height: 42,
+        padding: '0 14px',
+        borderRadius: 999,
+        border: '1px solid #dbe5f0',
+        background: '#ffffff',
+        color: '#0f172a',
+        boxShadow: '0 10px 20px rgba(15,23,42, 0.10)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: 6,
+        fontWeight: 700,
+        fontSize: 12,
         cursor: 'pointer',
         zIndex: 950,
       }}
     >
+      <span>Plan</span>
       <FaChevronLeft />
     </button>
   )}

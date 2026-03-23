@@ -1,6 +1,6 @@
 import React, { useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaBell, FaFacebookMessenger, FaCog } from "react-icons/fa"
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaBell, FaFacebookMessenger, FaCog, FaCalendarAlt } from "react-icons/fa"
 import axios from "axios"
 
 import { BACKEND_BASE } from "../config.js"
@@ -381,6 +381,7 @@ export default function Register() {
           <div className="sidebar-menu">
             <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
             <Link className="sidebar-btn" to="/employees"> <FaChalkboardTeacher /> Employees</Link>
+            <Link className="sidebar-btn" to="/employees/attendance"> <FaCalendarAlt /> Attendance</Link>
             <Link className="sidebar-btn" to="/register" style={{backgroundColor: "#4b6cb7", color: "white"}}> <FaFileAlt /> Registration</Link>
             <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
           </div>

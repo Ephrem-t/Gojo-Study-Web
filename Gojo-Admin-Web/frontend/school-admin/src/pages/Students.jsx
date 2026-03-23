@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { 
   FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, 
-  FaSignOutAlt, FaBell, FaFacebookMessenger, FaSearch, FaCalendarAlt, FaCommentDots, FaCheck, FaPaperPlane
+  FaSignOutAlt, FaBell, FaFacebookMessenger, FaSearch, FaCalendarAlt, FaCommentDots, FaCheck, FaPaperPlane, FaChartLine, FaChevronDown
 } from "react-icons/fa";
 import axios from "axios";
 import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
@@ -10,14 +10,16 @@ import { useMemo } from "react";
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
 import { getFirestore, collection, getDocs } from "firebase/firestore";
 
-import app, { db } from "../firebase"; // Adjust the path if needed
+import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
+import Sidebar from "../components/Sidebar";
 
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
   // ------------------ STATES ------------------
   const [students, setStudents] = useState([]); // List of all students
+  const [teachers, setTeachers] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
   const [searchTerm, setSearchTerm] = useState("");
@@ -26,18 +28,237 @@ function StudentsPage() {
   const [studentChatOpen, setStudentChatOpen] = useState(false); // Toggle chat popup
   const [popupMessages, setPopupMessages] = useState([]); // Messages for chat popup
   const messagesEndRef = useRef(null);
+  const studentSelectionRequestRef = useRef(0);
   const [popupInput, setPopupInput] = useState(""); // Input for chat message
   const [details, setDetails] = useState(null);
   const [performance, setPerformance] = useState([]);
   const [studentTab, setStudentTab] = useState("details");
   const [attendance, setAttendance] = useState([]);
+  const [paymentHistory, setPaymentHistory] = useState({});
   const [marks, setMarks] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [studentsLoading, setStudentsLoading] = useState(true);
+  const [currentAcademicYear, setCurrentAcademicYear] = useState("");
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [unreadMap, setUnreadMap] = useState({});
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editForm, setEditForm] = useState({});
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [studentFullscreenOpen, setStudentFullscreenOpen] = useState(false);
+  const [fullscreenEditing, setFullscreenEditing] = useState(false);
+  const [fullscreenSaving, setFullscreenSaving] = useState(false);
+  const [fullscreenSectionCollapsed, setFullscreenSectionCollapsed] = useState({});
+  const [fullscreenEditForm, setFullscreenEditForm] = useState({ sections: {}, additional: {} });
+  const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
+  const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const navigate = useNavigate();
-  const admin = JSON.parse(localStorage.getItem("admin")) || {}; // Admin info from localStorage
-  const adminId = admin.userId || null;
-  const adminUserId = admin.userId || null;
+  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+
+  // Prefer the best available session payload. Sometimes `finance` can be stale/empty
+  // while `admin` still contains a valid adminId/userId (or vice-versa).
+  const getStoredAuth = () => {
+    const parse = (raw) => {
+      try {
+        return JSON.parse(raw || "") || {};
+      } catch (e) {
+        return {};
+      }
+    };
+
+    const rawFinance = localStorage.getItem("registrar");
+    const rawAdmin = localStorage.getItem("admin");
+    const financeObj = parse(rawFinance);
+    const adminObj = parse(rawAdmin);
+
+    const hasIdentity = (obj) => Boolean(obj && (obj.financeId || obj.adminId || obj.userId));
+
+    if (hasIdentity(financeObj)) return { raw: rawFinance, data: financeObj, source: "finance" };
+    if (hasIdentity(adminObj)) return { raw: rawAdmin, data: adminObj, source: "admin" };
+
+    return { raw: rawFinance || rawAdmin, data: financeObj || adminObj || {}, source: rawFinance ? "registrar" : "admin" };
+  };
+
+  const _storedFinance = (() => {
+    return getStoredAuth().data || {};
+  })();
+
+  const schoolCode = _storedFinance.schoolCode || "";
+  const DB_URL = schoolCode
+    ? `${DB_BASE}/Platform1/Schools/${schoolCode}`
+    : DB_BASE;
+  const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
+
+  const readStudentsCache = () => {
+    try {
+      const rawSession = sessionStorage.getItem(STUDENTS_CACHE_KEY);
+      const rawLocal = localStorage.getItem(STUDENTS_CACHE_KEY);
+      const parsed = JSON.parse(rawSession || rawLocal || "null");
+      if (!parsed || typeof parsed !== "object") return null;
+
+      const cachedAt = Number(parsed.cachedAt || 0);
+      if (!cachedAt || Date.now() - cachedAt > 10 * 60 * 1000) return null;
+
+      if (!rawSession && rawLocal) {
+        sessionStorage.setItem(STUDENTS_CACHE_KEY, rawLocal);
+      }
+
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeStudentsCache = (payload) => {
+    try {
+      const serialized = JSON.stringify({ ...(payload || {}), cachedAt: Date.now() });
+      sessionStorage.setItem(STUDENTS_CACHE_KEY, serialized);
+      localStorage.setItem(STUDENTS_CACHE_KEY, serialized);
+    } catch {
+      // ignore cache write failures
+    }
+  };
+
+  const [finance, setFinance] = useState({
+    financeId: _storedFinance.financeId || _storedFinance.adminId || "",
+    userId: _storedFinance.userId || "",
+    schoolCode: _storedFinance.schoolCode || "",
+    name: _storedFinance.name || _storedFinance.username || "Register Office",
+    username: _storedFinance.username || "",
+    profileImage: _storedFinance.profileImage || "/default-profile.png",
+    isActive: _storedFinance.isActive || false,
+  });
+
+  // Compatibility alias: map `finance` to `admin` for older code
+  const admin = {
+    adminId: finance.financeId || finance.adminId || "",
+    userId: finance.userId || "",
+    name: finance.name || finance.username || "Register Office",
+    profileImage: finance.profileImage || "/default-profile.png",
+    isActive: finance.isActive || false,
+  };
+
+  // include username for sidbar display (comes from Users node)
+  admin.username = finance.username || "";
+
+  const adminId = admin?.adminId || admin?.userId || null;
+  const adminUserId = admin?.userId || null;
+
+  const [loadingFinance, setLoadingFinance] = useState(true);
+  // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
+  const loadFinanceFromStorage = async () => {
+    const storedAuth = getStoredAuth();
+    const stored = storedAuth.raw;
+    const parsed = storedAuth.data || {};
+
+    if (!stored) {
+      setLoadingFinance(false);
+      return;
+    }
+
+    try {
+      const financeData = parsed;
+      const financeKey = financeData.financeId || financeData.adminId || financeData.id || financeData.uid || "";
+      const possibleUserId = financeData.userId || financeData.user_id || financeData.uid || financeData.user || "";
+
+      if (financeKey) {
+        let res = null;
+        try {
+          res = (await axios.get(`${DB_URL}/Finance/${financeKey}.json`)) || null;
+        } catch (err) {
+          res = null;
+        }
+
+        if (!res || !res.data) {
+          try {
+            res = (await axios.get(`${DB_URL}/Academics/${financeKey}.json`)) || null;
+          } catch (err) {
+            res = null;
+          }
+        }
+
+        if (res && res.data) {
+          const node = res.data;
+          const userId = node.userId || node.user_id || possibleUserId || "";
+
+          if (userId) {
+            try {
+              const userRes = await axios.get(`${DB_URL}/Users/${userId}.json`);
+              const nextFinance = {
+                financeId: financeKey,
+                userId,
+                schoolCode: financeData.schoolCode || "",
+                name: userRes.data?.name || node.name || financeData.name || "Register Office",
+                username: userRes.data?.username || financeData.username || "",
+                profileImage: userRes.data?.profileImage || node.profileImage || financeData.profileImage || "/default-profile.png",
+                isActive: node.isActive || financeData.isActive || false,
+              };
+              setFinance(nextFinance);
+              localStorage.setItem("finance", JSON.stringify({ ...financeData, ...nextFinance }));
+              localStorage.setItem("admin", JSON.stringify({ ...financeData, ...nextFinance, adminId: nextFinance.financeId }));
+              setLoadingFinance(false);
+              return;
+            } catch (err) {
+              const nextFinance = {
+                financeId: financeKey,
+                userId,
+                schoolCode: financeData.schoolCode || "",
+                name: node.name || financeData.name || "Register Office",
+                username: node.username || financeData.username || "",
+                profileImage: node.profileImage || financeData.profileImage || "/default-profile.png",
+                isActive: node.isActive || financeData.isActive || false,
+              };
+              setFinance(nextFinance);
+              localStorage.setItem("finance", JSON.stringify({ ...financeData, ...nextFinance }));
+              localStorage.setItem("admin", JSON.stringify({ ...financeData, ...nextFinance, adminId: nextFinance.financeId }));
+              setLoadingFinance(false);
+              return;
+            }
+          }
+        }
+      }
+
+      if (possibleUserId) {
+        try {
+          const userRes = await axios.get(`${DB_URL}/Users/${possibleUserId}.json`);
+          const nextFinance = {
+            financeId: financeData.financeId || financeData.adminId || "",
+            userId: possibleUserId,
+            schoolCode: financeData.schoolCode || "",
+            name: userRes.data?.name || financeData.name || "Register Office",
+            username: userRes.data?.username || financeData.username || "",
+            profileImage: userRes.data?.profileImage || financeData.profileImage || "/default-profile.png",
+            isActive: financeData.isActive || false,
+          };
+          setFinance(nextFinance);
+          localStorage.setItem("finance", JSON.stringify({ ...financeData, ...nextFinance }));
+          localStorage.setItem("admin", JSON.stringify({ ...financeData, ...nextFinance, adminId: nextFinance.financeId }));
+          setLoadingFinance(false);
+          return;
+        } catch (err) {
+          // ignore and fallback to stored values
+        }
+      }
+
+      const fallbackFinance = {
+        financeId: financeData.financeId || financeData.adminId || "",
+        userId: financeData.userId || "",
+        schoolCode: financeData.schoolCode || "",
+        name: financeData.name || financeData.username || "Register Office",
+        username: financeData.username || "",
+        profileImage: financeData.profileImage || "/default-profile.png",
+        isActive: financeData.isActive || false,
+      };
+      setFinance(fallbackFinance);
+      localStorage.setItem("finance", JSON.stringify({ ...financeData, ...fallbackFinance }));
+      localStorage.setItem("admin", JSON.stringify({ ...financeData, ...fallbackFinance, adminId: fallbackFinance.financeId }));
+    } catch (e) {
+      try {
+        localStorage.removeItem("registrar");
+        localStorage.removeItem("admin");
+      } catch (err) {}
+    }
+
+    setLoadingFinance(false);
+  };
   // UI state helpers (responsive + dropdowns/chat)
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 800 : false);
   const getIsPortrait = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(orientation: portrait)").matches : false);
@@ -45,8 +266,6 @@ function StudentsPage() {
   const [isNarrow, setIsNarrow] = useState(getIsNarrow());
   const [isPortrait, setIsPortrait] = useState(getIsPortrait());
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
-  const [showPostDropdown, setShowPostDropdown] = useState(false);
-  const [unreadSenders, setUnreadSenders] = useState({});
   const [expandedCards, setExpandedCards] = useState({});
   const [attendanceView, setAttendanceView] = useState("daily");
   const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
@@ -58,7 +277,28 @@ function StudentsPage() {
     semester1: ["quarter1", "quarter2"],
     semester2: ["quarter3", "quarter4"],
   };
+
+  const isValidGradeKey = (value) => {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric >= 1 && numeric <= 12;
+  };
+
+  const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
+
+  const isWebImageUrl = (value) => {
+    const normalized = String(value || "").trim();
+    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized);
+  };
+
+  const getSafeImage = (...candidates) => {
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const normalized = String(candidate).trim();
+      if (isWebImageUrl(normalized)) return normalized;
+    }
+    return "/default-profile.png";
+  };
 
   const [studentMarks, setStudentMarks] = useState({});
   const studentMarksFlattened = useMemo(() => {
@@ -112,112 +352,80 @@ function StudentsPage() {
     return out;
   }, [studentMarks]);
 
-  // minimal post notifications state + stub (original implementation was corrupted)
-  const [postNotifications, setPostNotifications] = useState([]);
-  const fetchPostNotifications = async () => {
-    try {
-      // stub: clear or leave empty until a full implementation is restored
-      setPostNotifications([]);
-    } catch (err) {
-      setPostNotifications([]);
-    }
-  };
-
-
-  useEffect(() => {
-    if (!adminId) return;
-
-    fetchPostNotifications();
-    const interval = setInterval(fetchPostNotifications, 5000);
-
-    return () => clearInterval(interval);
-  }, [adminId]);
-
-const handleNotificationClick = async (notification) => {
-  try {
-    await axios.post(`${API_BASE}/mark_post_notification_read`, {
-      notificationId: notification.notificationId,
-      adminId: admin.userId,
-    });
-  } catch (err) {
-    console.warn("Failed to delete notification:", err);
-  }
-
-  // 🔥 REMOVE FROM UI IMMEDIATELY
-  setPostNotifications((prev) =>
-    prev.filter((n) => n.notificationId !== notification.notificationId)
-  );
-
-  setShowPostDropdown(false);
-
-  // ➜ Navigate to post
-  navigate("/dashboard", {
-    state: { postId: notification.postId },
-  });
-};
-useEffect(() => {
-  if (location.state?.postId) {
-    setPostNotifications([]);
-  }
-}, []);
-
   const handleSendMessage = () => {
     // now newMessageText is defined
     console.log("Sending message:", newMessageText);
     // your code to send the message
   };
 
+  // load finance/admin on mount
   useEffect(() => {
-    const closeDropdown = (e) => {
-      if (
-        !e.target.closest(".icon-circle") &&
-        !e.target.closest(".notification-dropdown")
-      ) {
-        setShowPostDropdown(false);
+    loadFinanceFromStorage();
+  }, []);
+
+  useEffect(() => {
+    const cached = readStudentsCache();
+    if (!cached) return;
+
+    if (Array.isArray(cached.studentList) && cached.studentList.length) {
+      setStudents(cached.studentList);
+      setStudentsLoading(false);
+    }
+
+    if (Array.isArray(cached.gradeOptions)) {
+      setGradeOptions(cached.gradeOptions);
+    }
+
+    if (typeof cached.currentAcademicYear === "string") {
+      setCurrentAcademicYear(cached.currentAcademicYear);
+    }
+  }, []);
+
+  // If we have a `finance.userId`, fetch the Users record to ensure
+  // `name`, `username`, and `profileImage` are up-to-date.
+  useEffect(() => {
+    if (!finance?.userId) return;
+
+    let cancelled = false;
+
+    const refreshUser = async () => {
+      try {
+        const res = await axios.get(`${DB_URL}/Users/${finance.userId}.json`);
+        if (cancelled) return;
+        const user = res.data || {};
+        setFinance((prev) => ({
+          ...prev,
+          name: user.name || prev.name,
+          username: user.username || prev.username,
+          profileImage: user.profileImage || prev.profileImage,
+        }));
+      } catch (err) {
+        // ignore - keep existing values
       }
     };
 
-    document.addEventListener("click", closeDropdown);
-    return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
-  useEffect(() => {
-    const fetchStudents = async () => {
-      const querySnapshot = await getDocs(collection(db, "students"));
-      const studentsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(studentsData);
+    refreshUser();
+    return () => {
+      cancelled = true;
     };
-
-    fetchStudents();
-  }, []);
+  }, [finance?.userId]);
 
   const handleClick = () => {
     navigate("/all-chat"); // replace with your target route
   };
 
-  useEffect(() => {
-    // Replace with your actual API call
-    const fetchUnreadSenders = async () => {
-      const response = await fetch("/api/unreadSenders");
-      const data = await response.json();
-      setUnreadSenders(data);
-    };
-    fetchUnreadSenders();
-  }, []);
-
   const handleSelectStudent = async (s) => {
-    setLoading(true);
+    const requestId = studentSelectionRequestRef.current + 1;
+    studentSelectionRequestRef.current = requestId;
+    setSelectedStudent((prev) => ({ ...(prev || {}), ...s }));
+    setRightSidebarOpen(true);
     try {
       // 1️⃣ Fetch user info
-      const userRes = await axios.get(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/Users/${s.userId}.json`
-      );
+      const userRes = await axios.get(`${DB_URL}/Users/${s.userId}.json`);
       const user = userRes.data || {};
 
       // 2️⃣ Fetch ClassMarks from Firebase
-      const marksRes = await axios.get(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/ClassMarks.json`
-      );
+      const marksRes = await axios.get(`${DB_URL}/ClassMarks.json`);
       const classMarks = marksRes.data || {};
 
       const studentMarksObj = {};
@@ -243,9 +451,7 @@ useEffect(() => {
       });
 
       // 3️⃣ Fetch Attendance (optional)
-      const attendanceRes = await axios.get(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/Attendance.json`
-      );
+      const attendanceRes = await axios.get(`${DB_URL}/Attendance.json`);
       const attendanceRaw = attendanceRes.data || {};
 
       const attendanceData = [];
@@ -268,7 +474,7 @@ useEffect(() => {
       try {
         if (s.studentId) {
           const rtRes = await axios.get(
-            `https://bale-house-rental-default-rtdb.firebaseio.com/Students/${s.studentId}.json`
+            `${DB_URL}/Students/${s.studentId}.json`
           );
           rtStudent = rtRes.data || {};
         }
@@ -303,13 +509,19 @@ useEffect(() => {
         const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
         for (const pid of parentIds) {
           try {
-            const pRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Parents/${pid}.json`);
+            const pRes = await axios.get(`${DB_URL}/Parents/${pid}.json`);
             const parentNode = pRes.data || {};
             const parentUserId = parentNode.userId;
             if (parentUserId) {
-              const uRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Users/${parentUserId}.json`);
+              const uRes = await axios.get(`${DB_URL}/Users/${parentUserId}.json`);
               const parentUser = uRes.data || {};
-              const pInfo = { parentId: pid, name: parentUser.name || parentNode.name || "Parent", phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null };
+              const pInfo = {
+                parentId: pid,
+                userId: parentUserId || null,
+                name: parentUser.name || parentNode.name || "Parent",
+                phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null,
+                profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
+              };
               parentsList.push(pInfo);
               if (!parentName) parentName = pInfo.name;
               if (!parentPhone) parentPhone = pInfo.phone;
@@ -322,8 +534,14 @@ useEffect(() => {
         // ignore
       }
       // 6️⃣ Set selected student state (include age & parent info)
-      setSelectedStudent({
+      if (studentSelectionRequestRef.current !== requestId) {
+        return;
+      }
+
+      setSelectedStudent((prev) => ({
+        ...(prev || {}),
         ...s,
+        ...rtStudent,
         ...user,
         marks: studentMarksObj,
         attendance: attendanceData,
@@ -331,14 +549,11 @@ useEffect(() => {
         parents: parentsList,
         parentName: parentName,
         parentPhone: parentPhone,
-      });
-
-
-   setRightSidebarOpen(true);
+      }));
     } catch (err) {
-      console.error("Error fetching student data:", err);
-    } finally {
-      setLoading(false);
+      if (studentSelectionRequestRef.current === requestId) {
+        console.error("Error fetching student data:", err);
+      }
     }
   };
 
@@ -352,14 +567,90 @@ useEffect(() => {
     if (selectedStudent) setRightSidebarOpen(true);
   };
 
+  // ---- Student profile edit helpers ----
+  const startEditProfile = () => {
+    if (!selectedStudent) return;
+    setEditForm({ ...(selectedStudent || {}) });
+    setEditingProfile(true);
+  };
+
+  const cancelEditProfile = () => {
+    setEditingProfile(false);
+    setEditForm({});
+  };
+
+  const saveProfileEdits = async () => {
+    if (!selectedStudent) return;
+    setSavingProfile(true);
+    try {
+      const payload = { ...(editForm || {}) };
+
+      // Primary: if we have a RTDB studentId, update the Realtime DB directly
+      if (selectedStudent.studentId) {
+        // PATCH the Students node
+        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+
+        // Also update Users node when userId exists (keep profile in sync)
+        if (selectedStudent.userId) {
+          const userPayload = {};
+          ["name", "email", "phone", "profileImage", "username"].forEach((k) => {
+            if (typeof payload[k] !== "undefined") userPayload[k] = payload[k];
+          });
+          if (Object.keys(userPayload).length > 0) {
+            await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+          }
+        }
+
+        const updated = { ...(selectedStudent || {}), ...(payload || {}) };
+        setSelectedStudent(updated);
+        setStudents((prev) => prev.map((p) => (p.studentId === selectedStudent.studentId ? { ...(p || {}), ...(payload || {}) } : p)));
+        setEditingProfile(false);
+        setEditForm({});
+        return;
+      }
+
+      // Secondary: if we have only a userId, update Users node
+      if (selectedStudent.userId) {
+        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        const updated = { ...(selectedStudent || {}), ...(payload || {}) };
+        setSelectedStudent(updated);
+        setStudents((prev) => prev.map((p) => (p.userId === selectedStudent.userId ? { ...(p || {}), ...(payload || {}) } : p)));
+        setEditingProfile(false);
+        setEditForm({});
+        return;
+      }
+
+      // Fallback: call backend register endpoint (create/update) if RTDB not available
+      try {
+        const fd = new FormData();
+        Object.entries(payload).forEach(([k, v]) => fd.append(k, v));
+        const res = await fetch(`${BACKEND_BASE}/register/student`, { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || "Failed to save via backend");
+
+        // backend returned created/updated info
+        const updated = { ...(selectedStudent || {}), ...(data || payload) };
+        setSelectedStudent(updated);
+        setStudents((prev) => prev.map((p) => ((p.userId && data.userId && p.userId === data.userId) || (p.studentId && data.studentId && p.studentId === data.studentId)) ? { ...(p || {}), ...(data || payload) } : p));
+        setEditingProfile(false);
+        setEditForm({});
+        return;
+      } catch (be) {
+        throw be;
+      }
+    } catch (err) {
+      console.error("Save profile error:", err);
+      alert("Could not save profile: " + (err.message || err));
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
   // close dropdowns outside click - unchanged logic retained
   useEffect(() => {
     const closeDropdown = (e) => {
       if (!e.target.closest(".icon-circle") && !e.target.closest(".messenger-dropdown")) {
         setShowMessageDropdown(false);
-      }
-      if (!e.target.closest(".icon-circle") && !e.target.closest(".notification-dropdown")) {
-        setShowPostDropdown(false);
       }
     };
     document.addEventListener("click", closeDropdown);
@@ -372,8 +663,8 @@ useEffect(() => {
     const fetchTeachersAndUnread = async () => {
       try {
         const [teachersRes, usersRes] = await Promise.all([
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json")
+          axios.get(`${DB_URL}/Teachers.json`),
+          axios.get(`${DB_URL}/Users.json`)
         ]);
 
         const teachersData = teachersRes.data || {};
@@ -398,7 +689,7 @@ useEffect(() => {
 
         for (const t of teacherList) {
           const chatKey = `${t.userId}_${adminUserId}`;
-          const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
+          const res = await axios.get(`${DB_URL}/Chats/${chatKey}/messages.json`);
           const msgs = Object.values(res.data || {}).map(m => ({
             ...m,
             sender: m.senderId === adminUserId ? "admin" : "teacher"
@@ -424,64 +715,141 @@ useEffect(() => {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        setLoading(true);
-        const studentsRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json");
+        const [studentsRes, schoolInfoRes, gradesRes] = await Promise.all([
+          axios.get(`${DB_URL}/Students.json`),
+          axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
+          axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
+        ]);
 
         const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
+        const activeAcademicYear = (schoolInfoRes.data || {}).currentAcademicYear || "";
+        const gradesData = gradesRes.data || {};
+        setCurrentAcademicYear(activeAcademicYear);
 
-        const studentList = Object.keys(studentsData).map((id) => {
+        const managedGrades = Object.keys(gradesData)
+          .filter((gradeKey) => isValidGradeKey(gradeKey))
+          .sort((a, b) => Number(a) - Number(b));
+        setGradeOptions(managedGrades);
+        setSelectedGrade((prev) => {
+          if (prev === "All") return prev;
+          return managedGrades.includes(String(prev)) ? prev : "All";
+        });
+
+        const studentKeys = Object.keys(studentsData);
+
+        const baseStudentList = studentKeys.map((id) => {
           const student = studentsData[id];
-          const user = usersData[student.userId] || {};
           return {
             studentId: id,
             userId: student.userId,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
+            name: student.name || student.studentName || "No Name",
+            profileImage: getSafeImage(
+              student?.basicStudentInformation?.studentPhoto,
+              student?.profileImage
+            ),
             grade: student.grade,
             section: student.section,
-            email: user.email || ""
+            academicYear: student.academicYear || "",
+            email: student.email || ""
           };
         });
 
-        setStudents(studentList);
+        setStudents(baseStudentList);
+        setStudentsLoading(false);
+        writeStudentsCache({
+          studentList: baseStudentList,
+          gradeOptions: managedGrades,
+          currentAcademicYear: activeAcademicYear,
+        });
+
+        try {
+          const usersRes = await axios.get(`${DB_URL}/Users.json`);
+          const usersData = usersRes.data || {};
+          const hydratedStudentList = baseStudentList.map((student) => {
+            const user = usersData[student.userId] || {};
+            return {
+              ...student,
+              name: user.name || user.username || student.name || "No Name",
+              profileImage: getSafeImage(
+                user?.profileImage,
+                student?.profileImage
+              ),
+              email: user.email || student.email || "",
+            };
+          });
+
+          setStudents(hydratedStudentList);
+          writeStudentsCache({
+            studentList: hydratedStudentList,
+            gradeOptions: managedGrades,
+            currentAcademicYear: activeAcademicYear,
+          });
+        } catch (userErr) {
+          // keep base list if users node is slow/unavailable
+        }
       } catch (err) {
         console.error("Error fetching students:", err);
       } finally {
-        setLoading(false);
+        setStudentsLoading(false);
       }
     };
 
     fetchStudents();
   }, []);
 
+  const previousAcademicYearKey = useMemo(() => {
+    const text = String(currentAcademicYear || "").trim();
+    if (!text) return "";
+    const normalized = text.replace("/", "_");
+    const parts = normalized.split("_");
+    if (parts.length !== 2) return "";
+    const start = Number(parts[0]);
+    if (Number.isNaN(start)) return "";
+    return `${start - 1}_${start}`;
+  }, [currentAcademicYear]);
+
+  const filteredStudentsBase = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    return students.filter((s) => {
+      if (selectedGrade !== "All" && String(s.grade) !== String(selectedGrade)) return false;
+      if (selectedSection !== "All" && String(s.section) !== String(selectedSection)) return false;
+
+      if (!normalizedSearch) return true;
+
+      const haystack = [s.name, s.studentId, s.userId, s.email, s.grade, s.section]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    });
+  }, [students, selectedGrade, selectedSection, searchTerm]);
+
+  const currentYearStudents = useMemo(() => {
+    if (!currentAcademicYear) return filteredStudentsBase;
+    const normalizedCurrentYear = normalizeAcademicYear(currentAcademicYear);
+    return filteredStudentsBase.filter(
+      (student) => normalizeAcademicYear(student.academicYear) === normalizedCurrentYear
+    );
+  }, [filteredStudentsBase, currentAcademicYear]);
+
+  const lastYearStudents = useMemo(() => {
+    if (!previousAcademicYearKey) return [];
+    return filteredStudentsBase.filter(
+      (student) => String(student.academicYear || "").trim() === String(previousAcademicYearKey).trim()
+    );
+  }, [filteredStudentsBase, previousAcademicYearKey]);
+
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
     if (selectedGrade === "All") {
       setSections([]);
     } else {
-      const gradeSections = [...new Set(students.filter(s => s.grade === selectedGrade).map(s => s.section))];
+      const gradeSections = [...new Set(students.filter(s => String(s.grade) === String(selectedGrade)).map(s => s.section))];
       setSections(gradeSections);
       setSelectedSection("All");
     }
   }, [selectedGrade, students]);
-
-  // ------------------ FILTER STUDENTS ------------------
-  const normalizedSearch = searchTerm.trim().toLowerCase();
-  const filteredStudents = students.filter((s) => {
-    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
-    if (selectedSection !== "All" && s.section !== selectedSection) return false;
-
-    if (!normalizedSearch) return true;
-
-    const haystack = [s.name, s.studentId, s.userId, s.email, s.grade, s.section]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(normalizedSearch);
-  });
 
 
   // ---------------- FETCH PERFORMANCE ----------------
@@ -495,10 +863,9 @@ useEffect(() => {
     let cancelled = false;
 
     async function fetchMarks() {
-      setLoading(true);
       try {
         const res = await axios.get(
-          "https://bale-house-rental-default-rtdb.firebaseio.com/ClassMarks.json"
+          `${DB_URL}/ClassMarks.json`
         );
 
         const marksObj = {};
@@ -520,8 +887,6 @@ useEffect(() => {
       } catch (err) {
         console.error("Marks fetch error:", err);
         if (!cancelled) setStudentMarks({});
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
 
@@ -531,6 +896,34 @@ useEffect(() => {
       cancelled = true;
     };
   }, [selectedStudent]);
+
+  useEffect(() => {
+    if (studentTab !== "payment" || !selectedStudent) return;
+
+    const fetchPaymentHistory = async () => {
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const year = new Date().getFullYear();
+      const studentKey = selectedStudent?.studentId || selectedStudent?.userId || String(selectedStudent?.id || "");
+      const out = {};
+
+      await Promise.all(
+        months.map(async (m) => {
+          const key = `${year}-${m}`;
+          try {
+            const res = await axios.get(`${DB_URL}/monthlyPaid/${key}.json`).catch(() => ({ data: {} }));
+            const node = res.data || {};
+            out[key] = !!(node && (node[studentKey] || node[String(studentKey)]));
+          } catch {
+            out[key] = false;
+          }
+        })
+      );
+
+      setPaymentHistory(out);
+    };
+
+    fetchPaymentHistory();
+  }, [studentTab, selectedStudent, DB_URL]);
 
 
   //-------------------------Fetch unread status for each student--------------
@@ -542,7 +935,7 @@ useEffect(() => {
         const key = `${s.studentId}_${admin.userId}`;
 
         const res = await axios.get(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key}/messages.json`
+          `${DB_URL}/Chats/${key}/messages.json`
         );
 
         const msgs = res.data || {};
@@ -567,7 +960,7 @@ useEffect(() => {
     const fetchMessages = async () => {
       try {
         const res = await axios.get(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`
+          `${DB_URL}/Chats/${chatKey}/messages.json`
         );
 
         const msgs = Object.values(res.data || {}).map(m => ({
@@ -600,7 +993,7 @@ useEffect(() => {
       const chatKey = `${selectedStudent.userId}_${adminUserId}`;
       // 1) push message
       const pushRes = await axios.post(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
+        `${DB_URL}/Chats/${chatKey}/messages.json`,
         {
           senderId: newMessage.senderId,
           receiverId: newMessage.receiverId,
@@ -626,7 +1019,7 @@ useEffect(() => {
       };
 
       await axios.patch(
-        `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
+        `${DB_URL}/Chats/${chatKey}.json`,
         {
           participants: {
             ...(/* keep existing participants if any */ {}),
@@ -640,18 +1033,18 @@ useEffect(() => {
       // 3) increment unread for receiver
       try {
         const unreadRes = await axios.get(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`
+          `${DB_URL}/Chats/${chatKey}/unread.json`
         );
         const unread = unreadRes.data || {};
         const prev = Number(unread[selectedStudent.userId] || 0);
         const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
         await axios.put(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
+          `${DB_URL}/Chats/${chatKey}/unread.json`,
           updated
         );
       } catch (uErr) {
         await axios.put(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`,
+          `${DB_URL}/Chats/${chatKey}/unread.json`,
           { [selectedStudent.userId]: 1, [adminUserId]: 0 }
         );
       }
@@ -682,7 +1075,7 @@ useEffect(() => {
       // push message with full schema
       try {
         const pushRes = await axios.post(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`,
+          `${DB_URL}/Chats/${chatKey}/messages.json`,
           {
             senderId: newMessage.senderId,
             receiverId: newMessage.receiverId,
@@ -702,7 +1095,7 @@ useEffect(() => {
         // patch lastMessage + participants
         const lastMessage = { text: newMessage.text, senderId: newMessage.senderId, seen: false, timeStamp: newMessage.timeStamp };
         await axios.patch(
-          `https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`,
+          `${DB_URL}/Chats/${chatKey}.json`,
           {
             participants: { [adminUserId]: true, [selectedStudent.userId]: true },
             lastMessage,
@@ -711,13 +1104,13 @@ useEffect(() => {
 
         // update unread
         try {
-          const unreadRes = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`);
+          const unreadRes = await axios.get(`${DB_URL}/Chats/${chatKey}/unread.json`);
           const unread = unreadRes.data || {};
           const prev = Number(unread[selectedStudent.userId] || 0);
           const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-          await axios.put(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, updated);
+          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, updated);
         } catch (uErr) {
-          await axios.put(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
+          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
         }
 
         setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
@@ -727,114 +1120,6 @@ useEffect(() => {
       }
     } catch (err) {
       console.error("Failed to send message:", err);
-    }
-  };
-
-  // ---------------- FETCH UNREAD MESSAGES ----------------
-  const fetchUnreadMessages = async () => {
-    if (!admin.userId) return;
-
-    const senders = {};
-
-    try {
-      // 1️⃣ USERS (names & images)
-      const usersRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
-      );
-      const usersData = usersRes.data || {};
-
-      const findUserByUserId = (userId) => {
-        return Object.values(usersData).find(u => u.userId === userId);
-      };
-
-      // helper to read messages from BOTH chat keys
-      const getUnreadCount = async (userId) => {
-        const key1 = `${admin.userId}_${userId}`;
-        const key2 = `${userId}_${admin.userId}`;
-
-        const [r1, r2] = await Promise.all([
-          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-        ]);
-
-        const msgs = [
-          ...Object.values(r1.data || {}),
-          ...Object.values(r2.data || {})
-        ];
-
-        return msgs.filter(
-          m => m.receiverId === admin.userId && !m.seen
-        ).length;
-      };
-
-      // 2️⃣ TEACHERS
-      const teachersRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"
-      );
-
-      for (const k in teachersRes.data || {}) {
-        const t = teachersRes.data[k];
-        const unread = await getUnreadCount(t.userId);
-
-        if (unread > 0) {
-         const user = findUserByUserId(t.userId);
-
-        senders[t.userId] = {
-          type: "teacher",
-          name: user?.name || "Teacher",
-          profileImage: user?.profileImage || "/default-profile.png",
-          count: unread
-        };
-        }
-      }
-
-      // 3️⃣ STUDENTS
-      const studentsRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Students.json"
-      );
-
-      for (const k in studentsRes.data || {}) {
-        const s = studentsRes.data[k];
-        const unread = await getUnreadCount(s.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(s.userId);
-
-        senders[s.userId] = {
-          type: "student",
-          name: user?.name || s.name || "Student",
-          profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
-          count: unread
-        };
-
-        }
-      }
-
-      // 4️⃣ PARENTS
-      const parentsRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json"
-      );
-
-      for (const k in parentsRes.data || {}) {
-        const p = parentsRes.data[k];
-        const unread = await getUnreadCount(p.userId);
-
-        if (unread > 0) {
-         const user = findUserByUserId(p.userId);
-
-        senders[p.userId] = {
-          type: "parent",
-          name: user?.name || p.name || "Parent",
-          profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
-          count: unread
-        };
-
-        }
-      }
-
-      setUnreadSenders(senders);
-    } catch (err) {
-      console.error("Unread fetch failed:", err);
     }
   };
 
@@ -852,15 +1137,6 @@ useEffect(() => {
     document.addEventListener("click", closeDropdown);
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
-
-  useEffect(() => {
-    if (!admin.userId) return;
-
-    fetchUnreadMessages();
-    const interval = setInterval(fetchUnreadMessages, 5000);
-
-    return () => clearInterval(interval);
-  }, [admin.userId]);
 
   useEffect(() => {
     const onResize = () => {
@@ -899,9 +1175,9 @@ useEffect(() => {
 
       if (Object.keys(updates).length > 0) {
         try {
-          await axios.patch(`https://bale-house-rental-default-rtdb.firebaseio.com/.json`, updates);
+          await axios.patch(`${DB_URL}/.json`, updates);
           // reset unread and mark lastMessage seen at chat root
-          axios.patch(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
+          axios.patch(`${DB_URL}/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
         } catch (err) {
           console.error('Failed to patch seen updates:', err);
         }
@@ -934,36 +1210,6 @@ useEffect(() => {
 
     return { total, present, absent, percent, streak };
   }, [selectedStudent]);
-
-  const markMessagesAsSeen = async (userId) => {
-    const key1 = `${admin.userId}_${userId}`;
-    const key2 = `${userId}_${admin.userId}`;
-
-    const [r1, r2] = await Promise.all([
-      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-    ]);
-
-    const updates = {};
-
-    const collectUpdates = (data, basePath) => {
-      Object.entries(data || {}).forEach(([msgId, msg]) => {
-        if (msg.receiverId === admin.userId && !msg.seen) {
-          updates[`${basePath}/${msgId}/seen`] = true;
-        }
-      });
-    };
-
-    collectUpdates(r1.data, `Chats/${key1}/messages`);
-    collectUpdates(r2.data, `Chats/${key2}/messages`);
-
-    if (Object.keys(updates).length > 0) {
-      await axios.patch(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/.json",
-        updates
-      );
-    }
-  };
 
   const attendanceData = React.useMemo(() => {
     if (!selectedStudent?.attendance) return [];
@@ -1030,165 +1276,442 @@ useEffect(() => {
 
 
 
-  const contentLeft = isNarrow ? 0 : 90;
+  const contentLeft = 0;
+  const rightSidebarOffset = !isPortrait ? 408 : 2;
+
+  const registrationSections = useMemo(() => {
+    if (!selectedStudent) return null;
+
+    return {
+      basic: selectedStudent.basicStudentInformation || {},
+      parent: selectedStudent.parentGuardianInformation || {},
+      address: selectedStudent.addressInformation || {},
+      finance: selectedStudent.financeInformation || {},
+      health: selectedStudent.healthEmergency || {},
+      academic: selectedStudent.academicSetup || {},
+      system: selectedStudent.systemAccountInformation || {},
+    };
+  }, [selectedStudent]);
+
+  const sectionDefinitions = useMemo(() => ([
+    { key: "basic", title: "1) Basic Student Information" },
+    { key: "parent", title: "2) Parent / Guardian Information", fullWidth: true },
+    { key: "address", title: "3) Address Information" },
+    { key: "finance", title: "4) Finance Information" },
+    { key: "health", title: "5) Health & Emergency" },
+    { key: "academic", title: "6) Academic Setup" },
+    { key: "system", title: "7) System Account Information" },
+  ]), []);
+
+  const excludedAdditionalKeys = useMemo(() => [
+    "basicStudentInformation",
+    "parentGuardianInformation",
+    "addressInformation",
+    "financeInformation",
+    "healthEmergency",
+    "academicSetup",
+    "systemAccountInformation",
+    "marks",
+    "attendance",
+    "parents",
+    "studentId",
+    "userId",
+  ], []);
+
+  const stringifyIfObject = (value) => {
+    if (value && typeof value === "object") {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (e) {
+        return "";
+      }
+    }
+    return value ?? "";
+  };
+
+  const parseEditableValue = (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        return JSON.parse(trimmed);
+      } catch (e) {
+        return value;
+      }
+    }
+    return value;
+  };
+
+  const normalizeEditableMap = (obj = {}) => {
+    const out = {};
+    Object.entries(obj || {}).forEach(([key, value]) => {
+      out[key] = parseEditableValue(value);
+    });
+    return out;
+  };
+
+  const formatFieldLabel = (fieldKey = "") =>
+    String(fieldKey)
+      .replace(/([A-Z])/g, " $1")
+      .replace(/[_-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^./, (char) => char.toUpperCase());
+
+  const isImageValue = (fieldKey, value) => {
+    if (!value || typeof value !== "string") return false;
+    const val = value.trim();
+    const isUrlLike = /^https?:\/\//i.test(val) || /^data:image\//i.test(val);
+    const hasImageExt = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(val);
+    const keyHintsImage = /(image|photo|avatar|nationalid|nid)/i.test(String(fieldKey || ""));
+    return (keyHintsImage && isUrlLike) || hasImageExt || /^data:image\//i.test(val);
+  };
+
+  const renderDisplayValue = (fieldKey, value) => {
+    if (isImageValue(fieldKey, value)) {
+      return (
+        <img
+          src={String(value)}
+          alt={formatFieldLabel(fieldKey)}
+          style={{ width: "100%", maxHeight: 180, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
+        />
+      );
+    }
+
+    if (Array.isArray(value)) {
+      if (!value.length) return <span>-</span>;
+
+      return (
+        <div style={{ display: "grid", gap: 8 }}>
+          {value.map((item, index) => (
+            <div
+              key={`${String(fieldKey)}_${index}`}
+              style={{ background: "var(--surface-muted)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 10px" }}
+            >
+              {item && typeof item === "object" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {Object.entries(item).map(([nestedKey, nestedValue]) => (
+                    <div key={`${nestedKey}_${index}`}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>
+                        {formatFieldLabel(nestedKey)}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text-primary)", wordBreak: "break-word" }}>
+                        {renderDisplayValue(nestedKey, nestedValue)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <span>{String(item || "-")}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (value && typeof value === "object") {
+      return (
+        <div style={{ display: "grid", gap: 6 }}>
+          {Object.entries(value).map(([nestedKey, nestedValue]) => (
+            <div
+              key={nestedKey}
+              style={{ background: "var(--surface-muted)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 10px" }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>
+                {formatFieldLabel(nestedKey)}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-primary)", wordBreak: "break-word" }}>
+                {renderDisplayValue(nestedKey, nestedValue)}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (typeof value === "boolean") {
+      return <span>{value ? "Yes" : "No"}</span>;
+    }
+
+    return <span>{String(value || "-")}</span>;
+  };
+
+  const resetFullscreenEditFormFromSelected = () => {
+    if (!selectedStudent) return;
+    const sectionsForm = {
+      basic: Object.fromEntries(Object.entries(registrationSections?.basic || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      parent: Object.fromEntries(Object.entries(registrationSections?.parent || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      address: Object.fromEntries(Object.entries(registrationSections?.address || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      finance: Object.fromEntries(Object.entries(registrationSections?.finance || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      health: Object.fromEntries(Object.entries(registrationSections?.health || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      academic: Object.fromEntries(Object.entries(registrationSections?.academic || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+      system: Object.fromEntries(Object.entries(registrationSections?.system || {}).map(([k, v]) => [k, stringifyIfObject(v)])),
+    };
+
+    const additionalSource = Object.fromEntries(
+      Object.entries(selectedStudent || {}).filter(([key]) => !excludedAdditionalKeys.includes(key))
+    );
+
+    const additionalForm = Object.fromEntries(
+      Object.entries(additionalSource).map(([k, v]) => [k, stringifyIfObject(v)])
+    );
+
+    setFullscreenEditForm({ sections: sectionsForm, additional: additionalForm });
+    setFullscreenSectionCollapsed({
+      basic: false,
+      parent: false,
+      address: false,
+      finance: false,
+      health: false,
+      academic: false,
+      system: false,
+      additional: false,
+    });
+  };
+
+  useEffect(() => {
+    if (!studentFullscreenOpen || !selectedStudent) return;
+    resetFullscreenEditFormFromSelected();
+    setFullscreenEditing(false);
+  }, [studentFullscreenOpen, selectedStudent, registrationSections, excludedAdditionalKeys]);
+
+  const toggleFullscreenSection = (sectionKey) => {
+    setFullscreenSectionCollapsed((prev) => ({
+      ...prev,
+      [sectionKey]: !prev[sectionKey],
+    }));
+  };
+
+  const updateFullscreenSectionField = (sectionKey, fieldKey, value) => {
+    setFullscreenEditForm((prev) => ({
+      ...prev,
+      sections: {
+        ...(prev.sections || {}),
+        [sectionKey]: {
+          ...((prev.sections || {})[sectionKey] || {}),
+          [fieldKey]: value,
+        },
+      },
+    }));
+  };
+
+  const updateFullscreenAdditionalField = (fieldKey, value) => {
+    setFullscreenEditForm((prev) => ({
+      ...prev,
+      additional: {
+        ...(prev.additional || {}),
+        [fieldKey]: value,
+      },
+    }));
+  };
+
+  const saveFullscreenEdits = async () => {
+    if (!selectedStudent?.studentId) return;
+
+    setFullscreenSaving(true);
+    try {
+      const normalizedSections = {
+        basic: normalizeEditableMap(fullscreenEditForm.sections?.basic || {}),
+        parent: normalizeEditableMap(fullscreenEditForm.sections?.parent || {}),
+        address: normalizeEditableMap(fullscreenEditForm.sections?.address || {}),
+        finance: normalizeEditableMap(fullscreenEditForm.sections?.finance || {}),
+        health: normalizeEditableMap(fullscreenEditForm.sections?.health || {}),
+        academic: normalizeEditableMap(fullscreenEditForm.sections?.academic || {}),
+        system: normalizeEditableMap(fullscreenEditForm.sections?.system || {}),
+      };
+
+      const normalizedAdditional = normalizeEditableMap(fullscreenEditForm.additional || {});
+
+      const studentPayload = {
+        basicStudentInformation: normalizedSections.basic,
+        parentGuardianInformation: normalizedSections.parent,
+        addressInformation: normalizedSections.address,
+        financeInformation: normalizedSections.finance,
+        healthEmergency: normalizedSections.health,
+        academicSetup: normalizedSections.academic,
+        systemAccountInformation: normalizedSections.system,
+        ...normalizedAdditional,
+      };
+
+      await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, studentPayload);
+
+      if (selectedStudent.userId) {
+        const userPayload = {};
+        const userFieldCandidates = [
+          "name",
+          "email",
+          "phone",
+          "profileImage",
+          "username",
+          "dob",
+          "gender",
+          "nationality",
+          "nationalIdNumber",
+          "nationalIdImageUrl",
+        ];
+
+        userFieldCandidates.forEach((field) => {
+          if (typeof normalizedAdditional[field] !== "undefined") {
+            userPayload[field] = normalizedAdditional[field];
+          }
+        });
+
+        if (!userPayload.name && normalizedSections.basic?.studentFullName) {
+          userPayload.name = normalizedSections.basic.studentFullName;
+        }
+        if (!userPayload.username && normalizedSections.system?.studentUsername) {
+          userPayload.username = normalizedSections.system.studentUsername;
+        }
+
+        if (Object.keys(userPayload).length > 0) {
+          await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+        }
+      }
+
+      const updatedSelected = {
+        ...(selectedStudent || {}),
+        ...studentPayload,
+        name: normalizedAdditional.name || normalizedSections.basic?.studentFullName || selectedStudent.name,
+        profileImage: normalizedAdditional.profileImage || selectedStudent.profileImage,
+        email: normalizedAdditional.email || selectedStudent.email,
+        phone: normalizedAdditional.phone || selectedStudent.phone,
+        username: normalizedAdditional.username || normalizedSections.system?.studentUsername || selectedStudent.username,
+      };
+
+      setSelectedStudent(updatedSelected);
+      setStudents((prev) =>
+        prev.map((item) =>
+          item.studentId === selectedStudent.studentId
+            ? {
+                ...item,
+                name: updatedSelected.name || item.name,
+                profileImage: updatedSelected.profileImage || item.profileImage,
+                email: updatedSelected.email || item.email,
+                grade: updatedSelected.grade || item.grade,
+                section: updatedSelected.section || item.section,
+              }
+            : item
+        )
+      );
+
+      setFullscreenEditing(false);
+      alert("Student information updated successfully.");
+    } catch (err) {
+      console.error("Fullscreen save error:", err);
+      alert("Could not save student information: " + (err.message || err));
+    } finally {
+      setFullscreenSaving(false);
+    }
+  };
+
+  const chipStyle = (active) => ({
+    padding: "6px 12px",
+    borderRadius: "999px",
+    background: active ? "var(--accent-strong)" : "var(--surface-accent)",
+    color: active ? "#fff" : "var(--accent-strong)",
+    cursor: "pointer",
+    border: active ? "1px solid var(--accent-strong)" : "1px solid var(--border-strong)",
+    fontSize: "11px",
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    transition: "all 0.2s ease",
+  });
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const softPanelStyle = {
+    background: "var(--surface-muted)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 10,
+  };
+  const listCardStyle = (isSelected) => ({
+    width: isNarrow ? "92%" : "560px",
+    minHeight: "86px",
+    borderRadius: "14px",
+    padding: "12px",
+    background: isSelected ? "var(--surface-accent)" : "var(--surface-panel)",
+    border: isSelected ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
+    boxShadow: isSelected ? "var(--shadow-glow)" : "var(--shadow-soft)",
+    cursor: "pointer",
+    transition: "all 0.25s ease",
+    position: "relative",
+  });
+  const rightDrawerCardStyle = {
+    background: "var(--surface-panel)",
+    borderRadius: 12,
+    border: "1px solid var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
+  };
 
  return (
-    <div className="dashboard-page">
-      {/* ---------------- TOP NAVIGATION BAR ---------------- */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-        
-        <div className="nav-right">
-          <div
-            className="icon-circle"
-            style={{ position: "relative", cursor: "pointer" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPostDropdown(prev => !prev);
-            }}
-          >
-            <FaBell />
-
-            {(() => {
-              const messageCount = Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0);
-              const total = (postNotifications?.length || 0) + messageCount;
-              return total > 0 ? (
-                <span style={{ position: "absolute", top: "-5px", right: "-5px", background: "red", color: "#fff", borderRadius: "50%", padding: "2px 6px", fontSize: "10px", fontWeight: "bold" }}>{total}</span>
-              ) : null;
-            })()}
-
-            {showPostDropdown && (
-              <div className="notification-dropdown" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 40, right: 0, width: 360, maxHeight: 420, overflowY: "auto", background: "#fff", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.12)", zIndex: 1000, padding: 6 }}>
-                {((postNotifications?.length || 0) + Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)) === 0 ? (
-                  <p style={{ padding: 12, textAlign: "center", color: "#777" }}>No new notifications</p>
-                ) : (
-                  <div>
-                    {postNotifications.length > 0 && (
-                      <div>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #eee", fontWeight: 700 }}>Posts</div>
-                        {postNotifications.map(n => (
-                          <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
-                            </div>
-                            <div style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{new Date(n.time || n.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count||0), 0) > 0 && (
-                      <div>
-                        <div style={{ padding: '8px 10px', color: '#333', fontWeight: 700, background: '#fafafa', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
-                        {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
-                          <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid #f0f0f0", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = '#f6f8fa')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
-                              <p style={{ margin: 0, fontSize: 13, color: "#555", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="icon-circle" style={{ position: "relative", cursor: "pointer" }} onClick={() => navigate("/all-chat") }>
-            <FaFacebookMessenger />
-            {Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0) > 0 && (
-              <span className="badge">{Object.values(unreadSenders || {}).reduce((a, s) => a + (s.count || 0), 0)}</span>
-            )}
-          </div>
-
-          <Link className="icon-circle" to="/settings"><FaCog /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard" style={{ display: "flex" }}>
+   <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
         {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar" style={{ width: '220px', padding: '10px' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{admin.name}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.adminId || "username"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaHome style={{ width: 18, height: 18 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/teachers" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Teachers
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#4b6cb7', color: '#fff', borderRadius: 8 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/schedule" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaCalendarAlt style={{ width: 18, height: 18 }} /> Schedule
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/registration-form" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Registration Form
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
+        <Sidebar admin={admin} />
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
           style={{
-            padding: "10px 20px 20px",
-            flex: 1,
+            flex: "1.08 1 0",
             minWidth: 0,
+            maxWidth: "none",
+            margin: "0",
             boxSizing: "border-box",
+            alignSelf: "stretch",
+            height: "100%",
+            overflowY: "auto",
+            overflowX: "hidden",
+            scrollbarWidth: "thin",
+            scrollbarColor: "transparent transparent",
+            padding: `0 ${rightSidebarOffset}px 0 2px`,
           }}
         >
           <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
-            <h2 style={{ marginBottom: "6px", textAlign: isNarrow ? "center" : "left", marginTop: "-8px", fontSize: "20px", marginLeft: contentLeft }}>
-              Students
-            </h2>
+            <div
+              className="section-header-card"
+              style={{
+                margin: "0 0 12px",
+                marginLeft: 0,
+                width: "min(100%, 1320px)",
+              }}
+            >
+              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Students</h2>
+              <div className="section-header-card__meta">
+                <span>Total: {filteredStudentsBase.length}</span>
+                <span>Current Year: {currentYearStudents.length}</span>
+                <span className="section-header-card__chip">
+                  {currentAcademicYear
+                    ? `Academic Year: ${String(currentAcademicYear).replace("_", "/")}`
+                    : "Academic Year: Not Set"}
+                </span>
+              </div>
+            </div>
 
             {/* Search */}
             <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
               <div
                 style={{
-                  width: isNarrow ? "92%" : "400px",
+                  width: isNarrow ? "92%" : "560px",
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "#fff",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "10px",
-                  padding: "6px 10px",
-                  boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
+                  background: "var(--surface-panel)",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: "12px",
+                  padding: "10px 12px",
+                  boxShadow: "var(--shadow-soft)",
                 }}
               >
-                <FaSearch style={{ color: "#6b7280", fontSize: 14 }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
@@ -1198,7 +1721,7 @@ useEffect(() => {
                     width: "100%",
                     border: "none",
                     outline: "none",
-                    fontSize: 12,
+                    fontSize: 13,
                     background: "transparent",
                   }}
                 />
@@ -1210,7 +1733,7 @@ useEffect(() => {
               <div
                 style={{
                   display: "flex",
-                  gap: "6px",
+                  gap: "8px",
                   flexWrap: "wrap",
                   justifyContent: "center",
                   maxWidth: "100%",
@@ -1218,19 +1741,11 @@ useEffect(() => {
                   paddingBottom: 1,
                 }}
               >
-                {["All","5","6","7","8"].map(g => (
+                {["All", ...gradeOptions].map(g => (
                   <button
                     key={g}
                     onClick={() => setSelectedGrade(g)}
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: "8px",
-                      background: selectedGrade === g ? "#4b6cb7" : "#ddd",
-                      color: selectedGrade === g ? "#fff" : "#000",
-                      cursor: "pointer",
-                      border: "none",
-                      fontSize: "11px",
-                    }}
+                    style={chipStyle(selectedGrade === g)}
                   >
                     {g === "All" ? "All Grades" : `Grade ${g}`}
                   </button>
@@ -1238,13 +1753,14 @@ useEffect(() => {
               </div>
             </div>
 
+
             {/* Section Filter */}
             {selectedGrade !== "All" && sections.length > 0 && (
               <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
                 <div
                   style={{
                     display: "flex",
-                    gap: "6px",
+                    gap: "8px",
                     flexWrap: "wrap",
                     justifyContent: "center",
                     maxWidth: "100%",
@@ -1256,15 +1772,7 @@ useEffect(() => {
                     <button
                       key={section}
                       onClick={() => setSelectedSection(section)}
-                      style={{
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: selectedSection === section ? "#4b6cb7" : "#ddd",
-                        color: selectedSection === section ? "#fff" : "#000",
-                        cursor: "pointer",
-                        border: "none",
-                        fontSize: "11px",
-                      }}
+                      style={chipStyle(selectedSection === section)}
                     >
                       {section === "All" ? "All Sections" : `Section ${section}`}
                     </button>
@@ -1274,80 +1782,48 @@ useEffect(() => {
             )}
 
             {/* Students List */}
-            {/* Students List */}
-            {loading ? (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", paddingLeft: contentLeft }}>
+            {studentsLoading ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {Array.from({ length: 6 }).map((_, idx) => (
-                  <div key={idx} style={{ width: isNarrow ? "92%" : "400px", height: "72px", borderRadius: "12px", padding: "10px", background: "#fff", border: "1px solid #eee", boxShadow: "0 4px 10px rgba(0,0,0,0.04)" }}>
+                    <div key={idx} style={{ width: isNarrow ? "92%" : "560px", height: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "#f1f5f9" }} />
-                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#f1f5f9" }} />
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
+                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
                       <div style={{ flex: 1 }}>
-                        <div style={{ width: "60%", height: 12, background: "#f1f5f9", borderRadius: 6, marginBottom: 8 }} />
-                        <div style={{ width: "40%", height: 10, background: "#f1f5f9", borderRadius: 6 }} />
+                        <div style={{ width: "60%", height: 12, background: "var(--surface-muted)", borderRadius: 6, marginBottom: 8 }} />
+                        <div style={{ width: "40%", height: 10, background: "var(--surface-muted)", borderRadius: 6 }} />
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
-            ) : filteredStudents.length === 0 ? (
-              <p style={{ textAlign: "center", color: "#555" }}>No students found for this selection.</p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "10px", paddingLeft: contentLeft }}>
-                {filteredStudents.map((s, i) => (
-                  <div
-                    key={s.userId}
-                    onClick={() => handleSelectStudent(s)}
-                    className="student-card"
-                    style={{
-                      width: isNarrow ? "92%" : "400px",
-                      height: "72px",
-                      borderRadius: "12px",
-                      padding: "10px",
-                      background: selectedStudent?.studentId === s.studentId ? "#e0e7ff" : "#fff",
-                      border: selectedStudent?.studentId === s.studentId ? "2px solid #4b6cb7" : "1px solid #ddd",
-                      boxShadow: selectedStudent?.studentId === s.studentId ? "0 6px 15px rgba(75,108,183,0.3)" : "0 4px 10px rgba(0,0,0,0.1)",
-                      cursor: "pointer",
-                      transition: "all 0.3s ease",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 10,
-                          background: "#eef2ff",
-                          color: "#2563eb",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: 800,
-                          fontSize: 13,
-                          flex: "0 0 auto",
-                        }}
-                      >
-                        {i + 1}
+              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
+                {currentYearStudents.length === 0 ? (
+                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
+                ) : (
+                  currentYearStudents.map((s, i) => (
+                    <div
+                      key={`current-${s.studentId || s.userId || i}`}
+                      onClick={() => handleSelectStudent(s)}
+                      className="student-card"
+                      style={listCardStyle(selectedStudent?.studentId === s.studentId)}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
+                        <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
+                          {i + 1}
+                        </div>
+                        <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
+                        <div style={{ minWidth: 0 }}>
+                          <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
+                          <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
+                            Grade {s.grade} • Section {s.section}
+                          </div>
+                        </div>
                       </div>
-                      <img
-                        src={s.profileImage}
-                        alt={s.name}
-                        style={{
-                          width: "48px",
-                          height: "48px",
-                          borderRadius: "50%",
-                          border: selectedStudent?.studentId === s.studentId ? "3px solid #4b6cb7" : "3px solid red",
-                          objectFit: "cover",
-                          transition: "all 0.3s ease",
-                        }}
-                      />
-                      <h3 style={{ marginTop: "-24px", fontSize: "14px" }}>{s.name}</h3>
                     </div>
-                    <div style={{ marginLeft: isNarrow ? "78px" : "104px", marginTop: "-16px", color: "#555", fontSize: "11px" }}>
-                      Grade {s.grade} - Section {s.section}
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             )}
           </div>
@@ -1355,132 +1831,315 @@ useEffect(() => {
 
         {/* RIGHT SIDEBAR */}
         {/* RIGHT SIDEBAR */}
-{selectedStudent && (
   <div
     style={{
-      width: isPortrait ? "100%" : "30%",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      width: isPortrait ? "100%" : "380px",
       position: "fixed",
+      left: isPortrait ? 0 : "auto",
       right: 0,
       top: isPortrait ? 0 : "55px",
-      background: "#fff",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      background: "var(--surface-panel)",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
-      padding: "12px",
-      boxShadow: "0 0 18px rgba(0,0,0,0.08)",
-      borderLeft: isPortrait ? "none" : "1px solid #e5e7eb",
+      padding: "14px",
+      boxShadow: "var(--shadow-panel)",
+      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       transition: "all 0.35s ease",
-      fontSize: "10px",
+      fontSize: "12px",
     }}
   >
     {/* Close button */}
-    <div style={{ position: "absolute", top: 0, left: 22, zIndex: 2000 }}>
-      <button
-        onClick={() => setSelectedStudent(null)}
-        aria-label="Close sidebar"
-        style={{
-          background: "none",
-          border: "none",
-          fontSize: 28,
-          fontWeight: 700,
-          color: "#3647b7",
-          cursor: "pointer",
-          padding: 2,
-          lineHeight: 1,
-        }}
-      >
-        ×
-      </button>
-    </div>
+    {selectedStudent && (
+      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 2000 }}>
+        <button
+          onClick={() => {
+            studentSelectionRequestRef.current += 1;
+            setRightSidebarOpen(false);
+            setStudentFullscreenOpen(false);
+            setSelectedStudent(null);
+          }}
+          aria-label="Close sidebar"
+          style={{
+            width: 34,
+            height: 34,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255,255,255,0.18)",
+            border: "1px solid rgba(255,255,255,0.42)",
+            borderRadius: 999,
+            backdropFilter: "blur(6px)",
+            fontSize: 24,
+            fontWeight: 700,
+            color: "#ffffff",
+            cursor: "pointer",
+            padding: 0,
+            lineHeight: 1,
+            boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+          }}
+        >
+          ×
+        </button>
+      </div>
+    )}
+
+    {/* Expand button */}
+    {selectedStudent && (
+      <div style={{ position: "absolute", top: 8, right: 14, zIndex: 2000 }}>
+        <button
+          onClick={() => setStudentFullscreenOpen(true)}
+          aria-label="Expand student profile"
+          title="Expand"
+          style={{
+            border: "1px solid var(--border-strong)",
+            background: "var(--surface-panel)",
+            color: "var(--accent-strong)",
+            borderRadius: 8,
+            padding: "4px 8px",
+            fontSize: 14,
+            cursor: "pointer",
+            fontWeight: 800,
+            lineHeight: 1,
+          }}
+        >
+          ⤢
+        </button>
+      </div>
+    )}
 
     {/* Header */}
     <div
       style={{
-        background: "#e0e7ff",
-        margin: "-12px -12px 10px",
-        padding: "14px 10px",
+        background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
+        margin: "-14px -14px 12px",
+        padding: "16px 10px",
         textAlign: "center",
       }}
     >
-      <div
-        style={{
-          width: "70px",
-          height: "70px",
-          margin: "0 auto 10px",
-          borderRadius: "50%",
-          overflow: "hidden",
-          border: "3px solid #4b6cb7",
-        }}
-      >
-        <img
-          src={selectedStudent.profileImage}
-          alt={selectedStudent.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
+      {selectedStudent ? (
+        <>
+          <div
+            style={{
+              width: "70px",
+              height: "70px",
+              margin: "0 auto 10px",
+              borderRadius: "50%",
+              overflow: "hidden",
+              border: "3px solid rgba(255,255,255,0.8)",
+            }}
+          >
+            <img
+              src={selectedStudent.profileImage}
+              alt={selectedStudent.name}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </div>
 
-      <h2 style={{ margin: 0, color: "#111827", fontSize: 14 }}>{selectedStudent.name}</h2>
-      <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "10px" }}>{selectedStudent.studentId}</p>
-      <p style={{ margin: 0, color: "#6b7280", fontSize: "10px" }}>
-        Grade {selectedStudent.grade} - Section {selectedStudent.section}
-      </p>
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedStudent.name}</h2>
+          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedStudent.studentId}</p>
+          <p style={{ margin: 0, color: "#dbeafe", fontSize: "10px" }}>
+            Grade {selectedStudent.grade} - Section {selectedStudent.section}
+          </p>
+        </>
+      ) : (
+        <>
+          <div
+            style={{
+              width: "70px",
+              height: "70px",
+              margin: "0 auto 10px",
+              borderRadius: "50%",
+              border: "3px solid rgba(255,255,255,0.8)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#ffffff",
+              background: "rgba(255,255,255,0.1)"
+            }}
+          >
+            <FaChalkboardTeacher size={30} />
+          </div>
+
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+            Students Workspace
+          </h2>
+
+          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px", fontWeight: 600 }}>
+            Student Overview
+          </p>
+        </>
+      )}
     </div>
 
     {/* Tabs */}
-    <div style={{ display: "flex", borderBottom: "1px solid #e5e7eb", marginBottom: "10px" }}>
-      {["details", "attendance", "performance"].map((tab) => (
-        <button
-          key={tab}
-          onClick={() => setStudentTab(tab)}
-          style={{
-            flex: 1,
-            padding: "6px",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontWeight: 600,
-            color: studentTab === tab ? "#4b6cb7" : "#6b7280",
-            fontSize: "10px",
-            borderBottom: studentTab === tab ? "3px solid #4b6cb7" : "3px solid transparent",
-          }}
-        >
-          {tab.toUpperCase()}
-        </button>
-      ))}
-    </div>
+    {selectedStudent ? (
+      <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
+        {["details", "attendance", "payment"].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setStudentTab(tab)}
+            style={{
+              flex: 1,
+              padding: "6px",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+              color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
+              fontSize: "10px",
+              borderBottom: studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
+            }}
+          >
+            {tab.toUpperCase()}
+          </button>
+        ))}
+      </div>
+    ) : null}
+
+    {!selectedStudent ? (
+      <div
+        style={{
+          padding: "10px",
+          display: "grid",
+          gap: 8,
+          gridTemplateColumns: "1fr 1fr",
+          marginBottom: "10px"
+        }}
+      >
+        {[
+          { label: "Total", value: students.length },
+          { label: "Visible", value: filteredStudentsBase.length },
+          { label: "Grade", value: selectedGrade === "All" ? "All" : `G${selectedGrade}` },
+          { label: "Search", value: searchTerm ? "Active" : "None" }
+        ].map((item) => (
+          <div
+            key={item.label}
+            style={{
+              ...rightDrawerCardStyle,
+              padding: "10px",
+              minHeight: 56,
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center"
+            }}
+          >
+            <div
+              style={{
+                fontSize: "9px",
+                fontWeight: 800,
+                color: "var(--text-muted)",
+                letterSpacing: "0.3px",
+                textTransform: "uppercase"
+              }}
+            >
+              {item.label}
+            </div>
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 800,
+                color: "var(--text-primary)",
+                marginTop: 2
+              }}
+            >
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : null}
 
     {/* Tab Content */}
     <div>
       {/* DETAILS TAB */}
-      {studentTab === "details" && (
+      {studentTab === "details" && selectedStudent && (
         <div
           style={{
             padding: "12px",
-            background: "#ffffff",
-            borderRadius: 12,
-            border: "1px solid #e5e7eb",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            ...rightDrawerCardStyle,
             margin: "0 auto",
             maxWidth: 380,
           }}
         >
           <div>
             {/* STUDENT DETAILS */}
-            <h3
-              style={{
-                margin: 0,
-                marginBottom: 6,
-                color: "#0f172a",
-                fontWeight: 800,
-                letterSpacing: "0.1px",
-                fontSize: 12,
-                textAlign: "left",
-              }}
-            >
-              Student Profile
-            </h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3
+                style={{
+                  margin: 0,
+                  marginBottom: 6,
+                  color: "var(--text-primary)",
+                  fontWeight: 800,
+                  letterSpacing: "0.1px",
+                  fontSize: 12,
+                  textAlign: "left",
+                }}
+              >
+                Student Profile
+              </h3>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                {!editingProfile ? (
+                  <button
+                    onClick={startEditProfile}
+                    style={{
+                      background: "var(--surface-panel)",
+                      border: "1px solid var(--border-strong)",
+                      color: "var(--accent-strong)",
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      fontWeight: 700,
+                      fontSize: 12,
+                    }}
+                  >
+                    Edit Profile
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={saveProfileEdits}
+                      disabled={savingProfile}
+                      style={{
+                        background: "var(--accent-strong)",
+                        border: "none",
+                        color: "#fff",
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                        fontSize: 12,
+                      }}
+                    >
+                      {savingProfile ? "Saving..." : "Save"}
+                    </button>
+                    <button
+                      onClick={cancelEditProfile}
+                      style={{
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
+                        color: "var(--text-secondary)",
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                        fontSize: 12,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
+              ID: <b style={{ color: "var(--text-primary)" }}>{selectedStudent?.studentId || "N/A"}</b>
+            </div>
+
             <div
               style={{
                 display: "grid",
@@ -1489,56 +2148,170 @@ useEffect(() => {
               }}
             >
               {[
-                ["Phone", selectedStudent?.phone],
-                ["Gender", selectedStudent?.gender],
-                ["Email", selectedStudent?.email],
-                ["Grade", selectedStudent?.grade],
-                ["Section", selectedStudent?.section],
-                ["Age", selectedStudent?.age],
-                ["Birth Date", selectedStudent?.dob],
-                ["Parent Name", selectedStudent?.parentName],
-                ["Parent Phone", selectedStudent?.parentPhone],
-              ].map(([label, value]) => (
-                <div
-                  key={label}
-                  style={{
-                    alignItems: "center",
-                    justifyContent: "flex-start",
-                    display: "flex",
-                    background: "#ffffff",
-                    padding: "8px",
-                    borderRadius: 10,
-                    border: "1px solid #eef2f7",
-                    boxShadow: "none",
-                    minHeight: 36,
-                  }}
-                >
-                  <div>
-                    <div
-                      style={{
-                        fontSize: "9px",
-                        fontWeight: 700,
-                        letterSpacing: "0.4px",
-                        color: "#64748b",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {label}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        color: "#111",
-                        marginTop: 2,
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {value || <span style={{ color: "#cbd5e1" }}>N/A</span>}
+                { label: "Phone", key: "phone", icon: "📱" },
+                { label: "Gender", key: "gender", icon: "⚧" },
+                { label: "Email", key: "email", icon: "📧" },
+                { label: "Grade", key: "grade", icon: "🏫" },
+                { label: "Section", key: "section", icon: "🧩" },
+                { label: "Age", key: "age", icon: "🎂" },
+                { label: "Birth Date", key: "dob", icon: "📅" },
+                { label: "Parent Name", key: "parentName", icon: "👤" },
+                { label: "Parent Phone", key: "parentPhone", icon: "☎️" },
+              ].map(({ label, key, icon }) => {
+                const value = selectedStudent?.[key];
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      alignItems: "center",
+                      justifyContent: "flex-start",
+                      display: "flex",
+                      background: "var(--surface-panel)",
+                      padding: "8px",
+                      borderRadius: 10,
+                      border: "1px solid var(--border-soft)",
+                      boxShadow: "none",
+                      minHeight: 36,
+                    }}
+                  >
+                    {!editingProfile && (
+                      <span
+                        style={{
+                          fontSize: 14,
+                          marginRight: 8,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {icon}
+                      </span>
+                    )}
+
+                    <div style={{ width: "100%" }}>
+                      <div
+                        style={{
+                          fontSize: "9px",
+                          fontWeight: 700,
+                          letterSpacing: "0.4px",
+                          color: "var(--text-muted)",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {label}
+                      </div>
+
+                      {!editingProfile ? (
+                        <div
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color:
+                              label === "Gender"
+                                ? String(value || "").toLowerCase() === "male"
+                                  ? "var(--success)"
+                                  : String(value || "").toLowerCase() === "female"
+                                  ? "var(--accent-strong)"
+                                  : "var(--text-primary)"
+                                : "var(--text-primary)",
+                            marginTop: 2,
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
+                        </div>
+                      ) : (
+                        key === "gender" ? (
+                          <select
+                            value={typeof editForm[key] !== "undefined" ? editForm[key] : (value || "")}
+                            onChange={(e) => setEditForm((p) => ({ ...(p || {}), [key]: e.target.value }))}
+                            style={{
+                              marginTop: 6,
+                              width: "100%",
+                              padding: "8px 10px",
+                              borderRadius: 8,
+                              border: "1px solid var(--input-border)",
+                              fontSize: 12,
+                              background: "var(--input-bg)",
+                              color: "var(--text-primary)",
+                            }}
+                          >
+                            <option value="">Select gender</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                          </select>
+                        ) : (
+                          <input
+                            value={typeof editForm[key] !== "undefined" ? editForm[key] : (value || "")}
+                            onChange={(e) => setEditForm((p) => ({ ...(p || {}), [key]: e.target.value }))}
+                            style={{
+                              marginTop: 6,
+                              width: "100%",
+                              padding: "8px 10px",
+                              borderRadius: 8,
+                              border: "1px solid var(--input-border)",
+                              fontSize: 12,
+                              background: "var(--input-bg)",
+                              color: "var(--text-primary)",
+                            }}
+                          />
+                        )
+                      )}
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+
+            <div
+              style={{
+                background: "var(--surface-panel)",
+                borderRadius: 12,
+                padding: 10,
+                border: "1px solid var(--border-soft)",
+                boxShadow: "none",
+                marginTop: 10,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  letterSpacing: "0.4px",
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  marginBottom: 8,
+                }}
+              >
+                Enrollment Summary
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[
+                  `Grade ${selectedStudent?.grade || "-"}`,
+                  `Section ${selectedStudent?.section || "-"}`,
+                  `Year ${String(selectedStudent?.academicYear || currentAcademicYear || "-").replace("_", "/")}`,
+                  `Status ${(selectedStudent?.status || "Active").toString()}`,
+                  `Parents ${Array.isArray(selectedStudent?.parents) ? selectedStudent.parents.length : 0}`,
+                ].map((item, index) => (
+                  <span
+                    key={`${item}_${index}`}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      border: "1px solid var(--border-soft)",
+                      background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
+                      color: "var(--text-secondary)",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
             </div>
            
           </div>
@@ -1550,10 +2323,10 @@ useEffect(() => {
         <div
           style={{
             padding: "12px",
-            background: "#ffffff",
+            background: "var(--surface-panel)",
             borderRadius: 12,
-            border: "1px solid #e5e7eb",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            border: "1px solid var(--border-soft)",
+            boxShadow: "var(--shadow-soft)",
           }}
         >
           {/* VIEW SWITCH */}
@@ -1576,8 +2349,8 @@ useEffect(() => {
                   fontWeight: 700,
                   fontSize: 10,
                   cursor: "pointer",
-                  background: attendanceView === v ? "#4b6cb7" : "#e5e7eb",
-                  color: attendanceView === v ? "#fff" : "#111827",
+                  background: attendanceView === v ? "var(--accent-strong)" : "var(--surface-strong)",
+                  color: attendanceView === v ? "#fff" : "var(--text-primary)",
                 }}
               >
                 {v.toUpperCase()}
@@ -1612,12 +2385,12 @@ useEffect(() => {
                   onClick={() => toggleExpand(expandKey)}
                   style={{
                     cursor: "pointer",
-                    background: "#ffffff",
+                    background: "var(--surface-panel)",
                     borderRadius: 12,
                     padding: 12,
                     marginBottom: 10,
-                    border: "1px solid #e5e7eb",
-                    boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+                    border: "1px solid var(--border-soft)",
+                    boxShadow: "var(--shadow-soft)",
                     position: "relative",
                     overflow: "hidden",
                   }}
@@ -1646,7 +2419,7 @@ useEffect(() => {
                           margin: 0,
                           fontSize: 12,
                           fontWeight: 800,
-                          color: "#0f172a",
+                          color: "var(--text-primary)",
                         }}
                       >
                         {formatSubjectName(course)}
@@ -1655,7 +2428,7 @@ useEffect(() => {
                         style={{
                           margin: "6px 0 0",
                           fontSize: 10,
-                          color: "#64748b",
+                          color: "var(--text-muted)",
                         }}
                       >
                         {records[0]?.teacherName}
@@ -1667,9 +2440,9 @@ useEffect(() => {
                         borderRadius: 999,
                         fontSize: 10,
                         fontWeight: 800,
-                        background: "#e0e7ff",
-                        color: "#1e40af",
-                        border: "1px solid #c7d2fe",
+                        background: "var(--accent-soft)",
+                        color: "var(--accent-strong)",
+                        border: "1px solid var(--border-strong)",
                       }}
                     >
                       {progress}%
@@ -1680,7 +2453,7 @@ useEffect(() => {
                     onClick={() => toggleExpand(expandKey)}
                     style={{
                       height: 8,
-                      background: "#e5e7eb",
+                      background: "var(--surface-strong)",
                       borderRadius: 999,
                       cursor: "pointer",
                       overflow: "hidden",
@@ -1691,7 +2464,7 @@ useEffect(() => {
                       style={{
                         height: "100%",
                         width: `${progress}%`,
-                        background: "#4b6cb7",
+                        background: "var(--accent-strong)",
                         transition: "width .3s ease",
                       }}
                     />
@@ -1700,7 +2473,7 @@ useEffect(() => {
                     style={{
                       fontSize: 10,
                       fontWeight: 700,
-                      color: "#475569",
+                      color: "var(--text-secondary)",
                       marginBottom: 12,
                     }}
                   >
@@ -1711,8 +2484,8 @@ useEffect(() => {
                     <div
                       style={{
                         marginTop: 14,
-                        background: "#ffffff",
-                        border: "1px solid #e5e7eb",
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
                         borderRadius: 10,
                         padding: 10,
                       }}
@@ -1727,12 +2500,12 @@ useEffect(() => {
                             padding: "8px 6px",
                             borderBottom:
                               i !== displayRecords.length - 1
-                                ? "1px solid #e5e7eb"
+                                ? "1px solid var(--border-soft)"
                                 : "none",
                           }}
                         >
                           <div style={{ display: "flex", flexDirection: "column" }}>
-                            <span style={{ fontSize: 10, color: "#1f2937" }}>
+                            <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
                               {new Date(r.date).toDateString()}
                             </span>
                           </div>
@@ -1744,16 +2517,16 @@ useEffect(() => {
                               fontWeight: 800,
                               background:
                                 r.status === "present"
-                                  ? "#dcfce7"
+                                  ? "var(--success-soft)"
                                   : r.status === "late"
-                                  ? "#fef3c7"
-                                  : "#fee2e2",
+                                  ? "var(--warning-soft)"
+                                  : "var(--danger-soft)",
                               color:
                                 r.status === "present"
-                                  ? "#166534"
+                                  ? "var(--success)"
                                   : r.status === "late"
-                                  ? "#92400e"
-                                  : "#991b1b",
+                                  ? "var(--warning)"
+                                  : "var(--danger)",
                             }}
                           >
                             {r.status.toUpperCase()}
@@ -1768,289 +2541,214 @@ useEffect(() => {
         </div>
       )}
 
-      {/* PERFORMANCE TAB */}
-      {studentTab === "performance" && (
+      {/* PAYMENT TAB: Read-only monthly payment history */}
+      {studentTab === "payment" && (
         <div
           style={{
             position: "relative",
-            paddingBottom: "70px",
-            background: "#ffffff",
-            border: "1px solid #e5e7eb",
+            background: "var(--surface-panel)",
+            border: "1px solid var(--border-soft)",
             borderRadius: 12,
-            boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+            boxShadow: "var(--shadow-soft)",
             padding: 12,
           }}
         >
-          {/* Semester Tabs */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              gap: 6,
-              marginBottom: 10,
-              borderBottom: "1px solid #e5e7eb",
-              paddingBottom: 6,
-            }}
-          >
-            {["semester1", "semester2"].map((sem) => {
-              const isActive = activeSemester === sem;
-              return (
-                <button
-                  key={sem}
-                  onClick={() => {
-                    setActiveSemester(sem);
-                    // reset quarter to first quarter of the newly selected semester
-                    const firstQ = semesterQuarters[sem] && semesterQuarters[sem][0];
-                    if (firstQ) setActiveQuarter(firstQ);
-                  }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: isActive ? "#4b6cb7" : "#64748b",
-                    padding: "6px 8px",
-                    borderBottom: isActive ? "2px solid #4b6cb7" : "2px solid transparent",
-                  }}
-                >
-                  {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                </button>
-              );
-            })}
-          </div>
-          {/* Quarter selector under semester tabs */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 8, marginBottom: 10 }}>
-            {(semesterQuarters[activeSemester] || []).map((q) => (
-              <button
-                key={q}
-                onClick={() => setActiveQuarter(q)}
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 8,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  background: activeQuarter === q ? '#4b6cb7' : '#eef2f6',
-                  color: activeQuarter === q ? '#fff' : '#1f2937',
-                }}
-              >
-                {q.replace('quarter', 'Quarter ')}
-              </button>
-            ))}
-          </div>
-          {/* Marks Cards */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr",
-              gap: 10,
-              padding: 0,
-            }}
-          >
-            {loading ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  gridColumn: "1 / -1",
-                  padding: 12,
-                  color: "#64748b",
-                  fontSize: 11,
-                }}
-              >
-                Loading performance...
-              </div>
-            ) : Object.keys(studentMarksFlattened || {}).length === 0 ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: 12,
-                  borderRadius: 12,
-                  background: "#ffffff",
-                  color: "#64748b",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  border: "1px solid #e5e7eb",
-                  gridColumn: "1 / -1",
-                }}
-              >
-                No performance records
-              </div>
-            ) : (
-              Object.entries(studentMarksFlattened).map(
-                ([courseKey, studentCourseData], idx) => {
-                  const semNode = studentCourseData?.[activeSemester];
-                  if (!semNode) return null;
+          <h3 style={{ margin: 0, marginBottom: 10, color: "var(--text-primary)", fontWeight: 800, fontSize: 13, textAlign: "center" }}>
+            Monthly Payment History
+          </h3>
 
-                  // Prefer semester-level assessments when present; otherwise select the
-                  // active quarter node (or the first quarter-like child that contains assessments).
-                  let data = null;
-                  if (semNode.assessments) {
-                    data = semNode;
-                  } else if (semNode[activeQuarter]) {
-                    data = semNode[activeQuarter];
-                  } else {
-                    const quarterKey = Object.keys(semNode).find(
-                      (k) => semNode[k] && semNode[k].assessments
-                    );
-                    data = quarterKey ? semNode[quarterKey] : null;
-                  }
-
-                  if (!data) return null;
-                  const assessments = data.assessments || {};
-                  const total = Object.values(assessments).reduce(
-                    (sum, a) => sum + (a.score || 0),
-                    0
-                  );
-                  const maxTotal = Object.values(assessments).reduce(
-                    (sum, a) => sum + (a.max || 0),
-                    0
-                  );
-                  const percentage = maxTotal ? (total / maxTotal) * 100 : 0;
-                  const statusClr =
-                    percentage >= 75
-                      ? "#16a34a"
-                      : percentage >= 50
-                      ? "#f59e0b"
-                      : "#dc2626";
-                  const courseName = formatSubjectName(courseKey);
-
+          {!selectedStudent ? (
+            <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Select a student to view payment history.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {Object.keys(paymentHistory).length === 0 ? (
+                <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading payment history...</p>
+              ) : (
+                Object.entries(paymentHistory).map(([monthKey, paid]) => {
+                  const [year, monthShort] = monthKey.split("-");
                   return (
                     <div
-                      key={`${courseKey}-${idx}`}
+                      key={monthKey}
                       style={{
-                        padding: 12,
-                        borderRadius: 12,
-                        background: "#ffffff",
-                        border: "1px solid #e5e7eb",
-                        boxShadow: "0 8px 20px rgba(15,23,42,0.06)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        background: paid ? "var(--success-soft)" : "var(--danger-soft)",
+                        border: paid ? "1px solid var(--success)" : "1px solid var(--danger)",
                       }}
                     >
-                      {/* Course Name */}
-                      <div
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 800,
-                          marginBottom: 10,
-                          color: "#0f172a",
-                          textAlign: "left",
-                        }}
-                      >
-                        {courseName}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <div style={{ width: 10, height: 10, borderRadius: 999, background: paid ? "var(--success)" : "var(--danger)" }} />
+                        <div style={{ fontWeight: 700 }}>{monthShort} {year}</div>
                       </div>
-                      {/* Summary */}
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                        <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>
-                          Total
-                        </div>
-                        <div style={{ fontSize: 11, fontWeight: 800, color: "#111827" }}>
-                          {total} / {maxTotal}
-                        </div>
-                        <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, border: "1px solid #e5e7eb", color: statusClr, background: "#ffffff" }}>
-                          {Math.round(percentage)}%
-                        </div>
-                      </div>
-                      <div style={{ height: 8, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 12 }}>
-                        <div style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, height: "100%", background: statusClr }} />
-                      </div>
-                      {/* Assessment Bars */}
-                      {Object.entries(assessments).map(([key, a]) => (
-                        <div key={key} style={{ marginBottom: 8 }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              fontSize: 10,
-                              fontWeight: 600,
-                              color: "#111827",
-                            }}
-                          >
-                            <span>{a.name}</span>
-                            <span>
-                              {a.score} / {a.max}
-                            </span>
-                          </div>
-                          <div
-                            style={{
-                              height: 5,
-                              borderRadius: "999px",
-                              background: "#e5e7eb",
-                              marginTop: "5px",
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: `${(a.score / a.max) * 100}%`,
-                                height: "100%",
-                                background: statusClr,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                      {/* Status */}
-                      <div
-                        style={{
-                          marginTop: 8,
-                          textAlign: "left",
-                          fontWeight: 700,
-                          color: statusClr,
-                          fontSize: 10,
-                        }}
-                      >
-                        {percentage >= 75
-                          ? "Excellent"
-                          : percentage >= 50
-                          ? "Good"
-                          : "Needs Improvement"}
-                      </div>
-                      {/* Teacher Name */}
-                      <div
-                        style={{
-                          marginTop: 6,
-                          textAlign: "left",
-                          fontSize: 10,
-                          color: "#64748b",
-                        }}
-                      >
-                        {studentCourseData.teacherName ||
-                          data.teacherName ||
-                          "N/A"}
-                      </div>
+                      <div style={{ fontWeight: 800, color: paid ? "var(--success)" : "var(--danger)" }}>{paid ? "Paid" : "Unpaid"}</div>
                     </div>
                   );
-                }
-              )
-            )}
-          </div>
+                })
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
-    {/* Chat Button */}
-    {!studentChatOpen && (
+    {/* Parent Chat Button */}
+    {selectedStudent && !studentChatOpen && (
       <div
-        onClick={() => setStudentChatOpen(true)}
+        onClick={() => {
+          if (!selectedStudent?.userId) {
+            alert("Please select a student first.");
+            return;
+          }
+
+          const firstParent = (selectedStudent?.parents || [])[0];
+          if (!firstParent?.userId) {
+            alert("No parent found for this student.");
+            return;
+          }
+
+          navigate("/all-chat", {
+            state: {
+              user: {
+                userId: firstParent.userId,
+                name: firstParent.name || selectedStudent.parentName || "Parent",
+                profileImage: firstParent.profileImage || "/default-profile.png",
+                type: "parent",
+              },
+            },
+          });
+        }}
+        title="Chat with student's parent"
+        style={{
+          position: "fixed",
+          bottom: "20px",
+          right: "220px",
+          width: "140px",
+          height: "48px",
+          background: "linear-gradient(135deg, color-mix(in srgb, var(--success) 78%, #0f172a), var(--success))",
+          borderRadius: "28px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-start",
+          gap: 10,
+          padding: "0 12px",
+          color: "#fff",
+          cursor: "pointer",
+          zIndex: 1100,
+          boxShadow: "var(--shadow-glow)",
+          transition: "transform 0.16s ease",
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 34,
+            height: 34,
+            borderRadius: 10,
+            background: "rgba(255,255,255,0.14)",
+          }}
+        >
+          <FaFacebookMessenger size={18} />
+        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
+          <span style={{ fontWeight: 800, fontSize: 13 }}>Parent Chat</span>
+        </div>
+        <span
+          style={{
+            position: "absolute",
+            top: -8,
+            right: 8,
+            background: "color-mix(in srgb, var(--success) 42%, #04130b)",
+            color: "#fff",
+            borderRadius: "999px",
+            fontSize: 10,
+            fontWeight: 800,
+            padding: "2px 6px",
+            border: "2px solid #fff",
+            lineHeight: 1,
+          }}
+        >
+          P
+        </span>
+      </div>
+    )}
+
+    {/* Student Chat Button (styled like Parent Chat) */}
+    {selectedStudent && !studentChatOpen && (
+      <div
+        onClick={() => {
+          if (!selectedStudent?.userId) {
+            alert("Please select a student first.");
+            return;
+          }
+          navigate("/all-chat", {
+            state: {
+              user: {
+                userId: selectedStudent.userId,
+                name: selectedStudent.name,
+                profileImage: selectedStudent.profileImage,
+                type: "student",
+              },
+            },
+          });
+        }}
+        title="Chat with student"
         style={{
           position: "fixed",
           bottom: "20px",
           right: "20px",
-          width: "60px",
-          height: "60px",
-          background:
-            "linear-gradient(135deg, #833ab4, #0259fa, #459afc)",
-          borderRadius: "50%",
+          width: "140px",
+          height: "48px",
+          background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
+          borderRadius: "28px",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
+          justifyContent: "flex-start",
+          gap: 10,
+          padding: "0 12px",
           color: "#fff",
           cursor: "pointer",
           zIndex: 1000,
-          boxShadow: "0 8px 18px rgba(0,0,0,0.25)",
-          transition: "transform 0.2s ease",
+          boxShadow: "var(--shadow-glow)",
+          transition: "transform 0.16s ease",
         }}
       >
-        <FaCommentDots size={30} />
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 34,
+            height: 34,
+            borderRadius: 10,
+            background: "rgba(255,255,255,0.14)",
+          }}
+        >
+          <FaCommentDots size={18} />
+        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
+          <span style={{ fontWeight: 800, fontSize: 13 }}>Student Chat</span>
+        </div>
+        <span
+          style={{
+            position: "absolute",
+            top: -8,
+            right: 8,
+            background: "color-mix(in srgb, var(--accent-strong) 28%, #020617)",
+            color: "#fff",
+            borderRadius: "999px",
+            fontSize: 10,
+            fontWeight: 800,
+            padding: "2px 6px",
+            border: "2px solid #fff",
+            lineHeight: 1,
+          }}
+        >
+          S
+        </span>
       </div>
     )}
     {/* Chat Popup */}
@@ -2062,9 +2760,9 @@ useEffect(() => {
           right: "20px",
           width: "360px",
           height: "480px",
-          background: "#fff",
+          background: "var(--surface-panel)",
           borderRadius: "16px",
-          boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
+          boxShadow: "var(--shadow-panel)",
           zIndex: 2000,
           display: "flex",
           flexDirection: "column",
@@ -2075,11 +2773,11 @@ useEffect(() => {
         <div
           style={{
             padding: "14px",
-            borderBottom: "1px solid #eee",
+            borderBottom: "1px solid var(--border-soft)",
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            background: "#fafafa",
+            background: "var(--surface-muted)",
           }}
         >
             <strong>{selectedStudent.name}</strong>
@@ -2090,8 +2788,12 @@ useEffect(() => {
                 setStudentChatOpen(false); // properly close popup
                 navigate("/all-chat", {
                   state: {
-                    user: selectedStudent, // user to auto-select
-                    tab: "student", // tab type
+                    user: {
+                      userId: selectedStudent.userId,
+                      name: selectedStudent.name,
+                      profileImage: selectedStudent.profileImage,
+                      type: "student",
+                    },
                   },
                 });
               }}
@@ -2127,11 +2829,11 @@ useEffect(() => {
             display: "flex",
             flexDirection: "column",
             gap: "6px",
-            background: "#f9f9f9",
+            background: "var(--surface-muted)",
           }}
         >
           {popupMessages.length === 0 ? (
-            <p style={{ textAlign: "center", color: "#aaa" }}>
+            <p style={{ textAlign: "center", color: "var(--text-muted)" }}>
               Start chatting with {selectedStudent.name}
             </p>
           ) : (
@@ -2150,13 +2852,13 @@ useEffect(() => {
                   <div
                     style={{
                       maxWidth: "70%",
-                      background: isAdmin ? "#4facfe" : "#fff",
-                      color: isAdmin ? "#fff" : "#000",
+                      background: isAdmin ? "var(--accent)" : "var(--surface-panel)",
+                      color: isAdmin ? "#fff" : "var(--text-primary)",
                       padding: "10px 14px",
                       borderRadius: 18,
                       borderTopRightRadius: isAdmin ? 0 : 18,
                       borderTopLeftRadius: isAdmin ? 18 : 0,
-                      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                      boxShadow: "var(--shadow-soft)",
                       wordBreak: "break-word",
                       cursor: "default",
                       position: "relative",
@@ -2174,7 +2876,7 @@ useEffect(() => {
                         gap: 6,
                         marginTop: 6,
                         fontSize: 11,
-                        color: isAdmin ? "#fff" : "#888",
+                        color: isAdmin ? "#fff" : "var(--text-muted)",
                       }}
                     >
                       <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>
@@ -2183,8 +2885,8 @@ useEffect(() => {
                       <span>{formatTime(m.timeStamp)}</span>
                       {isAdmin && !m.deleted && (
                       <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
-                                                          <FaCheck size={10} color={isAdmin ? "#fff" : "#888"} style={{ opacity: 0.90, marginLeft: 2 }} />
-                                                          {m.seen && (<FaCheck size={10} color={isAdmin ? "#f3f7f8" : "#ccc"} style={{ marginLeft: -6, opacity: 0.95 }} />)}
+                                                          <FaCheck size={10} color={isAdmin ? "#fff" : "var(--text-muted)"} style={{ opacity: 0.90, marginLeft: 2 }} />
+                                                          {m.seen && (<FaCheck size={10} color={isAdmin ? "#f8fafc" : "var(--text-muted)"} style={{ marginLeft: -6, opacity: 0.95 }} />)}
                                                         </span>
                       )}
                     </div>
@@ -2199,10 +2901,10 @@ useEffect(() => {
         <div
           style={{
             padding: "10px",
-            borderTop: "1px solid #eee",
+            borderTop: "1px solid var(--border-soft)",
             display: "flex",
             gap: "8px",
-            background: "#fff",
+            background: "var(--surface-panel)",
           }}
         >
           <input
@@ -2213,8 +2915,10 @@ useEffect(() => {
               flex: 1,
               padding: "10px 14px",
               borderRadius: "25px",
-              border: "1px solid #ccc",
+              border: "1px solid var(--input-border)",
               outline: "none",
+              background: "var(--input-bg)",
+              color: "var(--text-primary)",
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") sendMessage();
@@ -2226,7 +2930,7 @@ useEffect(() => {
               width: 45,
               height: 45,
               borderRadius: "50%",
-              background: "#4facfe",
+              background: "var(--accent)",
               border: "none",
               color: "#fff",
               display: "flex",
@@ -2240,6 +2944,282 @@ useEffect(() => {
         </div>
       </div>
     )}
+  </div>
+
+{selectedStudent && studentFullscreenOpen && (
+  <div
+    style={{
+      position: "fixed",
+      inset: 0,
+      zIndex: 3000,
+      background: "linear-gradient(180deg, var(--page-bg-secondary) 0%, var(--page-bg) 100%)",
+      overflowY: "auto",
+      padding: "16px 20px 24px",
+    }}
+  >
+    <div
+      style={{
+        maxWidth: 1180,
+        margin: "0 auto",
+        background: "var(--surface-panel)",
+        border: "1px solid var(--border-soft)",
+        borderRadius: 16,
+        boxShadow: "var(--shadow-panel)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          padding: "14px 16px",
+          color: "#fff",
+          background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src={selectedStudent.profileImage || "/default-profile.png"}
+            alt={selectedStudent.name}
+            style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
+          />
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedStudent.name || "Student"}</div>
+            <div style={{ fontSize: 12, opacity: 0.95 }}>{selectedStudent.studentId} • Grade {selectedStudent.grade || "-"} • Section {selectedStudent.section || "-"}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!fullscreenEditing ? (
+            <button
+              onClick={() => setFullscreenEditing(true)}
+              style={{
+                border: "1px solid rgba(255,255,255,0.45)",
+                background: "rgba(255,255,255,0.14)",
+                color: "#fff",
+                borderRadius: 8,
+                padding: "8px 12px",
+                cursor: "pointer",
+                fontWeight: 700,
+              }}
+            >
+              Edit All Sections
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => {
+                  resetFullscreenEditFormFromSelected();
+                  setFullscreenEditing(false);
+                }}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.45)",
+                  background: "rgba(255,255,255,0.14)",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+                disabled={fullscreenSaving}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveFullscreenEdits}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.45)",
+                  background: "#16a34a",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                  opacity: fullscreenSaving ? 0.75 : 1,
+                }}
+                disabled={fullscreenSaving}
+              >
+                {fullscreenSaving ? "Saving..." : "Save Changes"}
+              </button>
+            </>
+          )}
+
+          <button
+            onClick={() => setStudentFullscreenOpen(false)}
+            style={{
+              border: "1px solid rgba(255,255,255,0.45)",
+              background: "rgba(255,255,255,0.14)",
+              color: "#fff",
+              borderRadius: 8,
+              padding: "8px 12px",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Exit Full Screen
+          </button>
+        </div>
+      </div>
+
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+        {sectionDefinitions.map((section) => {
+          const sectionData = fullscreenEditing
+            ? (fullscreenEditForm.sections?.[section.key] || {})
+            : (registrationSections?.[section.key] || {});
+          const isCollapsed = !!fullscreenSectionCollapsed?.[section.key];
+          const sectionEntries = Object.entries(sectionData || {});
+          const imageEntries = !fullscreenEditing
+            ? sectionEntries.filter(([key, value]) => isImageValue(key, value))
+            : [];
+          const nonImageEntries = !fullscreenEditing
+            ? sectionEntries.filter(([key, value]) => !isImageValue(key, value))
+            : sectionEntries;
+
+          return (
+          <div
+            key={section.title}
+            style={{
+              background: "var(--surface-panel)",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 12,
+              padding: 10,
+              boxShadow: "var(--shadow-soft)",
+              gridColumn: section.fullWidth ? "1 / -1" : "auto",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => toggleFullscreenSection(section.key)}
+              style={{
+                width: "100%",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: "var(--surface-muted)",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 10,
+                padding: "8px 10px",
+                cursor: "pointer",
+                marginBottom: 8,
+              }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)" }}>{section.title}</span>
+              <FaChevronDown style={{ color: "var(--accent-strong)", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
+            </button>
+
+            {!isCollapsed && (Object.keys(sectionData || {}).length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No data</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {!fullscreenEditing && imageEntries.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                    {imageEntries.map(([key, value]) => (
+                      <div key={`image_${key}`} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 6 }}>{formatFieldLabel(key)}</div>
+                        {renderDisplayValue(key, value)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  {nonImageEntries.map(([key, value]) => (
+                    <div key={key} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2, wordBreak: "break-word" }}>
+                        {!fullscreenEditing ? (
+                          renderDisplayValue(key, value)
+                        ) : (
+                          <div style={{ display: "grid", gap: 6 }}>
+                            <input
+                              value={value ?? ""}
+                              onChange={(event) => updateFullscreenSectionField(section.key, key, event.target.value)}
+                              style={{ width: "100%", border: "1px solid var(--input-border)", borderRadius: 8, padding: "8px 10px", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
+                            />
+                            {isImageValue(key, value) ? (
+                              <img
+                                src={String(value || "")}
+                                alt={formatFieldLabel(key)}
+                                style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
+                              />
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )})}
+
+        <div
+          style={{
+            background: "var(--surface-panel)",
+            border: "1px solid var(--border-soft)",
+            borderRadius: 12,
+            padding: 12,
+            boxShadow: "var(--shadow-soft)",
+            gridColumn: "1 / -1",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => toggleFullscreenSection("additional")}
+            style={{
+              width: "100%",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              background: "var(--surface-muted)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: 10,
+              padding: "8px 10px",
+              cursor: "pointer",
+              marginBottom: 8,
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 800, color: "var(--accent-strong)" }}>Additional Student Data</span>
+            <FaChevronDown style={{ color: "var(--accent-strong)", transform: fullscreenSectionCollapsed?.additional ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform .2s ease" }} />
+          </button>
+
+          {!fullscreenSectionCollapsed?.additional && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
+              {Object.entries(fullscreenEditing ? (fullscreenEditForm.additional || {}) : Object.fromEntries(
+                Object.entries(selectedStudent || {}).filter(([k]) => !excludedAdditionalKeys.includes(k))
+              )).map(([key, value]) => (
+                <div key={key} style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase" }}>{formatFieldLabel(key)}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2, wordBreak: "break-word" }}>
+                    {!fullscreenEditing ? (
+                      renderDisplayValue(key, value)
+                    ) : (
+                      <div style={{ display: "grid", gap: 6 }}>
+                        <input
+                          value={value ?? ""}
+                          onChange={(event) => updateFullscreenAdditionalField(key, event.target.value)}
+                          style={{ width: "100%", border: "1px solid var(--input-border)", borderRadius: 8, padding: "8px 10px", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
+                        />
+                        {isImageValue(key, value) ? (
+                          <img
+                            src={String(value || "")}
+                            alt={formatFieldLabel(key)}
+                            style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border-strong)" }}
+                          />
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   </div>
 )}
     </div>

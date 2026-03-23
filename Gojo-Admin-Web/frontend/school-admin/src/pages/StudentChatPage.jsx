@@ -87,19 +87,19 @@ function StudentChatPage() {
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: "#f1f4f8" }}>
+    <div style={{ display: "flex", height: "100vh", background: "var(--surface-soft)" }}>
       {/* LEFT CHAT LIST */}
       <div
         style={{
           width: "280px",
-          background: "#fff",
-          borderRight: "1px solid #ddd",
+          background: "var(--surface-panel)",
+          borderRight: "1px solid var(--border-soft)",
           overflowY: "auto",
         }}
       >
-        <div style={{ padding: "15px", borderBottom: "1px solid #ddd", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ padding: "15px", borderBottom: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <strong>Students</strong>
-          <button onClick={() => navigate("/students")} style={{ cursor: "pointer", fontSize: "16px", background: "none", border: "none" }}>
+          <button onClick={() => navigate("/students")} style={{ cursor: "pointer", fontSize: "16px", background: "none", border: "none", color: "var(--text-primary)" }}>
             ← Back
           </button>
         </div>
@@ -113,8 +113,8 @@ function StudentChatPage() {
               gap: "10px",
               padding: "10px",
               cursor: "pointer",
-              background: selectedStudent?.studentId === student.studentId ? "#e0e7ff" : "#fff",
-              borderBottom: "1px solid #eee",
+              background: selectedStudent?.studentId === student.studentId ? "color-mix(in srgb, var(--accent) 14%, var(--surface-panel))" : "var(--surface-panel)",
+              borderBottom: "1px solid var(--border-soft)",
             }}
           >
             <img src={student.profileImage} alt={student.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
@@ -127,12 +127,12 @@ function StudentChatPage() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
         {selectedStudent ? (
           <>
-            <div style={{ padding: "15px", borderBottom: "1px solid #ddd", display: "flex", alignItems: "center", gap: "15px" }}>
+            <div style={{ padding: "15px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: "15px", background: "var(--surface-panel)" }}>
               <img src={selectedStudent.profileImage} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
               <strong>{selectedStudent.name}</strong>
             </div>
 
-            <div style={{ flex: 1, padding: "15px", overflowY: "auto" }}>
+            <div style={{ flex: 1, padding: "15px", overflowY: "auto", background: "var(--surface-soft)" }}>
               {messages.map((msg, idx) => (
                 <div
                   key={idx}
@@ -144,8 +144,8 @@ function StudentChatPage() {
                 >
                   <div
                     style={{
-                      background: msg.adminId === admin.adminId ? "#4b6cb7" : "#e0e7ff",
-                      color: msg.adminId === admin.adminId ? "#fff" : "#000",
+                      background: msg.adminId === admin.adminId ? "var(--accent-strong)" : "var(--surface-panel)",
+                      color: msg.adminId === admin.adminId ? "var(--on-accent)" : "var(--text-primary)",
                       padding: "10px 15px",
                       borderRadius: "12px",
                       maxWidth: "70%",
@@ -157,24 +157,24 @@ function StudentChatPage() {
               ))}
             </div>
 
-            <div style={{ display: "flex", padding: "15px", gap: "10px", borderTop: "1px solid #ddd" }}>
+            <div style={{ display: "flex", padding: "15px", gap: "10px", borderTop: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
               <input
                 type="text"
                 value={messageInput}
                 onChange={e => setMessageInput(e.target.value)}
                 placeholder="Type a message..."
-                style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #ccc" }}
+                style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-primary)" }}
               />
               <button
                 onClick={handleSendMessage}
-                style={{ background: "#4b6cb7", color: "#fff", padding: "10px 15px", borderRadius: "8px", border: "none", cursor: "pointer" }}
+                style={{ background: "var(--accent-strong)", color: "var(--on-accent)", padding: "10px 15px", borderRadius: "8px", border: "none", cursor: "pointer" }}
               >
                 Send
               </button>
             </div>
           </>
         ) : (
-          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", color: "#555" }}>
+          <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", color: "var(--text-muted)" }}>
             Select a student to start chatting
           </div>
         )}

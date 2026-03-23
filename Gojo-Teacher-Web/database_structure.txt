@@ -1,3 +1,34 @@
+Platform1
+└── Schools
+    └── <schoolCode>
+        ├── AcademicYears
+        ├── Chats
+        ├── Courses
+        ├── GradeManagement
+        │   └── grades
+        │       └── <grade>
+        │           └── sectionSubjectTeachers
+        │               └── <section>
+        │                   └── <subject>
+        │                       ├── teacherId
+        │                       ├── teacherName
+        │                       ├── teacherRecordKey
+        │                       └── teacherUserId
+        ├── Parents
+        ├── Posts
+        ├── School_Admins
+        ├── StudentCourses
+        ├── Students
+        ├── Teachers
+        ├── Users
+        ├── counters
+        └── schoolInfo
+
+Notes
+- Teacher-Web is school-scoped under Platform1/Schools/<schoolCode>/...
+- New teacher-course assignment source is GradeManagement/grades/*/sectionSubjectTeachers.
+- TeacherAssignments may be empty or absent in newer exports; app code should fall back to GradeManagement.
+
 Root
 │
 ├─ Users

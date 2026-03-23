@@ -120,16 +120,16 @@ const handlePost = async () => {
 
 ### 4. Firebase Query for School_Admin
 ```javascript
-// Should load from School_Admin node
+// Should load from School_Admins node in the bale-house-rental RTDB
 const loadAdminFromStorage = () => {
   const storedAdmin = localStorage.getItem("admin");
   if (storedAdmin) {
     const adminData = JSON.parse(storedAdmin);
-    // Verify this admin exists in School_Admin node
-    axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admin/${adminData.adminId}.json`)
+    // Verify this admin exists in School_Admins node
+    axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/School_Admins/${adminData.adminId}.json`)
       .then(res => {
         if (res.data) {
-          setAdmin(res.data);  // Load from School_Admin node
+          setAdmin(res.data);  // Load from School_Admins node
         }
       });
   }

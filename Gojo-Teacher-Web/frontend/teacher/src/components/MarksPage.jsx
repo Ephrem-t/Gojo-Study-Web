@@ -2,17 +2,11 @@ import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  FaPlus,
-  FaTrash,
   FaSave,
-  FaEdit,
   FaHome,
-  FaCog,
   FaSignOutAlt,
-  FaBell,
   FaUsers,
   FaChalkboardTeacher,
-  FaFacebookMessenger,
   FaClipboardCheck
   , FaFileExcel, FaPrint, FaFileDownload,
    FaUserCheck,
@@ -23,7 +17,9 @@ import Sidebar from "./Sidebar";
 import "../styles/global.css";
 
 import { API_BASE } from "../api/apiConfig";
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import { getRtdbRoot } from "../api/rtdbScope";
+import { getTeacherCourseContext } from "../api/teacherApi";
+const RTDB_BASE = getRtdbRoot();
 
 // Format student name: capitalize first letter of each word, rest lowercase
 const formatStudentName = (rawName) => {
@@ -33,6 +29,13 @@ const formatStudentName = (rawName) => {
     .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ""))
     .join(" ");
 };
+
+const toSubjectKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
 
 export default function MarksPage() {
   // Sidebar toggle state for mobile (like Dashboard)
@@ -92,24 +95,8 @@ export default function MarksPage() {
     if (!teacher) return;
     const fetchCourses = async () => {
       try {
-        const [assignmentsRes, coursesRes, teachersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/TeacherAssignments.json`),
-          axios.get(`${RTDB_BASE}/Courses.json`),
-          axios.get(`${RTDB_BASE}/Teachers.json`),
-        ]);
-        const teachers = teachersRes.data || {};
-        const teacherIdentifiers = new Set([
-          String(teacher.teacherId || "").trim(),
-          String(teacher.teacherKey || "").trim(),
-          String(teacher.userId || "").trim(),
-        ].filter(Boolean));
-        const teacherEntry = Object.entries(teachers).find(
-          ([key, t]) => teacherIdentifiers.has(String(key || "").trim()) || teacherIdentifiers.has(String(t.userId || "").trim())
-        );
-        if (!teacherEntry) return;
-        const teacherKey = teacherEntry[0];
-        const assignedCourses = Object.values(assignmentsRes.data || {}).filter((a) => a.teacherId === teacherKey).map((a) => a.courseId);
-        const teacherCourses = Object.entries(coursesRes.data || {}).filter(([courseKey]) => assignedCourses.includes(courseKey)).map(([courseKey, course]) => ({ id: courseKey, ...course }));
+        const context = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        const teacherCourses = context.courses || [];
         setCourses(teacherCourses);
         if (!selectedCourseId && teacherCourses.length > 0) setSelectedCourseId(teacherCourses[0].id);
       } catch (err) {
@@ -124,9 +111,19 @@ export default function MarksPage() {
     if (!selectedCourseId) return;
     const loadCourseData = async () => {
       try {
-        const marksRes = await axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`);
         const course = courses.find((c) => c.id === selectedCourseId);
         if (!course) return;
+
+        const subjectKey = toSubjectKey(course.subject || course.name || "");
+        const [marksRes, templateRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`),
+          axios.get(
+            `${RTDB_BASE}/AssesmentTemplates/${encodeURIComponent(course.grade)}/${encodeURIComponent(subjectKey)}/${activeSemester}.json`
+          ).catch(() => ({ data: {} })),
+        ]);
+
+        const templateSemNode =
+          templateRes.data && typeof templateRes.data === "object" ? templateRes.data : {};
 
         const filteredStudents = students.filter(
           (s) => s.grade === course.grade && s.section === course.section
@@ -142,6 +139,9 @@ export default function MarksPage() {
               if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
             });
           }
+        });
+        Object.keys(templateSemNode || {}).forEach((k) => {
+          if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
         });
 
         const quartersArrRaw = Array.from(quarterSet);
@@ -184,6 +184,19 @@ export default function MarksPage() {
             if (semData && semData[selectedQuarter] && semData[selectedQuarter].assessments) {
               initMarks[s.id] = semData[selectedQuarter].assessments;
               if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData[selectedQuarter].assessments);
+            } else if (semData && semData.assessments) {
+              initMarks[s.id] = semData.assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData.assessments);
+            } else if (
+              templateSemNode &&
+              templateSemNode[selectedQuarter] &&
+              templateSemNode[selectedQuarter].assessments
+            ) {
+              initMarks[s.id] = templateSemNode[selectedQuarter].assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode[selectedQuarter].assessments);
+            } else if (templateSemNode && templateSemNode.assessments) {
+              initMarks[s.id] = templateSemNode.assessments;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode.assessments);
             } else {
               // No per-quarter assessments for this student
               initMarks[s.id] = {};
@@ -232,56 +245,6 @@ export default function MarksPage() {
     fetchStudents();
   }, [teacherUserId]);
 
-  // Assessment structure handling
-  const addAssessment = () => setAssessmentList((p) => [...p, { name: "", max: "" }]);
-  const updateAssessment = (i, field, value) => {
-    const copy = [...assessmentList];
-    copy[i][field] = value;
-    setAssessmentList(copy);
-  };
-  const removeAssessment = (i) =>
-    setAssessmentList((p) => p.filter((_, idx) => idx !== i));
-  const submitStructure = async () => {
-    if (assessmentList.reduce((sum, a) => sum + Number(a.max || 0), 0) !== 100) {
-      alert("Total MAX must be exactly 100");
-      return;
-    }
-    const structureObj = {};
-    assessmentList.forEach((a, idx) => {
-      structureObj[`a${idx + 1}`] = {
-        name: a.name,
-        max: Number(a.max),
-        score: 0,
-      };
-    });
-    try {
-      const course = courses.find((c) => c.id === selectedCourseId);
-      if (!course) return;
-      const filteredStudents = students.filter((s) => s.grade === course.grade && s.section === course.section);
-      // Persist structure into the currently selected quarter for each student
-      await Promise.all(
-        filteredStudents.map((s) =>
-          axios.put(
-            `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${s.id}/${activeSemester}/${selectedQuarter}.json`,
-            {
-              teacherName: teacher?.name || "",
-              assessments: structureObj,
-            }
-          )
-        )
-      );
-      const initMarks = {};
-      filteredStudents.forEach((s) => {
-        initMarks[s.id] = structureObj;
-      });
-      setStudentMarks(initMarks);
-      setStructureSubmitted(true);
-      alert("Assessment structure saved!");
-    } catch (err) {
-      console.error("Error submitting structure:", err);
-      alert("Failed to submit structure");
-    }
-  };
   const updateScore = (sid, key, value) => {
     // allow empty string while editing (treat as no input), otherwise store numeric
     setStudentMarks((p) => ({
@@ -289,7 +252,14 @@ export default function MarksPage() {
       [sid]: { ...p[sid], [key]: { ...p[sid][key], score: value === '' ? '' : Number(value) } },
     }));
   };
+  const templateMissingMessage =
+    "Assessment template is not available. Ask admin to create it first in AssessmentTemplates.";
+
   const saveMarks = async (sid) => {
+    if (!structureSubmitted || !assessmentList.length) {
+      alert(templateMissingMessage);
+      return;
+    }
     try {
       // Save into the currently selected quarter (per-quarter model)
       await axios.put(
@@ -308,6 +278,10 @@ export default function MarksPage() {
 
   // Save all students' marks at once for the selected course/semester/quarter
   const saveAllMarks = async () => {
+    if (!structureSubmitted || !assessmentList.length) {
+      alert(templateMissingMessage);
+      return;
+    }
     if (!selectedCourseId || selectedQuarter === 'avg') {
       alert('Please select a valid course and quarter');
       return;
@@ -716,119 +690,36 @@ export default function MarksPage() {
     setTimeout(() => { w.print(); }, 200);
   };
 
-  return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-        <div className="nav-right">
-          <div className="icon-circle" style={{ position: "relative" }}>
-            <div
-              onClick={() => setShowNotifications(!showNotifications)}
-              style={{ cursor: "pointer", position: "relative" }}
-              aria-label="Show notifications"
-              tabIndex={0}
-              role="button"
-              onKeyPress={e => { if (e.key === 'Enter') setShowNotifications(!showNotifications); }}
-            >
-              <FaBell size={24} />
-              {(notifications.length + totalUnreadMessages) > 0 && (
-                <span style={{
-                  position: "absolute", top: -5, right: -5, background: "red", color: "white",
-                  borderRadius: "50%", width: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center"
-                }}>
-                  {notifications.length + totalUnreadMessages}
-                </span>
-              )}
-            </div>
-            {showNotifications && (
-              <>
-                <div
-                  style={{
-                    position: 'fixed',
-                    inset: 0,
-                    background: 'rgba(0,0,0,0.08)',
-                    zIndex: 1999,
-                  }}
-                  onClick={() => setShowNotifications(false)}
-                />
-                <div
-                  className="notification-popup"
-                  style={
-                    typeof window !== 'undefined' && window.innerWidth <= 600
-                      ? {
-                          position: 'fixed',
-                          left: '50%',
-                          top: '8%',
-                          transform: 'translate(-50%, 0)',
-                          width: '90vw',
-                          maxWidth: 340,
-                          zIndex: 2000,
-                          background: '#fff',
-                          borderRadius: 12,
-                          boxShadow: '0 2px 16px rgba(0,0,0,0.18)',
-                          maxHeight: '70vh',
-                          overflowY: 'auto',
-                          padding: 12,
-                        }
-                      : {
-                          position: 'absolute',
-                          top: 30,
-                          right: 0,
-                          width: 300,
-                          maxHeight: 400,
-                          overflowY: 'auto',
-                          background: '#fff',
-                          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-                          borderRadius: 8,
-                          zIndex: 100,
-                        }
-                  }
-                >
-                  {notifications.length > 0 && notifications.map((notif, index) => (
-                    notif.type === "post" ? (
-                      <div key={notif.id || index}
-                        onClick={() => handleNotificationClick(notif.id)}
-                        style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                        <img src={notif.adminProfile} alt={notif.adminName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                        <div>
-                          <strong>{notif.adminName}</strong>
-                          <p style={{ margin: 0, fontSize: 12 }}>{notif.title}</p>
-                        </div>
-                      </div>
-                    ) : null
-                  ))}
-                  {totalUnreadMessages > 0 && conversations.filter(c => c.unreadForMe > 0).map((conv, idx) => (
-                    <div key={conv.chatId || idx} onClick={() => {
-                      setShowNotifications(false);
-                      navigate("/all-chat");
-                    }} style={{ display: "flex", alignItems: "center", padding: "10px 15px", borderBottom: "1px solid #eee", cursor: "pointer" }}>
-                      <img src={conv.profile || "/default-profile.png"} alt={conv.displayName} style={{ width: 35, height: 35, borderRadius: "50%", marginRight: 10 }} />
-                      <div><strong>{conv.displayName}</strong><p style={{ margin: 0, fontSize: 12, color: '#0b78f6' }}>New message</p></div>
-                    </div>
-                  ))}
-                  {notifications.length === 0 && totalUnreadMessages === 0 && <div style={{ padding: 15 }}>No notifications</div>}
-                </div>
-              </>
-            )}
-          </div>
-          <div className="icon-circle" style={{ position: "relative", marginLeft: 12 }}>
-            <div onClick={() => navigate("/all-chat")}
-                 style={{ cursor: "pointer", position: "relative" }}>
-              <FaFacebookMessenger size={22} />
-              {totalUnreadMessages > 0 && (
-                <span style={{ position: "absolute", top: -6, right: -6, background: "#f60b0b", color: "#fff", borderRadius: "50%", minWidth: 18, height: 18, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 6px" }}>
-                  {totalUnreadMessages}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="icon-circle" onClick={() => navigate("/settings")}><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="profile" />
-        </div>
-      </nav>
+  const isMobile = window.innerWidth <= 600;
 
-      <div className="google-dashboard">
+  return (
+    <div
+      className="dashboard-page"
+      style={{
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 0, padding: 0, height: "calc(100vh - 73px)", overflow: "hidden" }}>
         <Sidebar
           active="marks"
           sidebarOpen={sidebarOpen}
@@ -837,42 +728,60 @@ export default function MarksPage() {
           handleLogout={handleLogout}
         />
 
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         {/* MAIN CONTENT */}
         <div
           className="google-main"
-            style={
-              window.innerWidth <= 600
-                ? { width: "100vw", maxWidth: "100vw", marginLeft: 0, paddingLeft: 0 }
-                : { textAlign: 'left', marginLeft: 220, width: 'calc(100vw - 240px)', maxWidth: 'calc(100vw - 240px)', paddingLeft: 0 }
-            }
+          style={{
+            flex: 1,
+            width: "100%",
+            minWidth: 0,
+            height: "100%",
+            marginLeft: 0,
+            padding: isMobile ? "0 8px" : "0 18px",
+            overflowY: "auto",
+            overflowX: "hidden",
+            textAlign: "left",
+          }}
         >
-          <div className="main-inner" style={{ padding: window.innerWidth <= 600 ? '8px 2vw' : 30, width: '100%', maxWidth: '100%', margin: 0 }}>
-            <h2
-              style={{
-                textAlign: "cente5r",
-                marginBottom: "35px",
-                color: "#1e3a8a",
-                fontSize: "36px",
-                fontWeight: "700",
-                letterSpacing: "1px",
-              }}
-            >
-              Marks Entry Dashboard
-            </h2>
+          <div className="main-inner" style={{ padding: isMobile ? "10px 0 20px" : "20px 0", width: "100%", maxWidth: "100%", margin: 0 }}>
+            <div className="section-header-card" style={{ marginBottom: 16 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Marks Entry Dashboard</h2>
+              <div className="section-header-card__meta">
+                <span>{activeSemester === "semester1" ? "Semester 1" : "Semester 2"}</span>
+                <span className="section-header-card__chip">Teacher View</span>
+              </div>
+            </div>
+
             <div
               style={{
-                marginBottom: "30px",
+                marginBottom: "14px",
                 display: "flex",
-                justifyContent: "center",
+                justifyContent: "flex-start",
                 alignItems: "center",
-                gap: "15px",
+                gap: "12px",
+                background: "var(--surface-panel)",
+                border: "1px solid var(--border-soft)",
+                boxShadow: "var(--shadow-soft)",
+                borderRadius: 14,
+                padding: isMobile ? "12px" : "14px 16px",
+                flexWrap: "wrap",
               }}
             >
               <label
                 style={{
                   fontWeight: "600",
-                  color: "#374151",
-                  fontSize: "16px",
+                  color: "var(--text-secondary)",
+                  fontSize: "14px",
                 }}
               >
                 Select Course:
@@ -881,15 +790,14 @@ export default function MarksPage() {
                 value={selectedCourseId}
                 onChange={(e) => setSelectedCourseId(e.target.value)}
                 style={{
-                  padding: "12px 18px",
+                  padding: "10px 12px",
                   borderRadius: "12px",
-                  border: "1px solid #cbd5e1",
-                  background: "#fff",
-                  minWidth: "300px",
-                  fontSize: "15px",
+                  border: "1px solid var(--border-strong)",
+                  background: "var(--surface-panel)",
+                  minWidth: isMobile ? "100%" : "300px",
+                  fontSize: "14px",
                   fontWeight: "500",
-                  boxShadow: "0 6px 15px rgba(0,0,0,0.08)",
-                  transition: "0.3s all",
+                  color: "var(--text-primary)",
                 }}
               >
                 <option value="">-- Select Course --</option>
@@ -905,11 +813,12 @@ export default function MarksPage() {
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "center",
-                  gap: "40px",
-                  marginBottom: "35px",
-                  borderBottom: "2px solid #c7d2fe",
-                  paddingBottom: "10px",
+                  justifyContent: "flex-start",
+                  gap: "10px",
+                  marginBottom: "14px",
+                  borderBottom: "1px solid var(--border-soft)",
+                  paddingBottom: "8px",
+                  overflowX: "auto",
                 }}
               >
                 {["semester1", "semester2"].map((sem) => {
@@ -924,32 +833,18 @@ export default function MarksPage() {
                         setStudentMarks({});
                       }}
                       style={{
-                        background: "none",
-                        border: "none",
+                        background: isActive ? "var(--accent-soft)" : "var(--surface-panel)",
+                        border: isActive ? "1px solid color-mix(in srgb, var(--accent-strong) 34%, white)" : "1px solid var(--border-soft)",
                         cursor: "pointer",
-                        fontSize: "18px",
+                        fontSize: "13px",
                         fontWeight: "700",
-                        letterSpacing: "1px",
-                        color: isActive ? "#1e40af" : "#6b7280",
-                        paddingBottom: "12px",
-                        position: "relative",
-                        transition: "0.3s all",
+                        color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
+                        padding: "8px 12px",
+                        borderRadius: 10,
+                        whiteSpace: "nowrap",
                       }}
                     >
                       {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                      {isActive && (
-                        <span
-                          style={{
-                            position: "absolute",
-                            left: 0,
-                            bottom: "-2px",
-                            width: "100%",
-                            height: "4px",
-                            borderRadius: "6px",
-                            background: "linear-gradient(135deg, #4b6cb7, #1e40af)",
-                          }}
-                        />
-                      )}
                     </button>
                   );
                 })}
@@ -957,9 +852,9 @@ export default function MarksPage() {
             )}
 
     {selectedCourseId && (
-      <div style={{ display: "flex", gap: "16px", marginBottom: "30px" }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontWeight: 600, color: '#374151' }}>Quarter:</span>
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-soft)", padding: isMobile ? "12px" : "12px 16px" }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 13 }}>Quarter:</span>
           {(quartersBySem[activeSemester] || ['q1','q2']).map((q) => (
             <button
               key={q}
@@ -967,10 +862,11 @@ export default function MarksPage() {
               style={{
                 padding: '8px 12px',
                 borderRadius: 10,
-                border: selectedQuarter === q ? '2px solid #1e40af' : '1px solid #e5e7eb',
-                background: selectedQuarter === q ? '#e0e7ff' : '#fff',
+                border: selectedQuarter === q ? '1px solid color-mix(in srgb, var(--accent-strong) 34%, white)' : '1px solid var(--border-soft)',
+                background: selectedQuarter === q ? 'var(--accent-soft)' : 'var(--surface-panel)',
                 cursor: 'pointer',
-                fontWeight: 600,
+                fontWeight: 700,
+                color: selectedQuarter === q ? 'var(--accent-strong)' : 'var(--text-muted)',
               }}
             >
               {q.toUpperCase()}
@@ -981,42 +877,17 @@ export default function MarksPage() {
         {structureSubmitted ? (
           <>
             <button
-              style={{
-                marginBottom: "0px",
-                padding: "10px 18px",
-                background: "linear-gradient(135deg, #f59e0b, #d97706)",
-                color: "#fff",
-                borderRadius: "12px",
-                border: "none",
-                fontWeight: "600",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                boxShadow: "0 8px 20px rgba(0,0,0,0.15)",
-                transition: "0.3s all",
-              }}
-              onClick={() => {
-                setStructureSubmitted(false);
-                setStudentMarks({});
-              }}
-            >
-              <FaEdit /> Edit Assessment Structure
-            </button>
-            <button
               onClick={() => downloadExcel()}
               style={{
                 padding: "10px 16px",
-                background: "#28a745",
+                background: "var(--accent)",
                 color: "#fff",
                 border: "none",
-                borderRadius: "8px",
+                borderRadius: "10px",
                 fontWeight: 600,
                 display: "flex",
                 alignItems: "center",
-                marginLeft: "0px",
                 gap: 8,
-                boxShadow: "0 2px 8px 0 rgba(40,167,69,.07)",
                 cursor: "pointer"
               }}
               title="Download as Excel"
@@ -1025,19 +896,18 @@ export default function MarksPage() {
             </button>
             <button
               onClick={() => saveAllMarks()}
+              disabled={!structureSubmitted || !assessmentList.length || selectedQuarter === 'avg'}
               style={{
                 padding: "10px 16px",
-                background: "#0d6efd",
+                background: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "var(--surface-strong)" : "var(--accent-strong)",
                 color: "#fff",
                 border: "none",
-                borderRadius: "8px",
+                borderRadius: "10px",
                 fontWeight: 600,
                 display: "flex",
                 alignItems: "center",
-                marginLeft: "8px",
                 gap: 8,
-                boxShadow: "0 2px 8px rgba(13,110,253,.07)",
-                cursor: "pointer"
+                cursor: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "not-allowed" : "pointer"
               }}
               title="Save all marks for current quarter"
             >
@@ -1048,121 +918,25 @@ export default function MarksPage() {
       </div>
     )}
 
-            {/* Assessment Builder */}
+            {/* Template Required Notice */}
             {selectedCourseId && !structureSubmitted && (
               <div
                 style={{
-                  backdropFilter: "blur(15px)",
-                  background: "rgba(255, 255, 255, 0.85)",
-                  padding: "30px",
-                  borderRadius: "20px",
-                  boxShadow: "0 15px 30px rgba(0,0,0,0.08)",
-                  marginBottom: "40px",
-                  transition: "all 0.3s ease",
+                  background: "var(--surface-panel)",
+                  padding: isMobile ? "14px" : "20px",
+                  borderRadius: "14px",
+                  border: "1px solid var(--border-soft)",
+                  boxShadow: "var(--shadow-soft)",
+                  marginBottom: "18px",
                 }}
               >
-                <h3 style={{ marginBottom: "25px", color: "#1f2937", fontWeight: "600", fontSize: "20px" }}>
-                  Assessment Structure
+                <h3 style={{ marginBottom: "16px", color: "var(--text-primary)", fontWeight: "700", fontSize: "18px" }}>
+                  Assessment Template Not Found
                 </h3>
-                {assessmentList.map((a, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      gap: "12px",
-                      marginBottom: "18px",
-                      alignItems: "center",
-                    }}
-                  >
-                    <input
-                      placeholder="Assessment Name"
-                      value={a.name}
-                      onChange={(e) => updateAssessment(i, "name", e.target.value)}
-                      style={{
-                        flex: 2,
-                        padding: "12px 14px",
-                        borderRadius: "12px",
-                        border: "1px solid #d1d5db",
-                        outline: "none",
-                        boxShadow: "inset 0 3px 6px rgba(0,0,0,0.06)",
-                        fontWeight: "500",
-                      }}
-                    />
-                    <input
-                      type="number"
-                      placeholder="Max"
-                      value={a.max}
-                      onChange={(e) => updateAssessment(i, "max", e.target.value)}
-                      style={{
-                        flex: 1,
-                        padding: "12px 14px",
-                        border: "1px solid #d1d5db",
-                        outline: "none",
-                        boxShadow: "inset 0 3px 6px rgba(0,0,0,0.06)",
-                        fontWeight: "500",
-                      }}
-                    />
-                    <button
-                      onClick={() => removeAssessment(i)}
-                      style={{
-                        background: "#ef4444",
-                        color: "#fff",
-                        padding: "12px 14px",
-                        borderRadius: "12px",
-                        border: "none",
-                        cursor: "pointer",
-                        boxShadow: "0 6px 15px rgba(0,0,0,0.12)",
-                        transition: "0.3s all",
-                      }}
-                    >
-                      <FaTrash />
-                    </button>
-                  </div>
-                ))}
-                <div style={{ display: "flex", gap: "20px", alignItems: "center", marginTop: "20px" }}>
-                  <button
-                    style={{
-                      padding: "12px 20px",
-                      borderRadius: "14px",
-                      background: "#10b981",
-                      color: "#fff",
-                      border: "none",
-                      cursor: "pointer",
-                      fontWeight: "600",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
-                      transition: "0.3s all",
-                    }}
-                    onClick={addAssessment}
-                  >
-                    <FaPlus /> Add Assessment
-                  </button>
-                  <span style={{ fontWeight: "600", color: "#374151", fontSize: "16px" }}>
-                    Total Max: {assessmentList.reduce((sum, a) => sum + Number(a.max || 0), 0)} / 100
-                  </span>
-                </div>
-                <button
-                  style={{
-                    marginTop: "30px",
-                    padding: "14px 20px",
-                    borderRadius: "16px",
-                    background: "linear-gradient(135deg, #4b6cb7, #1e40af)",
-                    color: "#fff",
-                    border: "none",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    boxShadow: "0 8px 20px rgba(0,0,0,0.15)",
-                    transition: "0.3s all",
-                    fontSize: "16px",
-                  }}
-                  onClick={submitStructure}
-                >
-                  Submit Structure
-                </button>
-
-                
+                <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  Admin has not created an assessment template for this course and semester/quarter yet.
+                  Teachers can only enter marks based on admin-created templates.
+                </p>
               </div>
             )}
 
@@ -1175,15 +949,16 @@ export default function MarksPage() {
                   overflowX: "auto",
                   overflowY: "visible",
                   minHeight: 120,
-                  width: window.innerWidth <= 600 ? "100vw" : "100%",
-                  maxWidth: "100vw",
+                  width: "100%",
+                  maxWidth: "100%",
                   paddingBottom: 32,
                   whiteSpace: "normal",
-                  background: "#fff",
-                  borderRadius: 12,
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                  background: "var(--surface-panel)",
+                  borderRadius: 14,
+                  border: "1px solid var(--border-soft)",
+                  boxShadow: "var(--shadow-soft)",
                   marginBottom: 20,
-                  padding: 16
+                  padding: isMobile ? 10 : 14
                 }}
               >
                   
@@ -1194,7 +969,7 @@ export default function MarksPage() {
                   style={{
                     borderCollapse: "collapse",
                     borderSpacing: "0 12px",
-                    fontSize: "15px",
+                    fontSize: "14px",
                     minWidth: 0,
                     width: "100%",
                     maxWidth: "100%",
@@ -1204,14 +979,13 @@ export default function MarksPage() {
                   <thead>
                     <tr
                       style={{
-                        background: "linear-gradient(135deg, #4b6cb7, #1e3a8a)",
+                        background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
                         color: "#fff",
-                        borderRadius: "16px",
-                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        borderRadius: "12px",
                         textTransform: "uppercase",
-                        letterSpacing: "1px",
-                        fontWeight: "600",
-                        fontSize: "14px",
+                        letterSpacing: "0.6px",
+                        fontWeight: "700",
+                        fontSize: "12px",
                       }}
                     >
                       <th
@@ -1323,13 +1097,12 @@ export default function MarksPage() {
                                   }}
                                   onWheel={(e) => { e.preventDefault(); e.stopPropagation(); try{ e.currentTarget.blur(); }catch(_){} }}
                                   style={{
-                                    width: "70px",
-                                    padding: "8px 12px",
-                                    borderRadius: "10px",
-                                    border: "1px solid #cbd5e1",
+                                    width: "66px",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    border: "1px solid var(--border-strong)",
                                     textAlign: "center",
-                                    boxShadow: "inset 0 3px 6px rgba(0,0,0,0.06)",
-                                    transition: "0.3s all",
+                                    background: "var(--surface-panel)",
                                     fontWeight: "500",
                                   }}
                                 />

@@ -190,9 +190,33 @@ def resolve_user_from_any(identity):
     return None
 
 
-def resolve_admin_identifiers(identity):
-    """Return normalized IDs preferring School_Admins mapping."""
-    user = resolve_user_from_any(identity)
+def find_user_for_login(username, password):
+    """Find user by username/password with one pass over users."""
+    target_username = _norm_text(username)
+    target_password = _norm_text(password)
+    if not target_username or not target_password:
+        return None
+
+    target_upper = target_username.upper()
+    case_insensitive_match = None
+
+    users = get_users_snapshot()
+    for user in users.values():
+        if _norm_text(user.get("password")) != target_password:
+            continue
+
+        current_username = _norm_text(user.get("username"))
+        if current_username == target_username:
+            return user
+
+        if case_insensitive_match is None and current_username.upper() == target_upper:
+            case_insensitive_match = user
+
+    return case_insensitive_match
+
+
+def resolve_admin_identifiers_from_user(user):
+    """Return normalized admin identifiers for a known user object."""
     if not user:
         return None
 
@@ -244,6 +268,12 @@ def resolve_admin_identifiers(identity):
     }
 
 
+def resolve_admin_identifiers(identity):
+    """Return normalized IDs preferring School_Admins mapping."""
+    user = resolve_user_from_any(identity)
+    return resolve_admin_identifiers_from_user(user)
+
+
 @app.route("/api/schools", methods=["GET"])
 def list_schools():
     return jsonify({"success": True, "schools": get_school_options()})
@@ -251,6 +281,15 @@ def list_schools():
 
 def _norm_text(value):
     return str(value).strip() if value is not None else ""
+
+
+def _normalized_role(value):
+    return _norm_text(value).lower()
+
+
+def _is_admin_role(value):
+    role = _normalized_role(value).replace("-", "_")
+    return role in {"school_admins", "school_admin", "admin", "admins"}
 
 # ---------------- FILE UPLOAD ---------------- #
 def upload_file_to_firebase(file, folder=""):
@@ -408,31 +447,21 @@ def login_admin():
         if not username or not password:
             return jsonify({"success": False, "message": "Username and password are required"}), 400
 
-        users = get_users_snapshot()
-        matched_user = None
-        for user in users.values():
-            if _norm_text(user.get("username")) == username and _norm_text(user.get("password")) == password:
-                matched_user = user
-                break
-
-        # Support case-insensitive username entry for ID-like usernames.
-        if not matched_user:
-            upper_username = username.upper()
-            for user in users.values():
-                if _norm_text(user.get("username")).upper() == upper_username and _norm_text(user.get("password")) == password:
-                    matched_user = user
-                    break
+        matched_user = find_user_for_login(username, password)
 
         if not matched_user:
             return jsonify({"success": False, "message": "Invalid username or password"})
 
-        resolved = resolve_admin_identifiers(matched_user.get("userId"))
+        role = _normalized_role(matched_user.get("role"))
+        if not _is_admin_role(role):
+            return jsonify({"success": False, "message": "Only users with role = school_admins can login here"}), 403
+
+        resolved = resolve_admin_identifiers_from_user(matched_user)
         if not resolved:
-            role = _norm_text(matched_user.get("role")).lower()
-            if role in {"school_admins", "admin", "school-admin", "schooladmin"}:
+            if _is_admin_role(role):
                 return jsonify({"success": False, "message": "School_Admins record missing for this user"}), 403
 
-            return jsonify({"success": False, "message": "Only admin accounts can login here"}), 403
+            return jsonify({"success": False, "message": "Only school_admins accounts can login here"}), 403
 
         return jsonify({
             "success": True,
@@ -441,6 +470,7 @@ def login_admin():
             "userId": matched_user.get("userId"),
             "name": matched_user.get("name"),
             "username": matched_user.get("username"),
+            "role": role,
             "schoolCode": resolved.get("schoolCode"),
             "profileImage": matched_user.get("profileImage", "")
         })
@@ -496,14 +526,46 @@ def create_post():
 # ---------------- GET ALL POSTS ---------------- #
 @app.route("/api/get_posts", methods=["GET"])
 def get_posts():
+    def normalize_posts_node(posts_node, school_code=""):
+        normalized = {}
+        if not isinstance(posts_node, dict):
+            return normalized
+
+        # Handle legacy shape where Posts contains a single post object directly.
+        if "postId" in posts_node and ("message" in posts_node or "postUrl" in posts_node):
+            normalized[str(posts_node.get("postId") or f"{school_code}-legacy-post")] = posts_node
+            return normalized
+
+        for raw_key, raw_value in posts_node.items():
+            if not isinstance(raw_value, dict):
+                continue
+
+            if "postId" not in raw_value and "message" not in raw_value and "postUrl" not in raw_value:
+                continue
+
+            normalized[str(raw_value.get("postId") or raw_key)] = raw_value
+
+        return normalized
+
     all_posts = {}
-    schools = all_schools_snapshot()
-    for school in schools.values():
+    requested_school_code = (request.args.get("schoolCode") or "").strip()
+
+    if requested_school_code:
+        school = (all_schools_snapshot() or {}).get(requested_school_code) or {}
         if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-            all_posts.update(school.get("Posts") or {})
+            all_posts.update(normalize_posts_node(school.get("Posts") or {}, requested_school_code))
+    else:
+        schools = all_schools_snapshot()
+        for school_code, school in schools.items():
+            if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
+                all_posts.update(normalize_posts_node(school.get("Posts") or {}, school_code))
+
     post_list = []
 
     for key, post in all_posts.items():
+        if not isinstance(post, dict):
+            continue
+
         post_owner = resolve_admin_identifiers(post.get("adminId"))
         user_data = post_owner.get("user", {}) if post_owner else {}
         
@@ -512,6 +574,9 @@ def get_posts():
             "message": post.get("message"),
             "postUrl": post.get("postUrl"),
             "adminId": post.get("adminId"),
+            "userId": post.get("userId"),
+            "targetRole": post.get("targetRole", "all"),
+            "schoolCode": post.get("schoolCode", requested_school_code),
             "adminName": user_data.get("name", "Admin"),
             "adminProfile": user_data.get("profileImage", "/default-profile.png"),
             "time": post.get("time"),
@@ -528,14 +593,35 @@ def get_posts():
 
 @app.route("/api/get_all_posts", methods=["GET"])
 def get_all_posts():
+    def normalize_posts_node(posts_node, school_code=""):
+        normalized = {}
+        if not isinstance(posts_node, dict):
+            return normalized
+
+        if "postId" in posts_node and ("message" in posts_node or "postUrl" in posts_node):
+            normalized[str(posts_node.get("postId") or f"{school_code}-legacy-post")] = posts_node
+            return normalized
+
+        for raw_key, raw_value in posts_node.items():
+            if not isinstance(raw_value, dict):
+                continue
+            if "postId" not in raw_value and "message" not in raw_value and "postUrl" not in raw_value:
+                continue
+            normalized[str(raw_value.get("postId") or raw_key)] = raw_value
+
+        return normalized
+
     all_posts = {}
     schools = all_schools_snapshot()
-    for school in schools.values():
+    for school_code, school in schools.items():
         if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-            all_posts.update(school.get("Posts") or {})
+            all_posts.update(normalize_posts_node(school.get("Posts") or {}, school_code))
     post_list = []
 
     for key, post in all_posts.items():
+        if not isinstance(post, dict):
+            continue
+
         post_list.append({
             "postId": key,
             "message": post.get("message"),
@@ -590,12 +676,16 @@ def fetch_admin_profile(adminId):
         return jsonify({"success": False, "message": "Admin not found"}), 404
 
     user_data = resolved.get("user", {})
+    if not _is_admin_role(user_data.get("role")):
+        return jsonify({"success": False, "message": "Only school_admins accounts can access this profile"}), 403
+
     profile = {
         "adminId": resolved.get("adminId") or resolved.get("username") or resolved.get("userId"),
         "userId": resolved.get("userId"),
         "schoolCode": resolved.get("schoolCode"),
         "name": user_data.get("name"),
         "username": user_data.get("username"),
+        "role": _normalized_role(user_data.get("role")),
         "profileImage": user_data.get("profileImage", "/default-profile.png")
     }
     return jsonify({"success": True, "admin": profile})

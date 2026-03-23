@@ -1,10 +1,14 @@
 import React, { useEffect, useState,useRef } from "react";
 import axios from "axios";
-import { FaHome, FaFileAlt, FaUpload, FaCog, FaSignOutAlt, FaSearch, FaBell, FaUsers, FaClipboardCheck, FaChalkboardTeacher, FaFacebookMessenger } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaUpload, FaSignOutAlt, FaSearch, FaUsers, FaClipboardCheck, FaChalkboardTeacher } from "react-icons/fa";
 import { Link, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
+import { getRtdbRoot } from "../api/rtdbScope";
+import { getTeacherCourseContext } from "../api/teacherApi";
+
+const RTDB_BASE = getRtdbRoot();
 
 
 
@@ -91,28 +95,8 @@ const handleNotificationClick = (postId, index) => {
 
     async function fetchCourses() {
       try {
-        const [coursesRes, assignmentsRes, teachersRes] = await Promise.all([
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Courses.json"),
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/TeacherAssignments.json"),
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
-        ]);
-
-        const teacherKeyEntry = Object.entries(teachersRes.data || {}).find(
-          ([key, t]) => t.userId === teacher.userId
-        );
-        if (!teacherKeyEntry) return;
-        const teacherKey = teacherKeyEntry[0];
-
-        const teacherAssignments = Object.values(assignmentsRes.data || {}).filter(
-          a => a.teacherId === teacherKey
-        );
-
-        const teacherCourses = teacherAssignments.map(a => ({
-          id: a.courseId,
-          ...coursesRes.data[a.courseId]
-        }));
-
-        setCourses(teacherCourses);
+        const context = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        setCourses(context.courses || []);
       } catch (err) {
         console.error("Error fetching courses:", err);
       }
@@ -126,7 +110,7 @@ const handleNotificationClick = (postId, index) => {
     async function fetchPosts() {
       try {
         const res = await axios.get(
-          "https://bale-house-rental-default-rtdb.firebaseio.com/TeacherPosts.json"
+          `${RTDB_BASE}/TeacherPosts.json`
         );
         setPosts(Object.entries(res.data || {}).map(([id, post]) => ({ id, ...post })));
       } catch (err) {
@@ -159,7 +143,7 @@ const handleNotificationClick = (postId, index) => {
 
     try {
       await axios.post(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/TeacherPosts.json",
+        `${RTDB_BASE}/TeacherPosts.json`,
         postData
       );
       alert("Post submitted!");
@@ -181,109 +165,40 @@ const handleNotificationClick = (postId, index) => {
   // ---------------- Guard ----------------
   if (!teacher) return null;
 
-  return (
-    <div className="dashboard-page">
-      {/* Top Navbar */}
-      <nav className="top-navbar">
-        <h2>Gojo Dashboard</h2>
-        <div className="nav-search">
-          <FaSearch className="search-icon" />
-          <input type="text" placeholder="Search Teacher and Student..." />
-        </div>
-        <div className="nav-right">
-    
-<div className="icon-circle">
-  <div
-    onClick={() => setShowNotifications(!showNotifications)}
-    style={{ cursor: "pointer", position: "relative" }}
-  >
-    <FaBell size={24} />
-    {notifications.length > 0 && (
-      <span
-        style={{
-          position: "absolute",
-          top: -5,
-          right: -5,
-          background: "red",
-          color: "white",
-          borderRadius: "50%",
-          width: 18,
-          height: 18,
-          fontSize: 12,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {notifications.length}
-      </span>
-    )}
-  </div>
+  const visiblePosts = posts.filter(
+    (post) => post.teacherId === teacherUserId || post.courseId === selectedCourseId
+  );
 
-  {showNotifications && (
+  return (
     <div
+      className="dashboard-page"
       style={{
-        position: "absolute",
-        top: 30,
-        right: 0,
-        width: 300,
-        maxHeight: 400,
-        overflowY: "auto",
-        background: "#fff",
-        boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
-        borderRadius: 8,
-        zIndex: 100,
+        background: "var(--page-bg)",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fafc",
+        "--surface-strong": "#e2e8f0",
+        "--page-bg": "#f5f8ff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#2563eb",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#1d4ed8",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
       }}
     >
-      {notifications.length > 0 ? (
-        notifications.map((post, index) => (
-          <div
-            key={post.id || index}
-            onClick={() => {
-              // Navigate to dashboard first
-              navigate("/dashboard");
-
-              // Highlight and scroll the post after a small delay to allow navigation
-              setTimeout(() => handleNotificationClick(post.id, index), 100);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              padding: "10px 15px",
-              borderBottom: "1px solid #eee",
-              cursor: "pointer",
-            }}
-          >
-            <img
-              src={post.adminProfile}
-              alt={post.adminName}
-              style={{
-                width: 35,
-                height: 35,
-                borderRadius: "50%",
-                marginRight: 10,
-              }}
-            />
-            <div>
-              <strong>{post.adminName}</strong>
-              <p style={{ margin: 0, fontSize: 12 }}>{post.title}</p>
-            </div>
-          </div>
-        ))
-      ) : (
-        <div style={{ padding: 15 }}>No notifications</div>
-      )}
-    </div>
-  )}
-</div>
-
-          <div className="icon-circle"><FaFacebookMessenger /></div>
-          <div className="icon-circle"><FaCog /></div>
-          <img src={teacher?.profileImage || "/default-profile.png"} alt="teacher" className="profile-img" />
-        </div>
-      </nav>
-
-      <div className="google-dashboard">
+      <div
+        className="google-dashboard"
+        style={{ display: "flex", gap: 12, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}
+      >
         <Sidebar
           active=""
           sidebarOpen={sidebarOpen}
@@ -292,158 +207,196 @@ const handleNotificationClick = (postId, index) => {
           handleLogout={handleLogout}
         />
 
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         {/* Main Content */}
-        <div style={{
-          marginLeft: "500px",
-          width: "40%",
-          padding: "100px 30px 50px",
-          background: "#f3f4f6",
-          minHeight: "100vh",
-          fontFamily: "'Inter', sans-serif",
-        }}>
+        <div
+          style={{
+            flex: 1,
+            width: "100%",
+            minWidth: 0,
+            height: "100%",
+            marginLeft: 0,
+            padding: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+          }}
+        >
+          <div style={{ padding: "16px 18px 20px", width: "100%", maxWidth: 1320, margin: 0 }}>
+            <div className="section-header-card" style={{ marginBottom: 14 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Post Notes / Files</h2>
+              <div className="section-header-card__meta">
+                <span>{teacher?.name || "Teacher"}</span>
+                <span>{visiblePosts.length} Posts</span>
+                <span className="section-header-card__chip">Teacher View</span>
+              </div>
+            </div>
 
-
-
-
-          {/* Page Header */}
-          <div style={{
-            marginBottom: "30px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            background: "linear-gradient(90deg, #e0e7ff, #c7d2fe)",
-            padding: "20px 25px",
-            borderRadius: "18px",
-            boxShadow: "0 5px 20px rgba(0,0,0,0.08)",
-          }}>
-            <h2 style={{ fontSize: "28px", fontWeight: 700, color: "#1e293b" }}>Post Notes / Files</h2>
-            <span style={{ color: "#475569", fontSize: "16px", fontWeight: 500 }}>
-              {teacher?.name}, share notes with your students
-            </span>
-          </div>
-
-          {/* Post Form */}
-          <div style={{
-            marginBottom: "40px",
-            background: "#fff",
-            padding: "30px 25px",
-            borderRadius: "18px",
-            boxShadow: "0 6px 25px rgba(0,0,0,0.08)",
-          }}>
-            <select
-              value={selectedCourseId}
-              onChange={(e) => setSelectedCourseId(e.target.value)}
+            <div
               style={{
-                width: "100%",
-                padding: "14px 16px",
-                borderRadius: "12px",
-                border: "1px solid #cbd5e1",
-                fontSize: "15px",
-                marginBottom: "18px",
-                background: "#f8fafc",
-                cursor: "pointer",
-              }}
-            >
-              <option value="">Select Class & Subject</option>
-              {courses.map(c => (
-                <option key={c.id} value={c.id}>{c.subject} — Grade {c.grade}{c.section}</option>
-              ))}
-            </select>
-
-            <textarea
-              placeholder="Write your note here..."
-              value={noteText}
-              onChange={(e) => setNoteText(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "18px",
-                borderRadius: "15px",
-                border: "1px solid #cbd5e1",
-                marginBottom: "18px",
-                minHeight: "140px",
-                fontSize: "15px",
-                resize: "vertical",
-                background: "#f8fafc",
-              }}
-            />
-
-            <input
-              type="file"
-              onChange={(e) => setFile(e.target.files[0])}
-              style={{
-                display: "block",
-                marginBottom: "25px",
-                fontSize: "15px",
-                cursor: "pointer",
-                padding: "10px",
-                borderRadius: "12px",
-                border: "1px solid #cbd5e1",
-                background: "#f8fafc",
-                width: "100%",
-              }}
-            />
-
-            <button
-              onClick={handleSubmit}
-              style={{
-                background: "linear-gradient(90deg, #4b6cb7, #182848)",
-                color: "#fff",
-                border: "none",
-                padding: "14px 30px",
-                borderRadius: "15px",
-                cursor: "pointer",
-                fontSize: "16px",
+                marginBottom: 14,
+                background: "linear-gradient(135deg, #eff6ff, #f8fafc)",
+                border: "1px solid var(--border-soft)",
+                borderRadius: 14,
+                padding: "12px 14px",
+                color: "var(--text-secondary)",
                 fontWeight: 600,
-                width: "100%",
+                fontSize: 13,
               }}
             >
-              <FaUpload style={{ marginRight: "10px" }} /> Submit Post
-            </button>
-          </div>
+              Create class notes and attach files for your students in one place.
+            </div>
 
-          {/* Posts List */}
-          <div>
-            <h3 style={{ fontSize: "22px", fontWeight: 700, marginBottom: "20px", color: "#1e293b" }}>All Posts</h3>
+            {/* Post Form */}
+            <div
+              style={{
+                marginBottom: "16px",
+                background: "var(--surface-panel)",
+                padding: "18px 16px",
+                borderRadius: "14px",
+                border: "1px solid var(--border-soft)",
+                boxShadow: "var(--shadow-soft)",
+              }}
+            >
+              <select
+                value={selectedCourseId}
+                onChange={(e) => setSelectedCourseId(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "11px 12px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--border-strong)",
+                  fontSize: "13px",
+                  marginBottom: "12px",
+                  background: "#f8fafc",
+                  color: "var(--text-primary)",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">Select Class & Subject</option>
+                {courses.map(c => (
+                  <option key={c.id} value={c.id}>{c.subject} — Grade {c.grade}{c.section}</option>
+                ))}
+              </select>
 
-            {posts
-              .filter(post => post.teacherId === teacherUserId || post.courseId === selectedCourseId)
-              .map((post, idx) => (
+              <textarea
+                placeholder="Write your note here..."
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "14px",
+                  borderRadius: "12px",
+                  border: "1px solid var(--border-strong)",
+                  marginBottom: "12px",
+                  minHeight: "130px",
+                  fontSize: "14px",
+                  resize: "vertical",
+                  background: "#f8fafc",
+                }}
+              />
+
+              <input
+                type="file"
+                onChange={(e) => setFile(e.target.files[0])}
+                style={{
+                  display: "block",
+                  marginBottom: "14px",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  padding: "10px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--border-strong)",
+                  background: "#f8fafc",
+                  width: "100%",
+                }}
+              />
+
+              <button
+                onClick={handleSubmit}
+                style={{
+                  background: "linear-gradient(90deg, var(--accent-strong), var(--accent))",
+                  color: "#fff",
+                  border: "none",
+                  padding: "11px 18px",
+                  borderRadius: "999px",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  width: "100%",
+                  boxShadow: "0 8px 18px rgba(29, 78, 216, 0.22)",
+                }}
+              >
+                <FaUpload style={{ marginRight: "8px" }} /> Submit Post
+              </button>
+            </div>
+
+            {/* Posts List */}
+            <div>
+              <h3 style={{ fontSize: "20px", fontWeight: 800, marginBottom: "12px", color: "#1e293b" }}>All Posts</h3>
+
+              {visiblePosts.length === 0 && (
+                <div
+                  style={{
+                    background: "var(--surface-panel)",
+                    padding: "18px",
+                    borderRadius: "14px",
+                    border: "1px solid var(--border-soft)",
+                    color: "var(--text-muted)",
+                    textAlign: "center",
+                  }}
+                >
+                  No posts yet for the selected filter.
+                </div>
+              )}
+
+              {visiblePosts.map((post, idx) => (
                 <div
                   key={idx}
                   style={{
-                    background: "#fff",
-                    padding: "20px 25px",
-                    borderRadius: "18px",
-                    marginBottom: "18px",
-                    boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+                    background: "var(--surface-panel)",
+                    padding: "16px",
+                    borderRadius: "14px",
+                    marginBottom: "10px",
+                    border: "1px solid var(--border-soft)",
+                    boxShadow: "0 6px 16px rgba(15, 23, 42, 0.07)",
                   }}
                 >
-                  <p style={{ marginBottom: "12px", fontSize: "15px", lineHeight: "1.6", color: "#334155" }}>
+                  <p style={{ marginBottom: "10px", fontSize: "14px", lineHeight: "1.55", color: "#334155" }}>
                     {post.text}
                   </p>
 
                   {post.fileUrl && (
-                    <div style={{ display: "flex", alignItems: "center", marginBottom: "10px" }}>
-                      <span style={{ fontSize: "20px", marginRight: "10px" }}>📄</span>
+                    <div style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+                      <span style={{ fontSize: "18px", marginRight: "8px" }}>📄</span>
                       <a
                         href={post.fileUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         download
-                        style={{ color: "#2563eb", fontWeight: 600, textDecoration: "none", fontSize: "15px" }}
+                        style={{ color: "#2563eb", fontWeight: 700, textDecoration: "none", fontSize: "13px" }}
                       >
                         View / Download File
                       </a>
                     </div>
                   )}
 
-                  <div style={{ fontSize: "13px", color: "#64748b", textAlign: "right" }}>
+                  <div style={{ fontSize: "12px", color: "#64748b", textAlign: "right" }}>
                     Posted: {new Date(post.createdAt).toLocaleString()}
                   </div>
                 </div>
               ))}
+            </div>
           </div>
-
         </div>
       </div>
     </div>
