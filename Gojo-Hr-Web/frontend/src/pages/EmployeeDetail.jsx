@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaBell, FaFacebookMessenger, FaCog } from 'react-icons/fa'
+import { FaBell, FaFacebookMessenger, FaCog } from 'react-icons/fa'
 import api from '../api'
+import Sidebar from '../components/Sidebar'
 
 const DEFAULT_FORM = {
   personal: { employeeId: '', firstName: '', middleName: '', lastName: '', dob: '', placeOfBirth: '', nationality: '', gender: '', nationalId: '', profileImageName: '', bloodGroup: '', religion: '', disabilityStatus: '' },
@@ -23,7 +24,7 @@ const FIELD_CONFIG = {
     { key: 'nationality', label: 'Nationality', type: 'text' },
     { key: 'gender', label: 'Gender', type: 'select', options: ['', 'male', 'female'] },
     { key: 'nationalId', label: 'National ID', type: 'text' },
-    { key: 'profileImageName', label: 'Profile Image', type: 'text' },
+    { key: 'profileImageName', label: 'Profile Image', type: 'file', isImage: true },
     { key: 'bloodGroup', label: 'Blood Group', type: 'text' },
     { key: 'religion', label: 'Religion', type: 'text' },
     { key: 'disabilityStatus', label: 'Disability Status', type: 'text', fullWidth: true }
@@ -117,40 +118,46 @@ export default function EmployeeDetail() {
     }
   })
 
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [meta, setMeta] = useState({})
-  const [formData, setFormData] = useState(DEFAULT_FORM)
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [meta, setMeta] = useState({});
+  const [formData, setFormData] = useState(DEFAULT_FORM);
+  const [profileImagePreview, setProfileImagePreview] = useState(null);
+  const [profileImageFile, setProfileImageFile] = useState(null);
 
   const displayName = useMemo(() => {
-    const p = formData.personal || {}
-    return [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ') || 'Employee'
-  }, [formData])
+    const p = formData.personal || {};
+    return [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ') || 'Employee';
+  }, [formData]);
 
   useEffect(() => {
-    loadEmployee()
-  }, [id])
+    loadEmployee();
+  }, [id]);
 
   async function loadEmployee() {
-    setLoading(true)
-    setError('')
+    setLoading(true);
+    setError('');
     try {
-      const response = await api.get(`/employees/${encodeURIComponent(id)}`)
-      const payload = response.data || {}
+      const response = await api.get(`/employees/${encodeURIComponent(id)}`);
+      const payload = response.data || {};
       setMeta({
         userId: payload.userId || '',
         teacherId: payload.teacherId || '',
         managementId: payload.managementId || '',
         financeId: payload.financeId || '',
         hrId: payload.hrId || ''
-      })
-      setFormData(normalizeEmployeeRecord(payload))
+      });
+      setFormData(normalizeEmployeeRecord(payload));
+      // Set preview if image exists
+      const imgUrl = (payload.personal && payload.personal.profileImageName) || '';
+      if (imgUrl && imgUrl.startsWith('http')) setProfileImagePreview(imgUrl);
     } catch (e) {
-      console.error(e)
-      setError('Unable to load employee information.')
+      console.error(e);
+      setError('Unable to load employee information.');
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
@@ -161,12 +168,12 @@ export default function EmployeeDetail() {
         ...(prev[section] || {}),
         [key]: value
       }
-    }))
+    }));
   }
 
   async function saveEmployee() {
-    setSaving(true)
-    setError('')
+    setSaving(true);
+    setError('');
     try {
       const payload = {
         ...meta,
@@ -184,78 +191,143 @@ export default function EmployeeDetail() {
           job: formData.job,
           financial: formData.financial
         }
+      };
+
+      await api.put(`/employees/${encodeURIComponent(id)}`, payload);
+
+      // If a new profile image file is selected, upload it
+      if (profileImageFile) {
+        const formDataObj = new FormData();
+        formDataObj.append('profile', profileImageFile);
+        try {
+          const res = await api.post(`/employees/${encodeURIComponent(id)}/upload_profile_image`, formDataObj, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+          const url = res.data.profileImageUrl;
+          setField('personal', 'profileImageName', url);
+          setProfileImagePreview(url);
+        } catch (err) {
+          alert('Failed to upload profile image.');
+        }
       }
 
-      await api.put(`/employees/${encodeURIComponent(id)}`, payload)
-      alert('Employee information updated successfully.')
+      alert('Employee information updated successfully.');
     } catch (e) {
-      console.error(e)
-      setError('Failed to save employee information.')
+      console.error(e);
+      setError('Failed to save employee information.');
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
   }
 
-  function renderField(sectionKey, field) {
-    const value = formData?.[sectionKey]?.[field.key]
+    function renderField(sectionKey, field) {
+      const value = formData?.[sectionKey]?.[field.key];
 
-    if (field.type === 'checkbox') {
+      // Custom file input for profile image
+      if (field.type === 'file' && field.isImage) {
+        return (
+          <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
+            <span>{field.label}</span>
+            <input
+              type="file"
+              accept="image/*"
+              className="ed-input"
+              onChange={async e => {
+                const file = e.target.files[0];
+                if (file) {
+                  setProfileImageFile(file);
+                  const reader = new FileReader();
+                  reader.onload = ev => {
+                    setProfileImagePreview(ev.target.result);
+                  };
+                  reader.readAsDataURL(file);
+                  // If employee already exists, upload immediately
+                  if (id) {
+                    const formData = new FormData();
+                    formData.append('profile', file);
+                    try {
+                      const res = await api.post(`/employees/${encodeURIComponent(id)}/upload_profile_image`, formData, {
+                        headers: { 'Content-Type': 'multipart/form-data' }
+                      });
+                      const url = res.data.profileImageUrl;
+                      setField(sectionKey, field.key, url);
+                      setProfileImagePreview(url);
+                    } catch (err) {
+                      alert('Failed to upload profile image.');
+                    }
+                  }
+                }
+              }}
+            />
+            {/* Show preview if available */}
+            {(profileImagePreview || value) && (
+              <img
+                src={profileImagePreview || value}
+                alt="Profile Preview"
+                style={{ marginTop: 8, maxWidth: 120, maxHeight: 120, borderRadius: 10, border: '1px solid #d8e1f3' }}
+              />
+            )}
+          </label>
+        );
+      }
+
+      if (field.type === 'checkbox') {
+        return (
+          <label key={field.key} className={`ed-field ed-checkbox ${field.fullWidth ? 'full' : ''}`}>
+            <input
+              type="checkbox"
+              checked={Boolean(value)}
+              onChange={(e) => setField(sectionKey, field.key, e.target.checked)}
+            />
+            <span>{field.label}</span>
+          </label>
+        );
+      }
+
+      if (field.type === 'textarea') {
+        return (
+          <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
+            <span>{field.label}</span>
+            <textarea
+              value={value || ''}
+              onChange={(e) => setField(sectionKey, field.key, e.target.value)}
+              className="ed-input"
+              rows={3}
+            />
+          </label>
+        );
+      }
+
+      if (field.type === 'select') {
+        return (
+          <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
+            <span>{field.label}</span>
+            <select
+              value={value || ''}
+              onChange={(e) => setField(sectionKey, field.key, e.target.value)}
+              className="ed-input"
+            >
+              {(field.options || []).map(opt => (
+                <option key={opt || 'empty'} value={opt}>{opt || 'Select'}</option>
+              ))}
+            </select>
+          </label>
+        );
+      }
+
       return (
-        <label key={field.key} className={`ed-field ed-checkbox ${field.fullWidth ? 'full' : ''}`}>
+        <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
+          <span>{field.label}</span>
           <input
-            type="checkbox"
-            checked={Boolean(value)}
-            onChange={(e) => setField(sectionKey, field.key, e.target.checked)}
-          />
-          <span>{field.label}</span>
-        </label>
-      )
-    }
-
-    if (field.type === 'textarea') {
-      return (
-        <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
-          <span>{field.label}</span>
-          <textarea
+            type={field.type || 'text'}
             value={value || ''}
+            readOnly={field.readOnly}
             onChange={(e) => setField(sectionKey, field.key, e.target.value)}
             className="ed-input"
-            rows={3}
           />
         </label>
-      )
+      );
     }
-
-    if (field.type === 'select') {
-      return (
-        <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
-          <span>{field.label}</span>
-          <select
-            value={value || ''}
-            onChange={(e) => setField(sectionKey, field.key, e.target.value)}
-            className="ed-input"
-          >
-            {(field.options || []).map(opt => (
-              <option key={opt || 'empty'} value={opt}>{opt || 'Select'}</option>
-            ))}
-          </select>
-        </label>
-      )
-    }
-
-    return (
-      <label key={field.key} className={`ed-field ${field.fullWidth ? 'full' : ''}`}>
-        <span>{field.label}</span>
-        <input
-          type={field.type || 'text'}
-          value={value || ''}
-          readOnly={field.readOnly}
-          onChange={(e) => setField(sectionKey, field.key, e.target.value)}
-          className="ed-input"
-        />
-      </label>
-    )
-  }
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
@@ -497,25 +569,18 @@ export default function EmployeeDetail() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
-        <aside className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin?.profileImage || '/default-profile.png'} alt="profile" />
-            </div>
-            <h3>{admin?.name || 'Admin Name'}</h3>
-            <p>{admin?.adminId || 'username'}</p>
-          </div>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
+        <Sidebar
+          admin={admin}
+          fullHeight
+          top={4}
+          onLogout={() => {
+            localStorage.removeItem('admin');
+            navigate('/login', { replace: true });
+          }}
+        />
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
-            <Link className="sidebar-btn" to="/employees" style={{ backgroundColor: '#4b6cb7', color: 'white' }}> <FaChalkboardTeacher /> Employees</Link>
-            <Link className="sidebar-btn" to="/register"> <FaFileAlt /> Registration</Link>
-            <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
-          </div>
-        </aside>
-
-        <main className="google-main">
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
           <div className="employee-detail-shell">
             <div className="employee-page-bg">
               <div className="employee-head">

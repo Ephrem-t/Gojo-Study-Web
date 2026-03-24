@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react'
 import api from '../api'
 import { Link, useNavigate } from "react-router-dom";
 
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaBell, FaFacebookMessenger, FaCalendarAlt } from "react-icons/fa";
+import { FaCog, FaBell, FaFacebookMessenger } from "react-icons/fa";
+import Sidebar from "../components/Sidebar";
 
 // Mock fallback using provided Employees export (used when API fails)
 const MOCK_EMPLOYEES = {
@@ -258,9 +259,11 @@ export default function Employees() {
   }
 
   async function remove(id) {
-    if (!confirm('Delete employee?')) return
+    if (!confirm('Terminate employee? This will remove linked Users and role-node records, but keep Employees record.')) return
     try {
-      await api.delete(`/employees/${id}`)
+      // Prefer admin.hrId, admin.hrID, admin.adminId, or adminId for HR id
+      const hrId = admin.hrId || admin.hrID || admin.adminId || admin.adminID || admin.id || admin.userId;
+      await api.post(`/employees/${id}/terminate`, { hrId })
       load()
     } catch (e) {
       console.error(e)
@@ -283,26 +286,18 @@ export default function Employees() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
-        <aside className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin?.profileImage || '/default-profile.png'} alt="profile" />
-            </div>
-            <h3>{admin?.name || 'Admin Name'}</h3>
-            <p>{admin?.adminId || 'username'}</p>
-          </div>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
+        <Sidebar
+          admin={admin}
+          fullHeight
+          top={4}
+          onLogout={() => {
+            localStorage.removeItem('admin');
+            navigate('/login', { replace: true });
+          }}
+        />
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
-            <Link className="sidebar-btn" to="/employees" style={{backgroundColor: "#4b6cb7", color: "white"}}> <FaChalkboardTeacher /> Employees</Link>
-            <Link className="sidebar-btn" to="/employees/attendance"> <FaCalendarAlt /> Attendance</Link>
-            <Link className="sidebar-btn" to="/register"> <FaFileAlt /> Registration</Link>
-            <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
-          </div>
-        </aside>
-
-        <main className="google-main">
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
           <style>{`
             .emp-main-shell {
               width: 100%;
@@ -441,9 +436,9 @@ export default function Employees() {
               background: #e8f1ff;
               color: #2552a1;
             }
-            .emp-action-btn.delete {
-              background: #fff0f2;
-              color: #bd2842;
+            .emp-action-btn.terminate {
+              background: #fff7ed;
+              color: #c2410c;
             }
             .emp-empty {
               padding: 28px;
@@ -487,6 +482,10 @@ export default function Employees() {
                       .filter(e => {
                         const raw = e.raw || {}
                         const job = raw.job || (raw.profileData && raw.profileData.job) || {}
+                        const statusValue = (job.status || raw.status || '').toString().toLowerCase().trim()
+                        if (statusValue.includes('terminated')) {
+                          return false
+                        }
                         const empCat = (job.employeeCategory || job.position || '').toString().toLowerCase()
                         if (filter === 'management') {
                           const isMgmtByEmployeeId = Boolean(raw.managementId || (e.user && e.user.managementId))
@@ -533,6 +532,7 @@ export default function Employees() {
                         const joined = job.hireDate || job.dateJoined || ''
                         const status = (job.status || raw.status || '').toString()
 
+                        const isActive = (e.user && typeof e.user.isActive !== 'undefined') ? e.user.isActive : true;
                         return (
                           <tr key={e.id}>
                             <td>
@@ -552,7 +552,9 @@ export default function Employees() {
                             <td>
                               <div className="emp-actions">
                                 <button onClick={() => navigate(`/employees/${encodeURIComponent(e.id)}`)} className="emp-action-btn view">View</button>
-                                <button onClick={() => remove(e.id)} className="emp-action-btn delete">Delete</button>
+                                {!isActive && (
+                                  <button onClick={() => remove(e.id)} className="emp-action-btn terminate">Terminate</button>
+                                )}
                               </div>
                             </td>
                           </tr>

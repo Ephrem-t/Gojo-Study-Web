@@ -1,7 +1,8 @@
 import React, { useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaBell, FaFacebookMessenger, FaCog, FaCalendarAlt } from "react-icons/fa"
+import { FaBell, FaFacebookMessenger, FaCog } from "react-icons/fa"
 import axios from "axios"
+import Sidebar from "../components/Sidebar"
 
 import { BACKEND_BASE } from "../config.js"
 
@@ -368,26 +369,18 @@ export default function Register() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
-        <aside className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin?.profileImage || '/default-profile.png'} alt="profile" />
-            </div>
-            <h3>{admin?.name || 'Admin Name'}</h3>
-            <p>{admin?.adminId || 'username'}</p>
-          </div>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
+        <Sidebar
+          admin={admin}
+          fullHeight
+          top={4}
+          onLogout={() => {
+            localStorage.removeItem('admin');
+            navigate('/login', { replace: true });
+          }}
+        />
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
-            <Link className="sidebar-btn" to="/employees"> <FaChalkboardTeacher /> Employees</Link>
-            <Link className="sidebar-btn" to="/employees/attendance"> <FaCalendarAlt /> Attendance</Link>
-            <Link className="sidebar-btn" to="/register" style={{backgroundColor: "#4b6cb7", color: "white"}}> <FaFileAlt /> Registration</Link>
-            <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
-          </div>
-        </aside>
-
-        <main className="google-main">
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
           <div className="register-shell">
             <div className="register-hero">
               <h3 className="register-title">Employee Registration Workspace</h3>

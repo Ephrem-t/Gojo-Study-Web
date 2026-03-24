@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FaBell, FaFacebookMessenger, FaCog, FaHome, FaChalkboardTeacher, FaFileAlt, FaCalendarAlt } from 'react-icons/fa';
+import { FaBell, FaFacebookMessenger, FaCog } from 'react-icons/fa';
 import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
+import Sidebar from '../components/Sidebar';
 
 function toIsoDate(dateObj) {
   const year = dateObj.getFullYear();
@@ -34,6 +35,12 @@ export default function EmployeesAttendance() {
 
   const normalizedEmployees = useMemo(() => {
     return employees
+      .filter((employee) => {
+        // Exclude terminated employees from attendance marking
+        const status = (employee.status || employee?.job?.status || employee?.profileData?.job?.status || '').toString().toLowerCase();
+        const isActive = typeof employee.isActive === 'boolean' ? employee.isActive : true;
+        return status !== 'terminated' && isActive !== false;
+      })
       .map((employee) => {
         const job = employee?.job || employee?.profileData?.job || {};
         const personal = employee?.personal || employee?.profileData?.personal || {};
@@ -122,6 +129,7 @@ export default function EmployeesAttendance() {
   };
 
   const statusStyles = (status) => {
+    if (!status) return { bg: '#ffffff', border: '#dbe2f2', text: '#64748b' };
     if (status === 'present') return { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' };
     if (status === 'late') return { bg: '#fffbeb', border: '#fde68a', text: '#92400e' };
     return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
@@ -165,26 +173,18 @@ export default function EmployeesAttendance() {
         </div>
       </nav>
 
-      <div className="google-dashboard">
-        <aside className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin?.profileImage || '/default-profile.png'} alt="profile" />
-            </div>
-            <h3>{admin?.name || 'Admin Name'}</h3>
-            <p>{admin?.adminId || admin?.hrId || 'username'}</p>
-          </div>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
+        <Sidebar
+          admin={admin}
+          fullHeight
+          top={4}
+          onLogout={() => {
+            localStorage.removeItem('admin');
+            navigate('/login', { replace: true });
+          }}
+        />
 
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/"> <FaHome /> Dashboard</Link>
-            <Link className="sidebar-btn" to="/employees"> <FaChalkboardTeacher /> Employees</Link>
-            <Link className="sidebar-btn" to="/employees/attendance" style={{ backgroundColor: '#4b6cb7', color: 'white' }}> <FaCalendarAlt /> Attendance</Link>
-            <Link className="sidebar-btn" to="/register"> <FaFileAlt /> Registration</Link>
-            <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
-          </div>
-        </aside>
-
-        <main className="google-main" style={{ width: '100%' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px', width: '100%' }}>
           <div style={{ maxWidth: 1100, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
@@ -251,9 +251,12 @@ export default function EmployeesAttendance() {
               ) : (
                 normalizedEmployees.map((employee) => {
                   const employeeId = employee.id;
+                  const hasSavedOrSelectedStatus = Object.prototype.hasOwnProperty.call(attendance || {}, employeeId);
                   const record = attendance?.[employeeId] || {};
-                  const status = (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase();
-                  const displayStatus = status === 'late' ? 'late' : status === 'present' ? 'present' : 'absent';
+                  const rawStatus = hasSavedOrSelectedStatus
+                    ? (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase()
+                    : '';
+                  const displayStatus = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
                   const styles = statusStyles(displayStatus);
 
                   return (
@@ -280,7 +283,7 @@ export default function EmployeesAttendance() {
                           style={{
                             fontSize: 12,
                             fontWeight: 900,
-                            textTransform: 'capitalize',
+                            textTransform: displayStatus ? 'capitalize' : 'none',
                             color: styles.text,
                             background: '#fff',
                             border: `1px solid ${styles.border}`,
@@ -288,7 +291,7 @@ export default function EmployeesAttendance() {
                             borderRadius: 999,
                           }}
                         >
-                          {displayStatus}
+                          {displayStatus || 'Not set'}
                         </span>
 
                         <select
@@ -305,6 +308,7 @@ export default function EmployeesAttendance() {
                             cursor: 'pointer',
                           }}
                         >
+                          <option value="" disabled>Select status</option>
                           <option value="present">Present</option>
                           <option value="late">Late</option>
                           <option value="absent">Absent</option>

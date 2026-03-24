@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
 import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaEllipsisH } from "react-icons/fa";
 import './Dashboard.css';
 import '../styles/global.css';
+import Sidebar from "../components/Sidebar";
 
 function StatCard({ title, value, icon, color }) {
   return (
@@ -40,6 +41,99 @@ function LineChart({ data = [], width = 420, height = 120, color = '#4b6cb7' }) 
   )
 }
 
+function GrowthTrendChart({ points = [], mode = 'monthly' }) {
+  if (!points.length) return null;
+
+  const width = 700;
+  const height = 220;
+  const leftPad = 40;
+  const rightPad = 14;
+  const topPad = 18;
+  const bottomPad = 34;
+  const chartHeight = height - topPad - bottomPad;
+  const chartWidth = width - leftPad - rightPad;
+  const maxCount = Math.max(1, ...points.map((point) => Number(point.count) || 0));
+  const stepX = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
+
+  const yForCount = (value) => {
+    const clamped = Math.max(0, Math.min(maxCount, Number(value) || 0));
+    return topPad + (1 - (clamped / maxCount)) * chartHeight;
+  };
+
+  const linePoints = points
+    .map((point, index) => `${(leftPad + (index * stepX)).toFixed(2)},${yForCount(point.count).toFixed(2)}`)
+    .join(' ');
+
+  const linePath = linePoints ? `M ${linePoints.split(' ').join(' L ')}` : '';
+  const areaPath = linePoints
+    ? `${linePath} L ${(leftPad + ((points.length - 1) * stepX)).toFixed(2)} ${height - bottomPad} L ${leftPad} ${height - bottomPad} Z`
+    : '';
+
+  const yTicks = Array.from({ length: 5 }, (_, index) => Math.round((maxCount * index) / 4));
+  const barWidth = points.length > 8 ? 18 : 24;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Employee growth trend">
+      <defs>
+        <linearGradient id="growthAreaGradient" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#4b6cb7" stopOpacity="0.24" />
+          <stop offset="100%" stopColor="#4b6cb7" stopOpacity="0.03" />
+        </linearGradient>
+        <linearGradient id="growthBarGradient" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#6f8fe0" />
+          <stop offset="100%" stopColor="#3157b7" />
+        </linearGradient>
+      </defs>
+
+      {yTicks.map((tickValue) => {
+        const y = yForCount(tickValue);
+        return (
+          <g key={`growth-tick-${tickValue}`}>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
+            <text x={leftPad - 7} y={y + 4} fontSize="10" textAnchor="end" fill="#64748b" fontWeight="700">{tickValue}</text>
+          </g>
+        );
+      })}
+
+      {points.map((point, index) => {
+        const x = leftPad + (index * stepX);
+        const y = yForCount(point.count);
+        const barHeight = Math.max(0, (height - bottomPad) - y);
+
+        return (
+          <g key={`${point.label}-${index}`}>
+            <rect
+              x={x - (barWidth / 2)}
+              y={y}
+              width={barWidth}
+              height={barHeight}
+              rx="4"
+              fill="url(#growthBarGradient)"
+              opacity="0.84"
+            />
+            {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
+              <text x={x} y={height - 12} fontSize="10" textAnchor="middle" fill="#64748b" fontWeight="700">{point.label}</text>
+            ) : null}
+          </g>
+        );
+      })}
+
+      {areaPath ? <path d={areaPath} fill="url(#growthAreaGradient)" /> : null}
+      {linePath ? <path d={linePath} fill="none" stroke="#2749a0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
+
+      {points.map((point, index) => {
+        const x = leftPad + (index * stepX);
+        const y = yForCount(point.count);
+        return <circle key={`growth-point-${index}`} cx={x} cy={y} r="3.4" fill="#fff" stroke="#2749a0" strokeWidth="1.8" />;
+      })}
+
+      <text x={leftPad} y="12" fontSize="11" fill="#475569" fontWeight="800">
+        {mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}
+      </text>
+    </svg>
+  );
+}
+
 function DonutChart({ values = [], colors = [], size = 120 }) {
   const total = values.reduce((s, v) => s + v, 0) || 1;
   let angle = -90;
@@ -67,15 +161,15 @@ function DonutChart({ values = [], colors = [], size = 120 }) {
   )
 }
 
-function GenderBar({ male = 0, female = 0, other = 0, width = 220, height = 80 }) {
-  const total = Math.max(1, male + female + other);
-  const max = Math.max(male, female, other, 1);
+function GenderBar({ male = 0, female = 0, width = 220, height = 80 }) {
+  const total = Math.max(1, male + female );
+  const max = Math.max(male, female, 1);
   const barW = 40;
   const gap = 16;
   const startX = 10;
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      {[{k:'Male',v:male,color:'#4b6cb7'},{k:'Female',v:female,color:'#e0245e'},{k:'Other',v:other,color:'#f59e0b'}].map((b,i)=>{
+      {[{k:'Male',v:male,color:'#4b6cb7'},{k:'Female',v:female,color:'#e0245e'}].map((b,i)=>{
         const h = Math.round((b.v / max) * (height - 30));
         const x = startX + i * (barW + gap);
         const y = height - h - 18;
@@ -145,9 +239,179 @@ function KPI({ title, value, delta, sparkData, positive=true }) {
   )
 }
 
+function AttendanceTrendChart({ points = [] }) {
+  if (!points.length) return null;
+
+  const width = 720;
+  const height = 260;
+  const chartTop = 46;
+  const chartBottom = 196;
+  const leftPad = 48;
+  const rightPad = 44;
+  const usableHeight = chartBottom - chartTop;
+  const usableWidth = width - leftPad - rightPad;
+  const stepX = points.length > 1 ? usableWidth / (points.length - 1) : 0;
+  const maxCount = Math.max(1, ...points.map((point) => Number(point.total) || 0));
+
+  const yForCount = (countValue) => {
+    const clamped = Math.max(0, Math.min(maxCount, Number(countValue) || 0));
+    return chartBottom - (clamped / maxCount) * usableHeight;
+  };
+
+  const yForRate = (rateValue) => {
+    const clamped = Math.max(0, Math.min(100, Number(rateValue) || 0));
+    return chartBottom - (clamped / 100) * usableHeight;
+  };
+
+  const ratePoints = points
+    .map((point, index) => `${(leftPad + (index * stepX)).toFixed(2)},${yForRate(point.rate).toFixed(2)}`)
+    .join(' ');
+
+  const rateLinePath = ratePoints ? `M ${ratePoints.split(' ').join(' L ')}` : '';
+  const rateAreaPath = ratePoints
+    ? `${rateLinePath} L ${(leftPad + ((points.length - 1) * stepX)).toFixed(2)} ${chartBottom} L ${leftPad} ${chartBottom} Z`
+    : '';
+
+  const countTicks = Array.from({ length: 5 }, (_, index) => Math.round((maxCount * index) / 4));
+  const rateTicks = [0, 25, 50, 75, 100];
+  const barColors = {
+    present: '#16a34a',
+    late: '#d97706',
+    absent: '#dc2626',
+  };
+
+  const groupWidth = points.length > 1 ? Math.min(34, stepX * 0.62) : 30;
+  const singleBarWidth = Math.max(5, Math.floor((groupWidth - 4) / 3));
+  const gapBetweenBars = 2;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance rate trend">
+      <defs>
+        <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#3157b7" stopOpacity="0.22" />
+          <stop offset="100%" stopColor="#3157b7" stopOpacity="0.03" />
+        </linearGradient>
+      </defs>
+
+      <g>
+        <rect x="0" y="0" width={width} height={height} fill="#ffffff" rx="12" />
+      </g>
+
+      <g>
+        <rect x={leftPad} y={chartTop} width={usableWidth} height={usableHeight} fill="#fcfdff" stroke="#e2e8f0" />
+      </g>
+
+      {countTicks.map((tickValue) => {
+        const y = yForCount(tickValue);
+        return (
+          <g key={`count-tick-${tickValue}`}>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
+            <text x={leftPad - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#64748b" fontWeight="700">
+              {tickValue}
+            </text>
+          </g>
+        );
+      })}
+
+      {rateTicks.map((tickValue) => {
+        const y = yForRate(tickValue);
+        return (
+          <g key={`rate-tick-${tickValue}`}>
+            <text x={width - rightPad + 8} y={y + 4} textAnchor="start" fontSize="10" fill="#3157b7" fontWeight="700">
+              {tickValue}%
+            </text>
+          </g>
+        );
+      })}
+
+      {points.map((point, index) => {
+        const xCenter = leftPad + (index * stepX);
+        const leftStart = xCenter - (groupWidth / 2);
+        const presentValue = Number(point.presentCount) || 0;
+        const lateValue = Number(point.lateCount) || 0;
+        const absentValue = Number(point.absentCount) || 0;
+
+        const bars = [
+          { key: 'present', value: presentValue, x: leftStart },
+          { key: 'late', value: lateValue, x: leftStart + singleBarWidth + gapBetweenBars },
+          { key: 'absent', value: absentValue, x: leftStart + (singleBarWidth + gapBetweenBars) * 2 },
+        ];
+
+        return (
+          <g key={`bars-${point.date}-${index}`}>
+            {bars.map((bar) => {
+              const topY = yForCount(bar.value);
+              const barHeight = Math.max(0, chartBottom - topY);
+              return (
+                <rect
+                  key={`${bar.key}-${point.date}-${index}`}
+                  x={bar.x}
+                  y={topY}
+                  width={singleBarWidth}
+                  height={barHeight}
+                  rx="2"
+                  fill={barColors[bar.key]}
+                  opacity="0.88"
+                />
+              );
+            })}
+          </g>
+        );
+      })}
+
+      {rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
+      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" /> : null}
+
+      {points.map((point, index) => {
+        const x = leftPad + (index * stepX);
+        const y = yForRate(point.rate);
+
+        return (
+          <g key={`${point.date}-${index}`}>
+            <circle cx={x} cy={y} r="4.2" fill="#fff" stroke="#3157b7" strokeWidth="2.4" />
+            {index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1 ? (
+              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="700">
+                {point.label}
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+
+      <g>
+        <text x={leftPad} y="20" fontSize="11" fill="#475569" fontWeight="800">Attendance Records (count)</text>
+        <g transform={`translate(${leftPad + 168}, 11)`}>
+          <rect x="0" y="0" width="10" height="10" fill="#16a34a" rx="2" />
+          <text x="14" y="9" fontSize="10" fill="#166534" fontWeight="700">Present</text>
+          <rect x="74" y="0" width="10" height="10" fill="#d97706" rx="2" />
+          <text x="88" y="9" fontSize="10" fill="#92400e" fontWeight="700">Late</text>
+          <rect x="130" y="0" width="10" height="10" fill="#dc2626" rx="2" />
+          <text x="144" y="9" fontSize="10" fill="#991b1b" fontWeight="700">Absent</text>
+          <line x1="200" y1="5" x2="226" y2="5" stroke="#3157b7" strokeWidth="2.2" />
+          <circle cx="213" cy="5" r="3" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
+          <text x="232" y="9" fontSize="10" fill="#3157b7" fontWeight="700">Rate %</text>
+        </g>
+      </g>
+    </svg>
+  );
+}
+
+function resolveDashboardSelection(action) {
+  if (action === 'view-my-posts') {
+    return { dashboardView: 'home', postFeedView: 'mine' };
+  }
+
+  if (action === 'view-overview') {
+    return { dashboardView: 'overview', postFeedView: 'all' };
+  }
+
+  return { dashboardView: 'home', postFeedView: 'all' };
+}
+
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
   const [users, setUsers] = useState([]);
+  const [attendanceByDate, setAttendanceByDate] = useState({});
   const [posts, setPosts] = useState([]);
   const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
   const [postText, setPostText] = useState('');
@@ -164,14 +428,20 @@ export default function Dashboard() {
     }
   });
   const navigate = useNavigate();
+  const location = useLocation();
+  const initialSidebarAction = location.state?.dashboardAction;
+  const initialDashboardSelection = resolveDashboardSelection(initialSidebarAction);
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
   const [calendarViewDate, setCalendarViewDate] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
-  const [dashboardView, setDashboardView] = useState('home');
-  const [postFeedView, setPostFeedView] = useState('all');
-  const [isDashboardMenuOpen, setIsDashboardMenuOpen] = useState(true);
+  const [dashboardView, setDashboardView] = useState(initialDashboardSelection.dashboardView);
+  const [postFeedView, setPostFeedView] = useState(initialDashboardSelection.postFeedView);
+  const [attendanceRecordView, setAttendanceRecordView] = useState('daily');
+  const [growthTrendView, setGrowthTrendView] = useState('monthly');
+  const [attendanceStatusFilter, setAttendanceStatusFilter] = useState('present');
+  const [showAttendancePeopleList, setShowAttendancePeopleList] = useState(false);
   const [selectedCalendarIsoDate, setSelectedCalendarIsoDate] = useState('');
   const [hoveredCalendarIsoDate, setHoveredCalendarIsoDate] = useState('');
   const fileInputRef = useRef(null);
@@ -199,7 +469,15 @@ export default function Dashboard() {
       try {
         const res = await api.get('/employees');
         const items = res.data || [];
-        setEmployees(Array.isArray(items) ? items : Object.values(items || {}));
+        if (Array.isArray(items)) {
+          setEmployees(items);
+          return;
+        }
+        const normalized = Object.entries(items || {}).map(([id, payload]) => ({
+          ...(payload || {}),
+          id,
+        }));
+        setEmployees(normalized);
       } catch (e) {
         console.error(e);
       }
@@ -228,6 +506,21 @@ export default function Dashboard() {
     }
 
     loadUsers();
+  }, []);
+
+  useEffect(() => {
+    async function loadAttendanceHistory() {
+      try {
+        const response = await api.get('/api/employee_attendance/history');
+        const map = response.data?.attendanceByDate;
+        setAttendanceByDate(map && typeof map === 'object' ? map : {});
+      } catch (error) {
+        console.error(error);
+        setAttendanceByDate({});
+      }
+    }
+
+    loadAttendanceHistory();
   }, []);
 
   useEffect(() => {
@@ -279,7 +572,254 @@ export default function Dashboard() {
   const count = employees.length;
   const departments = Array.from(new Set(employees.map(e => e.department).filter(Boolean))).length || 3;
   const openPositions = Math.max(2, Math.round((count / 10))) ;
-  const attendanceRate = employees.length ? `${Math.round((employees.filter(e => e.presentToday).length / employees.length) * 100) || 96}%` : '—';
+
+  const attendanceSeries = useMemo(() => {
+    const dateEntries = Object.entries(attendanceByDate || {})
+      .filter(([dateKey, recordMap]) => typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && recordMap && typeof recordMap === 'object')
+      .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate));
+
+    return dateEntries.map(([dateKey, recordMap]) => {
+      const records = Object.values(recordMap || {}).filter((entry) => entry && typeof entry === 'object');
+      const total = records.length;
+
+      if (total === 0) {
+        return { date: dateKey, rate: 0, total: 0, presentCount: 0, lateCount: 0, absentCount: 0 };
+      }
+
+      const lateCount = records.filter((entry) => String(entry.status || '').toLowerCase() === 'late').length;
+      const presentCount = records.filter((entry) => {
+        const status = String(entry.status || '').toLowerCase();
+        if (status === 'present') {
+          return true;
+        }
+
+        if (status === 'late' || status === 'absent') {
+          return false;
+        }
+
+        return entry.present === true;
+      }).length;
+      const attendingCount = presentCount + lateCount;
+      const absentCount = Math.max(0, total - attendingCount);
+
+      return {
+        date: dateKey,
+        rate: Math.round((attendingCount / total) * 100),
+        total,
+        presentCount,
+        lateCount,
+        absentCount,
+      };
+    });
+  }, [attendanceByDate]);
+
+  const attendanceDisplaySeries = useMemo(() => {
+    const source = Array.isArray(attendanceSeries) ? attendanceSeries : [];
+    if (!source.length) return [];
+
+    if (attendanceRecordView === 'daily') {
+      const today = new Date();
+      const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const todayRecord = source.find((item) => item.date === todayIso);
+
+      if (!todayRecord) {
+        return [];
+      }
+
+      return [{
+        ...todayRecord,
+        bucketKey: todayRecord.date,
+        label: 'Today',
+      }];
+    }
+
+    const buckets = source.reduce((accumulator, item) => {
+      const dateValue = new Date(`${item.date}T00:00:00`);
+      if (Number.isNaN(dateValue.getTime())) {
+        return accumulator;
+      }
+
+      let key = item.date;
+      let label = item.date.slice(5);
+
+      if (attendanceRecordView === 'weekly') {
+        const day = dateValue.getDay();
+        const mondayOffset = day === 0 ? -6 : 1 - day;
+        const weekStart = new Date(dateValue);
+        weekStart.setDate(dateValue.getDate() + mondayOffset);
+        const weekYear = weekStart.getFullYear();
+        const weekMonth = String(weekStart.getMonth() + 1).padStart(2, '0');
+        const weekDay = String(weekStart.getDate()).padStart(2, '0');
+        key = `${weekYear}-${weekMonth}-${weekDay}`;
+        label = `Wk ${weekMonth}/${weekDay}`;
+      }
+
+      if (attendanceRecordView === 'monthly') {
+        const monthYear = dateValue.getFullYear();
+        const monthNumber = String(dateValue.getMonth() + 1).padStart(2, '0');
+        key = `${monthYear}-${monthNumber}`;
+        label = `${monthYear}/${monthNumber}`;
+      }
+
+      if (!accumulator[key]) {
+        accumulator[key] = {
+          bucketKey: key,
+          label,
+          total: 0,
+          presentCount: 0,
+          lateCount: 0,
+          absentCount: 0,
+        };
+      }
+
+      accumulator[key].total += item.total || 0;
+      accumulator[key].presentCount += item.presentCount || 0;
+      accumulator[key].lateCount += item.lateCount || 0;
+      accumulator[key].absentCount += item.absentCount || 0;
+
+      return accumulator;
+    }, {});
+
+    return Object.values(buckets)
+      .sort((leftItem, rightItem) => String(leftItem.bucketKey).localeCompare(String(rightItem.bucketKey)))
+      .map((bucket) => {
+        const attendingCount = (bucket.presentCount || 0) + (bucket.lateCount || 0);
+        const total = bucket.total || 0;
+        return {
+          date: bucket.bucketKey,
+          label: bucket.label,
+          total,
+          presentCount: bucket.presentCount || 0,
+          lateCount: bucket.lateCount || 0,
+          absentCount: bucket.absentCount || 0,
+          rate: total > 0 ? Math.round((attendingCount / total) * 100) : 0,
+        };
+      });
+  }, [attendanceSeries, attendanceRecordView]);
+
+  const fallbackAttendanceRate = employees.length
+    ? `${Math.round((employees.filter((employee) => employee.presentToday).length / employees.length) * 100) || 96}%`
+    : '—';
+  const latestAttendanceRate = attendanceDisplaySeries.length > 0
+    ? `${attendanceDisplaySeries[attendanceDisplaySeries.length - 1].rate}%`
+    : fallbackAttendanceRate;
+  const attendanceRate = latestAttendanceRate;
+  const attendanceLineDataRaw = attendanceSeries.length > 0
+    ? attendanceSeries.slice(-6).map((item) => item.rate)
+    : [];
+  const attendanceLineData = attendanceLineDataRaw.length === 1
+    ? [attendanceLineDataRaw[0], attendanceLineDataRaw[0]]
+    : attendanceLineDataRaw;
+  const latestAttendanceSnapshot = attendanceDisplaySeries.length > 0
+    ? attendanceDisplaySeries[attendanceDisplaySeries.length - 1]
+    : null;
+  const attendanceChartPoints = attendanceDisplaySeries
+    .slice(-10)
+    .map((point) => ({
+      ...point,
+      label: point.label || point.date,
+    }));
+  const recentAttendanceRecords = attendanceDisplaySeries.slice(-4).reverse();
+
+  const getAttendanceBucketMeta = (dateString, viewMode) => {
+    const dateValue = new Date(`${dateString}T00:00:00`);
+    if (Number.isNaN(dateValue.getTime())) {
+      return { key: dateString, label: dateString };
+    }
+
+    if (viewMode === 'weekly') {
+      const day = dateValue.getDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      const weekStart = new Date(dateValue);
+      weekStart.setDate(dateValue.getDate() + mondayOffset);
+      const weekYear = weekStart.getFullYear();
+      const weekMonth = String(weekStart.getMonth() + 1).padStart(2, '0');
+      const weekDay = String(weekStart.getDate()).padStart(2, '0');
+      return {
+        key: `${weekYear}-${weekMonth}-${weekDay}`,
+        label: `Wk ${weekMonth}/${weekDay}`,
+      };
+    }
+
+    if (viewMode === 'monthly') {
+      const monthYear = dateValue.getFullYear();
+      const monthNumber = String(dateValue.getMonth() + 1).padStart(2, '0');
+      return {
+        key: `${monthYear}-${monthNumber}`,
+        label: `${monthYear}/${monthNumber}`,
+      };
+    }
+
+    return {
+      key: dateString,
+      label: dateString.slice(5),
+    };
+  };
+
+  const todayIsoAttendanceDate = new Date().toISOString().slice(0, 10);
+  const attendancePeopleDateLabel = attendanceRecordView === 'daily'
+    ? `Today (${todayIsoAttendanceDate})`
+    : attendanceRecordView === 'weekly'
+      ? 'All people in visible weekly records'
+      : 'All people in visible monthly records';
+  const employeeNameById = useMemo(() => {
+    return (employees || []).reduce((accumulator, employee) => {
+      const employeeId = employee?.id || employee?.employeeId || employee?.job?.employeeId || employee?.profileData?.job?.employeeId;
+      if (!employeeId) return accumulator;
+
+      const personal = employee?.personal || employee?.profileData?.personal || {};
+      const fullName = employee?.name
+        || employee?.fullName
+        || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')
+        || 'Employee';
+      accumulator[String(employeeId)] = fullName;
+      return accumulator;
+    }, {});
+  }, [employees]);
+  const attendancePeopleList = useMemo(() => {
+    const visibleBucketKeys = new Set((attendanceDisplaySeries || []).map((entry) => entry?.date).filter(Boolean));
+    if (!visibleBucketKeys.size) return [];
+
+    const normalizeStatus = (record) => {
+      const rawStatus = String(record?.status || '').toLowerCase();
+      if (rawStatus === 'present' || rawStatus === 'late' || rawStatus === 'absent') {
+        return rawStatus;
+      }
+      return record?.present === true ? 'present' : 'absent';
+    };
+
+    const rows = [];
+
+    Object.entries(attendanceByDate || {}).forEach(([sourceDate, recordMap]) => {
+      if (!recordMap || typeof recordMap !== 'object') return;
+
+      const bucketMeta = getAttendanceBucketMeta(sourceDate, attendanceRecordView);
+      if (!visibleBucketKeys.has(bucketMeta.key)) return;
+
+      Object.entries(recordMap).forEach(([employeeId, record]) => {
+        rows.push({
+          employeeId,
+          status: normalizeStatus(record),
+          name: employeeNameById[employeeId] || `Employee ${employeeId}`,
+          sourceDate,
+          bucketLabel: bucketMeta.label,
+          bucketKey: bucketMeta.key,
+        });
+      });
+    });
+
+    return rows
+      .filter((entry) => entry.status === attendanceStatusFilter)
+      .sort((leftEntry, rightEntry) => {
+        if (leftEntry.bucketKey !== rightEntry.bucketKey) {
+          return String(rightEntry.bucketKey).localeCompare(String(leftEntry.bucketKey));
+        }
+        if (leftEntry.sourceDate !== rightEntry.sourceDate) {
+          return String(rightEntry.sourceDate).localeCompare(String(leftEntry.sourceDate));
+        }
+        return leftEntry.name.localeCompare(rightEntry.name);
+      });
+  }, [attendanceByDate, attendanceDisplaySeries, attendanceRecordView, attendanceStatusFilter, employeeNameById]);
 
   // additional KPIs
   const leavesToday = employees.filter(e => e.presentToday === false).length;
@@ -339,6 +879,57 @@ export default function Dashboard() {
       };
     });
 
+  const monthlyGrowthSeries = useMemo(() => {
+    const monthCount = 12;
+    const startMonths = Array.from({ length: monthCount }, (_, index) => {
+      const now = new Date();
+      return new Date(now.getFullYear(), now.getMonth() - (monthCount - 1 - index), 1);
+    });
+
+    return startMonths.map((monthStart) => {
+      const year = monthStart.getFullYear();
+      const month = monthStart.getMonth();
+      const registrations = employees.reduce((total, employee) => {
+        const hireDate = getEmployeeHireDate(employee);
+        if (!hireDate) return total;
+        if (hireDate.getFullYear() === year && hireDate.getMonth() === month) {
+          return total + 1;
+        }
+        return total;
+      }, 0);
+
+      return {
+        key: `${year}-${String(month + 1).padStart(2, '0')}`,
+        label: monthStart.toLocaleDateString('en-US', { month: 'short' }),
+        count: registrations,
+      };
+    });
+  }, [employees]);
+
+  const annualGrowthSeries = useMemo(() => {
+    const yearCount = 6;
+    const startYear = new Date().getFullYear() - (yearCount - 1);
+
+    return Array.from({ length: yearCount }, (_, index) => {
+      const year = startYear + index;
+      const registrations = employees.reduce((total, employee) => {
+        const hireDate = getEmployeeHireDate(employee);
+        if (!hireDate) return total;
+        return hireDate.getFullYear() === year ? total + 1 : total;
+      }, 0);
+
+      return {
+        key: String(year),
+        label: String(year),
+        count: registrations,
+      };
+    });
+  }, [employees]);
+
+  const growthTrendPoints = growthTrendView === 'monthly' ? monthlyGrowthSeries : annualGrowthSeries;
+  const currentGrowthTotal = growthTrendPoints.reduce((sum, point) => sum + (point.count || 0), 0);
+  const peakGrowthPoint = growthTrendPoints.reduce((best, point) => ((point.count || 0) > (best.count || 0) ? point : best), growthTrendPoints[0] || { label: '—', count: 0 });
+
   // growth trend based on real hire dates from the database (last 6 months)
   const months = 6;
   const monthStarts = Array.from({ length: months }, (_, index) => {
@@ -382,7 +973,7 @@ export default function Dashboard() {
       .toLowerCase();
     if (g.includes('f')) return 'female';
     if (g.includes('m')) return 'male';
-    return 'other';
+    return ;
   }
 
   const genderCounts = employees.reduce((acc, e) => {
@@ -392,8 +983,8 @@ export default function Dashboard() {
   }, {});
   const maleCount = genderCounts.male || 0;
   const femaleCount = genderCounts.female || 0;
-  const otherCount = genderCounts.other || 0;
-  const genderValues = [maleCount, femaleCount, otherCount];
+  
+  const genderValues = [maleCount, femaleCount];
 
   const notificationCount = upcomingBirthdays.length + upcomingContracts.length;
   const messageCount = recentHires.length;
@@ -546,6 +1137,21 @@ export default function Dashboard() {
   const canSubmitPost = Boolean(postText.trim() || postMedia);
   const postOwnerId = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || 'hr-admin';
   const currentLikeActorId = admin?.userId || admin?.id || admin?.adminId || admin?.hrId || 'hr-admin';
+  const handleSidebarViewSelection = (action) => {
+    const nextSelection = resolveDashboardSelection(action);
+    setDashboardView(nextSelection.dashboardView);
+    setPostFeedView(nextSelection.postFeedView);
+  };
+
+  useEffect(() => {
+    const actionFromNavigation = location.state?.dashboardAction;
+    if (!actionFromNavigation) {
+      return;
+    }
+
+    handleSidebarViewSelection(actionFromNavigation);
+    navigate(location.pathname, { replace: true, state: {} });
+  }, [location.pathname, location.state, navigate]);
   const isPostOwnedByCurrentUser = (post) => {
     if (!post) return false;
     const ownerCandidates = [post.adminId, post.userId, post.hrId, post.ownerId].filter(Boolean).map((value) => String(value));
@@ -661,6 +1267,16 @@ export default function Dashboard() {
     }
   };
 
+  const handleAttendanceStatusCardClick = (statusValue) => {
+    if (showAttendancePeopleList && attendanceStatusFilter === statusValue) {
+      setShowAttendancePeopleList(false);
+      return;
+    }
+
+    setAttendanceStatusFilter(statusValue);
+    setShowAttendancePeopleList(true);
+  };
+
   return (
     <div className="dashboard-page" style={{ background: 'var(--page-bg, #f4f6fb)', minHeight: '100vh' }}>
       <nav className="top-navbar" style={{ borderBottom: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-overlay, #ffffff)' }}>
@@ -705,86 +1321,19 @@ export default function Dashboard() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', paddingLeft: 'calc(var(--sidebar-width, 220px) + 54px)', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
-        <aside className="google-sidebar">
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin?.profileImage || '/default-profile.png'} alt="profile" />
-            </div>
-            <h3>{admin?.name || 'Admin Name'}</h3>
-            <p>{admin?.hrId || 'username'}</p>
-          </div>
-
-          <div className="sidebar-menu">
-            <button
-              type="button"
-              className="sidebar-btn"
-              onClick={() => setIsDashboardMenuOpen((open) => !open)}
-              aria-expanded={isDashboardMenuOpen}
-              style={{ backgroundColor: "#4b6cb7", color: "white" }}
-            >
-              <FaUsers /> Dashboard
-            </button>
-
-            {isDashboardMenuOpen ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2, marginBottom: 6 }}>
-                <button
-                  type="button"
-                  className="sidebar-btn"
-                  onClick={() => {
-                    setDashboardView('home');
-                    setPostFeedView('all');
-                  }}
-                  style={{
-                    marginLeft: 18,
-                    width: 'calc(100% - 18px)',
-                    fontSize: 14,
-                    backgroundColor: dashboardView === 'home' && postFeedView === 'all' ? '#4b6cb7' : undefined,
-                    color: dashboardView === 'home' && postFeedView === 'all' ? '#fff' : undefined,
-                  }}
-                >
-                  Home
-                </button>
-                <button
-                  type="button"
-                  className="sidebar-btn"
-                  onClick={() => {
-                    setDashboardView('home');
-                    setPostFeedView('mine');
-                  }}
-                  style={{
-                    marginLeft: 18,
-                    width: 'calc(100% - 18px)',
-                    fontSize: 14,
-                    backgroundColor: dashboardView === 'home' && postFeedView === 'mine' ? '#4b6cb7' : undefined,
-                    color: dashboardView === 'home' && postFeedView === 'mine' ? '#fff' : undefined,
-                  }}
-                >
-                  My Post
-                </button>
-                <button
-                  type="button"
-                  className="sidebar-btn"
-                  onClick={() => setDashboardView('overview')}
-                  style={{
-                    marginLeft: 18,
-                    width: 'calc(100% - 18px)',
-                    fontSize: 14,
-                    backgroundColor: dashboardView === 'overview' ? '#4b6cb7' : undefined,
-                    color: dashboardView === 'overview' ? '#fff' : undefined,
-                  }}
-                >
-                  Overview
-                </button>
-              </div>
-            ) : null}
-        
-            <Link className="sidebar-btn" to="/employees"> <FaChalkboardTeacher /> Employees</Link>
-            <Link className="sidebar-btn" to="/employees/attendance"> <FaCalendarAlt /> Attendance</Link>
-            <Link className="sidebar-btn" to="/register"> <FaClipboardList /> Registration</Link>
-            <button className="logout-btn" onClick={() => { localStorage.removeItem('admin'); window.location.href = '/login' }}>Logout</button>
-          </div>
-        </aside>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
+        <Sidebar
+          admin={admin}
+          fullHeight
+          top={4}
+          selectedDashboardView={dashboardView}
+          selectedPostFeedView={postFeedView}
+          onSelectDashboardView={handleSidebarViewSelection}
+          onLogout={() => {
+            localStorage.removeItem('admin');
+            navigate('/login', { replace: true });
+          }}
+        />
 
         <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
           <div style={{ width: '100%', maxWidth: dashboardView === 'home' ? 780 : 1100, margin: '0 auto 14px', background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)', border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 14, padding: '12px 14px', boxShadow: '0 8px 20px rgba(20,35,78,0.08)' }}>
@@ -936,17 +1485,218 @@ export default function Dashboard() {
                 <StatCard title="Terminated" value={terminatedEmployeesCount} icon={<FaArrowDown />} color="#dc2626" />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-                <KPI title="Attendance Rate" value={attendanceRate} delta="Compared to last week" sparkData={lineData} positive />
-                <KPI title="Avg Tenure" value={avgTenureFormatted} delta="Stable workforce" sparkData={lineData.map((value, index) => value - (index % 2 ? 1 : 0))} positive />
-                <KPI title="Turnover" value={turnoverRate} delta="Monitor exits this quarter" sparkData={lineData.map((value, index) => Math.max(1, value - (index * 2)))} positive={false} />
+              <div style={{
+                ...overviewCardStyle,
+                padding: 14,
+                borderRadius: 18,
+                background: 'linear-gradient(165deg, #f9fbff 0%, #eef4ff 58%, #ffffff 100%)',
+                width: 1100,
+                margin: '0 auto',
+                marginLeft: 0,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 19, fontWeight: 900, color: '#0f172a', letterSpacing: '-0.01em' }}>Attendance Rate</div>
+                    <div style={{ marginTop: 4, fontSize: 13, color: '#64748b', fontWeight: 700 }}>Live analytics from Employees_Attendance records</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {['daily', 'weekly', 'monthly'].map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setAttendanceRecordView(tab)}
+                        style={{
+                          height: 30,
+                          padding: '0 12px',
+                          borderRadius: 999,
+                          border: attendanceRecordView === tab ? '1px solid #3157b7' : '1px solid #dbe2f2',
+                          background: attendanceRecordView === tab ? '#e7eeff' : '#fff',
+                          color: attendanceRecordView === tab ? '#1e3a8a' : '#475569',
+                          fontSize: 12,
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          textTransform: 'capitalize',
+                        }}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid #cfdcfa', background: '#ffffff', boxShadow: '0 8px 20px rgba(49,87,183,0.12)' }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Latest Rate</div>
+                    <div style={{ fontSize: 28, lineHeight: 1.1, fontWeight: 900, color: '#1e3a8a', marginTop: 2 }}>{attendanceRate}</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, borderRadius: 14, border: '1px solid #dbe2f2', background: '#fff', padding: 10 }}>
+                  {attendanceChartPoints.length > 0 ? (
+                    <AttendanceTrendChart points={attendanceChartPoints} />
+                  ) : (
+                    <div style={{ padding: '26px 10px', textAlign: 'center', fontSize: 13, color: '#64748b', fontWeight: 700 }}>
+                      Attendance graph will appear once attendance records are available.
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => handleAttendanceStatusCardClick('present')}
+                    style={{
+                      borderRadius: 12,
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '1px solid #16a34a' : '1px solid #d1fae5',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '#e9fceb' : '#f0fdf4',
+                      padding: '10px 12px',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                    }}
+                    title={showAttendancePeopleList && attendanceStatusFilter === 'present' ? 'Hide Present People List' : 'Show Present People List'}
+                  >
+                    <div style={{ fontSize: 11, color: '#166534', fontWeight: 800 }}>Present</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: '#14532d', marginTop: 2 }}>{latestAttendanceSnapshot?.presentCount ?? 0}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAttendanceStatusCardClick('late')}
+                    style={{
+                      borderRadius: 12,
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '1px solid #d97706' : '1px solid #fde68a',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '#fff4dd' : '#fffbeb',
+                      padding: '10px 12px',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                    }}
+                    title={showAttendancePeopleList && attendanceStatusFilter === 'late' ? 'Hide Late People List' : 'Show Late People List'}
+                  >
+                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 800 }}>Late</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: '#78350f', marginTop: 2 }}>{latestAttendanceSnapshot?.lateCount ?? 0}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAttendanceStatusCardClick('absent')}
+                    style={{
+                      borderRadius: 12,
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '1px solid #dc2626' : '1px solid #fecaca',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '#ffebeb' : '#fef2f2',
+                      padding: '10px 12px',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                    }}
+                    title={showAttendancePeopleList && attendanceStatusFilter === 'absent' ? 'Hide Absent People List' : 'Show Absent People List'}
+                  >
+                    <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 800 }}>Absent</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: '#7f1d1d', marginTop: 2 }}>{latestAttendanceSnapshot?.absentCount ?? 0}</div>
+                  </button>
+                  <div style={{ borderRadius: 12, border: '1px solid #dbe2f2', background: '#f8faff', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: '#475569', fontWeight: 800 }}>Records</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: '#1e293b', marginTop: 2 }}>{latestAttendanceSnapshot?.total ?? 0}</div>
+                  </div>
+                </div>
+
+                {showAttendancePeopleList ? (
+                <div style={{ marginTop: 10, border: '1px solid #dbe2f2', borderRadius: 12, background: '#fff', padding: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: '#334155', textTransform: 'capitalize' }}>{attendanceStatusFilter} People List</div>
+                      <div style={{ marginTop: 2, fontSize: 11, color: '#64748b', fontWeight: 700 }}>{attendancePeopleDateLabel}</div>
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#334155', textTransform: 'capitalize' }}>Status: {attendanceStatusFilter}</div>
+                  </div>
+
+                  <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', maxHeight: 160, overflowY: 'auto' }}>
+                    {attendancePeopleList.length === 0 ? (
+                      <div style={{ padding: '10px 12px', fontSize: 12, color: '#64748b', fontWeight: 700 }}>
+                        No {attendanceStatusFilter} employees found for this selection.
+                      </div>
+                    ) : (
+                      attendancePeopleList.map((entry, index) => (
+                        <div key={`${entry.employeeId}-${entry.status}-${entry.sourceDate || 'na'}-${entry.bucketKey || 'na'}-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 12px', borderTop: '1px solid #eef2ff' }}>
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: '#0f172a' }}>{entry.name}</div>
+                            {attendanceRecordView === 'daily' ? null : (
+                              <div style={{ marginTop: 1, fontSize: 10, color: '#64748b', fontWeight: 700 }}>{entry.bucketLabel} • {entry.sourceDate}</div>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>{entry.employeeId}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+                ) : null}
+
+                <div style={{ marginTop: 10, border: '1px solid #dbe2f2', borderRadius: 12, overflow: 'hidden' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', background: '#f8faff', borderBottom: '1px solid #e2e8f0', fontSize: 11, fontWeight: 900, color: '#334155' }}>
+                    <div>{attendanceRecordView === 'daily' ? 'Date' : attendanceRecordView === 'weekly' ? 'Week' : 'Month'}</div>
+                    <div style={{ textAlign: 'right' }}>Rate</div>
+                    <div style={{ textAlign: 'right' }}>Present</div>
+                    <div style={{ textAlign: 'right' }}>Late</div>
+                    <div style={{ textAlign: 'right' }}>Absent</div>
+                  </div>
+                  {recentAttendanceRecords.length === 0 ? (
+                    <div style={{ padding: '12px', fontSize: 12, color: '#64748b', fontWeight: 700 }}>No attendance records found.</div>
+                  ) : (
+                    recentAttendanceRecords.map((record) => (
+                      <div key={record.date} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', borderTop: '1px solid #eef2ff', fontSize: 12, color: '#334155', fontWeight: 700 }}>
+                        <div>{record.date}</div>
+                        <div style={{ textAlign: 'right', color: '#1e3a8a', fontWeight: 900 }}>{record.rate}%</div>
+                        <div style={{ textAlign: 'right', color: '#166534' }}>{record.presentCount}</div>
+                        <div style={{ textAlign: 'right', color: '#92400e' }}>{record.lateCount}</div>
+                        <div style={{ textAlign: 'right', color: '#991b1b' }}>{record.absentCount}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
+
+             
 
               <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12 }}>
                 <div style={overviewCardStyle}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Employee Growth Trend</div>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>Headcount movement over recent months</div>
-                  <LineChart data={lineData} width={700} height={160} color="#4b6cb7" />
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 900, color: '#111827' }}>Employee Growth Trend</div>
+                      <div style={{ marginTop: 3, fontSize: 12, color: '#6b7280' }}>Real registrations from employee hire dates</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {['monthly', 'annual'].map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setGrowthTrendView(mode)}
+                          style={{
+                            height: 30,
+                            borderRadius: 999,
+                            border: growthTrendView === mode ? '1px solid #3157b7' : '1px solid #dbe2f2',
+                            background: growthTrendView === mode ? '#e7eeff' : '#fff',
+                            color: growthTrendView === mode ? '#1e3a8a' : '#475569',
+                            padding: '0 12px',
+                            fontSize: 12,
+                            fontWeight: 800,
+                            textTransform: 'capitalize',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {mode === 'annual' ? 'Yearly' : 'Monthly'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 8 }}>
+                    <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>{growthTrendView === 'monthly' ? 'Last 12 Months' : 'Last 6 Years'}</div>
+                      <div style={{ marginTop: 2, fontSize: 20, color: '#1e293b', fontWeight: 900 }}>{currentGrowthTotal}</div>
+                    </div>
+                    <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
+                      <div style={{ marginTop: 2, fontSize: 14, color: '#0f172a', fontWeight: 900 }}>{peakGrowthPoint?.label || '—'} ({peakGrowthPoint?.count || 0})</div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid #e2e8f0', background: '#fff', padding: 8 }}>
+                    <GrowthTrendChart points={growthTrendPoints} mode={growthTrendView} />
+                  </div>
                 </div>
                 <div style={overviewCardStyle}>
                   <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Gender Distribution</div>
@@ -954,12 +1704,11 @@ export default function Dashboard() {
                     <DonutChart values={genderValues} colors={['#4b6cb7', '#ec4899', '#f59e0b']} size={130} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 7, fontSize: 12, color: '#374151', fontWeight: 700 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><FaMale color="#4b6cb7" /> Male: {maleCount}</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><FaFemale color="#ec4899" /> Female: {femaleCount}</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><FaUsers color="#f59e0b" /> Other: {otherCount}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><FaFemale color="#ec4899" /> Female: {femaleCount}</div>                      
                     </div>
                   </div>
                   <div style={{ marginTop: 10 }}>
-                    <GenderBar male={maleCount} female={femaleCount} other={otherCount} width={250} height={86} />
+                    <GenderBar male={maleCount} female={femaleCount}  width={250} height={86} />
                   </div>
                 </div>
               </div>
