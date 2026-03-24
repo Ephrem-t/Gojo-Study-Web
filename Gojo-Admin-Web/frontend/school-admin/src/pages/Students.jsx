@@ -43,6 +43,10 @@ function StudentsPage() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
   const [savingProfile, setSavingProfile] = useState(false);
+  const [togglingActive, setTogglingActive] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmAdminUsername, setConfirmAdminUsername] = useState("");
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState("");
   const [studentFullscreenOpen, setStudentFullscreenOpen] = useState(false);
   const [fullscreenEditing, setFullscreenEditing] = useState(false);
   const [fullscreenSaving, setFullscreenSaving] = useState(false);
@@ -75,6 +79,58 @@ function StudentsPage() {
     if (hasIdentity(adminObj)) return { raw: rawAdmin, data: adminObj, source: "admin" };
 
     return { raw: rawFinance || rawAdmin, data: financeObj || adminObj || {}, source: rawFinance ? "registrar" : "admin" };
+  };
+
+  const toggleStudentActive = async () => {
+    if (!selectedStudent) return;
+    const newActive = !selectedStudent.isActive;
+    setTogglingActive(true);
+    try {
+      const payload = { isActive: newActive };
+      if (selectedStudent.studentId) {
+        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+      }
+      if (selectedStudent.userId) {
+        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+      }
+      const updated = { ...(selectedStudent || {}), ...payload };
+      setSelectedStudent(updated);
+      setStudents((prev) =>
+        prev.map((p) =>
+          p.studentId === selectedStudent.studentId || p.userId === selectedStudent.userId
+            ? { ...(p || {}), ...payload }
+            : p
+        )
+      );
+    } catch (err) {
+      console.error("Toggle active error:", err);
+      alert("Could not update student status: " + (err.message || err));
+    } finally {
+      setTogglingActive(false);
+    }
+  };
+
+  const openConfirmModal = () => {
+    setShowConfirmModal(true);
+  };
+
+  const closeConfirmModal = () => {
+    setShowConfirmModal(false);
+    setConfirmAdminUsername("");
+    setConfirmAdminPassword("");
+  };
+
+  const confirmToggle = async () => {
+    if (!confirmAdminUsername || !confirmAdminPassword) {
+      alert("Enter admin credentials to confirm.");
+      return;
+    }
+    try {
+      await toggleStudentActive();
+      closeConfirmModal();
+    } catch (err) {
+      // toggleStudentActive handles errors
+    }
   };
 
   const _storedFinance = (() => {
@@ -1977,7 +2033,7 @@ function StudentsPage() {
     {/* Tabs */}
     {selectedStudent ? (
       <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
-        {["details", "attendance", "payment"].map((tab) => (
+        {["details", "attendance", "performance", "payment"].map((tab) => (
           <button
             key={tab}
             onClick={() => setStudentTab(tab)}
@@ -2082,6 +2138,24 @@ function StudentsPage() {
               </h3>
 
               <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={openConfirmModal}
+                  disabled={togglingActive}
+                  style={{
+                    background: selectedStudent?.isActive ? "#ff4d4f" : "var(--accent-strong)",
+                    border: "none",
+                    color: "#fff",
+                    padding: "6px 10px",
+                    borderRadius: 8,
+                    cursor: "pointer",
+                    fontWeight: 700,
+                    fontSize: 12,
+                  }}
+                >
+                  {togglingActive
+                    ? (selectedStudent?.isActive ? "Deactivating..." : "Activating...")
+                    : (selectedStudent?.isActive ? "Deactivate" : "Activate")}
+                </button>
                 {!editingProfile ? (
                   <button
                     onClick={startEditProfile}
@@ -2139,6 +2213,93 @@ function StudentsPage() {
             <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
               ID: <b style={{ color: "var(--text-primary)" }}>{selectedStudent?.studentId || "N/A"}</b>
             </div>
+
+            {showConfirmModal && (
+              <div
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(0,0,0,0.35)",
+                  zIndex: 1200,
+                }}
+              >
+                <div
+                  style={{
+                    width: 420,
+                    maxWidth: "92%",
+                    background: "var(--surface-panel)",
+                    padding: 18,
+                    borderRadius: 10,
+                    boxShadow: "var(--shadow-soft)",
+                    border: "1px solid var(--border-soft)",
+                  }}
+                >
+                  <h3 style={{ margin: 0, marginBottom: 8, fontSize: 14 }}>
+                    {selectedStudent?.isActive ? "Confirm Deactivation" : "Confirm Activation"}
+                  </h3>
+                  <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
+                    {selectedStudent?.isActive
+                      ? "You are about to deactivate this student and unassign their subjects. Enter admin credentials to confirm."
+                      : "You are about to activate this student. Enter admin credentials to confirm."}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      Admin username
+                      <input
+                        value={confirmAdminUsername}
+                        onChange={(e) => setConfirmAdminUsername(e.target.value)}
+                        style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }}
+                      />
+                    </label>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      Admin password
+                      <input
+                        type="password"
+                        value={confirmAdminPassword}
+                        onChange={(e) => setConfirmAdminPassword(e.target.value)}
+                        style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }}
+                      />
+                    </label>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                    <button
+                      onClick={closeConfirmModal}
+                      style={{
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
+                        color: "var(--text-secondary)",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={confirmToggle}
+                      disabled={togglingActive}
+                      style={{
+                        background: "var(--accent-strong)",
+                        border: "none",
+                        color: "#fff",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {togglingActive ? "Processing..." : "Confirm"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div
               style={{
@@ -2538,6 +2699,231 @@ function StudentsPage() {
                 </div>
               );
             })}
+        </div>
+      )}
+
+      {/* PERFORMANCE TAB */}
+      {studentTab === "performance" && selectedStudent && (
+        <div
+          style={{
+            position: "relative",
+            background: "var(--surface-panel)",
+            border: "1px solid var(--border-soft)",
+            borderRadius: 12,
+            boxShadow: "var(--shadow-soft)",
+            padding: 12,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: "12px",
+              marginBottom: "12px",
+              borderBottom: "1px solid var(--border-soft)",
+              paddingBottom: "6px",
+            }}
+          >
+            {["semester1", "semester2"].map((sem) => {
+              const isActive = activeSemester === sem;
+              return (
+                <button
+                  key={sem}
+                  onClick={() => setActiveSemester(sem)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
+                    padding: "6px 8px",
+                    borderBottom: isActive ? "2px solid var(--accent-strong)" : "2px solid transparent",
+                  }}
+                >
+                  {sem === "semester1" ? "Semester 1" : "Semester 2"}
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr",
+              gap: "10px",
+              padding: "10px",
+            }}
+          >
+            {Object.keys(studentMarksFlattened || {}).length === 0 ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: 12,
+                  borderRadius: 12,
+                  background: "var(--surface-panel)",
+                  color: "var(--text-secondary)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  border: "1px solid var(--border-soft)",
+                  gridColumn: "1 / -1",
+                }}
+              >
+                No performance records
+              </div>
+            ) : (
+              Object.entries(studentMarksFlattened)
+                .filter(([, studentCourseData]) => Boolean(studentCourseData?.[activeSemester]))
+                .map(([courseKey, studentCourseData], idx) => {
+                  const data = studentCourseData?.[activeSemester];
+                  if (!data) return null;
+
+                  const assessments = data.assessments || {};
+                  const total = Object.values(assessments).reduce((sum, a) => sum + (a.score || 0), 0);
+                  const maxTotal = Object.values(assessments).reduce((sum, a) => sum + (a.max || 0), 0);
+                  const percentage = maxTotal ? (total / maxTotal) * 100 : 0;
+                  const statusClr = percentage >= 75 ? "#16a34a" : percentage >= 50 ? "#f59e0b" : "#dc2626";
+
+                  const courseName = String(courseKey || "")
+                    .replace("course_", "")
+                    .replace(/_/g, " ")
+                    .toUpperCase();
+
+                  const quarterEntriesPreview = Object.entries(data || {})
+                    .filter(([k, v]) => /^(q\d+|quarter\d+|q_\d+)$/i.test(k) && v && typeof v === "object")
+                    .sort((a, b) => {
+                      const toQuarterNum = (value) => {
+                        const m = String(value || "").match(/\d+/);
+                        return m ? Number(m[0]) : 0;
+                      };
+                      return toQuarterNum(a[0]) - toQuarterNum(b[0]);
+                    });
+                  const hasQuarterFormatPreview = quarterEntriesPreview.length > 0;
+
+                  return (
+                    <div
+                      key={`${courseKey}-${idx}`}
+                      style={{
+                        padding: 12,
+                        borderRadius: 12,
+                        background: "var(--surface-panel)",
+                        border: "1px solid var(--border-soft)",
+                        boxShadow: "var(--shadow-soft)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 800,
+                          marginBottom: 10,
+                          color: "var(--text-primary)",
+                          textAlign: "left",
+                        }}
+                      >
+                        {courseName}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          fontSize: 10,
+                          fontWeight: 800,
+                          marginBottom: 10,
+                          color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e",
+                          background: hasQuarterFormatPreview ? "#dbeafe" : "#ccfbf1",
+                          border: "1px solid var(--border-soft)",
+                        }}
+                      >
+                        {hasQuarterFormatPreview ? "Format: Quarter-based" : "Format: Semester-based"}
+                      </div>
+
+                      {(() => {
+                        const quarterEntries = quarterEntriesPreview;
+                        const hasQuarterFormat = hasQuarterFormatPreview;
+
+                        const renderQuarterBlock = (quarterKey, qdata) => {
+                          const quarterMatch = String(quarterKey || "").match(/\d+/);
+                          const label = quarterMatch ? `Quarter ${quarterMatch[0]}` : String(quarterKey).toUpperCase();
+
+                          const qAss = qdata?.assessments || qdata || {};
+                          const qTotal = Object.values(qAss).reduce((s, a) => s + (a.score || 0), 0);
+                          const qMax = Object.values(qAss).reduce((s, a) => s + (a.max || 0), 0);
+                          const qPct = qMax ? (qTotal / qMax) * 100 : 0;
+                          const clr = qPct >= 75 ? "#16a34a" : qPct >= 50 ? "#f59e0b" : "#dc2626";
+
+                          return (
+                            <div style={{ flex: 1, minWidth: 0, padding: 8, borderRadius: 8, border: "1px solid #f1f5f9", background: "#fff" }}>
+                              <div style={{ fontSize: 11, fontWeight: 800, color: "#64748b", marginBottom: 8 }}>{label}</div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700 }}>{qTotal} / {qMax}</div>
+                                <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, color: clr, border: "1px solid #e5e7eb" }}>{Math.round(qPct)}%</div>
+                              </div>
+                              <div style={{ height: 6, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 8 }}>
+                                <div style={{ width: `${Math.max(0, Math.min(100, qPct))}%`, height: "100%", background: clr }} />
+                              </div>
+                              {Object.entries(qAss).length === 0 ? (
+                                <div style={{ color: "#8b8f95", fontSize: 12 }}>No marks</div>
+                              ) : (
+                                Object.entries(qAss).map(([k, a]) => (
+                                  <div key={k} style={{ marginBottom: 8 }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 600, color: "#111827" }}>
+                                      <span>{a.name || k}</span>
+                                      <span>{(a.score === "" || a.score === null || a.score === undefined || a.score === 0) ? "-" : a.score} / {a.max}</span>
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          );
+                        };
+
+                        if (hasQuarterFormat) {
+                          return (
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+                              {quarterEntries.map(([quarterKey, quarterData]) => (
+                                <React.Fragment key={quarterKey}>
+                                  {renderQuarterBlock(quarterKey, quarterData)}
+                                </React.Fragment>
+                              ))}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>Total</div>
+                              <div style={{ fontSize: 11, fontWeight: 800, color: "#111827" }}>{total} / {maxTotal}</div>
+                              <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, border: "1px solid #e5e7eb", color: statusClr, background: "#ffffff" }}>{Math.round(percentage)}%</div>
+                            </div>
+                            <div style={{ height: 8, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 12 }}>
+                              <div style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, height: "100%", background: statusClr }} />
+                            </div>
+                            {Object.entries(assessments).map(([key, a]) => (
+                              <div key={key} style={{ marginBottom: 8 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 600, color: "#111827" }}>
+                                  <span>{a.name}</span>
+                                  <span>{(a.score === "" || a.score === null || a.score === undefined || a.score === 0) ? "-" : a.score} / {a.max}</span>
+                                </div>
+                              </div>
+                            ))}
+                            <div style={{ marginTop: 8, textAlign: "left", fontWeight: 700, fontSize: 10, color: statusClr }}>
+                              {percentage >= 75 ? "Excellent" : percentage >= 50 ? "Good" : "Needs Improvement"}
+                            </div>
+                            <div style={{ marginTop: 6, textAlign: "left", fontSize: 10, color: "#64748b" }}>
+                              {studentCourseData.teacherName || data.teacherName || "N/A"}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  );
+                })
+            )}
+          </div>
         </div>
       )}
 

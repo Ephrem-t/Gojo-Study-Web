@@ -1196,9 +1196,11 @@ const toggleExpand = (key) => {
     const fetchMarksForStudent = async () => {
       setLoading(true);
       try {
-        const database = getDatabase();
-        const snapshot = await get(dbRef(database, "ClassMarks"));
-        if (!snapshot.exists()) {
+        const scopedSnapshot = await get(dbRef(db, schoolPath("ClassMarks")));
+        const legacySnapshot = scopedSnapshot.exists() ? null : await get(dbRef(db, "ClassMarks"));
+        const snapshot = scopedSnapshot.exists() ? scopedSnapshot : legacySnapshot;
+
+        if (!snapshot || !snapshot.exists()) {
           setStudentMarksFlattened({});
           setLoading(false);
           return;
@@ -1209,6 +1211,7 @@ const toggleExpand = (key) => {
 
         const candidates = new Set(
           [
+            selectedStudent.id,
             selectedStudent.studentId,
             selectedStudent.userId,
             selectedStudent.userId ? `student_${selectedStudent.userId}` : null,
@@ -2407,7 +2410,9 @@ marginRight: 0,
                           No performance records
                         </div>
                       ) : (
-                        Object.entries(studentMarksFlattened).map(([courseKey, studentCourseData], idx) => {
+                        Object.entries(studentMarksFlattened)
+                          .filter(([, studentCourseData]) => Boolean(studentCourseData?.[activeSemester]))
+                          .map(([courseKey, studentCourseData], idx) => {
                           // studentCourseData should be the student's object under a course:
                           // { teacherName: "...", semester1: { assessments: {...} }, semester2: { ... } }
                           const data = studentCourseData?.[activeSemester];
@@ -2437,6 +2442,15 @@ marginRight: 0,
                             .replace(/_/g, " ")
                             .toUpperCase();
 
+                          const quarterEntriesPreview = Object.entries(data || {})
+                            .filter(([k, v]) => /^q\d+$/i.test(k) && v && typeof v === "object")
+                            .sort((a, b) => {
+                              const na = parseInt(String(a[0]).replace(/^q/i, ""), 10) || 0;
+                              const nb = parseInt(String(b[0]).replace(/^q/i, ""), 10) || 0;
+                              return na - nb;
+                            });
+                          const hasQuarterFormatPreview = quarterEntriesPreview.length > 0;
+
                           return (
                             <div
                               key={`${courseKey}-${idx}`}
@@ -2461,12 +2475,34 @@ marginRight: 0,
                                 {courseName}
                               </div>
 
-                              {/* If quarter data exists, render Quarter 1 & Quarter 2; otherwise fall back to semester assessments */}
-                              {(() => {
-                                const q1 = data.q1 || data.quarter1 || data.q_1 || null;
-                                const q2 = data.q2 || data.quarter2 || data.q_2 || null;
+                              <div
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  padding: "3px 8px",
+                                  borderRadius: 999,
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  marginBottom: 10,
+                                  color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e",
+                                  background: hasQuarterFormatPreview ? "#dbeafe" : "#ccfbf1",
+                                  border: "1px solid var(--border-soft)",
+                                }}
+                              >
+                                {hasQuarterFormatPreview ? "Format: Quarter-based" : "Format: Semester-based"}
+                              </div>
 
-                                const renderQuarterBlock = (label, qdata) => {
+                              {/* Render by saved format: quarter-based or semester-based */}
+                              {(() => {
+                                const quarterEntries = quarterEntriesPreview;
+                                const hasQuarterFormat = hasQuarterFormatPreview;
+
+                                const renderQuarterBlock = (quarterKey, qdata) => {
+                                  const quarterNumber = parseInt(String(quarterKey).replace(/^q/i, ""), 10);
+                                  const label = Number.isFinite(quarterNumber)
+                                    ? `Quarter ${quarterNumber}`
+                                    : String(quarterKey).toUpperCase();
+
                                   const qAss = qdata?.assessments || qdata || {};
                                   const qTotal = Object.values(qAss).reduce((s, a) => s + (a.score || 0), 0);
                                   const qMax = Object.values(qAss).reduce((s, a) => s + (a.max || 0), 0);
@@ -2474,7 +2510,7 @@ marginRight: 0,
                                   const clr = qPct >= 75 ? '#16a34a' : qPct >= 50 ? '#f59e0b' : '#dc2626';
 
                                   return (
-                                    <div style={{ flex: 1, padding: 8, borderRadius: 8, border: '1px solid #f1f5f9', background: '#fff' }}>
+                                    <div style={{ flex: 1, minWidth: 0, padding: 8, borderRadius: 8, border: '1px solid #f1f5f9', background: '#fff' }}>
                                       <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', marginBottom: 8 }}>{label}</div>
                                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                                         <div style={{ fontSize: 12, fontWeight: 700 }}>{qTotal} / {qMax}</div>
@@ -2489,9 +2525,9 @@ marginRight: 0,
                                         Object.entries(qAss).map(([k, a]) => (
                                           <div key={k} style={{ marginBottom: 8 }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontWeight: 600, color: '#111827' }}>
-                                                  <span>{a.name || k}</span>
-                                                  <span>{(a.score === '' || a.score === null || a.score === undefined || a.score === 0) ? '-' : a.score} / {a.max}</span>
-                                                </div>
+                                              <span>{a.name || k}</span>
+                                              <span>{(a.score === '' || a.score === null || a.score === undefined || a.score === 0) ? '-' : a.score} / {a.max}</span>
+                                            </div>
                                           </div>
                                         ))
                                       )}
@@ -2499,11 +2535,14 @@ marginRight: 0,
                                   );
                                 };
 
-                                if (q1 || q2) {
+                                if (hasQuarterFormat) {
                                   return (
-                                    <div style={{ display: 'flex', gap: 10 }}>
-                                      {renderQuarterBlock('Quarter 1', q1)}
-                                      {renderQuarterBlock('Quarter 2', q2)}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10 }}>
+                                      {quarterEntries.map(([quarterKey, quarterData]) => (
+                                        <React.Fragment key={quarterKey}>
+                                          {renderQuarterBlock(quarterKey, quarterData)}
+                                        </React.Fragment>
+                                      ))}
                                     </div>
                                   );
                                 }

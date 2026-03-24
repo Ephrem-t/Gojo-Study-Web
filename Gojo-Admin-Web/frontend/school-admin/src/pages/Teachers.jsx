@@ -129,6 +129,160 @@ function TeachersPage() {
   const [postNotifications, setPostNotifications] = useState([]);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [selectedTeacherUser, setSelectedTeacherUser] = useState(null);
+  const [deactivating, setDeactivating] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminModalUsername, setAdminModalUsername] = useState("");
+  const [adminModalPassword, setAdminModalPassword] = useState("");
+  const [adminModalError, setAdminModalError] = useState("");
+  const [adminVerifying, setAdminVerifying] = useState(false);
+  const [pendingToggle, setPendingToggle] = useState(null); // { userId, curBool, newActive }
+  const [teachersInitialized, setTeachersInitialized] = useState(Boolean(bootstrapCache));
+
+  // open modal to confirm toggle and collect admin credentials
+  const handleToggleActiveTeacher = async () => {
+    if (!selectedTeacherUser?.userId && !selectedTeacher?.userId) return;
+    const userId = selectedTeacherUser?.userId || selectedTeacher?.userId;
+    if (!userId) return;
+
+    const currentVal = selectedTeacherUser?.isActive ?? selectedTeacher?.isActive;
+    const curBool = currentVal === true || String(currentVal) === "true";
+    const newActive = !curBool;
+
+    setPendingToggle({ userId, curBool, newActive });
+    setAdminModalUsername("");
+    setAdminModalPassword("");
+    setAdminModalError("");
+    setShowAdminModal(true);
+  };
+
+  const closeAdminModal = () => {
+    setShowAdminModal(false);
+    setPendingToggle(null);
+    setAdminModalError("");
+  };
+
+  const submitAdminModal = async () => {
+    if (!pendingToggle) return;
+    const { userId, curBool, newActive } = pendingToggle;
+    if (!adminModalUsername || !adminModalPassword) {
+      setAdminModalError('Enter admin username and password');
+      return;
+    }
+
+    setAdminVerifying(true);
+    setDeactivating(true);
+
+    try {
+      const verifyRes = await axios.post(`${API_BASE}/login`, { username: String(adminModalUsername).trim(), password: String(adminModalPassword) });
+      if (!verifyRes?.data?.success) {
+        setAdminModalError(verifyRes?.data?.message || 'Admin credentials verification failed');
+        setAdminVerifying(false);
+        setDeactivating(false);
+        return;
+      }
+    } catch (verErr) {
+      console.error('Admin credential verification failed', verErr);
+      setAdminModalError('Failed to verify admin credentials. Check server or try again.');
+      setAdminVerifying(false);
+      setDeactivating(false);
+      return;
+    }
+
+    // optimistic UI update
+    setSelectedTeacherUser((prev) => (prev ? { ...prev, isActive: newActive } : prev));
+    setUsersByUserId((prev) => ({ ...(prev || {}), [userId]: { ...((prev || {})[userId] || {}), isActive: newActive } }));
+    setTeachers((prev) => (Array.isArray(prev) ? prev.map(t => t.userId === userId ? { ...t, isActive: newActive } : t) : prev));
+
+    try {
+      const resp = await axios.get(`${SCHOOL_DB_ROOT}/Users.json`);
+      const allUsers = resp.data || {};
+      const normalize = (v) => String(v || "").replace(/^[-]+/, "").trim();
+      const pushKeys = Object.keys(allUsers || {}).filter((pk) => {
+        const rec = allUsers[pk] || {};
+        const recUserId = normalize(rec.userId || pk);
+        const recUsername = String(rec.username || "").trim();
+        return recUserId === userId || recUsername === userId || pk === userId;
+      });
+
+      if (pushKeys.length === 0) {
+        console.error('submitAdminModal: user push-key not found for', userId, allUsers);
+        throw new Error('user_record_not_found');
+      }
+
+      const pushKey = pushKeys[0];
+      const usersItemUrl = `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(pushKey)}.json`;
+
+      await axios.patch(usersItemUrl, { isActive: newActive });
+      setPopupMessages((msgs) => ([{ text: newActive ? 'Teacher activated.' : 'Teacher deactivated.', type: 'success', ts: Date.now() }, ...msgs]));
+
+      // If we just deactivated the teacher, also unassign them from courses/grade assignments
+      if (newActive === false) {
+        try {
+          // try to derive teacherId from selectedTeacher or users map
+          const teacherId = (selectedTeacher && selectedTeacher.teacherId) || (selectedTeacherUser && selectedTeacherUser.teacherId) || Object.values(teachers || []).find(t => t.userId === userId)?.teacherId || null;
+          if (teacherId) {
+            // 1) Remove TeacherAssignments entries that reference this teacherId
+            try {
+              const taRes = await axios.get(`${SCHOOL_DB_ROOT}/TeacherAssignments.json`);
+              const taData = taRes.data || {};
+              for (const [taKey, taVal] of Object.entries(taData)) {
+                if (!taVal) continue;
+                if (String(taVal.teacherId || "").trim() === String(teacherId).trim()) {
+                  await axios.delete(`${SCHOOL_DB_ROOT}/TeacherAssignments/${encodeURIComponent(taKey)}.json`);
+                }
+              }
+            } catch (e) {
+              console.error('Failed removing TeacherAssignments for', teacherId, e);
+            }
+
+            // 2) Delete GradeManagement sectionSubjectTeachers entries that reference this teacher
+            try {
+              const gmRes = await axios.get(`${SCHOOL_DB_ROOT}/GradeManagement/grades.json`);
+              const gmData = gmRes.data || {};
+              for (const [gradeKey, gradeNode] of Object.entries(gmData)) {
+                const sst = gradeNode?.sectionSubjectTeachers || {};
+                for (const [sectionKey, subjectsNode] of Object.entries(sst || {})) {
+                  for (const [subjectKey, assign] of Object.entries(subjectsNode || {})) {
+                    if (!assign) continue;
+                    const assignedTeacherId = String(assign.teacherId || assign.teacherRecordKey || "").trim();
+                    if (assignedTeacherId && assignedTeacherId === String(teacherId).trim()) {
+                      const deleteUrl = `${SCHOOL_DB_ROOT}/GradeManagement/grades/${encodeURIComponent(gradeKey)}/sectionSubjectTeachers/${encodeURIComponent(sectionKey)}/${encodeURIComponent(subjectKey)}.json`;
+                      try {
+                        await axios.delete(deleteUrl);
+                      } catch (err) {
+                        console.error('Failed deleting sectionSubjectTeachers entry', deleteUrl, err?.response?.data || err.message || err);
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('Failed clearing GradeManagement assignments for', teacherId, e);
+            }
+
+            // 3) Update local UI state to remove their grades/subjects
+            setTeachers((prev) => (Array.isArray(prev) ? prev.map(t => t.teacherId === teacherId ? { ...t, gradesSubjects: [], subjectsUnique: [] } : t) : prev));
+            setUsersByUserId((prev) => ({ ...(prev || {}), [userId]: { ...((prev || {})[userId] || {}), isActive: false } }));
+          }
+        } catch (e) {
+          console.error('Error during unassign steps for deactivated teacher', e);
+          setPopupMessages((msgs) => ([{ text: 'Teacher deactivated but failed to fully unassign from courses.', type: 'warning', ts: Date.now() }, ...msgs]));
+        }
+      }
+    } catch (err) {
+      console.error('submitAdminModal error:', err);
+      // revert optimistic changes on failure
+      setSelectedTeacherUser((prev) => (prev ? { ...prev, isActive: curBool } : prev));
+      setUsersByUserId((prev) => ({ ...(prev || {}), [userId]: { ...((prev || {})[userId] || {}), isActive: curBool } }));
+      setTeachers((prev) => (Array.isArray(prev) ? prev.map(t => t.userId === userId ? { ...t, isActive: curBool } : t) : prev));
+      setPopupMessages((msgs) => ([{ text: err?.message === 'user_record_not_found' ? 'User record not found in Users node.' : `Failed to update teacher status: ${err?.message || 'network error'}`, type: 'error', ts: Date.now() }, ...msgs]));
+    } finally {
+      setAdminVerifying(false);
+      setDeactivating(false);
+      closeAdminModal();
+    }
+  };
+  
   const [usersByUserId, setUsersByUserId] = useState(
     bootstrapCache?.usersMap && typeof bootstrapCache.usersMap === "object" ? bootstrapCache.usersMap : {}
   );
@@ -492,17 +646,22 @@ useEffect(() => {
       const cached = readTeachersCache();
       if (cached) {
         const cachedUsersMap = cached.usersMap && typeof cached.usersMap === "object" ? cached.usersMap : {};
-        const cachedTeacherList = (Array.isArray(cached.teacherList) ? cached.teacherList : []).map((teacherItem) => {
-          const user = cachedUsersMap[String(teacherItem?.userId || "").trim()] || {};
-          const currentName = String(teacherItem?.name || "").trim();
-          const currentTeacherId = String(teacherItem?.teacherId || "").trim();
-          const shouldReplaceWithUserName = !currentName || currentName === currentTeacherId;
-          return {
-            ...teacherItem,
-            name: shouldReplaceWithUserName ? (user.name || teacherItem.name || "Unknown Teacher") : teacherItem.name,
-            profileImage: resolveProfileImage(teacherItem?.profileImage, user.profileImage),
-          };
-        });
+        const cachedTeacherList = (Array.isArray(cached.teacherList) ? cached.teacherList : [])
+          .filter((teacherItem) => {
+            const userId = String(teacherItem?.userId || "").trim();
+            return !!cachedUsersMap[userId];
+          })
+          .map((teacherItem) => {
+            const user = cachedUsersMap[String(teacherItem?.userId || "").trim()] || {};
+            const currentName = String(teacherItem?.name || "").trim();
+            const currentTeacherId = String(teacherItem?.teacherId || "").trim();
+            const shouldReplaceWithUserName = !currentName || currentName === currentTeacherId;
+            return {
+              ...teacherItem,
+              name: shouldReplaceWithUserName ? (user.name || teacherItem.name || "Unknown Teacher") : teacherItem.name,
+              profileImage: resolveProfileImage(teacherItem?.profileImage, user.profileImage),
+            };
+          });
         setTeachers(cachedTeacherList);
         setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
         setUsersByUserId(cachedUsersMap);
@@ -551,9 +710,11 @@ useEffect(() => {
           );
         };
 
+        const normalizeId = (id) => String(id || "").replace(/^[-]+/, "").trim();
         const usersMap = Object.entries(usersData || {}).reduce((acc, [userKey, userRecord]) => {
-          const userId = String(userRecord?.userId || userKey || "").trim();
+          const userId = normalizeId(userRecord?.userId || userKey);
           if (!userId) return acc;
+          if (String(userRecord?.role || "").toLowerCase() !== "teacher") return acc;
           acc[userId] = {
             ...(userRecord || {}),
             userId,
@@ -655,70 +816,83 @@ useEffect(() => {
           });
         });
 
-        const teacherList = Object.keys(teacherSeedMap).map((teacherId) => {
-          const teacher = teacherSeedMap[teacherId] || {};
-          const user = usersMap[String(teacher?.userId || "").trim()] || {};
-          const teacherDisplayName =
-            String(user?.name || "").trim() ||
-            String(teacher?.name || "").trim() ||
-            String(employeeNameByTeacherId[teacherId] || "").trim() ||
-            "Unknown Teacher";
-          const teacherProfileImage = resolveProfileImage(
-            teacher?.profileImage,
-            employeeProfileImageByTeacherId[teacherId],
-            user?.profileImage
-          );
+        const teacherListRaw = Object.keys(teacherSeedMap)
+          .map((teacherId) => {
+            const teacher = teacherSeedMap[teacherId] || {};
+            const normalizedUserId = normalizeId(teacher?.userId);
+            const user = usersMap[normalizedUserId] || {};
+            if (!user.userId) return null;
+            const teacherDisplayName =
+              String(user?.name || "").trim() ||
+              String(teacher?.name || "").trim() ||
+              String(employeeNameByTeacherId[teacherId] || "").trim() ||
+              "Unknown Teacher";
+            const teacherProfileImage = resolveProfileImage(
+              teacher?.profileImage,
+              employeeProfileImageByTeacherId[teacherId],
+              user?.profileImage
+            );
 
-          const gradesSubjectsRaw = (assignmentsByTeacher[teacherId] || [])
-            .map((entry) => {
-              const courseId = String(entry?.courseId || "").trim();
-              const course = courseId ? coursesData?.[courseId] : null;
-              return {
-                courseId,
-                grade: entry?.grade ?? course?.grade,
-                subject: entry?.subject ?? course?.subject ?? course?.name,
-                section: entry?.section ?? course?.section,
-              };
-            })
-            .filter((entry) => {
-              return Boolean(
-                String(entry?.grade || "").trim() &&
-                  String(entry?.section || "").trim() &&
-                  String(entry?.subject || "").trim()
-              );
+            const gradesSubjectsRaw = (assignmentsByTeacher[teacherId] || [])
+              .map((entry) => {
+                const courseId = String(entry?.courseId || "").trim();
+                const course = courseId ? coursesData?.[courseId] : null;
+                return {
+                  courseId,
+                  grade: entry?.grade ?? course?.grade,
+                  subject: entry?.subject ?? course?.subject ?? course?.name,
+                  section: entry?.section ?? course?.section,
+                };
+              })
+              .filter((entry) => {
+                return Boolean(
+                  String(entry?.grade || "").trim() &&
+                    String(entry?.section || "").trim() &&
+                    String(entry?.subject || "").trim()
+                );
+              });
+
+            // Deduplicate: show each course only once (prevents repeated subjects)
+            const seenCourseKeys = new Set();
+            const gradesSubjects = [];
+            gradesSubjectsRaw.forEach((gs) => {
+              const key = gs.courseId || `${gs.grade}-${gs.section}-${gs.subject}`;
+              if (seenCourseKeys.has(key)) return;
+              seenCourseKeys.add(key);
+              gradesSubjects.push(gs);
             });
 
-          // Deduplicate: show each course only once (prevents repeated subjects)
-          const seenCourseKeys = new Set();
-          const gradesSubjects = [];
-          gradesSubjectsRaw.forEach((gs) => {
-            const key = gs.courseId || `${gs.grade}-${gs.section}-${gs.subject}`;
-            if (seenCourseKeys.has(key)) return;
-            seenCourseKeys.add(key);
-            gradesSubjects.push(gs);
-          });
+            // Deduplicate subjects for display (one subject name only once)
+            const seenSubjects = new Set();
+            const subjectsUnique = [];
+            gradesSubjects.forEach((gs) => {
+              const rawSubject = (gs?.subject ?? "").toString().trim();
+              if (!rawSubject) return;
+              const normalized = rawSubject.toLowerCase().replace(/\s+/g, " ");
+              if (seenSubjects.has(normalized)) return;
+              seenSubjects.add(normalized);
+              subjectsUnique.push(rawSubject);
+            });
 
-          // Deduplicate subjects for display (one subject name only once)
-          const seenSubjects = new Set();
-          const subjectsUnique = [];
-          gradesSubjects.forEach((gs) => {
-            const rawSubject = (gs?.subject ?? "").toString().trim();
-            if (!rawSubject) return;
-            const normalized = rawSubject.toLowerCase().replace(/\s+/g, " ");
-            if (seenSubjects.has(normalized)) return;
-            seenSubjects.add(normalized);
-            subjectsUnique.push(rawSubject);
-          });
+            return {
+              teacherId,
+              name: teacherDisplayName,
+              profileImage: teacherProfileImage,
+              gradesSubjects,
+              subjectsUnique,
+              email: user.email || null,
+              userId: normalizedUserId
+            };
+          })
+          .filter(Boolean);
 
-          return {
-            teacherId,
-            name: teacherDisplayName,
-            profileImage: teacherProfileImage,
-            gradesSubjects,
-            subjectsUnique,
-            email: user.email || null,
-            userId: teacher.userId
-          };
+        // Deduplicate by userId: only one entry per userId
+        const seenUserIds = new Set();
+        const teacherList = teacherListRaw.filter((teacher) => {
+          const userId = String(teacher.userId || "").trim();
+          if (seenUserIds.has(userId)) return false;
+          seenUserIds.add(userId);
+          return true;
         });
 
         setTeachers(teacherList);
@@ -757,10 +931,28 @@ useEffect(() => {
           };
         });
 
-        setTeachers(hydratedTeachers);
+        // If no Teachers node records are present, fall back to Users entries
+        let finalTeachers = hydratedTeachers;
+        if ((!Array.isArray(finalTeachers) || finalTeachers.length === 0) && Object.keys(usersMap || {}).length > 0) {
+          const fromUsers = Object.values(usersMap).map((u) => ({
+            teacherId: u.username || u.teacherId || u.userId || null,
+            name: u.name || (u.username || u.userId) || "Unknown Teacher",
+            profileImage: resolveProfileImage(u.profileImage),
+            gradesSubjects: [],
+            subjectsUnique: [],
+            email: u.email || null,
+            userId: u.userId,
+            // mark source so we know it's from Users fallback
+            _fromUsersFallback: true,
+          }));
+          finalTeachers = fromUsers;
+        }
+
+        setTeachers(finalTeachers);
+        setTeachersInitialized(true);
 
         writeTeachersCache({
-          teacherList: hydratedTeachers,
+          teacherList: finalTeachers,
           gradeOptions: resolvedGrades,
           usersMap,
         });
@@ -796,12 +988,67 @@ useEffect(() => {
     return name.includes(normalizedSearch) || subjects.includes(normalizedSearch) || grades.includes(normalizedSearch);
   };
 
+  const isTeacherInactive = (t) => {
+    try {
+      const u = (usersByUserId || {})[String(t?.userId || "")] || {};
+      const userVal = u?.isActive;
+      if (userVal !== undefined && userVal !== null) {
+        if (typeof userVal === "string") return userVal === "false" || userVal === "0";
+        return userVal === false || userVal === 0;
+      }
+      const tVal = t?.isActive;
+      if (tVal !== undefined && tVal !== null) {
+        if (typeof tVal === "string") return tVal === "false" || tVal === "0";
+        return tVal === false || tVal === 0;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
   const filteredTeachers =
     selectedGrade === "All"
       ? teachers.filter(matchesSearch)
-      : teachers
-          .filter((t) => (t.gradesSubjects || []).some((gs) => String(gs.grade) === String(selectedGrade)))
-          .filter(matchesSearch);
+      : selectedGrade === "Deactive"
+        ? teachers.filter((t) => isTeacherInactive(t)).filter(matchesSearch)
+        : selectedGrade === "Unassigned"
+          ? teachers.filter((t) => !(Array.isArray(t.gradesSubjects) && t.gradesSubjects.length)).filter(matchesSearch)
+          : teachers
+              .filter((t) => (t.gradesSubjects || []).some((gs) => String(gs.grade) === String(selectedGrade)))
+              .filter(matchesSearch);
+
+  // Ensure selected teacher remains visible even if filters exclude them
+  const displayedTeachers = (() => {
+    const list = Array.isArray(filteredTeachers) ? [...filteredTeachers] : [];
+    try {
+      const sel = selectedTeacher || (selectedTeacherUser ? teachers.find(tt => tt.userId === selectedTeacherUser.userId) : null);
+      if (sel) {
+        const exists = list.some((x) => (x.teacherId && sel.teacherId && x.teacherId === sel.teacherId) || (x.userId && sel.userId && x.userId === sel.userId));
+        if (!exists) {
+          // prepend selected teacher so UI keeps showing details
+          list.unshift(sel);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return list;
+  })();
+
+  // debug: why filteredTeachers may be empty
+  useEffect(() => {
+    try {
+      console.debug('Teachers filter debug', {
+        selectedGrade,
+        gradeOptions,
+        teachersCount: Array.isArray(teachers) ? teachers.length : 0,
+        filteredCount: Array.isArray(filteredTeachers) ? filteredTeachers.length : 0,
+        searchTerm,
+        sampleTeachers: Array.isArray(teachers) ? teachers.slice(0,3) : []
+      });
+    } catch (e) {}
+  }, [selectedGrade, gradeOptions, teachers, filteredTeachers, searchTerm]);
 
 
 
@@ -2182,7 +2429,7 @@ useEffect(() => {
                   Total: {filteredTeachers.length}
                 </div>
                 <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
-                  {selectedGrade === "All" ? "All Grades" : `Grade ${selectedGrade}`}
+                  {selectedGrade === "All" ? "All Grades" : selectedGrade === "Deactive" ? "Deactivated" : selectedGrade === "Unassigned" ? "Unassigned" : `Grade ${selectedGrade}`}
                 </div>
                 <button
                   type="button"
@@ -2249,26 +2496,26 @@ useEffect(() => {
                 paddingBottom: 1,
               }}
             >
-              {["All", ...gradeOptions].map(g => (
+              {(["All", "Deactive", "Unassigned", ...gradeOptions]).map(g => (
                 <button
                   key={g}
                   onClick={() => setSelectedGrade(g)}
                   style={chipStyle(selectedGrade === g)}
                 >
-                  {g === "All" ? "All Teachers" : `Grade ${g}`}
+                  {g === "All" ? "All Teachers" : g === "Deactive" ? "Deactivated" : g === "Unassigned" ? "Unassigned" : `Grade ${g}`}
                 </button>
               ))}
             </div>
           </div>
 
           {/* Teachers List */}
-          {loadingTeachers && filteredTeachers.length === 0 ? (
+          {(!teachersInitialized || (loadingTeachers && displayedTeachers.length === 0)) ? (
             <p style={{ width: contentWidth, textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>Loading teachers...</p>
-          ) : filteredTeachers.length === 0 ? (
+          ) : displayedTeachers.length === 0 ? (
             <p style={{ width: contentWidth, textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>No teachers found for this grade.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-              {filteredTeachers.map((t, i) => (
+              {displayedTeachers.map((t, i) => (
                 <div
                   key={t.teacherId}
                   onClick={() => setSelectedTeacher(t)}
@@ -2508,10 +2755,10 @@ useEffect(() => {
             marginBottom: "10px"
           }}
         >
-          {[
+            {[
             { label: "Total", value: teachers.length },
             { label: "Visible", value: filteredTeachers.length },
-            { label: "Grade", value: selectedGrade === "all" ? "All" : `G${selectedGrade}` },
+            { label: "Grade", value: selectedGrade === "All" ? "All" : selectedGrade === "Deactive" ? "Deactivated" : selectedGrade === "Unassigned" ? "Unassigned" : `G${selectedGrade}` },
             { label: "Search", value: searchTerm ? "Active" : "None" }
           ].map((item) => (
             <div
@@ -2556,6 +2803,7 @@ useEffect(() => {
      
 {/* ================= DETAILS TAB ================= */}
 
+
 {activeTab === "details" && selectedTeacher && (
   <div
     style={{
@@ -2577,8 +2825,32 @@ useEffect(() => {
       Teacher Profile
     </h3>
     <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
-      ID: <b style={{ color: "var(--text-primary)" }}>{selectedTeacher.teacherId}</b>
+      ID: <b style={{ color: "var(--text-primary)" }}>{String(selectedTeacher.teacherId || "").replace(/^[-]+/, "")}</b>
     </div>
+
+    {/* Activate/Deactivate Button */}
+    <button
+      type="button"
+      disabled={deactivating}
+      style={{
+        background: selectedTeacherUser?.isActive === false ? "var(--success)" : "var(--danger)",
+        color: "#fff",
+        border: "none",
+        padding: "7px 16px",
+        borderRadius: "8px",
+        fontWeight: 700,
+        fontSize: "11px",
+        marginBottom: 10,
+        cursor: deactivating ? "not-allowed" : "pointer",
+        opacity: deactivating ? 0.7 : 1,
+        width: "100%"
+      }}
+      onClick={handleToggleActiveTeacher}
+    >
+      {deactivating
+        ? (selectedTeacherUser?.isActive === false ? "Activating..." : "Deactivating...")
+        : (selectedTeacherUser?.isActive === false ? "Activate Teacher" : "Deactivate Teacher")}
+    </button>
 
     {/* Info GRID */}
     <div
@@ -2609,7 +2881,7 @@ useEffect(() => {
           })()
         },
         { label: "Subject(s)", icon: "📚", value: selectedTeacher.subjectsUnique?.join(", ") },
-        { label: "Teacher ID", icon: "🆔", value: selectedTeacher.teacherId },
+        { label: "Teacher ID", icon: "🆔", value: String(selectedTeacher.teacherId || "").replace(/^[-]+/, "") },
       ].map((item, i) => (
         <div
           key={i}
@@ -4336,6 +4608,24 @@ useEffect(() => {
             <button onClick={() => sendPopupMessage()} style={{ width: 45, height: 45, borderRadius: "50%", background: "var(--accent)", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", cursor: "pointer" }}>
               <FaPaperPlane />
             </button>
+          </div>
+        </div>
+      )}
+      {/* Admin confirm modal */}
+      {showAdminModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200 }}>
+          <div style={{ width: 420, maxWidth: '92%', background: 'var(--surface-panel)', borderRadius: 12, padding: 18, boxShadow: '0 12px 40px rgba(0,0,0,0.35)', border: '1px solid var(--border-soft)' }}>
+            <h3 style={{ margin: 0, marginBottom: 8 }}>{pendingToggle?.newActive ? 'Confirm Activation' : 'Confirm Deactivation'}</h3>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>{pendingToggle?.newActive ? 'You are about to activate this teacher. Please enter admin credentials to confirm.' : 'You are about to deactivate this teacher and unassign their subjects. Enter admin credentials to confirm.'}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input autoFocus placeholder="Admin username" value={adminModalUsername} onChange={(e) => setAdminModalUsername(e.target.value)} style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-soft)', outline: 'none' }} />
+              <input placeholder="Admin password" type="password" value={adminModalPassword} onChange={(e) => setAdminModalPassword(e.target.value)} style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-soft)', outline: 'none' }} />
+              {adminModalError && (<div style={{ color: '#b91c1c', fontSize: 13 }}>{adminModalError}</div>)}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 6 }}>
+                <button onClick={closeAdminModal} style={{ padding: '8px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border-soft)', cursor: 'pointer' }}>Cancel</button>
+                <button onClick={submitAdminModal} disabled={adminVerifying} style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer' }}>{adminVerifying ? 'Verifying...' : 'Confirm'}</button>
+              </div>
+            </div>
           </div>
         </div>
       )}

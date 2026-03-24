@@ -27,10 +27,13 @@ const resolveTeacherEntry = (teachers, teacher) => {
   });
 };
 
-const resolveCourseIdFromAssignment = (courses, grade, section, subject) => {
-  const normalizedGrade = String(grade || "").trim();
-  const normalizedSection = String(section || "").trim().toUpperCase();
-  const normalizedSubject = normalizeCourseFragment(subject);
+const resolveCourseIdFromAssignment = (courses, assignment = {}, grade, section, subject) => {
+  const explicitCourseId = String(assignment?.courseId || "").trim();
+  if (explicitCourseId) return explicitCourseId;
+
+  const normalizedGrade = String(grade || assignment?.grade || "").trim();
+  const normalizedSection = String(section || assignment?.section || "").trim().toUpperCase();
+  const normalizedSubject = normalizeCourseFragment(subject || assignment?.subject);
   const fallbackId = `course_${normalizedSubject}_${normalizedGrade}${normalizedSection}`;
 
   if (!courses || typeof courses !== "object") return fallbackId;
@@ -130,12 +133,7 @@ export const getTeacherCourseContext = async ({ teacher, rtdbBase } = {}) => {
 
           if (!assignmentRefs.some((ref) => teacherRefs.has(ref))) return;
 
-          const courseId = resolveCourseIdFromAssignment(
-            courses,
-            gradeKey,
-            assignment?.section || sectionKey,
-            assignment?.subject || subjectKey
-          );
+          const courseId = resolveCourseIdFromAssignment(courses, assignment, gradeKey, sectionKey, subjectKey);
 
           if (!courseId) return;
 
