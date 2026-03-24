@@ -250,11 +250,19 @@ export default function SubjectManagementPage() {
         const name = String(user.name || teacherId || "Teacher").trim();
 
         if (!teacherId) return null;
+        const userIsActive = user?.isActive;
+        const rowIsActive = row?.isActive;
+        const isActive = !(
+          userIsActive === false || userIsActive === "false" ||
+          rowIsActive === false || String(rowIsActive) === "false"
+        );
+
         return {
           teacherRecordKey: String(teacherRecordKey),
           teacherId,
           teacherName: name,
           userId: String(row.userId || ""),
+          isActive,
         };
       })
       .filter(Boolean)
@@ -976,11 +984,18 @@ export default function SubjectManagementPage() {
                                               style={{ ...controlFieldStyle, fontSize: 12, padding: "9px 10px" }}
                                             >
                                               <option value="">Select teacher</option>
-                                              {teachers.map((teacher) => (
-                                                <option key={teacher.teacherRecordKey} value={teacher.teacherRecordKey}>
-                                                  {teacher.teacherName} ({teacher.teacherId})
-                                                </option>
-                                              ))}
+                                              {teachers.map((teacher) => {
+                                                const inactive = teacher.isActive === false || String(teacher.isActive) === "false";
+                                                return (
+                                                  <option
+                                                    key={teacher.teacherRecordKey}
+                                                    value={teacher.teacherRecordKey}
+                                                    disabled={inactive}
+                                                  >
+                                                    {teacher.teacherName} ({teacher.teacherId}){inactive ? " — Deactivated" : ""}
+                                                  </option>
+                                                );
+                                              })}
                                             </select>
 
                                             <button
@@ -988,7 +1003,13 @@ export default function SubjectManagementPage() {
                                               disabled={
                                                 teachersLoading ||
                                                 teachers.length === 0 ||
-                                                !!assignSavingByTarget[targetKey]
+                                                !!assignSavingByTarget[targetKey] ||
+                                                (() => {
+                                                  const cur = selectedTeacherByTarget[targetKey] || getAssignedTeacherRecordKey(gradeItem, sectionKey, subjectKey) || "";
+                                                  if (!cur) return false;
+                                                  const obj = teachers.find((t) => t.teacherRecordKey === cur);
+                                                  return !!(obj && (obj.isActive === false || String(obj.isActive) === "false"));
+                                                })()
                                               }
                                               onClick={() => handleAssignTeacher(gradeItem, sectionKey, subject)}
                                               style={{

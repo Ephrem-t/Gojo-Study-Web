@@ -37,6 +37,17 @@ const toSubjectKey = (value) =>
     .replace(/\s+/g, "_")
     .replace(/[^a-z0-9_]/g, "");
 
+const getSubjectKeyVariants = (value) => {
+  const base = toSubjectKey(value);
+  const set = new Set([base]);
+  if (base === "mathematics" || base === "math") set.add("maths");
+  if (base === "maths") {
+    set.add("mathematics");
+    set.add("math");
+  }
+  return Array.from(set).filter(Boolean);
+};
+
 export default function MarksPage() {
   // Sidebar toggle state for mobile (like Dashboard)
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
@@ -45,7 +56,9 @@ export default function MarksPage() {
   const [students, setStudents] = useState([]);
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [assessmentList, setAssessmentList] = useState([]);
+  const [assessmentMode, setAssessmentMode] = useState("semester");
   const [studentMarks, setStudentMarks] = useState({});
+  const [noStudentsInCourse, setNoStudentsInCourse] = useState(false);
   const [structureSubmitted, setStructureSubmitted] = useState(false);
   const [activeSemester, setActiveSemester] = useState("semester2"); // default
   const [quartersBySem, setQuartersBySem] = useState({ semester1: ["q1", "q2"], semester2: ["q1", "q2"] });
@@ -114,42 +127,160 @@ export default function MarksPage() {
         const course = courses.find((c) => c.id === selectedCourseId);
         if (!course) return;
 
-        const subjectKey = toSubjectKey(course.subject || course.name || "");
+        const subjectVariants = getSubjectKeyVariants(course.subject || course.name || "");
         const [marksRes, templateRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`),
           axios.get(
-            `${RTDB_BASE}/AssesmentTemplates/${encodeURIComponent(course.grade)}/${encodeURIComponent(subjectKey)}/${activeSemester}.json`
+            `${RTDB_BASE}/AssesmentTemplates/${encodeURIComponent(course.grade)}.json`
           ).catch(() => ({ data: {} })),
         ]);
 
-        const templateSemNode =
+        const gradeTemplateNode =
           templateRes.data && typeof templateRes.data === "object" ? templateRes.data : {};
 
+        const findSubjectTemplateNode = () => {
+          for (const key of subjectVariants) {
+            if (gradeTemplateNode[key] && typeof gradeTemplateNode[key] === "object") {
+              return gradeTemplateNode[key];
+            }
+          }
+
+          const entries = Object.entries(gradeTemplateNode || {});
+          for (const [nodeKey, subjectNode] of entries) {
+            if (!subjectNode || typeof subjectNode !== "object") continue;
+            if (subjectVariants.includes(toSubjectKey(nodeKey))) return subjectNode;
+
+            const semEntries = Object.entries(subjectNode).filter(
+              ([semKey, semVal]) => /^semester\d+$/i.test(semKey) && semVal && typeof semVal === "object"
+            );
+            for (const [, semNode] of semEntries) {
+              const embeddedSubject = toSubjectKey(semNode?.subject || "");
+              if (embeddedSubject && subjectVariants.includes(embeddedSubject)) {
+                return subjectNode;
+              }
+            }
+          }
+
+          return null;
+        };
+
+        const subjectTemplateNode = findSubjectTemplateNode() || {};
+        const templateSemNode =
+          subjectTemplateNode && typeof subjectTemplateNode === "object"
+            ? (subjectTemplateNode[activeSemester] && typeof subjectTemplateNode[activeSemester] === "object"
+                ? subjectTemplateNode[activeSemester]
+                : {})
+            : {};
+        const hasQuarterTemplate = Object.keys(templateSemNode).some((k) => /^q\d+$/i.test(k));
+        const templateMode =
+          templateSemNode.mode === "quarter"
+            ? "quarter"
+            : templateSemNode.mode === "semester"
+            ? "semester"
+            : hasQuarterTemplate
+            ? "quarter"
+            : "semester";
+        setAssessmentMode(templateMode);
+
+        const normalizedCourseGrade = String(course.grade ?? "").trim();
+        const normalizedCourseSection = String(course.section ?? "").trim().toLowerCase();
         const filteredStudents = students.filter(
-          (s) => s.grade === course.grade && s.section === course.section
+          (s) =>
+            String(s.grade ?? "").trim() === normalizedCourseGrade &&
+            String(s.section ?? "").trim().toLowerCase() === normalizedCourseSection
         );
+        setNoStudentsInCourse(filteredStudents.length === 0);
+
+        if (!filteredStudents.length) {
+          setStudentMarks({});
+          setAssessmentList([]);
+          setStructureSubmitted(false);
+          setQuartersBySem((p) => ({ ...p, [activeSemester]: ["q1"] }));
+          setSelectedQuarter("q1");
+          return;
+        }
+
         const initMarks = {};
         let assessmentListFromDB = [];
 
-        const quarterSet = new Set();
-        filteredStudents.forEach((s) => {
-          const semData = marksRes.data?.[s.id]?.[activeSemester];
-          if (semData && typeof semData === "object") {
-            Object.keys(semData).forEach((k) => {
-              if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
-            });
-          }
-        });
-        Object.keys(templateSemNode || {}).forEach((k) => {
-          if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
-        });
+        const cloneAssessments = (assessments) => {
+          const src = assessments && typeof assessments === "object" ? assessments : {};
+          const out = {};
+          Object.entries(src).forEach(([key, value]) => {
+            const item = value && typeof value === "object" ? value : {};
+            out[key] = {
+              name: String(item.name || "").trim(),
+              max: Number(item.max || 0),
+              score: item.score === "" ? "" : Number(item.score || 0),
+            };
+          });
+          return out;
+        };
 
-        const quartersArrRaw = Array.from(quarterSet);
-        const required = ["q1", "q2"];
-        required.forEach((rq) => {
-          if (!quartersArrRaw.includes(rq)) quartersArrRaw.push(rq);
-        });
-        if (!quartersArrRaw.includes("avg")) quartersArrRaw.push("avg");
+        const getTemplateAssessmentsForSelection = () => {
+          if (templateMode === "quarter") {
+            const quarterNode = templateSemNode?.[selectedQuarter];
+            if (quarterNode && typeof quarterNode === "object" && quarterNode.assessments) {
+              return cloneAssessments(quarterNode.assessments);
+            }
+          }
+          if (templateSemNode && typeof templateSemNode === "object" && templateSemNode.assessments) {
+            return cloneAssessments(templateSemNode.assessments);
+          }
+          if (templateMode === "quarter") {
+            const firstQuarterNode = Object.entries(templateSemNode || {}).find(([k, v]) =>
+              /^q\d+$/i.test(k) && v && typeof v === "object" && v.assessments
+            );
+            if (firstQuarterNode) return cloneAssessments(firstQuarterNode[1].assessments);
+          }
+          return {};
+        };
+
+        const mergeScoresIntoTemplate = (templateAssessments, existingAssessments) => {
+          const merged = cloneAssessments(templateAssessments);
+          const existing = existingAssessments && typeof existingAssessments === "object" ? existingAssessments : {};
+          const existingByName = {};
+          Object.values(existing).forEach((item) => {
+            const nameKey = String(item?.name || "").trim().toLowerCase();
+            if (!nameKey) return;
+            existingByName[nameKey] = item;
+          });
+
+          Object.entries(merged).forEach(([key, item]) => {
+            const byKey = existing[key];
+            const byName = existingByName[String(item.name || "").trim().toLowerCase()];
+            const picked = byKey && typeof byKey === "object" ? byKey : byName;
+            if (!picked || typeof picked !== "object") return;
+            const scoreValue = picked.score;
+            item.score = scoreValue === "" ? "" : Number(scoreValue || 0);
+          });
+
+          return merged;
+        };
+
+        const quarterSet = new Set();
+        if (templateMode === "quarter") {
+          filteredStudents.forEach((s) => {
+            const semData = marksRes.data?.[s.id]?.[activeSemester];
+            if (semData && typeof semData === "object") {
+              Object.keys(semData).forEach((k) => {
+                if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
+              });
+            }
+          });
+          Object.keys(templateSemNode || {}).forEach((k) => {
+            if (k && k.toLowerCase().startsWith("q")) quarterSet.add(k);
+          });
+        }
+
+        const quartersArrRaw = templateMode === "quarter" ? Array.from(quarterSet) : ["q1"];
+        if (templateMode === "quarter") {
+          const required = ["q1", "q2"];
+          required.forEach((rq) => {
+            if (!quartersArrRaw.includes(rq)) quartersArrRaw.push(rq);
+          });
+          if (!quartersArrRaw.includes("avg")) quartersArrRaw.push("avg");
+        }
 
         const quartersArr = quartersArrRaw
           .filter((q) => q !== "avg")
@@ -158,15 +289,17 @@ export default function MarksPage() {
             const nb = parseInt(String(b).replace(/^q/i, ""), 10) || 0;
             return na - nb;
           });
-        if (!quartersArr.includes("avg")) quartersArr.push("avg");
+        if (templateMode === "quarter" && !quartersArr.includes("avg")) quartersArr.push("avg");
         setQuartersBySem((p) => ({ ...p, [activeSemester]: quartersArr }));
 
         // Ensure selectedQuarter exists for this semester
         if (!quartersArr.includes(selectedQuarter)) setSelectedQuarter(quartersArr[0]);
 
+        const templateAssessmentsForSelection = getTemplateAssessmentsForSelection();
+
         filteredStudents.forEach((s) => {
           const semData = marksRes.data?.[s.id]?.[activeSemester];
-          if (selectedQuarter === 'avg') {
+          if (templateMode === "quarter" && selectedQuarter === 'avg') {
             // compute average percentage across q1 and q2
             const q1 = semData?.q1?.assessments || {};
             const q2 = semData?.q2?.assessments || {};
@@ -181,24 +314,19 @@ export default function MarksPage() {
             initMarks[s.id] = { avg: { name: 'Average', max: 100, score: Number(avgPct.toFixed(1)) } };
             if (!assessmentListFromDB.length) assessmentListFromDB = [{ name: 'Average', max: 100 }];
           } else {
-            if (semData && semData[selectedQuarter] && semData[selectedQuarter].assessments) {
-              initMarks[s.id] = semData[selectedQuarter].assessments;
-              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData[selectedQuarter].assessments);
-            } else if (semData && semData.assessments) {
-              initMarks[s.id] = semData.assessments;
-              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(semData.assessments);
-            } else if (
-              templateSemNode &&
-              templateSemNode[selectedQuarter] &&
-              templateSemNode[selectedQuarter].assessments
-            ) {
-              initMarks[s.id] = templateSemNode[selectedQuarter].assessments;
-              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode[selectedQuarter].assessments);
-            } else if (templateSemNode && templateSemNode.assessments) {
-              initMarks[s.id] = templateSemNode.assessments;
-              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateSemNode.assessments);
+            const existingAssessments =
+              templateMode === "quarter"
+                ? semData?.[selectedQuarter]?.assessments || semData?.assessments || {}
+                : semData?.assessments || semData?.[selectedQuarter]?.assessments || {};
+
+            if (Object.keys(templateAssessmentsForSelection).length) {
+              initMarks[s.id] = mergeScoresIntoTemplate(templateAssessmentsForSelection, existingAssessments);
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(templateAssessmentsForSelection);
+            } else if (existingAssessments && Object.keys(existingAssessments).length) {
+              const clonedExisting = cloneAssessments(existingAssessments);
+              initMarks[s.id] = clonedExisting;
+              if (!assessmentListFromDB.length) assessmentListFromDB = Object.values(clonedExisting);
             } else {
-              // No per-quarter assessments for this student
               initMarks[s.id] = {};
             }
           }
@@ -209,6 +337,7 @@ export default function MarksPage() {
         setStructureSubmitted(assessmentListFromDB.length > 0);
       } catch (err) {
         console.error("Error loading marks:", err);
+        setNoStudentsInCourse(false);
         setStructureSubmitted(false);
         setStudentMarks({});
       }
@@ -263,7 +392,9 @@ export default function MarksPage() {
     try {
       // Save into the currently selected quarter (per-quarter model)
       await axios.put(
-        `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`,
+        assessmentMode === "quarter"
+          ? `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`
+          : `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}.json`,
         {
           teacherName: teacher?.name || "",
           assessments: studentMarks[sid],
@@ -278,11 +409,15 @@ export default function MarksPage() {
 
   // Save all students' marks at once for the selected course/semester/quarter
   const saveAllMarks = async () => {
+    if (noStudentsInCourse) {
+      alert("No students are assigned to this course/class yet.");
+      return;
+    }
     if (!structureSubmitted || !assessmentList.length) {
       alert(templateMissingMessage);
       return;
     }
-    if (!selectedCourseId || selectedQuarter === 'avg') {
+    if (!selectedCourseId || (assessmentMode === "quarter" && selectedQuarter === 'avg')) {
       alert('Please select a valid course and quarter');
       return;
     }
@@ -291,7 +426,9 @@ export default function MarksPage() {
       await Promise.all(
         entries.map(([sid, marks]) =>
           axios.put(
-            `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`,
+            assessmentMode === "quarter"
+              ? `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`
+              : `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}.json`,
             { teacherName: teacher?.name || '', assessments: marks }
           )
         )
@@ -854,7 +991,9 @@ export default function MarksPage() {
     {selectedCourseId && (
       <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-soft)", padding: isMobile ? "12px" : "12px 16px" }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 13 }}>Quarter:</span>
+          <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 13 }}>
+            {assessmentMode === "quarter" ? "Quarter:" : "Mode:"}
+          </span>
           {(quartersBySem[activeSemester] || ['q1','q2']).map((q) => (
             <button
               key={q}
@@ -869,7 +1008,7 @@ export default function MarksPage() {
                 color: selectedQuarter === q ? 'var(--accent-strong)' : 'var(--text-muted)',
               }}
             >
-              {q.toUpperCase()}
+              {assessmentMode === "semester" ? "SEM" : q.toUpperCase()}
             </button>
           ))}
           {/* Two quarters by default (q1, q2) - Add Quarter removed */}
@@ -896,10 +1035,10 @@ export default function MarksPage() {
             </button>
             <button
               onClick={() => saveAllMarks()}
-              disabled={!structureSubmitted || !assessmentList.length || selectedQuarter === 'avg'}
+              disabled={!structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg')}
               style={{
                 padding: "10px 16px",
-                background: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "var(--surface-strong)" : "var(--accent-strong)",
+                background: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "var(--surface-strong)" : "var(--accent-strong)",
                 color: "#fff",
                 border: "none",
                 borderRadius: "10px",
@@ -907,7 +1046,7 @@ export default function MarksPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: !structureSubmitted || !assessmentList.length || selectedQuarter === 'avg' ? "not-allowed" : "pointer"
+                cursor: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "not-allowed" : "pointer"
               }}
               title="Save all marks for current quarter"
             >
@@ -919,7 +1058,27 @@ export default function MarksPage() {
     )}
 
             {/* Template Required Notice */}
-            {selectedCourseId && !structureSubmitted && (
+            {selectedCourseId && noStudentsInCourse && (
+              <div
+                style={{
+                  background: "var(--surface-panel)",
+                  padding: isMobile ? "14px" : "20px",
+                  borderRadius: "14px",
+                  border: "1px solid var(--border-soft)",
+                  boxShadow: "var(--shadow-soft)",
+                  marginBottom: "18px",
+                }}
+              >
+                <h3 style={{ marginBottom: "10px", color: "var(--text-primary)", fontWeight: "700", fontSize: "18px" }}>
+                  No Students Found
+                </h3>
+                <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  No students are assigned to this course/class yet. Ask admin to enroll students for this grade and section.
+                </p>
+              </div>
+            )}
+
+            {selectedCourseId && !noStudentsInCourse && !structureSubmitted && (
               <div
                 style={{
                   background: "var(--surface-panel)",
