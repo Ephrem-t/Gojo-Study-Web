@@ -179,6 +179,7 @@ const MOCK_EMPLOYEES = {
 export default function Employees() {
   const [employees, setEmployees] = useState([])
   const [filter, setFilter] = useState('all') // 'all' or 'management'
+  const [searchTerm, setSearchTerm] = useState('')
   const [admin, setAdmin] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("admin")) || {};
@@ -348,11 +349,26 @@ export default function Employees() {
               color: #fff;
               border-color: #2f67d3;
             }
+            .emp-search {
+              height: 36px;
+              border-radius: 10px;
+              border: 1px solid #e6eef8;
+              padding: 8px 12px;
+              min-width: 220px;
+              box-shadow: 0 6px 18px rgba(20,40,90,0.06);
+              outline: none;
+              transition: box-shadow .18s ease, transform .12s ease;
+            }
+            .emp-search:focus {
+              box-shadow: 0 12px 30px rgba(16,78,139,0.12);
+              transform: translateY(-1px);
+              border-color: #cfe0ff;
+            }
             .emp-card {
-              background: #fff;
-              border: 1px solid #e6ecf8;
+              background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+              border: 1px solid rgba(226,232,240,0.8);
               border-radius: 16px;
-              box-shadow: 0 12px 26px rgba(23, 43, 91, 0.06);
+              box-shadow: 0 18px 40px rgba(17,34,77,0.06);
               overflow: hidden;
             }
             .emp-table-wrap {
@@ -362,47 +378,60 @@ export default function Employees() {
             .emp-table {
               width: 100%;
               min-width: 930px;
-              border-collapse: collapse;
+              border-collapse: separate;
+              border-spacing: 0 10px;
             }
             .emp-table thead th {
+              position: sticky;
+              top: 0;
+              z-index: 3;
               text-align: left;
-              padding: 14px 12px;
-              color: #5f6f91;
+              padding: 14px 16px;
+              color: #415070;
               font-size: 12px;
               font-weight: 800;
               letter-spacing: 0.35px;
-              border-bottom: 1px solid #e8eefb;
-              background: #f9fbff;
+              background: linear-gradient(180deg, #f8fbff 0%, #f1f6ff 100%);
+              border-bottom: none;
             }
             .emp-table tbody td {
-              padding: 12px;
-              color: #1c2e54;
+              padding: 14px 16px;
+              color: #0f172a;
               font-size: 13px;
-              border-bottom: 1px solid #eff3fb;
               vertical-align: middle;
+              background: transparent;
             }
+            .emp-table tbody tr {
+              background: #fff;
+              border-radius: 12px;
+              box-shadow: 0 8px 20px rgba(16,36,89,0.04);
+            }
+            .emp-table tbody tr td:first-child { border-radius: 12px 0 0 12px; }
+            .emp-table tbody tr td:last-child { border-radius: 0 12px 12px 0; }
             .emp-table tbody tr:hover {
-              background: #fbfdff;
+              transform: translateY(-2px);
+              box-shadow: 0 18px 36px rgba(10,30,80,0.06);
             }
             .emp-avatar {
-              width: 46px;
-              height: 46px;
-              border-radius: 10px;
+              width: 56px;
+              height: 56px;
+              border-radius: 12px;
               object-fit: cover;
-              border: 1px solid #dce5f8;
+              border: 1px solid rgba(35,60,110,0.06);
+              box-shadow: 0 8px 18px rgba(12,34,80,0.04);
             }
             .emp-avatar-fallback {
-              width: 46px;
-              height: 46px;
-              border-radius: 10px;
-              background: #eef2fb;
+              width: 56px;
+              height: 56px;
+              border-radius: 12px;
+              background: linear-gradient(135deg, #eef6ff, #f6fbff);
               display: flex;
               align-items: center;
               justify-content: center;
-              color: #6e7d9d;
-              font-size: 12px;
-              font-weight: 700;
-              border: 1px solid #dce5f8;
+              color: #33507a;
+              font-size: 13px;
+              font-weight: 800;
+              border: 1px solid rgba(220,229,248,0.8);
             }
             .emp-name {
               font-weight: 700;
@@ -458,6 +487,15 @@ export default function Employees() {
                 <button onClick={() => setFilter('finance')} className={`emp-filter-btn ${filter === 'finance' ? 'active' : ''}`}>Finance</button>
                 <button onClick={() => setFilter('hr')} className={`emp-filter-btn ${filter === 'hr' ? 'active' : ''}`}>HR</button>
                 <button onClick={() => setFilter('teacher')} className={`emp-filter-btn ${filter === 'teacher' ? 'active' : ''}`}>Teacher</button>
+                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    aria-label="Search employees"
+                    className="emp-search"
+                    placeholder="Search by name, id or role..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
               </div>
             </section>
 
@@ -507,6 +545,16 @@ export default function Employees() {
                           const isTeacherByCategory = empCat === 'teacher'
                           return isTeacherByEmployeeId || isTeacherByCategory
                         }
+                        // apply search filter
+                        if (searchTerm && searchTerm.trim()) {
+                          const t = searchTerm.toLowerCase().trim();
+                          const personal = raw.personal || (raw.profileData && raw.profileData.personal) || {}
+                          const jobLocal = raw.job || (raw.profileData && raw.profileData.job) || {}
+                          const name = (e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')).toString().toLowerCase();
+                          const id = (e.id || '').toString().toLowerCase();
+                          const roleIdMatch = ((raw.teacherId || raw.managementId || raw.financeId || raw.hrId) || '').toString().toLowerCase();
+                          if (!(name.includes(t) || id.includes(t) || roleIdMatch.includes(t))) return false;
+                        }
                         return true
                       })
                       .map(e => {
@@ -526,7 +574,10 @@ export default function Employees() {
                         const idDisplay = (e.id || '').toString()
                         const name = e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')
                         const role = job.employeeCategory || job.position || raw.role || ''
-                        const teacherId = raw.teacherId || (raw.profileData && raw.profileData.teacherId) || (e.user && e.user.teacherId) || ''
+                        const roleId =
+                          raw.teacherId || raw.managementId || raw.financeId || raw.hrId ||
+                          (raw.profileData && (raw.profileData.teacherId || raw.profileData.managementId || raw.profileData.financeId || raw.profileData.hrId)) ||
+                          (e.user && (e.user.teacherId || e.user.managementId || e.user.financeId || e.user.hrId)) || ''
                         const phone = contact.phone1 || contact.phone || contact.phone2 || ''
                         const deptPos = [job.department, job.position].filter(Boolean).join(' / ')
                         const joined = job.hireDate || job.dateJoined || ''
@@ -544,7 +595,7 @@ export default function Employees() {
                             </td>
                             <td>{idDisplay}</td>
                             <td className="emp-name">{name || '—'}</td>
-                            <td className="emp-role">{role}{teacherId ? ` (${teacherId})` : ''}</td>
+                            <td className="emp-role">{role}{roleId ? ` (${roleId})` : ''}</td>
                             <td>{phone || '—'}</td>
                             <td>{deptPos || '—'}</td>
                             <td>{joined || '—'}</td>

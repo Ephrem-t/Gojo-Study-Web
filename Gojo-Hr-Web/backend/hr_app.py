@@ -10,31 +10,91 @@ import re
 import tempfile
 from werkzeug.utils import secure_filename
 from firebase_admin import storage
+import base64
 
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Firebase Storage bucket
+# Configure storage bucket name from env
+FIREBASE_STORAGE_BUCKET = os.getenv('FIREBASE_STORAGE_BUCKET', 'bale-house-rental.appspot.com')
+
+# Initialize Firebase Storage bucket accessor
 def get_storage_bucket():
-    bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET', 'bale-house-rental.appspot.com')
-    return storage.bucket(bucket_name)
+    try:
+        return storage.bucket(FIREBASE_STORAGE_BUCKET)
+    except Exception:
+        # last-resort: try default bucket
+        return storage.bucket()
 
 # Upload file to Firebase Storage and return download URL
 def upload_profile_image_to_storage(file_storage, user_id):
     if not file_storage:
         return ''
     bucket = get_storage_bucket()
-    filename = secure_filename(file_storage.filename)
-    ext = os.path.splitext(filename)[1]
-    storage_path = f'profileImages/{user_id}{ext}'
+    if bucket is None:
+        raise RuntimeError('Storage bucket not available. Ensure FIREBASE_STORAGE_BUCKET and credentials are configured.')
+    # Build a stable filename using user's role/username/employeeId when available
+    filename = secure_filename(file_storage.filename or '')
+    ext = os.path.splitext(filename)[1] if filename else ''
+    # try to derive a meaningful base name from Users node
+    try:
+        user_data = users_ref().child(user_id).get() or {}
+    except Exception:
+        user_data = {}
+
+    base_name = None
+    # prefer role id fields or username/employeeId
+    for key in ('hrId', 'teacherId', 'managementId', 'financeId', 'username', 'employeeId'):
+        v = user_data.get(key) if isinstance(user_data, dict) else None
+        if v:
+            base_name = str(v)
+            break
+
+    if not base_name:
+        # fallback to user_id
+        base_name = str(user_id)
+
+    # timestamp for uniqueness
+    ts = str(int(datetime.utcnow().timestamp()))
+    # ensure extension default
+    if not ext:
+        # try to infer from mimetype
+        mimetype = getattr(file_storage, 'mimetype', '') or 'image/jpeg'
+        if '/' in mimetype:
+            guessed_ext = mimetype.split('/')[-1]
+            ext = f'.{guessed_ext}'
+        else:
+            ext = '.jpg'
+
+    storage_filename = f"{base_name}_{ts}_profile{ext}"
+    storage_path = f'HR/{storage_filename}'
     blob = bucket.blob(storage_path)
-    # Save file to temp file for upload
-    with tempfile.NamedTemporaryFile(delete=True) as tmp:
-        file_storage.save(tmp.name)
-        blob.upload_from_filename(tmp.name, content_type=file_storage.mimetype)
+    # Save file to a temp file for upload. On Windows NamedTemporaryFile keeps the
+    # file open which can cause PermissionError when another handle tries to open
+    # it; so create with delete=False, close it, then upload and finally remove.
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp_path = tmp.name
+    try:
+        tmp.close()
+        try:
+            file_storage.save(tmp_path)
+        except Exception as ex:
+            raise RuntimeError(f'Failed saving incoming file to temp path: {ex}')
+        try:
+            blob.upload_from_filename(tmp_path, content_type=file_storage.mimetype)
+        except Exception as ex:
+            raise RuntimeError(f'Failed uploading file to storage: {ex}')
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
     # Make public and get URL
-    blob.make_public()
+    try:
+        blob.make_public()
+    except Exception as ex:
+        raise RuntimeError(f'Uploaded but failed to make object public: {ex}')
     return blob.public_url
 
 # Initialize Firebase Admin
@@ -52,7 +112,8 @@ if not cred_path:
 
 cred = credentials.Certificate(cred_path)
 firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://bale-house-rental-default-rtdb.firebaseio.com'
+    'databaseURL': 'https://bale-house-rental-default-rtdb.firebaseio.com',
+    'storageBucket': FIREBASE_STORAGE_BUCKET,
 })
 
 ROOT = 'Employees'
@@ -191,32 +252,59 @@ def generate_employee_code():
     return f"EMP_{emp_seq:04d}_{year_suffix}"
 
 
+def get_school_shortname():
+    """Return the school's shortname stored under schoolinfo.shortname (uppercased).
+
+    Falls back to DEFAULT_SCHOOL_CODE if not present.
+    """
+    try:
+        # try both common spellings for the node (some databases use `schoolInfo`)
+        info = school_root().child('schoolinfo').get()
+        if info is None:
+            info = school_root().child('schoolInfo').get() or {}
+        if isinstance(info, dict):
+            for key in ('shortname', 'shortName', 'short', 'short_name'):
+                val = info.get(key)
+                if val:
+                    return str(val).strip().upper()
+        if isinstance(info, str) and info.strip():
+            return info.strip().upper()
+    except Exception:
+        pass
+    # fallback: remove non-alphanum and uppercase
+    return re.sub(r'[^A-Za-z0-9]', '', DEFAULT_SCHOOL_CODE).upper()
+
+
 def generate_teacher_code():
     year_suffix = datetime.now().year % 100
     teachers_all = teachers_ref().get() or {}
     teacher_seq = (len(teachers_all) or 0) + 1
-    return f"GET_{teacher_seq:04d}_{year_suffix}"
+    short = get_school_shortname()
+    return f"{short}T_{teacher_seq:04d}_{year_suffix:02d}"
 
 
 def generate_management_code():
     year_suffix = datetime.now().year % 100
     managements_all = managements_ref().get() or {}
     mgmt_seq = (len(managements_all) or 0) + 1
-    return f"GEM_{mgmt_seq:04d}_{year_suffix}"
+    short = get_school_shortname()
+    return f"{short}A_{mgmt_seq:04d}_{year_suffix:02d}"
 
 
 def generate_finance_code():
     year_suffix = datetime.now().year % 100
     finances_all = finances_ref().get() or {}
     fin_seq = (len(finances_all) or 0) + 1
-    return f"GEF_{fin_seq:04d}_{year_suffix}"
+    short = get_school_shortname()
+    return f"{short}F_{fin_seq:04d}_{year_suffix:02d}"
 
 
 def generate_hr_code():
     year_suffix = datetime.now().year % 100
     hrs_all = hrs_ref().get() or {}
     hr_seq = (len(hrs_all) or 0) + 1
-    return f"GEH_{hr_seq:04d}_{year_suffix}"
+    short = get_school_shortname()
+    return f"{short}H_{hr_seq:04d}_{year_suffix:02d}"
 
 
 def sanitize_employee_payload(emp_payload: dict):
@@ -259,6 +347,68 @@ def list_employees():
     return jsonify(data or {})
 
 
+def _normalize_gender(raw):
+    if raw is None:
+        return None
+    try:
+        g = str(raw).strip().lower()
+    except Exception:
+        return None
+    if not g:
+        return None
+    if 'f' in g:
+        return 'female'
+    if 'm' in g:
+        return 'male'
+    return None
+
+
+@app.route('/employees_with_gender', methods=['GET'])
+def list_employees_with_gender():
+    """Return employees with a computed `gender` field.
+
+    Gender is resolved from, in order:
+      - Employees node top-level 'gender'
+      - Employees.personal.gender
+      - Employees.profileData.personal.gender
+      - Linked Users node 'gender' (if employee.userId present)
+    The returned payload mirrors the Employees node but guarantees a `gender` key
+    with value 'male'|'female' or null when unknown.
+    """
+    try:
+        raw = ref().get() or {}
+        users_map = users_ref().get() or {}
+        result = {}
+        if isinstance(raw, dict):
+            for emp_id, payload in raw.items():
+                payload = payload or {}
+                gender = None
+                # top-level
+                gender = _normalize_gender(payload.get('gender'))
+                # personal
+                if not gender and isinstance(payload.get('personal'), dict):
+                    gender = _normalize_gender(payload.get('personal', {}).get('gender'))
+                # profileData.personal
+                if not gender and isinstance(payload.get('profileData'), dict):
+                    gender = _normalize_gender((payload.get('profileData') or {}).get('personal', {}).get('gender'))
+
+                # try linked user
+                if not gender:
+                    user_id = payload.get('userId')
+                    if user_id and isinstance(users_map, dict):
+                        user_payload = users_map.get(str(user_id)) or users_map.get(user_id) or {}
+                        gender = _normalize_gender(user_payload.get('gender') or (user_payload.get('personal') or {}).get('gender'))
+
+                # ensure we don't mutate original
+                item = dict(payload)
+                item['gender'] = gender
+                result[emp_id] = item
+
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/users', methods=['GET'])
 def list_users():
     data = users_ref().get()
@@ -271,6 +421,67 @@ def get_user(user_id):
     if data is None:
         return jsonify({'error': 'not found'}), 404
     return jsonify(data)
+
+
+@app.route('/users/<user_id>', methods=['PUT'])
+def update_user(user_id):
+    """Update user fields. Accepts JSON payload with fields to update."""
+    try:
+        payload = request.get_json() or {}
+        # sanitize minimal fields
+        allowed = {}
+        for k, v in (payload.items() if isinstance(payload, dict) else []):
+            # allow common profile fields (include password)
+            if k in ('name', 'username', 'profileImage', 'email', 'phone', 'role', 'isActive', 'password'):
+                allowed[k] = v
+        if allowed:
+            users_ref().child(user_id).update(allowed)
+        return jsonify({'ok': True}), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/users/<user_id>/upload_profile_image', methods=['POST'])
+def upload_user_profile_image(user_id):
+    # Accepts file field 'profile' similar to employees upload
+    try:
+        if 'profile' in request.files:
+            file = request.files['profile']
+            if file.filename == '':
+                return jsonify({'error': 'No selected file.'}), 400
+            try:
+                url = upload_profile_image_to_storage(file, user_id)
+                # update users node
+                users_ref().child(user_id).update({'profileImage': url})
+                return jsonify({'profileImageUrl': url}), 200
+            except Exception as ue:
+                # Do NOT fallback to data URLs silently. Return a clear error so the client
+                # can surface the problem and the environment can be fixed.
+                import traceback
+                tb = traceback.format_exc()
+                app.logger.error('upload_user_profile_image upload error: %s', tb)
+                # Provide actionable guidance for common misconfiguration
+                hint = (
+                    'Storage upload failed. Ensure FIREBASE_CREDENTIALS points to a valid service account JSON, '
+                    'FIREBASE_STORAGE_BUCKET is set to your GCS bucket name, and the service account has '
+                    'storage.objects.create and storage.objects.get permissions (and objects.list if needed).'
+                )
+                return jsonify({'error': str(ue), 'hint': hint, 'trace': tb}), 500
+
+        # If client sent a profileImage URL in form data
+        form = request.form or {}
+        if form.get('profileImage'):
+            url = form.get('profileImage')
+            users_ref().child(user_id).update({'profileImage': url})
+            return jsonify({'profileImageUrl': url}), 200
+
+        return jsonify({'error': 'No file or profileImage provided.'}), 400
+    except Exception as e:
+        # include a short trace in debug
+        import traceback
+        tb = traceback.format_exc()
+        app.logger.error('upload_user_profile_image error: %s', tb)
+        return jsonify({'error': str(e), 'trace': tb}), 500
 
 
 @app.route('/employees', methods=['POST'])
@@ -349,7 +560,8 @@ def register_teacher():
         'teacherId': teacher_code,
         'employeeId': emp_key,
         'username': teacher_code,
-        'schoolCode': DEFAULT_SCHOOL_CODE
+        # store the school's short name instead of the internal school code
+        'schoolCode': get_school_shortname()
     })
 
     return jsonify({'userId': user_id, 'teacherId': teacher_code, 'employeeId': emp_key}), 201
@@ -423,7 +635,8 @@ def register_management():
         'managementId': management_code,
         'employeeId': emp_key,
         'username': management_code,
-        'schoolCode': DEFAULT_SCHOOL_CODE
+        # store the school's short name instead of the internal school code
+        'schoolCode': get_school_shortname()
     })
 
     # attach managementId to employee node
@@ -553,6 +766,31 @@ def get_calendar_events():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/get_posts', methods=['GET'])
+def get_posts():
+    """Return posts as an array. Each post will include an `id` field.
+
+    The frontend expects an array; return sorted posts (newest first) when possible.
+    """
+    try:
+        raw = posts_ref().get() or {}
+        posts = []
+        if isinstance(raw, dict):
+            for pid, val in raw.items():
+                item = val or {}
+                item['id'] = item.get('id') or pid
+                posts.append(item)
+
+        try:
+            posts.sort(key=lambda p: p.get('time') or '', reverse=True)
+        except Exception:
+            pass
+
+        return jsonify(posts), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/register/<role>', methods=['POST'])
 def register_role(role):
     import time
@@ -662,7 +900,8 @@ def register_role(role):
     emp_id = emp_code
     users_ref().child(user_id).update({
         'employeeId': emp_id,
-        'schoolCode': DEFAULT_SCHOOL_CODE
+        # store the school's short name instead of the internal school code
+        'schoolCode': get_school_shortname()
     })
 
     # create employee record first
