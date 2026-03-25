@@ -34,7 +34,112 @@ const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
   { month: 4, day: 29, title: "Genna", notes: "Ethiopian Christmas." },
   { month: 5, day: 11, title: "Timkat", notes: "Epiphany celebration." },
   { month: 6, day: 23, title: "Adwa Victory Day", notes: "National remembrance day." },
+  { month: 8, day: 23, title: "International Labour Day", notes: "Public holiday." },
+  { month: 9, day: 1, title: "Patriots' Victory Day", notes: "Public holiday." },
+  { month: 9, day: 20, title: "Downfall of the Derg", notes: "National public holiday." },
 ];
+
+const YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN = {
+  2017: [
+    { date: "2025-03-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2025-06-06", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2025-09-05", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2018: [
+    { date: "2026-03-20", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2026-05-27", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2026-08-26", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2019: [
+    { date: "2027-03-10", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2027-05-17", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2027-08-15", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2020: [
+    { date: "2028-02-27", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2028-05-05", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2028-08-04", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2021: [
+    { date: "2029-02-14", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2029-04-24", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2029-07-24", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2022: [
+    { date: "2030-02-03", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2030-04-13", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2030-07-13", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2023: [
+    { date: "2031-01-23", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2031-04-02", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2031-07-02", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2024: [
+    { date: "2032-01-11", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2032-03-21", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2032-06-20", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2025: [
+    { date: "2032-12-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2033-03-10", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2033-06-09", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+};
+
+function buildYearSpecificGovernmentClosures(ethiopianYear) {
+  const gregorianEvents = YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN[ethiopianYear] || [];
+  return gregorianEvents.map((eventItem) => {
+    const [year, month, day] = eventItem.date.split("-").map(Number);
+    if (!year || !month || !day) return null;
+    // Convert Gregorian to Ethiopic
+    const ethDate = EthiopicCalendar.ge(year, month, day);
+    return {
+      month: ethDate.month,
+      day: ethDate.day,
+      title: eventItem.title,
+      notes: eventItem.notes,
+    };
+  }).filter(Boolean);
+}
+
+function getOrthodoxEasterDate(gregorianYear) {
+  const a = gregorianYear % 4;
+  const b = gregorianYear % 7;
+  const c = gregorianYear % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const julianMonth = Math.floor((d + e + 114) / 31);
+  const julianDay = ((d + e + 114) % 31) + 1;
+  const julianDateAsGregorian = new Date(gregorianYear, julianMonth - 1, julianDay);
+  julianDateAsGregorian.setDate(julianDateAsGregorian.getDate() + 13);
+  return julianDateAsGregorian;
+}
+
+function buildMovableOrthodoxClosures(ethiopianYear) {
+  const movableEvents = [];
+  const seenEventKeys = new Set();
+  [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
+    // Easter (Fasika)
+    const easter = getOrthodoxEasterDate(gregorianYear);
+    const ethEaster = EthiopicCalendar.ge(easter.getFullYear(), easter.getMonth() + 1, easter.getDate());
+    const key = `${ethEaster.year}-${ethEaster.month}-${ethEaster.day}`;
+    if (!seenEventKeys.has(key)) {
+      movableEvents.push({ month: ethEaster.month, day: ethEaster.day, title: "Fasika (Easter)", notes: "Orthodox movable feast." });
+      seenEventKeys.add(key);
+    }
+    // Good Friday (2 days before Easter)
+    const goodFriday = new Date(easter);
+    goodFriday.setDate(goodFriday.getDate() - 2);
+    const ethGoodFriday = EthiopicCalendar.ge(goodFriday.getFullYear(), goodFriday.getMonth() + 1, goodFriday.getDate());
+    const key2 = `${ethGoodFriday.year}-${ethGoodFriday.month}-${ethGoodFriday.day}`;
+    if (!seenEventKeys.has(key2)) {
+      movableEvents.push({ month: ethGoodFriday.month, day: ethGoodFriday.day, title: "Siklet (Good Friday)", notes: "Orthodox movable feast." });
+      seenEventKeys.add(key2);
+    }
+  });
+  return movableEvents;
+}
 
 const CALENDAR_EVENT_META = {
   academic: {
@@ -68,28 +173,34 @@ const getCalendarEventMeta = (category) => {
   return CALENDAR_EVENT_META[eventKey] || CALENDAR_EVENT_META.academic;
 };
 
-const buildDefaultCalendarEvents = (ethiopianYear) => DEFAULT_ETHIOPIAN_SPECIAL_DAYS.map((eventItem) => {
-  const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
-  const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, "0")}-${String(gregorianDate.day).padStart(2, "0")}`;
-
-  return {
-    id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
-    title: eventItem.title,
-    type: "no-class",
-    category: "no-class",
-    subType: "general",
-    notes: eventItem.notes,
-    gregorianDate: isoDate,
-    ethiopianDate: {
-      year: ethiopianYear,
-      month: eventItem.month,
-      day: eventItem.day,
-    },
-    createdAt: "",
-    createdBy: "system-default",
-    isDefault: true,
-  };
-});
+const buildDefaultCalendarEvents = (ethiopianYear) => {
+  const allEvents = [
+    ...DEFAULT_ETHIOPIAN_SPECIAL_DAYS,
+    ...buildMovableOrthodoxClosures(ethiopianYear),
+    ...buildYearSpecificGovernmentClosures(ethiopianYear),
+  ];
+  return allEvents.map((eventItem) => {
+    const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
+    const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, "0")}-${String(gregorianDate.day).padStart(2, "0")}`;
+    return {
+      id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
+      title: eventItem.title,
+      type: "no-class",
+      category: "no-class",
+      subType: "general",
+      notes: eventItem.notes,
+      gregorianDate: isoDate,
+      ethiopianDate: {
+        year: ethiopianYear,
+        month: eventItem.month,
+        day: eventItem.day,
+      },
+      createdAt: "",
+      createdBy: "system-default",
+      isDefault: true,
+    };
+  });
+};
 
 const normalizeCalendarEvent = (eventId, eventValue) => {
   const legacyType = eventValue?.type || "academic";
@@ -1508,7 +1619,7 @@ function Dashboard() {
   return (
     <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", minHeight: 0, overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
         <Sidebar
           admin={{
             ...admin,
@@ -1733,7 +1844,7 @@ function Dashboard() {
         </div>
 
         {/* RIGHT WIDGETS COLUMN */}
-        <div className="dashboard-widgets" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - 4px)', overflowY: 'auto', position: 'sticky', top: 4, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="dashboard-widgets" style={{ flex: '0 0 clamp(300px, 21vw, 360px)', minHeight: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Quick Statistics */}
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Quick Statistics</h4>
