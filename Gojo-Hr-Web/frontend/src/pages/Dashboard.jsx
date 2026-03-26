@@ -42,94 +42,116 @@ function LineChart({ data = [], width = 420, height = 120, color = '#4b6cb7' }) 
 }
 
 function GrowthTrendChart({ points = [], mode = 'monthly' }) {
-  if (!points.length) return null;
+  const [hoverIdx, setHoverIdx] = useState(-1);
+  const uid = useMemo(() => Math.random().toString(36).slice(2, 9), []);
+  if (!points || !points.length) return null;
 
-  const width = 700;
-  const height = 220;
-  const leftPad = 40;
-  const rightPad = 14;
-  const topPad = 18;
-  const bottomPad = 34;
-  const chartHeight = height - topPad - bottomPad;
+  const width = 920;
+  const height = 320;
+  const leftPad = 64;
+  const rightPad = 48;
+  const topPad = 48;
+  const bottomPad = 76;
   const chartWidth = width - leftPad - rightPad;
-  const maxCount = Math.max(1, ...points.map((point) => Number(point.count) || 0));
-  const stepX = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
+  const chartHeight = height - topPad - bottomPad;
+  const stepX = points.length > 1 ? chartWidth / (points.length) : chartWidth;
+  const maxCount = Math.max(1, ...points.map((p) => Math.max(p.totalCount || 0, p.maleCount || 0, p.femaleCount || 0)));
 
-  const yForCount = (value) => {
-    const clamped = Math.max(0, Math.min(maxCount, Number(value) || 0));
-    return topPad + (1 - (clamped / maxCount)) * chartHeight;
-  };
+  const yFor = (v) => topPad + (1 - (Math.max(0, v || 0) / maxCount)) * chartHeight;
 
-  const linePoints = points
-    .map((point, index) => `${(leftPad + (index * stepX)).toFixed(2)},${yForCount(point.count).toFixed(2)}`)
-    .join(' ');
+  const colors = { total: '#10b981', male: '#1d4ed8', female: '#db2777' };
 
-  const linePath = linePoints ? `M ${linePoints.split(' ').join(' L ')}` : '';
-  const areaPath = linePoints
-    ? `${linePath} L ${(leftPad + ((points.length - 1) * stepX)).toFixed(2)} ${height - bottomPad} L ${leftPad} ${height - bottomPad} Z`
-    : '';
-
-  const yTicks = Array.from({ length: 5 }, (_, index) => Math.round((maxCount * index) / 4));
-  const barWidth = points.length > 8 ? 18 : 24;
+  // bar layout
+  const groupWidth = Math.min(64, stepX * 0.9);
+  const barWidth = Math.max(10, Math.floor((groupWidth - 8) / 3));
+  const gap = 4;
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Employee growth trend">
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Employee growth (grouped bars)" style={{ overflow: 'visible' }}>
       <defs>
-        <linearGradient id="growthAreaGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#4b6cb7" stopOpacity="0.24" />
-          <stop offset="100%" stopColor="#4b6cb7" stopOpacity="0.03" />
-        </linearGradient>
-        <linearGradient id="growthBarGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#6f8fe0" />
-          <stop offset="100%" stopColor="#3157b7" />
-        </linearGradient>
+        <filter id={`shadow-${uid}`} x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="6" stdDeviation="8" floodColor="#0b1220" floodOpacity="0.06" />
+        </filter>
       </defs>
 
-      {yTicks.map((tickValue) => {
-        const y = yForCount(tickValue);
+      {/* background panel */}
+      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="#fff" stroke="#eef3ff" />
+
+      {/* y grid */}
+      {Array.from({ length: 4 }).map((_, i) => {
+        const val = Math.round((maxCount * i) / 3);
+        const y = yFor(val);
         return (
-          <g key={`growth-tick-${tickValue}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
-            <text x={leftPad - 7} y={y + 4} fontSize="10" textAnchor="end" fill="#64748b" fontWeight="700">{tickValue}</text>
+          <g key={`tick-${i}`}>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#f0f6ff" />
+            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="#64748b" textAnchor="end" fontWeight="700">{val}</text>
           </g>
         );
       })}
 
-      {points.map((point, index) => {
-        const x = leftPad + (index * stepX);
-        const y = yForCount(point.count);
-        const barHeight = Math.max(0, (height - bottomPad) - y);
+      {/* bars grouped per period */}
+      {points.map((pt, idx) => {
+        const xCenter = leftPad + idx * stepX + stepX / 2;
+        const startX = xCenter - groupWidth / 2;
+        const totalH = Math.max(0, chartHeight - (yFor(pt.totalCount || 0) - topPad));
+        const maleH = Math.max(0, chartHeight - (yFor(pt.maleCount || 0) - topPad));
+        const femaleH = Math.max(0, chartHeight - (yFor(pt.femaleCount || 0) - topPad));
+
+        const totalX = startX;
+        const maleX = startX + (barWidth + gap);
+        const femaleX = startX + 2 * (barWidth + gap);
 
         return (
-          <g key={`${point.label}-${index}`}>
-            <rect
-              x={x - (barWidth / 2)}
-              y={y}
-              width={barWidth}
-              height={barHeight}
-              rx="4"
-              fill="url(#growthBarGradient)"
-              opacity="0.84"
-            />
-            {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
-              <text x={x} y={height - 12} fontSize="10" textAnchor="middle" fill="#64748b" fontWeight="700">{point.label}</text>
+          <g key={`grp-${idx}`} onMouseEnter={() => setHoverIdx(idx)} onMouseLeave={() => setHoverIdx(-1)}>
+            <rect x={totalX} y={topPad + (chartHeight - totalH)} width={barWidth} height={totalH} rx={4} fill={colors.total} opacity={0.96} style={{ filter: `url(#shadow-${uid})` }} />
+            <rect x={maleX} y={topPad + (chartHeight - maleH)} width={barWidth} height={maleH} rx={4} fill={colors.male} opacity={0.98} />
+            <rect x={femaleX} y={topPad + (chartHeight - femaleH)} width={barWidth} height={femaleH} rx={4} fill={colors.female} opacity={0.98} />
+
+            {(idx % Math.max(1, Math.ceil(points.length / 6)) === 0 || idx === points.length - 1) ? (
+              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="#64748b" fontWeight="800">{pt.label}</text>
             ) : null}
           </g>
         );
       })}
 
-      {areaPath ? <path d={areaPath} fill="url(#growthAreaGradient)" /> : null}
-      {linePath ? <path d={linePath} fill="none" stroke="#2749a0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /> : null}
+      {/* legend */}
+      <g>
+        <rect x={width - rightPad - 220} y={14} width={208} height={44} rx={12} fill="#fff" stroke="#eef3ff" />
+        <g transform={`translate(${width - rightPad - 200}, 34)`}> 
+          <g>
+            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.total} />
+            <text x={22} y={4} fontSize="12" fill={colors.total} fontWeight="800">Total</text>
+          </g>
+          <g transform="translate(86,0)">
+            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.male} />
+            <text x={22} y={4} fontSize="12" fill={colors.male} fontWeight="800">Male</text>
+          </g>
+          <g transform="translate(150,0)">
+            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.female} />
+            <text x={22} y={4} fontSize="12" fill={colors.female} fontWeight="800">Female</text>
+          </g>
+        </g>
+      </g>
 
-      {points.map((point, index) => {
-        const x = leftPad + (index * stepX);
-        const y = yForCount(point.count);
-        return <circle key={`growth-point-${index}`} cx={x} cy={y} r="3.4" fill="#fff" stroke="#2749a0" strokeWidth="1.8" />;
-      })}
+      {/* title */}
+      <text x={leftPad} y={28} fontSize="15" fill="#07104a" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
 
-      <text x={leftPad} y="12" fontSize="11" fill="#475569" fontWeight="800">
-        {mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}
-      </text>
+      {/* hover tooltip */}
+      {hoverIdx >= 0 ? (() => {
+        const p = points[hoverIdx];
+        const cx = leftPad + hoverIdx * stepX + stepX / 2;
+        const boxW = 160;
+        const tx = Math.min(width - rightPad - boxW - 8, Math.max(leftPad + 8, cx - boxW / 2));
+        return (
+          <g transform={`translate(${tx}, ${topPad + 8})`}>
+            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="#07104a" opacity="0.96" />
+            <text x="12" y="18" fontSize="12" fill="#fff" fontWeight="800">{p.label}</text>
+            <text x="12" y="36" fontSize="12" fill="#a7f3d0">Total: {p.totalCount || 0}</text>
+            <text x="12" y="54" fontSize="12" fill="#bfdbfe">Male: {p.maleCount || 0}</text>
+            <text x="92" y="54" fontSize="12" fill="#ffd6ea">Female: {p.femaleCount || 0}</text>
+          </g>
+        );
+      })() : null}
     </svg>
   );
 }
@@ -223,92 +245,54 @@ function Sparkline({ data = [], color = '#4b6cb7', width = 100, height = 28 }) {
     </svg>
   )
 }
+function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
+  if (!points || !points.length) return null;
 
-function KPI({ title, value, delta, sparkData, positive=true }) {
-  return (
-    <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-      <div>
-        <h3>{title}</h3>
-        <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a' }}>{value}</div>
-        <div style={{ fontSize: 12, color: positive ? '#059669' : '#dc2626', marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ display: 'inline-flex', alignItems: 'center' }}>{positive ? <FaArrowUp /> : <FaArrowDown />}</span>{delta}</div>
-      </div>
-      <div>
-        <Sparkline data={sparkData} />
-      </div>
-    </div>
-  )
-}
-
-function AttendanceTrendChart({ points = [] }) {
-  if (!points.length) return null;
-
-  const width = 720;
-  const height = 260;
-  const chartTop = 46;
-  const chartBottom = 196;
   const leftPad = 48;
-  const rightPad = 44;
-  const usableHeight = chartBottom - chartTop;
-  const usableWidth = width - leftPad - rightPad;
-  const stepX = points.length > 1 ? usableWidth / (points.length - 1) : 0;
-  const maxCount = Math.max(1, ...points.map((point) => Number(point.total) || 0));
+  const rightPad = 36;
+  const topPad = 28;
+  const bottomPad = 48;
+  const chartWidth = width - leftPad - rightPad;
+  const chartHeight = height - topPad - bottomPad;
+  const maxCount = Math.max(1, ...points.map((p) => Math.max(p.presentCount || 0, p.lateCount || 0, p.absentCount || 0)));
+  const stepX = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
 
-  const yForCount = (countValue) => {
-    const clamped = Math.max(0, Math.min(maxCount, Number(countValue) || 0));
-    return chartBottom - (clamped / maxCount) * usableHeight;
-  };
+  const yForCount = (v) => topPad + (1 - (Math.max(0, v || 0) / maxCount)) * chartHeight;
+  const yForRate = (r) => topPad + (1 - (Math.max(0, Math.min(100, r || 0)) / 100)) * chartHeight;
 
-  const yForRate = (rateValue) => {
-    const clamped = Math.max(0, Math.min(100, Number(rateValue) || 0));
-    return chartBottom - (clamped / 100) * usableHeight;
-  };
+  const groupWidth = Math.min(60, stepX * 0.9);
+  const singleBarWidth = Math.max(6, Math.floor((groupWidth - 8) / 3));
+  const gapBetweenBars = 4;
+  const chartBottom = topPad + chartHeight;
 
-  const ratePoints = points
-    .map((point, index) => `${(leftPad + (index * stepX)).toFixed(2)},${yForRate(point.rate).toFixed(2)}`)
-    .join(' ');
-
-  const rateLinePath = ratePoints ? `M ${ratePoints.split(' ').join(' L ')}` : '';
-  const rateAreaPath = ratePoints
-    ? `${rateLinePath} L ${(leftPad + ((points.length - 1) * stepX)).toFixed(2)} ${chartBottom} L ${leftPad} ${chartBottom} Z`
-    : '';
-
-  const countTicks = Array.from({ length: 5 }, (_, index) => Math.round((maxCount * index) / 4));
+  const countTicks = Array.from({ length: 4 }, (_, i) => Math.round((maxCount * i) / 3));
   const rateTicks = [0, 25, 50, 75, 100];
-  const barColors = {
-    present: '#16a34a',
-    late: '#d97706',
-    absent: '#dc2626',
-  };
+  const barColors = { present: '#16a34a', late: '#d97706', absent: '#dc2626' };
 
-  const groupWidth = points.length > 1 ? Math.min(34, stepX * 0.62) : 30;
-  const singleBarWidth = Math.max(5, Math.floor((groupWidth - 4) / 3));
-  const gapBetweenBars = 2;
+  const ratePoints = points.map((p, i) => ({ x: leftPad + i * stepX, y: yForRate(p.rate || 0) }));
+  const rateLinePath = ratePoints.length ? `M ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')}` : '';
+  const rateAreaPath = ratePoints.length ? `M ${leftPad},${chartBottom} L ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')} L ${leftPad + (points.length - 1) * stepX},${chartBottom} Z` : '';
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance rate trend">
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend">
       <defs>
         <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#3157b7" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="#3157b7" stopOpacity="0.03" />
+          <stop offset="0%" stopColor="#bfdbf7" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="#bfdbf7" stopOpacity="0.02" />
         </linearGradient>
       </defs>
 
+      {/* background grid */}
       <g>
-        <rect x="0" y="0" width={width} height={height} fill="#ffffff" rx="12" />
-      </g>
-
-      <g>
-        <rect x={leftPad} y={chartTop} width={usableWidth} height={usableHeight} fill="#fcfdff" stroke="#e2e8f0" />
+        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="#fcfdff" stroke="#e2e8f0" rx={8} />
       </g>
 
       {countTicks.map((tickValue) => {
         const y = yForCount(tickValue);
         return (
           <g key={`count-tick-${tickValue}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
-            <text x={leftPad - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#64748b" fontWeight="700">
-              {tickValue}
-            </text>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#eef2ff" strokeDasharray="4 6" />
+            <text x={leftPad - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#64748b" fontWeight="700">{tickValue}</text>
           </g>
         );
       })}
@@ -316,17 +300,16 @@ function AttendanceTrendChart({ points = [] }) {
       {rateTicks.map((tickValue) => {
         const y = yForRate(tickValue);
         return (
-          <g key={`rate-tick-${tickValue}`}>
-            <text x={width - rightPad + 8} y={y + 4} textAnchor="start" fontSize="10" fill="#3157b7" fontWeight="700">
-              {tickValue}%
-            </text>
+          <g key={`rate-tick-${tickValue}`}> 
+            <text x={width - rightPad + 8} y={y + 4} textAnchor="start" fontSize="10" fill="#3157b7" fontWeight="700">{tickValue}%</text>
           </g>
         );
       })}
 
+      {/* bars */}
       {points.map((point, index) => {
-        const xCenter = leftPad + (index * stepX);
-        const leftStart = xCenter - (groupWidth / 2);
+        const xCenter = leftPad + index * stepX;
+        const leftStart = xCenter - groupWidth / 2;
         const presentValue = Number(point.presentCount) || 0;
         const lateValue = Number(point.lateCount) || 0;
         const absentValue = Number(point.absentCount) || 0;
@@ -338,21 +321,12 @@ function AttendanceTrendChart({ points = [] }) {
         ];
 
         return (
-          <g key={`bars-${point.date}-${index}`}>
+          <g key={`bars-${point.date || index}-${index}`}>
             {bars.map((bar) => {
               const topY = yForCount(bar.value);
               const barHeight = Math.max(0, chartBottom - topY);
               return (
-                <rect
-                  key={`${bar.key}-${point.date}-${index}`}
-                  x={bar.x}
-                  y={topY}
-                  width={singleBarWidth}
-                  height={barHeight}
-                  rx="2"
-                  fill={barColors[bar.key]}
-                  opacity="0.88"
-                />
+                <rect key={`${bar.key}-${index}`} x={bar.x} y={topY} width={singleBarWidth} height={barHeight} rx="2" fill={barColors[bar.key]} opacity="0.92" />
               );
             })}
           </g>
@@ -360,26 +334,23 @@ function AttendanceTrendChart({ points = [] }) {
       })}
 
       {rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
-      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" /> : null}
+      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /> : null}
 
       {points.map((point, index) => {
-        const x = leftPad + (index * stepX);
+        const x = leftPad + index * stepX;
         const y = yForRate(point.rate);
-
         return (
-          <g key={`${point.date}-${index}`}>
-            <circle cx={x} cy={y} r="4.2" fill="#fff" stroke="#3157b7" strokeWidth="2.4" />
-            {index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1 ? (
-              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="700">
-                {point.label}
-              </text>
+          <g key={`rate-point-${index}`}>
+            <circle cx={x} cy={y} r="4" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
+            {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
+              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="700">{point.label}</text>
             ) : null}
           </g>
         );
       })}
 
       <g>
-        <text x={leftPad} y="20" fontSize="11" fill="#475569" fontWeight="800">Attendance Records (count)</text>
+        <text x={leftPad} y={18} fontSize="11" fill="#475569" fontWeight="800">Attendance Records (count)</text>
         <g transform={`translate(${leftPad + 168}, 11)`}>
           <rect x="0" y="0" width="10" height="10" fill="#16a34a" rx="2" />
           <text x="14" y="9" fontSize="10" fill="#166534" fontWeight="700">Present</text>
@@ -467,7 +438,7 @@ export default function Dashboard() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await api.get('/employees');
+        const res = await api.get('/employees_with_gender');
         const items = res.data || [];
         if (Array.isArray(items)) {
           setEmployees(items);
@@ -713,12 +684,90 @@ export default function Dashboard() {
   const latestAttendanceSnapshot = attendanceDisplaySeries.length > 0
     ? attendanceDisplaySeries[attendanceDisplaySeries.length - 1]
     : null;
-  const attendanceChartPoints = attendanceDisplaySeries
-    .slice(-10)
-    .map((point) => ({
-      ...point,
-      label: point.label || point.date,
-    }));
+  const attendanceChartPoints = useMemo(() => {
+    const map = attendanceByDate || {};
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const normalizeRecords = (recordMap) => {
+      const records = Object.values(recordMap || {}).filter((r) => r && typeof r === 'object');
+      const lateCount = records.filter((entry) => String(entry.status || '').toLowerCase() === 'late').length;
+      const presentCount = records.filter((entry) => {
+        const status = String(entry.status || '').toLowerCase();
+        if (status === 'present') return true;
+        if (status === 'late' || status === 'absent') return false;
+        return entry.present === true;
+      }).length;
+      const absentCount = Math.max(0, records.length - (presentCount + lateCount));
+      const total = records.length;
+      const rate = total > 0 ? Math.round(((presentCount + lateCount) / total) * 100) : 0;
+      return { total, presentCount, lateCount, absentCount, rate };
+    };
+
+    // DAILY: show that day's attendance as a single point (or empty)
+    if (attendanceRecordView === 'daily') {
+      const p = normalizeRecords(map[todayIso]);
+      return [{ date: todayIso, label: 'Today', ...p }];
+    }
+
+    // WEEKLY: show each day in the selected/most-recent week as its own point
+    if (attendanceRecordView === 'weekly') {
+      const refDate = (attendanceDisplaySeries && attendanceDisplaySeries.length > 0 && attendanceDisplaySeries[attendanceDisplaySeries.length - 1].date) || todayIso;
+      const d = new Date(`${refDate}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return [];
+      const day = d.getDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day; // Monday as first day
+      const weekStart = new Date(d);
+      weekStart.setDate(d.getDate() + mondayOffset);
+      const days = Array.from({ length: 7 }, (_, i) => {
+        const dt = new Date(weekStart);
+        dt.setDate(weekStart.getDate() + i);
+        const iso = dt.toISOString().slice(0, 10);
+        const meta = normalizeRecords(map[iso]);
+        const label = dt.toLocaleDateString('en-US', { weekday: 'short' });
+        return { date: iso, label, ...meta };
+      });
+      return days;
+    }
+
+    // MONTHLY: show each week inside the selected/most-recent month as a point (week ranges)
+    if (attendanceRecordView === 'monthly') {
+      const refDate = (attendanceDisplaySeries && attendanceDisplaySeries.length > 0 && attendanceDisplaySeries[attendanceDisplaySeries.length - 1].date) || todayIso;
+      const d = new Date(`${refDate}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return [];
+      const year = d.getFullYear();
+      const month = d.getMonth();
+      const firstOfMonth = new Date(year, month, 1);
+      const lastOfMonth = new Date(year, month + 1, 0);
+
+      // find the Monday on or before the first of month
+      const firstDayWeekday = firstOfMonth.getDay();
+      const firstWeekStart = new Date(firstOfMonth);
+      firstWeekStart.setDate(firstOfMonth.getDate() - ((firstDayWeekday + 6) % 7));
+
+      const weeks = [];
+      let weekStart = new Date(firstWeekStart);
+      while (weekStart <= lastOfMonth) {
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+        // clamp to month
+        const startClamp = new Date(Math.max(weekStart.getTime(), firstOfMonth.getTime()));
+        const endClamp = new Date(Math.min(weekEnd.getTime(), lastOfMonth.getTime()));
+        // accumulate days within this week
+        let total = 0, presentCount = 0, lateCount = 0, absentCount = 0;
+        for (let dt = new Date(startClamp); dt <= endClamp; dt.setDate(dt.getDate() + 1)) {
+          const iso = dt.toISOString().slice(0, 10);
+          const meta = normalizeRecords(map[iso]);
+          total += meta.total; presentCount += meta.presentCount; lateCount += meta.lateCount; absentCount += meta.absentCount;
+        }
+        const rate = total > 0 ? Math.round(((presentCount + lateCount) / total) * 100) : 0;
+        const label = `${startClamp.getMonth() + 1}/${startClamp.getDate()}`;
+        weeks.push({ date: `${startClamp.toISOString().slice(0,10)}_${endClamp.toISOString().slice(0,10)}`, label, total, presentCount, lateCount, absentCount, rate });
+        weekStart.setDate(weekStart.getDate() + 7);
+      }
+      return weeks;
+    }
+
+    return [];
+  }, [attendanceByDate, attendanceRecordView, attendanceDisplaySeries]);
   const recentAttendanceRecords = attendanceDisplaySeries.slice(-4).reverse();
 
   const getAttendanceBucketMeta = (dateString, viewMode) => {
@@ -886,22 +935,39 @@ export default function Dashboard() {
       return new Date(now.getFullYear(), now.getMonth() - (monthCount - 1 - index), 1);
     });
 
+    function extractGender(e) {
+      const raw = e || {};
+      const g = (
+        raw.gender ||
+        raw.personal?.gender ||
+        raw.profileData?.personal?.gender ||
+        ''
+      ).toString().toLowerCase();
+      if (g.includes('f')) return 'female';
+      if (g.includes('m')) return 'male';
+      return;
+    }
+
     return startMonths.map((monthStart) => {
       const year = monthStart.getFullYear();
       const month = monthStart.getMonth();
-      const registrations = employees.reduce((total, employee) => {
+      let male = 0, female = 0, total = 0;
+      employees.forEach(employee => {
         const hireDate = getEmployeeHireDate(employee);
-        if (!hireDate) return total;
+        if (!hireDate) return;
         if (hireDate.getFullYear() === year && hireDate.getMonth() === month) {
-          return total + 1;
+          total++;
+          const g = extractGender(employee);
+          if (g === 'male') male++;
+          else if (g === 'female') female++;
         }
-        return total;
-      }, 0);
-
+      });
       return {
         key: `${year}-${String(month + 1).padStart(2, '0')}`,
         label: monthStart.toLocaleDateString('en-US', { month: 'short' }),
-        count: registrations,
+        totalCount: total,
+        maleCount: male,
+        femaleCount: female,
       };
     });
   }, [employees]);
@@ -910,25 +976,65 @@ export default function Dashboard() {
     const yearCount = 6;
     const startYear = new Date().getFullYear() - (yearCount - 1);
 
+    function extractGender(e) {
+      const raw = e || {};
+      const g = (
+        raw.gender ||
+        raw.personal?.gender ||
+        raw.profileData?.personal?.gender ||
+        ''
+      ).toString().toLowerCase();
+      if (g.includes('f')) return 'female';
+      if (g.includes('m')) return 'male';
+      return;
+    }
+
     return Array.from({ length: yearCount }, (_, index) => {
       const year = startYear + index;
-      const registrations = employees.reduce((total, employee) => {
+      let male = 0, female = 0, total = 0;
+      employees.forEach(employee => {
         const hireDate = getEmployeeHireDate(employee);
-        if (!hireDate) return total;
-        return hireDate.getFullYear() === year ? total + 1 : total;
-      }, 0);
-
+        if (!hireDate) return;
+        if (hireDate.getFullYear() === year) {
+          total++;
+          const g = extractGender(employee);
+          if (g === 'male') male++;
+          else if (g === 'female') female++;
+        }
+      });
       return {
         key: String(year),
         label: String(year),
-        count: registrations,
+        totalCount: total,
+        maleCount: male,
+        femaleCount: female,
       };
     });
   }, [employees]);
 
   const growthTrendPoints = growthTrendView === 'monthly' ? monthlyGrowthSeries : annualGrowthSeries;
-  const currentGrowthTotal = growthTrendPoints.reduce((sum, point) => sum + (point.count || 0), 0);
-  const peakGrowthPoint = growthTrendPoints.reduce((best, point) => ((point.count || 0) > (best.count || 0) ? point : best), growthTrendPoints[0] || { label: '—', count: 0 });
+  // convert periodic counts into cumulative (upward) series for monotonic growth lines
+  const cumulativeGrowthPoints = useMemo(() => {
+    if (!Array.isArray(growthTrendPoints) || growthTrendPoints.length === 0) return [];
+    let runTotal = 0, runMale = 0, runFemale = 0;
+    return growthTrendPoints.map((p) => {
+      runTotal += Number(p.totalCount || 0);
+      runMale += Number(p.maleCount || 0);
+      runFemale += Number(p.femaleCount || 0);
+      return {
+        ...p,
+        totalCount: runTotal,
+        maleCount: runMale,
+        femaleCount: runFemale,
+      };
+    });
+  }, [growthTrendPoints]);
+  // total across visible growth points (use totalCount field)
+  const currentGrowthTotal = growthTrendPoints.reduce((sum, point) => sum + (Number(point.totalCount || 0)), 0);
+
+  // find the period with the highest totalCount (peak year/month)
+  const peakGrowthPoint = growthTrendPoints.reduce((best, point) => ((Number(point.totalCount || 0)) > (Number(best.totalCount || 0)) ? point : best), growthTrendPoints[0] || { label: '—', totalCount: 0 });
+  const peakYear = peakGrowthPoint ? (peakGrowthPoint.label || peakGrowthPoint.key || '—') : '—';
 
   // growth trend based on real hire dates from the database (last 6 months)
   const months = 6;
@@ -954,6 +1060,47 @@ export default function Dashboard() {
     if (id) acc[id] = user;
     return acc;
   }, {});
+
+  const [dataQuality, setDataQuality] = useState({ totalRaw: 0, totalWithGender: 0, missingInFrontend: 0, missingInRaw: 0, missingGender: 0, missingHireDate: 0 });
+
+  // verify frontend employee list matches raw Employees node and surface simple metrics
+  useEffect(() => {
+    async function verifyData() {
+      try {
+        const res = await api.get('/employees');
+        const raw = res.data || {};
+        const rawIds = Array.isArray(raw) ? (raw.map((r) => r.id).filter(Boolean)) : Object.keys(raw || {});
+        const frontendIds = employees.map((e) => String(e.id || e.employeeId || e.job?.employeeId || '')).filter(Boolean);
+
+        const missingInFrontend = rawIds.filter((id) => !frontendIds.includes(String(id)));
+        const missingInRaw = frontendIds.filter((id) => !rawIds.includes(String(id)));
+
+        const missingGender = employees.filter((e) => {
+          const g = e.gender || e.personal?.gender || e.profileData?.personal?.gender || (e.userId && usersById[e.userId]?.gender);
+          return !(g && String(g).trim());
+        }).length;
+
+        const missingHireDate = employees.filter((e) => !getEmployeeHireDate(e)).length;
+
+        setDataQuality({
+          totalRaw: rawIds.length,
+          totalWithGender: employees.length,
+          missingInFrontend: missingInFrontend.length,
+          missingInRaw: missingInRaw.length,
+          missingGender,
+          missingHireDate,
+        });
+        if (missingInFrontend.length || missingInRaw.length || missingGender || missingHireDate) {
+          console.warn('Data quality issues detected', { missingInFrontend, missingInRaw, missingGender, missingHireDate });
+        }
+      } catch (err) {
+        console.error('Failed to verify employees data with backend', err);
+      }
+    }
+
+    // only run verification once we have loaded employees
+    if (employees && employees.length >= 0) verifyData();
+  }, [employees, users]);
 
   // gender distribution for donut / cards
   function extractGender(e) {
@@ -1090,6 +1237,19 @@ export default function Dashboard() {
   const topDepartments = Object.entries(departmentCounts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 6);
+
+  // employment type counts (Full-time, Part-time, Contract, Other)
+  const employmentCounts = normalizedEmployees.reduce((acc, e) => {
+    const job = e._job || {};
+    const raw = (job.employmentType || e.employmentType || job.type || job.contractType || '').toString().toLowerCase();
+    let key = 'Other';
+    if (raw.includes('full')) key = 'Full-time';
+    else if (raw.includes('part')) key = 'Part-time';
+    else if (raw.includes('contract') || raw.includes('temp') || raw.includes('short')) key = 'Contract';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const employmentOrder = ['Full-time', 'Part-time', 'Contract', 'Other'];
 
   const overviewCardStyle = {
     background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)',
@@ -1477,7 +1637,7 @@ export default function Dashboard() {
               </div>
             </>
           ) : (
-            <div style={{ width: '100%', maxWidth: 1100, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ width: '100%', maxWidth: 1600, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                 <StatCard title="Total Employees" value={count} icon={<FaUsers />} color="#4b6cb7" />
                 <StatCard title="Active" value={activeEmployeesCount} icon={<FaChartLine />} color="#059669" />
@@ -1490,11 +1650,11 @@ export default function Dashboard() {
                 padding: 14,
                 borderRadius: 18,
                 background: 'linear-gradient(165deg, #f9fbff 0%, #eef4ff 58%, #ffffff 100%)',
-                width: 1100,
+                width: 1530,
                 margin: '0 auto',
                 marginLeft: 0,
               }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex',  alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                   <div>
                     <div style={{ fontSize: 19, fontWeight: 900, color: '#0f172a', letterSpacing: '-0.01em' }}>Attendance Rate</div>
                     <div style={{ marginTop: 4, fontSize: 13, color: '#64748b', fontWeight: 700 }}>Live analytics from Employees_Attendance records</div>
@@ -1651,7 +1811,7 @@ export default function Dashboard() {
 
              
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 0.7fr', gap: 12 }}>
                 <div style={overviewCardStyle}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                     <div>
@@ -1689,8 +1849,10 @@ export default function Dashboard() {
                       <div style={{ marginTop: 2, fontSize: 20, color: '#1e293b', fontWeight: 900 }}>{currentGrowthTotal}</div>
                     </div>
                     <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '8px 10px' }}>
-                      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
-                      <div style={{ marginTop: 2, fontSize: 14, color: '#0f172a', fontWeight: 900 }}>{peakGrowthPoint?.label || '—'} ({peakGrowthPoint?.count || 0})</div>
+                        <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
+                        <div style={{ marginTop: 2, fontSize: 14, color: '#0f172a', fontWeight: 900 }}>
+                          {peakGrowthPoint?.label || peakYear || '—'} — {Number(peakGrowthPoint?.totalCount || 0)} employees
+                        </div>
                     </div>
                   </div>
 
@@ -1722,19 +1884,20 @@ export default function Dashboard() {
                 <div style={overviewCardStyle}>
                   <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Department Breakdown</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {topDepartments.length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>No department data available.</div>
+                    {normalizedEmployees.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#6b7280' }}>No employee data available.</div>
                     ) : (
-                      topDepartments.map(([departmentName, departmentCount], index) => {
-                        const pct = Math.round((departmentCount / Math.max(1, count)) * 100);
+                      employmentOrder.map((etype) => {
+                        const cnt = employmentCounts[etype] || 0;
+                        const pct = Math.round((cnt / Math.max(1, normalizedEmployees.length)) * 100);
                         return (
-                          <div key={`${departmentName}-${index}`}>
+                          <div key={etype}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 12, color: '#334155', fontWeight: 700 }}>
-                              <span>{departmentName}</span>
-                              <span>{departmentCount} ({pct}%)</span>
+                              <span>{etype}</span>
+                              <span>{cnt} ({pct}%)</span>
                             </div>
-                            <div style={{ width: '100%', height: 8, borderRadius: 999, background: '#e7edff', overflow: 'hidden' }}>
-                              <div style={{ width: `${pct}%`, height: '100%', background: 'linear-gradient(90deg, #4b6cb7, #7c9ef0)' }} />
+                            <div style={{ width: '100%', height: 8, borderRadius: 999, background: '#fff7ed', overflow: 'hidden' }}>
+                              <div style={{ width: `${pct}%`, height: '100%', background: etype === 'Full-time' ? 'linear-gradient(90deg, #10b981, #34d399)' : etype === 'Part-time' ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : etype === 'Contract' ? 'linear-gradient(90deg, #ef4444, #f97316)' : 'linear-gradient(90deg, #9ca3af, #d1d5db)' }} />
                             </div>
                           </div>
                         );
@@ -2160,4 +2323,4 @@ export default function Dashboard() {
       ) : null}
     </div>
   );
-}
+};

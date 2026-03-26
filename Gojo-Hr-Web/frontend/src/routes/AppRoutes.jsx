@@ -7,6 +7,7 @@ import EmployeeDetail from '../pages/EmployeeDetail'
 import EmployeesAttendance from '../pages/EmployeesAttendance'
 import TerminatedEmployees from '../pages/Terminated_Employees'
 import Login from '../pages/Login'
+import HRSettings from '../pages/HRSettings'
 
 export default function AppRoutes() {
   return (
@@ -20,6 +21,7 @@ export default function AppRoutes() {
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />
         <Route path="/employees/terminated" element={<TerminatedEmployees />} />
         <Route path="/employees/:id" element={<EmployeeDetail />} />
+        <Route path="/settings" element={<HRSettings />} />
       </Routes>
     </>
   )

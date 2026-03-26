@@ -150,9 +150,11 @@ export default function EmployeeDetail() {
         hrId: payload.hrId || ''
       });
       setFormData(normalizeEmployeeRecord(payload));
-      // Set preview if image exists
-      const imgUrl = (payload.personal && payload.personal.profileImageName) || '';
-      if (imgUrl && imgUrl.startsWith('http')) setProfileImagePreview(imgUrl);
+      // Set preview if image exists in any known location
+      const imgUrl = (payload.personal && payload.personal.profileImageName)
+        || (payload.profileData && payload.profileData.personal && payload.profileData.personal.profileImageName)
+        || payload.profileImage || '';
+      if (imgUrl && String(imgUrl).startsWith('http')) setProfileImagePreview(imgUrl);
     } catch (e) {
       console.error(e);
       setError('Unable to load employee information.');
@@ -175,6 +177,28 @@ export default function EmployeeDetail() {
     setSaving(true);
     setError('');
     try {
+      // If a new profile image file is selected, upload it first so the
+      // returned URL can be included in the payload we send to the backend.
+      let profileUrl = formData.personal?.profileImageName || '';
+      if (profileImageFile) {
+        const fd = new FormData();
+        fd.append('profile', profileImageFile);
+        try {
+          const up = await api.post(`/employees/${encodeURIComponent(id)}/upload_profile_image`, fd, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+          profileUrl = up.data?.profileImageUrl || profileUrl;
+          // update local copy
+          setField('personal', 'profileImageName', profileUrl);
+          setProfileImagePreview(profileUrl);
+        } catch (err) {
+          console.error('Profile upload failed', err);
+          setError('Failed to upload profile image. Please try again.');
+          setSaving(false);
+          return;
+        }
+      }
+
       const payload = {
         ...meta,
         personal: formData.personal,
@@ -193,23 +217,17 @@ export default function EmployeeDetail() {
         }
       };
 
+      // ensure profile image is persisted in both top-level and profileData
+      if (profileUrl) {
+        payload.personal = { ...(payload.personal || {}), profileImageName: profileUrl };
+        payload.profileData = payload.profileData || {};
+        payload.profileData.personal = { ...(payload.profileData.personal || {}), profileImageName: profileUrl };
+      }
+
       await api.put(`/employees/${encodeURIComponent(id)}`, payload);
 
-      // If a new profile image file is selected, upload it
-      if (profileImageFile) {
-        const formDataObj = new FormData();
-        formDataObj.append('profile', profileImageFile);
-        try {
-          const res = await api.post(`/employees/${encodeURIComponent(id)}/upload_profile_image`, formDataObj, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-          });
-          const url = res.data.profileImageUrl;
-          setField('personal', 'profileImageName', url);
-          setProfileImagePreview(url);
-        } catch (err) {
-          alert('Failed to upload profile image.');
-        }
-      }
+      // reload employee to reflect saved values
+      await loadEmployee();
 
       alert('Employee information updated successfully.');
     } catch (e) {

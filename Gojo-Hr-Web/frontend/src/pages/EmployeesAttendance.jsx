@@ -25,6 +25,9 @@ export default function EmployeesAttendance() {
 
   const [selectedDate, setSelectedDate] = useState(() => toIsoDate(new Date()));
   const [employees, setEmployees] = useState([]);
+  const [selectedPosition, setSelectedPosition] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [hoveredEmployeeId, setHoveredEmployeeId] = useState(null);
   const [attendance, setAttendance] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -33,8 +36,18 @@ export default function EmployeesAttendance() {
 
   const markedBy = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || '';
 
+  const positions = useMemo(() => {
+    const set = new Set();
+    (employees || []).forEach((emp) => {
+      const job = emp?.job || emp?.profileData?.job || {};
+      const pos = job.position || emp.position || emp.role || 'Staff';
+      if (pos) set.add(pos);
+    });
+    return Array.from(set).sort();
+  }, [employees]);
+
   const normalizedEmployees = useMemo(() => {
-    return employees
+    const list = (employees || [])
       .filter((employee) => {
         // Exclude terminated employees from attendance marking
         const status = (employee.status || employee?.job?.status || employee?.profileData?.job?.status || '').toString().toLowerCase();
@@ -45,15 +58,33 @@ export default function EmployeesAttendance() {
         const job = employee?.job || employee?.profileData?.job || {};
         const personal = employee?.personal || employee?.profileData?.personal || {};
         const name = employee.name || employee.fullName || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ') || 'Employee';
+        const avatar =
+          employee.profileImage ||
+          employee.profileImageUrl ||
+          employee.photoURL ||
+          employee.photo ||
+          (employee.profile && (employee.profile.image || employee.profile.photo)) ||
+          (employee.personal && (employee.personal.photo || employee.personal.profileImage)) ||
+          (employee.profileData && employee.profileData.personal && employee.profileData.personal.photo) ||
+          '';
+        const initials = name.split(' ').filter(Boolean).slice(0,2).map(n=>n[0]?.toUpperCase()).join('');
         return {
           ...employee,
           _name: name,
+          _avatar: avatar,
+          _initials: initials || 'E',
           _department: job.department || employee.department || 'Unassigned',
           _position: job.position || employee.position || employee.role || 'Staff',
         };
-      })
-      .sort((a, b) => a._name.localeCompare(b._name));
-  }, [employees]);
+      });
+
+    let filtered = selectedPosition ? list.filter((e) => e._position === selectedPosition) : list;
+    if (searchTerm && searchTerm.trim()) {
+      const q = searchTerm.trim().toLowerCase();
+      filtered = filtered.filter((e) => (e._name || '').toLowerCase().includes(q) || (e.id || '').toLowerCase().includes(q));
+    }
+    return filtered.sort((a, b) => a._name.localeCompare(b._name));
+  }, [employees, selectedPosition, searchTerm]);
 
   useEffect(() => {
     async function loadEmployees() {
@@ -66,7 +97,45 @@ export default function EmployeesAttendance() {
               ...(payload || {}),
               id,
             }));
-        setEmployees(list);
+        // Best-effort: fetch users to obtain profile images or additional metadata
+        let usersMap = {};
+        try {
+          const ures = await api.get('/users');
+          const udata = ures.data || {};
+          if (Array.isArray(udata)) {
+            usersMap = udata.reduce((acc, u) => {
+              const key = u.id || u.uid || u.userId;
+              if (key) acc[key] = u;
+              return acc;
+            }, {});
+          } else if (udata && typeof udata === 'object') {
+            usersMap = Object.entries(udata).reduce((acc, [k, v]) => {
+              acc[k] = v; return acc;
+            }, {});
+          }
+        } catch (e) {
+          // ignore failure to fetch users — not critical
+          console.warn('Could not fetch /users for profile images', e);
+        }
+
+        const merged = list.map((emp) => {
+          const copy = { ...(emp || {}) };
+          const userByKey = usersMap[emp.id] || usersMap[emp.userId] || usersMap[emp.uid];
+          let fallbackUser = userByKey;
+          if (!fallbackUser) {
+            // try to match by email or employeeId if available
+            const values = Object.values(usersMap || {});
+            fallbackUser = values.find((u) => (u.employeeId && (u.employeeId === emp.id || u.employeeId === emp.userId)) || (u.email && emp.email && u.email.toLowerCase() === emp.email.toLowerCase()));
+          }
+
+          if (fallbackUser) {
+            copy.profileImage = copy.profileImage || fallbackUser.profileImage || fallbackUser.photoURL || fallbackUser.photo || fallbackUser.photoUrl || fallbackUser.avatar || '';
+          }
+
+          return copy;
+        });
+
+        setEmployees(merged);
       } catch (e) {
         console.error(e);
         setEmployees([]);
@@ -185,42 +254,87 @@ export default function EmployeesAttendance() {
         />
 
         <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px', width: '100%' }}>
-          <div style={{ maxWidth: 1100, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
+          <div style={{ maxWidth: 1500, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: '#111827' }}>Employees Attendance</div>
                 <div style={{ marginTop: 4, fontSize: 13, color: '#6b7280' }}>Set each employee as Present, Late, or Absent then save.</div>
               </div>
 
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Date</label>
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827' }}
-                  />
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, borderRadius: 12, background: '#f8fafc', border: '1px solid #eef2ff' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Date</label>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => setSelectedDate(e.target.value)}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Position</label>
+                    <select
+                      value={selectedPosition}
+                      onChange={(e) => setSelectedPosition(e.target.value)}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827', background: '#fff', cursor: 'pointer' }}
+                    >
+                      <option value="">All positions</option>
+                      {positions.length ? positions.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      )) : <option disabled>No positions</option>}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 240 }}>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Search</label>
+                    <input
+                      placeholder="Search by name or ID"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827' }}
+                    />
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving || isLoading}
-                  style={{
-                    height: 38,
-                    border: 'none',
-                    borderRadius: 10,
-                    padding: '0 16px',
-                    fontWeight: 800,
-                    cursor: isSaving || isLoading ? 'not-allowed' : 'pointer',
-                    background: '#4b6cb7',
-                    color: '#fff',
-                    opacity: isSaving || isLoading ? 0.7 : 1,
-                  }}
-                >
-                  {isSaving ? 'Saving...' : 'Save'}
-                </button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedPosition(''); setSearchTerm(''); }}
+                    style={{
+                      height: 38,
+                      border: '1px solid #dbe2f2',
+                      borderRadius: 10,
+                      padding: '0 12px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      background: '#fff',
+                      color: '#374151'
+                    }}
+                  >
+                    Clear
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={isSaving || isLoading}
+                    style={{
+                      height: 38,
+                      border: 'none',
+                      borderRadius: 10,
+                      padding: '0 16px',
+                      fontWeight: 800,
+                      cursor: isSaving || isLoading ? 'not-allowed' : 'pointer',
+                      background: '#4b6cb7',
+                      color: '#fff',
+                      opacity: isSaving || isLoading ? 0.7 : 1,
+                    }}
+                  >
+                    {isSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -251,6 +365,7 @@ export default function EmployeesAttendance() {
               ) : (
                 normalizedEmployees.map((employee) => {
                   const employeeId = employee.id;
+                  const isHovered = hoveredEmployeeId === employeeId;
                   const hasSavedOrSelectedStatus = Object.prototype.hasOwnProperty.call(attendance || {}, employeeId);
                   const record = attendance?.[employeeId] || {};
                   const rawStatus = hasSavedOrSelectedStatus
@@ -262,19 +377,41 @@ export default function EmployeesAttendance() {
                   return (
                     <div
                       key={employeeId}
+                      onMouseEnter={() => setHoveredEmployeeId(employeeId)}
+                      onMouseLeave={() => setHoveredEmployeeId(null)}
                       style={{
                         display: 'grid',
                         gridTemplateColumns: '2.2fr 1.2fr 1.2fr 1.1fr',
                         gap: 0,
-                        padding: '10px 12px',
-                        borderBottom: '1px solid #eef2ff',
+                        padding: '12px 14px',
+                        borderBottom: '1px solid #eef6ff',
                         alignItems: 'center',
                         background: styles.bg,
+                        transition: 'transform .12s ease, box-shadow .12s ease',
+                        transform: isHovered ? 'translateY(-4px)' : 'none',
+                        boxShadow: isHovered ? '0 8px 20px rgba(17,24,39,0.06)' : 'none',
+                        borderRadius: isHovered ? 12 : 0,
                       }}
                     >
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: '#111827' }}>{employee._name}</div>
-                        <div style={{ fontSize: 12, color: '#6b7280' }}>{employeeId}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ width: 40, height: 40, borderRadius: 999, overflow: 'hidden', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#eef2ff', color: '#1f2937', fontWeight: 800 }}>
+                            {employee._avatar ? (
+                              <img
+                                src={employee._avatar}
+                                alt={employee._name}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = '/default-profile.png'; }}
+                              />
+                            ) : (
+                              <span>{employee._initials}</span>
+                            )}
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: '#111827' }}>{employee._name}</div>
+                            <div style={{ fontSize: 12, color: '#6b7280' }}>{employeeId}</div>
+                          </div>
+                        </div>
                       </div>
                       <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._department}</div>
                       <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._position}</div>
