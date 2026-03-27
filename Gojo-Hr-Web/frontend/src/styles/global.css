@@ -325,12 +325,44 @@ html[data-theme="dark"] {
 }
 
 /* ---------------- DASHBOARD LAYOUT ---------------- */
+.dashboard-page {
+	min-height: 100vh;
+	height: 100vh;
+	overflow: hidden;
+	background: var(--page-bg);
+}
+
 .google-dashboard {
 	display: flex;
 	min-height: 100vh;
+	height: calc(100vh - var(--topbar-height));
 	background: var(--page-bg);
 	gap: 20px;
 	margin-top: var(--topbar-height);
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+.google-main {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.google-main::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
+}
+
+.dashboard-widgets {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.dashboard-widgets::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
 }
 
 /* ---------------- LEFT SIDEBAR ---------------- */
@@ -349,6 +381,14 @@ html[data-theme="dark"] {
 	left: 20px;
 	z-index: 40;
 	border-radius: 10px;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.google-sidebar::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
 }
 
 /* Sidebar profile */

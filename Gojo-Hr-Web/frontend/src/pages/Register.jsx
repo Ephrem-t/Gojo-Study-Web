@@ -1,8 +1,8 @@
 import React, { useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
-import { FaBell, FaFacebookMessenger, FaCog } from "react-icons/fa"
+import { useNavigate } from "react-router-dom"
 import axios from "axios"
 import Sidebar from "../components/Sidebar"
+import TopNavbar from '../components/TopNavbar';
 
 import { BACKEND_BASE } from "../config.js"
 
@@ -91,7 +91,7 @@ export default function Register() {
     }
   }
 
-  const roleOptions = ['Teacher', 'Management', 'Finance', 'HR']
+  const roleOptions = ['Teacher', 'Management', 'Finance', 'HR', 'Other']
   const activeSectionLabel = sections.find(section => section.key === activeSection)?.label || 'Section'
 
   return (
@@ -355,19 +355,7 @@ export default function Register() {
           }
         }
       `}</style>
-      <nav className="top-navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2>Gojo HR</h2>
-          <span className="muted">— Admin Dashboard</span>
-        </div>
-
-        <div className="nav-right">
-          <div className="icon-circle" title="Notifications"><FaBell /></div>
-          <div className="icon-circle" title="Messages" onClick={() => navigate('/all-chat')}><FaFacebookMessenger /></div>
-          <Link to="/settings" className="icon-circle" aria-label="Settings"><FaCog /></Link>
-          <img src={admin.profileImage || '/default-profile.png'} alt="admin" className="profile-img" />
-        </div>
-      </nav>
+      <TopNavbar admin={admin} />
 
       <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
         <Sidebar
@@ -380,11 +368,16 @@ export default function Register() {
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px' }}>
           <div className="register-shell">
             <div className="register-hero">
               <h3 className="register-title">Employee Registration Workspace</h3>
               <p className="register-subtitle">Choose a role and complete each section to create a polished employee profile.</p>
+              {selectedRole === 'other' ? (
+                <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 12, border: '1px solid #dbeafe', background: '#eff6ff', color: '#1e3a8a', fontSize: 12, fontWeight: 700 }}>
+                  Other employees are stored only in the Employees node. No Users or role nodes will be created.
+                </div>
+              ) : null}
               <div className="role-pill-wrap">
                 {roleOptions.map((role) => {
                   const roleValue = role.toLowerCase()
@@ -521,6 +514,8 @@ export default function Register() {
                       <option value="Finance">Finance</option>
                       <option value="HR">HR</option>
                       <option value="Administrative">Administrative</option>
+                      <option value="Management">Management</option>
+                      <option value="Other">Other</option>
                     </select>
                     <input placeholder="Hire Date" type="date" className="form-input" value={formData.job.hireDate} onChange={(e) => setFormValue('job','hireDate', e.target.value)} />
                     <input placeholder="Contract Start Date" type="date" className="form-input" value={formData.job.contractStartDate} onChange={(e) => setFormValue('job','contractStartDate', e.target.value)} />

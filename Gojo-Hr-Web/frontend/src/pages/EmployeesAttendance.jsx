@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { FaBell, FaFacebookMessenger, FaCog } from 'react-icons/fa';
+import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
 import Sidebar from '../components/Sidebar';
+import TopNavbar from '../components/TopNavbar';
 
 function toIsoDate(dateObj) {
   const year = dateObj.getFullYear();
@@ -204,6 +204,18 @@ export default function EmployeesAttendance() {
     return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
   };
 
+  const actionButtonStyles = (buttonStatus, activeStatus) => {
+    if (buttonStatus === activeStatus) {
+      return buttonStatus === 'present'
+        ? { background: '#16a34a', color: '#fff', border: '1px solid #16a34a' }
+        : buttonStatus === 'late'
+          ? { background: '#d97706', color: '#fff', border: '1px solid #d97706' }
+          : { background: '#dc2626', color: '#fff', border: '1px solid #dc2626' };
+    }
+
+    return { background: '#fff', color: '#475569', border: '1px solid #dbe2f2' };
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
     setErrorMessage('');
@@ -228,19 +240,7 @@ export default function EmployeesAttendance() {
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
-      <nav className="top-navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2>Gojo HR</h2>
-          <span className="muted">— Admin Dashboard</span>
-        </div>
-
-        <div className="nav-right">
-          <div className="icon-circle" title="Notifications"><FaBell /></div>
-          <div className="icon-circle" title="Messages" onClick={() => navigate('/all-chat')}><FaFacebookMessenger /></div>
-          <Link to="/settings" className="icon-circle" aria-label="Settings"><FaCog /></Link>
-          <img src={admin.profileImage || '/default-profile.png'} alt="admin" className="profile-img" />
-        </div>
-      </nav>
+      <TopNavbar admin={admin} />
 
       <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
         <Sidebar
@@ -253,7 +253,7 @@ export default function EmployeesAttendance() {
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px', width: '100%' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
           <div style={{ maxWidth: 1500, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
@@ -351,11 +351,10 @@ export default function EmployeesAttendance() {
             ) : null}
 
             <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid #e6ecf8', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2.2fr 1.2fr 1.2fr 1.1fr', gap: 0, padding: '11px 12px', background: '#f8faff', borderBottom: '1px solid #e6ecf8', fontSize: 12, fontWeight: 900, color: '#334155' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 1.2fr 1.8fr', gap: 0, padding: '11px 12px', background: '#f8faff', borderBottom: '1px solid #e6ecf8', fontSize: 12, fontWeight: 900, color: '#334155' }}>
                 <div>Employee</div>
-                <div>Department</div>
                 <div>Position</div>
-                <div style={{ textAlign: 'right' }}>Status</div>
+                <div style={{ textAlign: 'right' }}>Attendance</div>
               </div>
 
               {isLoading ? (
@@ -381,7 +380,7 @@ export default function EmployeesAttendance() {
                       onMouseLeave={() => setHoveredEmployeeId(null)}
                       style={{
                         display: 'grid',
-                        gridTemplateColumns: '2.2fr 1.2fr 1.2fr 1.1fr',
+                        gridTemplateColumns: '2.4fr 1.2fr 1.8fr',
                         gap: 0,
                         padding: '12px 14px',
                         borderBottom: '1px solid #eef6ff',
@@ -413,43 +412,36 @@ export default function EmployeesAttendance() {
                           </div>
                         </div>
                       </div>
-                      <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._department}</div>
                       <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._position}</div>
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 900,
-                            textTransform: displayStatus ? 'capitalize' : 'none',
-                            color: styles.text,
-                            background: '#fff',
-                            border: `1px solid ${styles.border}`,
-                            padding: '5px 10px',
-                            borderRadius: 999,
-                          }}
-                        >
-                          {displayStatus || 'Not set'}
-                        </span>
-
-                        <select
-                          value={displayStatus}
-                          onChange={(e) => handleSetStatus(employeeId, e.target.value)}
-                          style={{
-                            height: 34,
-                            borderRadius: 10,
-                            border: '1px solid #dbe2f2',
-                            padding: '0 10px',
-                            fontWeight: 800,
-                            color: '#111827',
-                            background: '#fff',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <option value="" disabled>Select status</option>
-                          <option value="present">Present</option>
-                          <option value="late">Late</option>
-                          <option value="absent">Absent</option>
-                        </select>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                          {[
+                            { value: 'present', label: 'Present' },
+                            { value: 'late', label: 'Late' },
+                            { value: 'absent', label: 'Absent' },
+                          ].map((statusOption) => {
+                            const buttonStyle = actionButtonStyles(statusOption.value, displayStatus);
+                            return (
+                              <button
+                                key={statusOption.value}
+                                type="button"
+                                onClick={() => handleSetStatus(employeeId, statusOption.value)}
+                                style={{
+                                  height: 34,
+                                  minWidth: 78,
+                                  borderRadius: 10,
+                                  padding: '0 12px',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                  transition: 'transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease',
+                                  ...buttonStyle,
+                                }}
+                              >
+                                {statusOption.label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   );

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { FaCog, FaBell, FaFacebookMessenger } from "react-icons/fa";
 import Sidebar from "../components/Sidebar";
+import TopNavbar from '../components/TopNavbar';
 
 // Mock fallback using provided Employees export (used when API fails)
 const MOCK_EMPLOYEES = {
@@ -178,7 +179,7 @@ const MOCK_EMPLOYEES = {
 
 export default function Employees() {
   const [employees, setEmployees] = useState([])
-  const [filter, setFilter] = useState('all') // 'all' or 'management'
+  const [filter, setFilter] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [admin, setAdmin] = useState(() => {
     try {
@@ -273,19 +274,7 @@ export default function Employees() {
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
-      <nav className="top-navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2>Gojo HR</h2>
-          <span className="muted">— Admin Dashboard</span>
-        </div>
-
-        <div className="nav-right">
-          <div className="icon-circle" title="Notifications"><FaBell /></div>
-          <div className="icon-circle" title="Messages" onClick={() => navigate('/all-chat')}><FaFacebookMessenger /></div>
-          <Link to="/settings" className="icon-circle" aria-label="Settings"><FaCog /></Link>
-          <img src={admin.profileImage || '/default-profile.png'} alt="admin" className="profile-img" />
-        </div>
-      </nav>
+      <TopNavbar admin={admin} />
 
       <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
         <Sidebar
@@ -298,7 +287,7 @@ export default function Employees() {
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px' }}>
           <style>{`
             .emp-main-shell {
               width: 100%;
@@ -487,6 +476,7 @@ export default function Employees() {
                 <button onClick={() => setFilter('finance')} className={`emp-filter-btn ${filter === 'finance' ? 'active' : ''}`}>Finance</button>
                 <button onClick={() => setFilter('hr')} className={`emp-filter-btn ${filter === 'hr' ? 'active' : ''}`}>HR</button>
                 <button onClick={() => setFilter('teacher')} className={`emp-filter-btn ${filter === 'teacher' ? 'active' : ''}`}>Teacher</button>
+                <button onClick={() => setFilter('other')} className={`emp-filter-btn ${filter === 'other' ? 'active' : ''}`}>Other</button>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
                     aria-label="Search employees"
@@ -545,6 +535,15 @@ export default function Employees() {
                           const isTeacherByCategory = empCat === 'teacher'
                           return isTeacherByEmployeeId || isTeacherByCategory
                         }
+                        if (filter === 'other') {
+                          const roleText = (raw.role || job.employeeCategory || job.position || '').toString().toLowerCase().trim()
+                          const hasKnownRoleId = Boolean(
+                            raw.teacherId || raw.managementId || raw.financeId || raw.hrId ||
+                            (e.user && (e.user.teacherId || e.user.managementId || e.user.financeId || e.user.hrId))
+                          )
+                          const isOtherByCategory = empCat === 'other' || roleText === 'other'
+                          return isOtherByCategory && !hasKnownRoleId
+                        }
                         // apply search filter
                         if (searchTerm && searchTerm.trim()) {
                           const t = searchTerm.toLowerCase().trim();
@@ -553,7 +552,8 @@ export default function Employees() {
                           const name = (e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')).toString().toLowerCase();
                           const id = (e.id || '').toString().toLowerCase();
                           const roleIdMatch = ((raw.teacherId || raw.managementId || raw.financeId || raw.hrId) || '').toString().toLowerCase();
-                          if (!(name.includes(t) || id.includes(t) || roleIdMatch.includes(t))) return false;
+                          const roleText = (jobLocal.employeeCategory || jobLocal.position || raw.role || '').toString().toLowerCase();
+                          if (!(name.includes(t) || id.includes(t) || roleIdMatch.includes(t) || roleText.includes(t))) return false;
                         }
                         return true
                       })

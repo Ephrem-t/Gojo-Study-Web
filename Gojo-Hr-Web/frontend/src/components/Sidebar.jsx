@@ -88,7 +88,7 @@ const readStoredSidebarSections = () => {
 
 let sidebarSectionsState = readStoredSidebarSections();
 const SIDEBAR_FIXED_WIDTH = 320;
-const SIDEBAR_FIXED_HEIGHT = "calc(102vh - 77px)";
+const SIDEBAR_FIXED_HEIGHT = "calc(100vh - var(--topbar-height, 56px))";
 
 const defaultRootStyle = {
   width: SIDEBAR_FIXED_WIDTH,
@@ -104,14 +104,14 @@ const defaultRootStyle = {
   boxShadow: "var(--shadow-panel)",
   height: SIDEBAR_FIXED_HEIGHT,
   maxHeight: SIDEBAR_FIXED_HEIGHT,
-  overflowY: "hidden",
+  overflowY: "auto",
   overflowX: "hidden",
   display: "flex",
   flexDirection: "column",
   alignSelf: "flex-start",
   boxSizing: "border-box",
-  scrollbarWidth: "thin",
-  scrollbarColor: "var(--border-strong) transparent",
+  scrollbarWidth: "none",
+  msOverflowStyle: "none",
   transition: "opacity 180ms ease, filter 180ms ease",
 };
 
@@ -131,7 +131,7 @@ function Sidebar({
   const location = useLocation();
   const navigate = useNavigate();
   const currentPath = location.pathname;
-  const isDashboardRoute = currentPath === "/" || currentPath === "/dashboard";
+  const isDashboardRoute = currentPath === "/dashboard";
   const [sidebarSections, setSidebarSections] = useState(() => ({ ...sidebarSectionsState }));
   const displayAdminId = admin?.hrId || admin?.adminId || admin?.username || "username";
   const displayName = admin?.name || "Admin Name";
@@ -256,7 +256,7 @@ function Sidebar({
           maxHeight: SIDEBAR_FIXED_HEIGHT,
           minHeight: 0,
           alignSelf: "stretch",
-          overflowY: "hidden",
+          overflowY: "auto",
           overscrollBehavior: "none",
         }
       : null),
@@ -288,7 +288,7 @@ function Sidebar({
     }
 
     if (item.action && !onSelectDashboardView) {
-      navigate("/", { replace: false, state: { dashboardAction: item.action } });
+      navigate("/dashboard", { replace: false, state: { dashboardAction: item.action } });
     }
   };
 

@@ -415,6 +415,34 @@ def list_users():
     return jsonify(data or {})
 
 
+@app.route('/school_context', methods=['GET'])
+def get_school_context():
+    return jsonify({
+        'schoolCode': DEFAULT_SCHOOL_CODE,
+        'schoolShortname': get_school_shortname(),
+        'platformRoot': PLATFORM_ROOT,
+        'schoolsRoot': SCHOOLS_ROOT,
+    }), 200
+
+
+@app.route('/teachers', methods=['GET'])
+def list_teachers():
+    data = teachers_ref().get()
+    return jsonify(data or {})
+
+
+@app.route('/management', methods=['GET'])
+def list_management():
+    data = managements_ref().get()
+    return jsonify(data or {})
+
+
+@app.route('/finance', methods=['GET'])
+def list_finance():
+    data = finances_ref().get()
+    return jsonify(data or {})
+
+
 @app.route('/users/<user_id>', methods=['GET'])
 def get_user(user_id):
     data = users_ref().child(user_id).get()
@@ -656,6 +684,98 @@ def _file_to_dataurl(fstorage):
     return f"data:{fstorage.mimetype};base64,{b64}"
 
 
+def _normalize_post_target_role(value):
+    allowed_roles = {'all', 'teacher', 'management', 'finance', 'hr'}
+    normalized = str(value or 'all').strip().lower()
+    return normalized if normalized in allowed_roles else 'all'
+
+
+def _lookup_user_for_post(user_id=None, admin_id=None):
+    users_map = users_ref().get() or {}
+    if not isinstance(users_map, dict):
+        return None, {}
+
+    candidate_ids = [str(value) for value in (user_id, admin_id) if value]
+
+    for candidate in candidate_ids:
+        payload = users_map.get(candidate)
+        if isinstance(payload, dict):
+            return candidate, payload
+
+    for uid, payload in users_map.items():
+        if not isinstance(payload, dict):
+            continue
+
+        linked_codes = {
+            str(payload.get('hrId') or ''),
+            str(payload.get('employeeId') or ''),
+            str(payload.get('username') or ''),
+        }
+        linked_codes.discard('')
+
+        if any(candidate in linked_codes for candidate in candidate_ids):
+            return str(uid), payload
+
+    return None, {}
+
+
+def _resolve_post_author(user_id=None, admin_id=None, fallback_name='', fallback_profile=''):
+    resolved_user_id, user_payload = _lookup_user_for_post(user_id=user_id, admin_id=admin_id)
+    if not isinstance(user_payload, dict):
+        user_payload = {}
+
+    resolved_admin_id = (
+        admin_id
+        or user_payload.get('hrId')
+        or user_payload.get('employeeId')
+        or user_payload.get('username')
+        or resolved_user_id
+        or ''
+    )
+
+    resolved_name = user_payload.get('name') or fallback_name or 'HR Office'
+    resolved_profile = user_payload.get('profileImage') or fallback_profile or ''
+
+    return {
+        'userId': str(resolved_user_id or user_id or ''),
+        'adminId': str(resolved_admin_id or ''),
+        'hrId': str(resolved_admin_id or ''),
+        'adminName': resolved_name,
+        'adminProfile': resolved_profile,
+    }
+
+
+def _normalize_post_record(post_id, payload):
+    item = dict(payload or {})
+    normalized_post_id = str(item.get('postId') or item.get('id') or post_id or '')
+    author_meta = _resolve_post_author(
+        user_id=item.get('userId'),
+        admin_id=item.get('adminId') or item.get('hrId'),
+        fallback_name=item.get('adminName') or item.get('name') or '',
+        fallback_profile=item.get('adminProfile') or item.get('profileImage') or '',
+    )
+
+    likes = item.get('likes') if isinstance(item.get('likes'), dict) else {}
+    like_count_raw = item.get('likeCount')
+    try:
+        like_count = int(like_count_raw)
+    except Exception:
+        like_count = len(likes)
+
+    return {
+        **item,
+        **author_meta,
+        'postId': normalized_post_id,
+        'id': normalized_post_id,
+        'targetRole': _normalize_post_target_role(item.get('targetRole')),
+        'likes': likes,
+        'likeCount': max(like_count, len(likes)),
+        'message': item.get('message') or '',
+        'postUrl': item.get('postUrl') or '',
+        'time': item.get('time') or item.get('createdAt') or datetime.utcnow().isoformat() + 'Z',
+    }
+
+
 @app.route('/api/create_post', methods=['POST'])
 def create_post():
     try:
@@ -671,25 +791,45 @@ def create_post():
 
         message = (pick('message', '') or '').strip()
         post_url = pick('postUrl', '') or ''
-        hr_id = pick('hrId', '') or ''
+        admin_id = pick('adminId', '') or pick('hrId', '') or ''
         admin_name = pick('adminName', '') or ''
         admin_profile = pick('adminProfile', '') or ''
-        user_id = pick('userId', '') or ''
-        target_role = (pick('targetRole', 'all') or 'all').strip().lower()
+        user_id = pick('userId', '') or admin_id or ''
+        target_role = _normalize_post_target_role(pick('targetRole', 'all'))
+
+        if not message and not post_url:
+            return jsonify({'success': False, 'message': 'Post message or media is required.'}), 400
+
+        author_meta = _resolve_post_author(
+            user_id=user_id,
+            admin_id=admin_id,
+            fallback_name=admin_name,
+            fallback_profile=admin_profile,
+        )
+
+        post_node = posts_ref().push()
+        timestamp = datetime.utcnow().isoformat() + 'Z'
         post_obj = {
-            'hrId':  hr_id,
-            'userId': user_id,
-            'adminName': admin_name or 'HR Office',
-            'adminProfile': admin_profile,
+            'postId': post_node.key,
+            'id': post_node.key,
+            'adminId': author_meta['adminId'],
+            'hrId': author_meta['hrId'],
+            'userId': author_meta['userId'],
+            'adminName': author_meta['adminName'],
+            'adminProfile': author_meta['adminProfile'],
             'postUrl': post_url,
             'message': message,
-            'targetRole': target_role or 'all',
+            'targetRole': target_role,
             'likeCount': 0,
             'likes': {},
             'seenBy': {},
-            'time': datetime.utcnow().isoformat()
+            'time': timestamp,
+            'createdAt': timestamp,
+            'updatedAt': timestamp,
         }
-        # (removed stray else and unrelated like logic)
+        post_node.set(post_obj)
+
+        return jsonify({'success': True, 'post': _normalize_post_record(post_node.key, post_obj)}), 201
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -777,9 +917,7 @@ def get_posts():
         posts = []
         if isinstance(raw, dict):
             for pid, val in raw.items():
-                item = val or {}
-                item['id'] = item.get('id') or pid
-                posts.append(item)
+                posts.append(_normalize_post_record(pid, val))
 
         try:
             posts.sort(key=lambda p: p.get('time') or '', reverse=True)
@@ -791,9 +929,148 @@ def get_posts():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/update_post/<post_id>', methods=['PUT', 'PATCH'])
+def update_post(post_id):
+    try:
+        post_ref = posts_ref().child(str(post_id))
+        existing = post_ref.get()
+        if existing is None:
+            return jsonify({'success': False, 'message': 'Post not found.'}), 404
+
+        body = request.get_json(silent=True) or {}
+        form = request.form.to_dict() if request.form else {}
+
+        def pick(key, default=None):
+            if form.get(key) is not None:
+                return form.get(key)
+            if body.get(key) is not None:
+                return body.get(key)
+            return default
+
+        message = (pick('message', existing.get('message', '')) or '').strip()
+        post_url = pick('postUrl', existing.get('postUrl', '')) or ''
+        target_role = _normalize_post_target_role(pick('targetRole', existing.get('targetRole', 'all')))
+
+        if not message and not post_url:
+            return jsonify({'success': False, 'message': 'Post message or media is required.'}), 400
+
+        update_payload = {
+            'message': message,
+            'postUrl': post_url,
+            'targetRole': target_role,
+            'updatedAt': datetime.utcnow().isoformat() + 'Z',
+        }
+        post_ref.update(update_payload)
+
+        updated_post = _normalize_post_record(post_id, {**existing, **update_payload})
+        return jsonify({'success': True, 'post': updated_post, 'postId': str(post_id)}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/delete_post/<post_id>', methods=['DELETE'])
+def delete_post(post_id):
+    try:
+        post_ref = posts_ref().child(str(post_id))
+        existing = post_ref.get()
+        if existing is None:
+            return jsonify({'success': False, 'message': 'Post not found.'}), 404
+
+        post_ref.delete()
+        return jsonify({'success': True, 'postId': str(post_id)}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/like_post', methods=['POST'])
+def like_post():
+    try:
+        payload = request.get_json() or {}
+        post_id = str(payload.get('postId') or '').strip()
+        actor_id = str(payload.get('userId') or payload.get('adminId') or '').strip()
+
+        if not post_id:
+            return jsonify({'success': False, 'message': 'postId is required.'}), 400
+        if not actor_id:
+            return jsonify({'success': False, 'message': 'userId is required.'}), 400
+
+        post_ref = posts_ref().child(post_id)
+        existing = post_ref.get()
+        if existing is None:
+            return jsonify({'success': False, 'message': 'Post not found.'}), 404
+
+        existing = existing or {}
+        likes = existing.get('likes') if isinstance(existing.get('likes'), dict) else {}
+
+        if actor_id in likes:
+            likes.pop(actor_id, None)
+        else:
+            likes[actor_id] = {
+                'likedAt': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        like_count = len(likes)
+        update_payload = {
+            'likes': likes,
+            'likeCount': like_count,
+            'updatedAt': datetime.utcnow().isoformat() + 'Z',
+        }
+        post_ref.update(update_payload)
+
+        updated_post = _normalize_post_record(post_id, {**existing, **update_payload})
+        return jsonify({
+            'success': True,
+            'post': updated_post,
+            'postId': post_id,
+            'likes': likes,
+            'likeCount': like_count,
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/posts/mark_seen', methods=['POST'])
+def mark_posts_seen():
+    try:
+        payload = request.get_json(silent=True) or {}
+        actor_id = str(payload.get('userId') or payload.get('adminId') or '').strip()
+        post_ids = payload.get('postIds') or []
+
+        if not actor_id:
+            return jsonify({'success': False, 'message': 'userId is required.'}), 400
+        if not isinstance(post_ids, list) or not post_ids:
+            return jsonify({'success': True, 'updated': 0, 'postIds': []}), 200
+
+        updated_ids = []
+        seen_at = datetime.utcnow().isoformat() + 'Z'
+
+        for raw_post_id in post_ids:
+            post_id = str(raw_post_id or '').strip()
+            if not post_id:
+                continue
+
+            post_ref = posts_ref().child(post_id)
+            existing = post_ref.get()
+            if existing is None:
+                continue
+
+            seen_by = existing.get('seenBy') if isinstance(existing.get('seenBy'), dict) else {}
+            seen_by[actor_id] = seen_at
+            post_ref.update({
+                'seenBy': seen_by,
+                'updatedAt': seen_at,
+            })
+            updated_ids.append(post_id)
+
+        return jsonify({'success': True, 'updated': len(updated_ids), 'postIds': updated_ids}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/register/<role>', methods=['POST'])
 def register_role(role):
     import time
+    role = str(role or '').strip().lower()
     form = request.form.to_dict()
     files = request.files
 

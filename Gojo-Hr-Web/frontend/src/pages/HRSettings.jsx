@@ -5,6 +5,7 @@ import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
 import Sidebar from '../components/Sidebar';
+import TopNavbar from '../components/TopNavbar';
 
 export default function HRSettings() {
   const navigate = useNavigate();
@@ -127,19 +128,7 @@ export default function HRSettings() {
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
-      <nav className="top-navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2>Gojo HR</h2>
-          <span className="muted">— Admin Dashboard</span>
-        </div>
-
-        <div className="nav-right">
-          <div className="icon-circle" title="Notifications"><FaBell /></div>
-          <div className="icon-circle" title="Messages" onClick={() => navigate('/all-chat')}><FaFacebookMessenger /></div>
-          <button className="icon-circle" aria-label="Settings"><FaCog /></button>
-          <img src={admin.profileImage || '/default-profile.png'} alt="admin" className="profile-img" />
-        </div>
-      </nav>
+      <TopNavbar admin={admin} />
 
       <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
         <Sidebar
@@ -152,7 +141,7 @@ export default function HRSettings() {
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px', width: '100%' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
           <div style={{ maxWidth: 900, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 24 }}>
             <h3 style={{ fontSize: 20, fontWeight: 900, color: '#111827' }}>HR Settings</h3>
             <p style={{ color: '#6b7280', marginTop: 6 }}>Update your profile details and image.</p>

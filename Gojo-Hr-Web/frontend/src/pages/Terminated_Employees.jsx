@@ -5,6 +5,7 @@ import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
 import Sidebar from '../components/Sidebar';
+import TopNavbar from '../components/TopNavbar';
 
 function normalizeEmployees(data) {
   const list = Array.isArray(data)
@@ -101,19 +102,7 @@ export default function TerminatedEmployees() {
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
-      <nav className="top-navbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2>Gojo HR</h2>
-          <span className="muted">— Admin Dashboard</span>
-        </div>
-
-        <div className="nav-right">
-          <div className="icon-circle" title="Notifications"><FaBell /></div>
-          <div className="icon-circle" title="Messages" onClick={() => navigate('/all-chat')}><FaFacebookMessenger /></div>
-          <Link to="/settings" className="icon-circle" aria-label="Settings"><FaCog /></Link>
-          <img src={admin.profileImage || '/default-profile.png'} alt="admin" className="profile-img" />
-        </div>
-      </nav>
+      <TopNavbar admin={admin} />
 
       <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
         <Sidebar
@@ -126,7 +115,7 @@ export default function TerminatedEmployees() {
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, padding: '0 2px', width: '100%' }}>
+        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
           <div style={{ maxWidth: 1500, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
