@@ -6,6 +6,28 @@ import { FaCog, FaBell, FaFacebookMessenger } from "react-icons/fa";
 import Sidebar from "../components/Sidebar";
 import TopNavbar from '../components/TopNavbar';
 
+const normalizeRoleValue = (value = '') => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+
+const getSchoolAdminId = (...sources) => {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue
+    if (source.schoolAdminId) return source.schoolAdminId
+    if (source.managementId) return source.managementId
+  }
+  return ''
+}
+
+const formatEmployeeRoleLabel = (value = '') => {
+  const normalized = normalizeRoleValue(value)
+  if (normalized === 'school_admins' || normalized === 'school_admin' || normalized === 'management') {
+    return 'School Admins'
+  }
+  if (!normalized) return ''
+  return String(value)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
 // Mock fallback using provided Employees export (used when API fails)
 const MOCK_EMPLOYEES = {
   "-OltxoGMqQRv8fuufdNI": {
@@ -472,7 +494,7 @@ export default function Employees() {
               <p className="emp-subtitle">Manage all staff profiles, roles, and details from one professional workspace.</p>
               <div className="emp-toolbar">
                 <button onClick={() => setFilter('all')} className={`emp-filter-btn ${filter === 'all' ? 'active' : ''}`}>All</button>
-                <button onClick={() => setFilter('management')} className={`emp-filter-btn ${filter === 'management' ? 'active' : ''}`}>Management</button>
+                <button onClick={() => setFilter('school_admins')} className={`emp-filter-btn ${filter === 'school_admins' ? 'active' : ''}`}>School Admins</button>
                 <button onClick={() => setFilter('finance')} className={`emp-filter-btn ${filter === 'finance' ? 'active' : ''}`}>Finance</button>
                 <button onClick={() => setFilter('hr')} className={`emp-filter-btn ${filter === 'hr' ? 'active' : ''}`}>HR</button>
                 <button onClick={() => setFilter('teacher')} className={`emp-filter-btn ${filter === 'teacher' ? 'active' : ''}`}>Teacher</button>
@@ -514,11 +536,11 @@ export default function Employees() {
                         if (statusValue.includes('terminated')) {
                           return false
                         }
-                        const empCat = (job.employeeCategory || job.position || '').toString().toLowerCase()
-                        if (filter === 'management') {
-                          const isMgmtByEmployeeId = Boolean(raw.managementId || (e.user && e.user.managementId))
-                          const isMgmtByCategory = empCat === 'management' || empCat.includes('director') || empCat.includes('manager')
-                          return isMgmtByEmployeeId || isMgmtByCategory
+                        const empCat = normalizeRoleValue(job.employeeCategory || job.position || '')
+                        if (filter === 'school_admins') {
+                          const isSchoolAdminByEmployeeId = Boolean(getSchoolAdminId(raw, raw.profileData, e.user))
+                          const isSchoolAdminByCategory = empCat === 'school_admins' || empCat === 'school_admin' || empCat === 'management' || empCat.includes('director') || empCat.includes('manager')
+                          return isSchoolAdminByEmployeeId || isSchoolAdminByCategory
                         }
                         if (filter === 'finance') {
                           const isFinanceByEmployeeId = Boolean(raw.financeId || (e.user && e.user.financeId))
@@ -538,8 +560,8 @@ export default function Employees() {
                         if (filter === 'other') {
                           const roleText = (raw.role || job.employeeCategory || job.position || '').toString().toLowerCase().trim()
                           const hasKnownRoleId = Boolean(
-                            raw.teacherId || raw.managementId || raw.financeId || raw.hrId ||
-                            (e.user && (e.user.teacherId || e.user.managementId || e.user.financeId || e.user.hrId))
+                            raw.teacherId || getSchoolAdminId(raw, raw.profileData, e.user) || raw.financeId || raw.hrId ||
+                            (e.user && (e.user.teacherId || e.user.financeId || e.user.hrId))
                           )
                           const isOtherByCategory = empCat === 'other' || roleText === 'other'
                           return isOtherByCategory && !hasKnownRoleId
@@ -551,7 +573,7 @@ export default function Employees() {
                           const jobLocal = raw.job || (raw.profileData && raw.profileData.job) || {}
                           const name = (e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')).toString().toLowerCase();
                           const id = (e.id || '').toString().toLowerCase();
-                          const roleIdMatch = ((raw.teacherId || raw.managementId || raw.financeId || raw.hrId) || '').toString().toLowerCase();
+                          const roleIdMatch = ((raw.teacherId || getSchoolAdminId(raw, raw.profileData, e.user) || raw.financeId || raw.hrId) || '').toString().toLowerCase();
                           const roleText = (jobLocal.employeeCategory || jobLocal.position || raw.role || '').toString().toLowerCase();
                           if (!(name.includes(t) || id.includes(t) || roleIdMatch.includes(t) || roleText.includes(t))) return false;
                         }
@@ -574,10 +596,11 @@ export default function Employees() {
                         const idDisplay = (e.id || '').toString()
                         const name = e.name || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ')
                         const role = job.employeeCategory || job.position || raw.role || ''
+                        const roleLabel = formatEmployeeRoleLabel(role)
                         const roleId =
-                          raw.teacherId || raw.managementId || raw.financeId || raw.hrId ||
-                          (raw.profileData && (raw.profileData.teacherId || raw.profileData.managementId || raw.profileData.financeId || raw.profileData.hrId)) ||
-                          (e.user && (e.user.teacherId || e.user.managementId || e.user.financeId || e.user.hrId)) || ''
+                          raw.teacherId || getSchoolAdminId(raw, raw.profileData, e.user) || raw.financeId || raw.hrId ||
+                          (raw.profileData && (raw.profileData.teacherId || raw.profileData.financeId || raw.profileData.hrId)) ||
+                          (e.user && (e.user.teacherId || e.user.financeId || e.user.hrId)) || ''
                         const phone = contact.phone1 || contact.phone || contact.phone2 || ''
                         const deptPos = [job.department, job.position].filter(Boolean).join(' / ')
                         const joined = job.hireDate || job.dateJoined || ''
@@ -595,7 +618,7 @@ export default function Employees() {
                             </td>
                             <td>{idDisplay}</td>
                             <td className="emp-name">{name || '—'}</td>
-                            <td className="emp-role">{role}{roleId ? ` (${roleId})` : ''}</td>
+                            <td className="emp-role">{roleLabel || '—'}{roleId ? ` (${roleId})` : ''}</td>
                             <td>{phone || '—'}</td>
                             <td>{deptPos || '—'}</td>
                             <td>{joined || '—'}</td>

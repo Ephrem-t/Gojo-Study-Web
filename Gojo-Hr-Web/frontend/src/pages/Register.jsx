@@ -91,8 +91,15 @@ export default function Register() {
     }
   }
 
-  const roleOptions = ['Teacher', 'Management', 'Finance', 'HR', 'Other']
+  const roleOptions = [
+    { label: 'Teacher', value: 'teacher' },
+    { label: 'School Admins', value: 'school_admins' },
+    { label: 'Finance', value: 'finance' },
+    { label: 'HR', value: 'hr' },
+    { label: 'Other', value: 'other' }
+  ]
   const activeSectionLabel = sections.find(section => section.key === activeSection)?.label || 'Section'
+  const activeRoleLabel = roleOptions.find((role) => role.value === selectedRole)?.label || 'Role'
 
   return (
     <div className="dashboard-page" style={{ minHeight: '100vh' }}>
@@ -380,15 +387,14 @@ export default function Register() {
               ) : null}
               <div className="role-pill-wrap">
                 {roleOptions.map((role) => {
-                  const roleValue = role.toLowerCase()
-                  const isSelected = selectedRole === roleValue
+                  const isSelected = selectedRole === role.value
                   return (
                     <button
-                      key={role}
-                      onClick={() => setSelectedRole(roleValue)}
+                      key={role.value}
+                      onClick={() => setSelectedRole(role.value)}
                       className={`role-pill ${isSelected ? 'active' : ''}`}
                     >
-                      {role}
+                      {role.label}
                     </button>
                   )
                 })}
@@ -415,7 +421,7 @@ export default function Register() {
                 <div className="form-card">
                   <div className="form-card-header">
                     <h3>{activeSectionLabel} Details</h3>
-                    <span className="chip">{selectedRole.toUpperCase()}</span>
+                    <span className="chip">{activeRoleLabel}</span>
                   </div>
 
                   <div className="progress-wrap">
@@ -469,6 +475,8 @@ export default function Register() {
                       <option value="BSc">BSc</option>
                       <option value="MSc">MSc</option>
                       <option value="PhD">PhD</option>
+                      <option value="Prof.">Prof.</option>
+                      <option value="Other">Other</option>
                     </select>
                     <input placeholder="Field of Study" className="form-input" value={formData.education.fieldOfStudy} onChange={(e) => setFormValue('education','fieldOfStudy', e.target.value)} />
                     <input placeholder="Institution Name" className="form-input" value={formData.education.institution} onChange={(e) => setFormValue('education','institution', e.target.value)} />
@@ -514,7 +522,7 @@ export default function Register() {
                       <option value="Finance">Finance</option>
                       <option value="HR">HR</option>
                       <option value="Administrative">Administrative</option>
-                      <option value="Management">Management</option>
+                      <option value="School Admins">School Admins</option>
                       <option value="Other">Other</option>
                     </select>
                     <input placeholder="Hire Date" type="date" className="form-input" value={formData.job.hireDate} onChange={(e) => setFormValue('job','hireDate', e.target.value)} />

@@ -198,22 +198,22 @@ export default function EmployeesAttendance() {
   };
 
   const statusStyles = (status) => {
-    if (!status) return { bg: '#ffffff', border: '#dbe2f2', text: '#64748b' };
-    if (status === 'present') return { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' };
-    if (status === 'late') return { bg: '#fffbeb', border: '#fde68a', text: '#92400e' };
-    return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
+    if (!status) return { bg: 'var(--surface-panel, #ffffff)', border: 'var(--border-soft, #dbe2f2)', text: 'var(--text-muted, #64748b)' };
+    if (status === 'present') return { bg: 'var(--success-soft, #f0fdf4)', border: 'var(--success-border, #bbf7d0)', text: 'var(--success, #166534)' };
+    if (status === 'late') return { bg: 'var(--warning-soft, #fffbeb)', border: 'var(--warning-border, #fde68a)', text: 'var(--warning, #92400e)' };
+    return { bg: 'var(--danger-soft, #fef2f2)', border: 'var(--danger-border, #fecaca)', text: 'var(--danger, #991b1b)' };
   };
 
   const actionButtonStyles = (buttonStatus, activeStatus) => {
     if (buttonStatus === activeStatus) {
       return buttonStatus === 'present'
-        ? { background: '#16a34a', color: '#fff', border: '1px solid #16a34a' }
+        ? { background: 'var(--success, #16a34a)', color: '#fff', border: '1px solid var(--success, #16a34a)' }
         : buttonStatus === 'late'
-          ? { background: '#d97706', color: '#fff', border: '1px solid #d97706' }
-          : { background: '#dc2626', color: '#fff', border: '1px solid #dc2626' };
+          ? { background: 'var(--warning, #d97706)', color: '#fff', border: '1px solid var(--warning, #d97706)' }
+          : { background: 'var(--danger, #dc2626)', color: '#fff', border: '1px solid var(--danger, #dc2626)' };
     }
 
-    return { background: '#fff', color: '#475569', border: '1px solid #dbe2f2' };
+    return { background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #475569)', border: '1px solid var(--border-soft, #dbe2f2)' };
   };
 
   const handleSave = async () => {
@@ -254,31 +254,31 @@ export default function EmployeesAttendance() {
         />
 
         <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
-          <div style={{ maxWidth: 1500, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
+          <div style={{ maxWidth: 1500, margin: '0 auto', background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8fafc) 100%)', borderRadius: 16, border: '1px solid var(--border-soft, #e6ecf8)', boxShadow: 'var(--shadow-panel, 0 10px 24px rgba(17,24,39,0.08))', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontSize: 20, fontWeight: 900, color: '#111827' }}>Employees Attendance</div>
-                <div style={{ marginTop: 4, fontSize: 13, color: '#6b7280' }}>Set each employee as Present, Late, or Absent then save.</div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Employees Attendance</div>
+                <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Set each employee as Present, Late, or Absent then save.</div>
               </div>
 
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, borderRadius: 12, background: '#f8fafc', border: '1px solid #eef2ff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, borderRadius: 12, background: 'var(--surface-muted, #f8fafc)', border: '1px solid var(--border-soft, #eef2ff)' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Date</label>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Date</label>
                     <input
                       type="date"
                       value={selectedDate}
                       onChange={(e) => setSelectedDate(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827' }}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', background: 'var(--input-bg, #fff)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)' }}
                     />
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Position</label>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Position</label>
                     <select
                       value={selectedPosition}
                       onChange={(e) => setSelectedPosition(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827', background: '#fff', cursor: 'pointer' }}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)', background: 'var(--input-bg, #fff)', cursor: 'pointer' }}
                     >
                       <option value="">All positions</option>
                       {positions.length ? positions.map((p) => (
@@ -288,12 +288,12 @@ export default function EmployeesAttendance() {
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 240 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Search</label>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Search</label>
                     <input
                       placeholder="Search by name or ID"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid #dbe2f2', padding: '0 10px', fontWeight: 700, color: '#111827' }}
+                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', background: 'var(--input-bg, #fff)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)' }}
                     />
                   </div>
                 </div>
@@ -304,13 +304,13 @@ export default function EmployeesAttendance() {
                     onClick={() => { setSelectedPosition(''); setSearchTerm(''); }}
                     style={{
                       height: 38,
-                      border: '1px solid #dbe2f2',
+                      border: '1px solid var(--border-soft, #dbe2f2)',
                       borderRadius: 10,
                       padding: '0 12px',
                       fontWeight: 800,
                       cursor: 'pointer',
-                      background: '#fff',
-                      color: '#374151'
+                      background: 'var(--surface-panel, #fff)',
+                      color: 'var(--text-secondary, #374151)'
                     }}
                   >
                     Clear
@@ -327,7 +327,7 @@ export default function EmployeesAttendance() {
                       padding: '0 16px',
                       fontWeight: 800,
                       cursor: isSaving || isLoading ? 'not-allowed' : 'pointer',
-                      background: '#4b6cb7',
+                      background: 'linear-gradient(135deg, var(--accent, #4b6cb7) 0%, var(--accent-strong, #1d4ed8) 100%)',
                       color: '#fff',
                       opacity: isSaving || isLoading ? 0.7 : 1,
                     }}
@@ -339,28 +339,28 @@ export default function EmployeesAttendance() {
             </div>
 
             {errorMessage ? (
-              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--danger-border, #fecaca)', background: 'var(--danger-soft, #fef2f2)', color: 'var(--danger, #991b1b)', fontSize: 13, fontWeight: 700 }}>
                 {errorMessage}
               </div>
             ) : null}
 
             {successMessage ? (
-              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#166534', fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--success-border, #bbf7d0)', background: 'var(--success-soft, #f0fdf4)', color: 'var(--success, #166534)', fontSize: 13, fontWeight: 700 }}>
                 {successMessage}
               </div>
             ) : null}
 
-            <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid #e6ecf8', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 1.2fr 1.8fr', gap: 0, padding: '11px 12px', background: '#f8faff', borderBottom: '1px solid #e6ecf8', fontSize: 12, fontWeight: 900, color: '#334155' }}>
+            <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid var(--border-soft, #e6ecf8)', overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 1.2fr 1.8fr', gap: 0, padding: '11px 12px', background: 'var(--surface-muted, #f8faff)', borderBottom: '1px solid var(--border-soft, #e6ecf8)', fontSize: 12, fontWeight: 900, color: 'var(--text-secondary, #334155)' }}>
                 <div>Employee</div>
                 <div>Position</div>
                 <div style={{ textAlign: 'right' }}>Attendance</div>
               </div>
 
               {isLoading ? (
-                <div style={{ padding: 14, fontSize: 13, color: '#6b7280' }}>Loading attendance...</div>
+                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Loading attendance...</div>
               ) : normalizedEmployees.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: '#6b7280' }}>No employees found.</div>
+                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>No employees found.</div>
               ) : (
                 normalizedEmployees.map((employee) => {
                   const employeeId = employee.id;
@@ -383,7 +383,7 @@ export default function EmployeesAttendance() {
                         gridTemplateColumns: '2.4fr 1.2fr 1.8fr',
                         gap: 0,
                         padding: '12px 14px',
-                        borderBottom: '1px solid #eef6ff',
+                        borderBottom: '1px solid var(--border-soft, #eef6ff)',
                         alignItems: 'center',
                         background: styles.bg,
                         transition: 'transform .12s ease, box-shadow .12s ease',
@@ -394,7 +394,7 @@ export default function EmployeesAttendance() {
                     >
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ width: 40, height: 40, borderRadius: 999, overflow: 'hidden', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#eef2ff', color: '#1f2937', fontWeight: 800 }}>
+                          <div style={{ width: 40, height: 40, borderRadius: 999, overflow: 'hidden', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-accent, #eef2ff)', color: 'var(--text-primary, #1f2937)', fontWeight: 800 }}>
                             {employee._avatar ? (
                               <img
                                 src={employee._avatar}
@@ -407,12 +407,12 @@ export default function EmployeesAttendance() {
                             )}
                           </div>
                           <div>
-                            <div style={{ fontSize: 13, fontWeight: 800, color: '#111827' }}>{employee._name}</div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>{employeeId}</div>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{employee._name}</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>{employeeId}</div>
                           </div>
                         </div>
                       </div>
-                      <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._position}</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>{employee._position}</div>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                           {[

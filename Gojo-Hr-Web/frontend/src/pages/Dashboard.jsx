@@ -12,17 +12,17 @@ import TopNavbar from '../components/TopNavbar';
 
 function StatCard({ title, value, icon, color }) {
   return (
-    <div style={{ background: '#fff', borderRadius: 12, padding: 18, minWidth: 180, flex: 1, boxShadow: '0 6px 20px rgba(50,60,90,0.06)', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ background: color || '#eef2ff', color: '#fff', padding: 12, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
+    <div style={{ background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)', borderRadius: 12, padding: 18, minWidth: 180, flex: 1, boxShadow: 'var(--shadow-soft, 0 6px 20px rgba(50,60,90,0.06))', border: '1px solid var(--border-soft, #dbe2f2)', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ background: color || 'var(--accent, #4b6cb7)', color: '#fff', padding: 12, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
       <div>
-        <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 700 }}>{title}</div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: '#111827' }}>{value}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)', fontWeight: 700 }}>{title}</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{value}</div>
       </div>
     </div>
   )
 }
 
-function LineChart({ data = [], width = 420, height = 120, color = '#4b6cb7' }) {
+function LineChart({ data = [], width = 420, height = 120, color = 'var(--accent, #4b6cb7)' }) {
   if (!data.length) return null;
   const max = Math.max(...data);
   const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
@@ -78,7 +78,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
       </defs>
 
       {/* background panel */}
-      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="#fff" stroke="#eef3ff" />
+      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
 
       {/* y grid */}
       {Array.from({ length: 4 }).map((_, i) => {
@@ -86,8 +86,8 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
         const y = yFor(val);
         return (
           <g key={`tick-${i}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#f0f6ff" />
-            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="#64748b" textAnchor="end" fontWeight="700">{val}</text>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #f0f6ff)" />
+            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="var(--text-muted, #64748b)" textAnchor="end" fontWeight="700">{val}</text>
           </g>
         );
       })}
@@ -111,7 +111,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
             <rect x={femaleX} y={topPad + (chartHeight - femaleH)} width={barWidth} height={femaleH} rx={4} fill={colors.female} opacity={0.98} />
 
             {(idx % Math.max(1, Math.ceil(points.length / 6)) === 0 || idx === points.length - 1) ? (
-              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="#64748b" fontWeight="800">{pt.label}</text>
+              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="var(--text-muted, #64748b)" fontWeight="800">{pt.label}</text>
             ) : null}
           </g>
         );
@@ -119,25 +119,25 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
 
       {/* legend */}
       <g>
-        <rect x={width - rightPad - 220} y={14} width={208} height={44} rx={12} fill="#fff" stroke="#eef3ff" />
-        <g transform={`translate(${width - rightPad - 200}, 34)`}> 
+        <rect x={width - rightPad - 248} y={14} width={236} height={44} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
+        <g transform={`translate(${width - rightPad - 228}, 34)`}>
           <g>
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.total} />
-            <text x={22} y={4} fontSize="12" fill={colors.total} fontWeight="800">Total</text>
+            <text x={20} y={4} fontSize="11" fill={colors.total} fontWeight="800">Total</text>
           </g>
-          <g transform="translate(86,0)">
+          <g transform="translate(74,0)">
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.male} />
-            <text x={22} y={4} fontSize="12" fill={colors.male} fontWeight="800">Male</text>
+            <text x={20} y={4} fontSize="11" fill={colors.male} fontWeight="800">Male</text>
           </g>
-          <g transform="translate(150,0)">
+          <g transform="translate(136,0)">
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.female} />
-            <text x={22} y={4} fontSize="12" fill={colors.female} fontWeight="800">Female</text>
+            <text x={20} y={4} fontSize="11" fill={colors.female} fontWeight="800">Female</text>
           </g>
         </g>
       </g>
 
       {/* title */}
-      <text x={leftPad} y={28} fontSize="15" fill="#07104a" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
+      <text x={leftPad} y={28} fontSize="15" fill="var(--text-primary, #07104a)" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
 
       {/* hover tooltip */}
       {hoverIdx >= 0 ? (() => {
@@ -147,7 +147,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
         const tx = Math.min(width - rightPad - boxW - 8, Math.max(leftPad + 8, cx - boxW / 2));
         return (
           <g transform={`translate(${tx}, ${topPad + 8})`}>
-            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="#07104a" opacity="0.96" />
+            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="var(--surface-strong, #07104a)" opacity="0.96" />
             <text x="12" y="18" fontSize="12" fill="#fff" fontWeight="800">{p.label}</text>
             <text x="12" y="36" fontSize="12" fill="#a7f3d0">Total: {p.totalCount || 0}</text>
             <text x="12" y="54" fontSize="12" fill="#bfdbfe">Male: {p.maleCount || 0}</text>
@@ -178,7 +178,7 @@ function DonutChart({ values = [], colors = [], size = 120, centerValue = '', ce
         cy={size / 2}
         r={radius}
         fill="none"
-        stroke="#e8eefc"
+        stroke="var(--border-soft, #e8eefc)"
         strokeWidth={strokeWidth}
       />
       <g transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ filter: 'url(#genderDonutGlow)' }}>
@@ -202,9 +202,9 @@ function DonutChart({ values = [], colors = [], size = 120, centerValue = '', ce
           );
         })}
       </g>
-      <circle cx={size / 2} cy={size / 2} r={radius - strokeWidth / 2 + 1} fill="#fff" />
-      {centerValue ? <text x="50%" y="48%" textAnchor="middle" fontSize="22" fontWeight="900" fill="#111827">{centerValue}</text> : null}
-      {centerLabel ? <text x="50%" y="61%" textAnchor="middle" fontSize="10" fontWeight="800" fill="#64748b">{centerLabel}</text> : null}
+      <circle cx={size / 2} cy={size / 2} r={radius - strokeWidth / 2 + 1} fill="var(--surface-panel, #fff)" />
+      {centerValue ? <text x="50%" y="48%" textAnchor="middle" fontSize="22" fontWeight="900" fill="var(--text-primary, #111827)">{centerValue}</text> : null}
+      {centerLabel ? <text x="50%" y="61%" textAnchor="middle" fontSize="10" fontWeight="800" fill="var(--text-muted, #64748b)">{centerLabel}</text> : null}
     </svg>
   );
 }
@@ -220,20 +220,78 @@ function GenderBar({ male = 0, female = 0, width = 250, height = 86 }) {
 
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gender comparison bar">
-      <rect x={barX} y={barY} width={barWidth} height={barHeight} rx={8} fill="#edf2ff" />
+      <rect x={barX} y={barY} width={barWidth} height={barHeight} rx={8} fill="var(--surface-accent, #edf2ff)" />
       <rect x={barX} y={barY} width={maleWidth} height={barHeight} rx={8} fill="#4b6cb7" />
       <rect x={barX + maleWidth} y={barY} width={femaleWidth} height={barHeight} rx={8} fill="#ec4899" />
       <g transform={`translate(${barX}, 52)`}>
         <circle cx="5" cy="0" r="5" fill="#4b6cb7" />
-        <text x="16" y="4" fontSize="11" fill="#334155" fontWeight="800">Male {male}</text>
+        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Male {male}</text>
       </g>
       <g transform={`translate(${width / 2 + 6}, 52)`}>
         <circle cx="5" cy="0" r="5" fill="#ec4899" />
-        <text x="16" y="4" fontSize="11" fill="#334155" fontWeight="800">Female {female}</text>
+        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Female {female}</text>
       </g>
-      <text x={barX} y={78} fontSize="10" fill="#64748b" fontWeight="700">{Math.round((male / total) * 100)}%</text>
-      <text x={width - barX} y={78} textAnchor="end" fontSize="10" fill="#64748b" fontWeight="700">{Math.round((female / total) * 100)}%</text>
+      <text x={barX} y={78} fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((male / total) * 100)}%</text>
+      <text x={width - barX} y={78} textAnchor="end" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((female / total) * 100)}%</text>
     </svg>
+  );
+}
+
+const QUALIFICATION_GRAPH_CONFIG = [
+  { key: 'Diploma', label: 'Diploma', color: '#0ea5e9' },
+  { key: 'Degree', label: 'Degree', color: '#4b6cb7' },
+  { key: 'Masters', label: 'Masters', color: '#8b5cf6' },
+  { key: 'PhD', label: 'PhD', color: '#ec4899' },
+  { key: 'Prof.', label: 'Prof.', color: '#f59e0b' },
+  { key: 'Other', label: 'Other', color: '#64748b' },
+];
+
+function normalizeEducationQualification(employee = {}) {
+  const degreeType = String(
+    employee?.education?.degreeType || employee?.profileData?.education?.degreeType || ''
+  )
+    .trim()
+    .toLowerCase();
+  const highestQualification = String(
+    employee?.education?.highestQualification || employee?.profileData?.education?.highestQualification || ''
+  )
+    .trim()
+    .toLowerCase();
+  const combined = `${degreeType} ${highestQualification}`.trim();
+
+  if (!combined) return '';
+  if (combined.includes('prof')) return 'Prof.';
+  if (combined.includes('phd') || combined.includes('doctor')) return 'PhD';
+  if (combined.includes('msc') || combined.includes('master') || combined.includes('mba')) return 'Masters';
+  if (combined.includes('bsc') || combined.includes('bachelor') || combined.includes('degree')) return 'Degree';
+  if (combined.includes('diploma')) return 'Diploma';
+  return 'Other';
+}
+
+function QualificationChart({ items = [], total = 0 }) {
+  if (!items.some((item) => Number(item.count || 0) > 0)) {
+    return <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No qualification data available yet.</div>;
+  }
+
+  const safeTotal = Math.max(1, total);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((item) => {
+        const count = Number(item.count || 0);
+        const percentage = Math.round((count / safeTotal) * 100);
+
+        return (
+          <div key={item.key} style={{ display: 'grid', gridTemplateColumns: '84px 1fr 62px', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary, #334155)' }}>{item.label}</div>
+            <div style={{ height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--surface-accent, #eef2ff)', border: '1px solid var(--border-soft, #dbe2f2)' }}>
+              <div style={{ width: `${percentage}%`, height: '100%', background: item.color, borderRadius: 999 }} />
+            </div>
+            <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 800, color: 'var(--text-muted, #64748b)' }}>{count} ({percentage}%)</div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -251,11 +309,11 @@ function PositionChart({ employees = [], maxBars = 6 }) {
         const pct = Math.round((cnt/total)*100);
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-            <div style={{ width: 120, fontSize: 13, color: '#374151' }}>{pos}</div>
-            <div style={{ flex: 1, background: '#eef2ff', height: 10, borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ width: 120, fontSize: 13, color: 'var(--text-secondary, #374151)' }}>{pos}</div>
+            <div style={{ flex: 1, background: 'var(--surface-accent, #eef2ff)', height: 10, borderRadius: 6, overflow: 'hidden' }}>
               <div style={{ width: `${pct}%`, height: '100%', background: '#4b6cb7' }}></div>
             </div>
-            <div style={{ width: 46, textAlign: 'right', fontSize: 13, color: '#6b7280' }}>{cnt} ({pct}%)</div>
+            <div style={{ width: 46, textAlign: 'right', fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>{cnt} ({pct}%)</div>
           </div>
         )
       })}
@@ -264,7 +322,7 @@ function PositionChart({ employees = [], maxBars = 6 }) {
   )
 }
 
-function Sparkline({ data = [], color = '#4b6cb7', width = 100, height = 28 }) {
+function Sparkline({ data = [], color = 'var(--accent, #4b6cb7)', width = 100, height = 28 }) {
   if (!data.length) return null;
   const max = Math.max(...data);
   const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
@@ -297,7 +355,11 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
 
   const countTicks = Array.from({ length: 4 }, (_, i) => Math.round((maxCount * i) / 3));
   const rateTicks = [0, 25, 50, 75, 100];
-  const barColors = { present: '#16a34a', late: '#d97706', absent: '#dc2626' };
+  const barColors = {
+    present: 'var(--success, #16a34a)',
+    late: 'var(--warning, #d97706)',
+    absent: 'var(--danger, #dc2626)',
+  };
 
   const xForIndex = (index) => (points.length > 1 ? leftPad + index * stepX : leftPad + chartWidth / 2);
 
@@ -309,22 +371,22 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
     <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend">
       <defs>
         <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#bfdbf7" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="#bfdbf7" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.02" />
         </linearGradient>
       </defs>
 
       {/* background grid */}
       <g>
-        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="#fcfdff" stroke="#e2e8f0" rx={8} />
+        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="var(--surface-panel, #fcfdff)" stroke="var(--border-soft, #e2e8f0)" rx={8} />
       </g>
 
       {countTicks.map((tickValue) => {
         const y = yForCount(tickValue);
         return (
           <g key={`count-tick-${tickValue}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#eef2ff" strokeDasharray="4 6" />
-            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="#64748b" fontWeight="700">{tickValue}</text>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #eef2ff)" strokeDasharray="4 6" />
+            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{tickValue}</text>
           </g>
         );
       })}
@@ -333,7 +395,7 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
         const y = yForRate(tickValue);
         return (
           <g key={`rate-tick-${tickValue}`}> 
-            <text x={width - rightPad - 10} y={y + 4} textAnchor="end" fontSize="10" fill="#3157b7" fontWeight="700">{tickValue}%</text>
+            <text x={width - rightPad - 10} y={y + 4} textAnchor="end" fontSize="10" fill="var(--accent-strong, #3157b7)" fontWeight="700">{tickValue}%</text>
           </g>
         );
       })}
@@ -366,33 +428,33 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
       })}
 
       {rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
-      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /> : null}
+      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="var(--accent-strong, #3157b7)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /> : null}
 
       {points.map((point, index) => {
         const x = xForIndex(index);
         const y = yForRate(point.rate);
         return (
           <g key={`rate-point-${index}`}>
-            <circle cx={x} cy={y} r="4" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
+            <circle cx={x} cy={y} r="4" fill="var(--surface-panel, #fff)" stroke="var(--accent-strong, #3157b7)" strokeWidth="1.8" />
             {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
-              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="700">{point.label}</text>
+              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{point.label}</text>
             ) : null}
           </g>
         );
       })}
 
       <g>
-        <text x={leftPad} y={18} fontSize="11" fill="#475569" fontWeight="800">Attendance Records (count)</text>
+        <text x={leftPad} y={18} fontSize="11" fill="var(--text-secondary, #475569)" fontWeight="800">Attendance Records (count)</text>
         <g transform={`translate(${leftPad + 168}, 11)`}>
-          <rect x="0" y="0" width="10" height="10" fill="#16a34a" rx="2" />
-          <text x="14" y="9" fontSize="10" fill="#166534" fontWeight="700">Present</text>
-          <rect x="74" y="0" width="10" height="10" fill="#d97706" rx="2" />
-          <text x="88" y="9" fontSize="10" fill="#92400e" fontWeight="700">Late</text>
-          <rect x="130" y="0" width="10" height="10" fill="#dc2626" rx="2" />
-          <text x="144" y="9" fontSize="10" fill="#991b1b" fontWeight="700">Absent</text>
-          <line x1="200" y1="5" x2="226" y2="5" stroke="#3157b7" strokeWidth="2.2" />
-          <circle cx="213" cy="5" r="3" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
-          <text x="232" y="9" fontSize="10" fill="#3157b7" fontWeight="700">Rate %</text>
+          <rect x="0" y="0" width="10" height="10" fill="var(--success, #16a34a)" rx="2" />
+          <text x="14" y="9" fontSize="10" fill="var(--success, #166534)" fontWeight="700">Present</text>
+          <rect x="74" y="0" width="10" height="10" fill="var(--warning, #d97706)" rx="2" />
+          <text x="88" y="9" fontSize="10" fill="var(--warning, #92400e)" fontWeight="700">Late</text>
+          <rect x="130" y="0" width="10" height="10" fill="var(--danger, #dc2626)" rx="2" />
+          <text x="144" y="9" fontSize="10" fill="var(--danger, #991b1b)" fontWeight="700">Absent</text>
+          <line x1="200" y1="5" x2="226" y2="5" stroke="var(--accent-strong, #3157b7)" strokeWidth="2.2" />
+          <circle cx="213" cy="5" r="3" fill="var(--surface-panel, #fff)" stroke="var(--accent-strong, #3157b7)" strokeWidth="1.8" />
+          <text x="232" y="9" fontSize="10" fill="var(--accent-strong, #3157b7)" fontWeight="700">Rate %</text>
         </g>
       </g>
     </svg>
@@ -562,7 +624,7 @@ function getDashboardRoleLabel(value = '') {
   const role = String(value || '').trim().toLowerCase();
   if (role === 'teacher' || role === 'teachers') return 'Teacher';
   if (role === 'finance') return 'Finance';
-  if (role === 'management' || role === 'admin' || role === 'admins') return 'Management';
+  if (['school_admins', 'school_admin', 'management', 'admin', 'admins'].includes(role)) return 'School Admins';
   if (role === 'hr') return 'HR';
   return 'Staff';
 }
@@ -635,7 +697,7 @@ export default function Dashboard() {
   const [postMediaPreviewUrl, setPostMediaPreviewUrl] = useState('');
   const [editingPostId, setEditingPostId] = useState('');
   const [targetRole, setTargetRole] = useState('all');
-  const [targetOptions] = useState(['all', 'teacher', 'management', 'finance', 'hr']);
+  const [targetOptions] = useState(['all', 'teacher', 'school_admins', 'finance', 'hr']);
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [activePostMenuId, setActivePostMenuId] = useState('');
   const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
@@ -853,11 +915,11 @@ export default function Dashboard() {
       }
 
       try {
-        const [contextRes, teachersRes, financeRes, managementRes] = await Promise.all([
+        const [contextRes, teachersRes, financeRes, schoolAdminsRes] = await Promise.all([
           api.get('/school_context').catch(() => ({ data: {} })),
           api.get('/teachers').catch(() => ({ data: {} })),
           api.get('/finance').catch(() => ({ data: {} })),
-          api.get('/management').catch(() => ({ data: {} })),
+          api.get('/school_admins').catch(() => api.get('/management').catch(() => ({ data: {} }))),
         ]);
 
         if (cancelled) return;
@@ -871,7 +933,7 @@ export default function Dashboard() {
         [
           ['teacher', teachersRes.data],
           ['finance', financeRes.data],
-          ['management', managementRes.data],
+          ['school_admins', schoolAdminsRes.data],
         ].forEach(([roleKey, roleNodes]) => {
           Object.values(roleNodes || {}).forEach((roleNode) => {
             const userId = String(roleNode?.userId || '').trim();
@@ -1563,6 +1625,22 @@ export default function Dashboard() {
   const femalePercentage = Math.round((femaleCount / knownGenderTotal) * 100);
   const genderLeadLabel = maleCount === femaleCount ? 'Balanced' : maleCount > femaleCount ? 'Male lead' : 'Female lead';
   const genderValues = [maleCount, femaleCount];
+  const qualificationCounts = employees.reduce((acc, employee) => {
+    const qualification = normalizeEducationQualification(employee);
+    if (!qualification) return acc;
+
+    acc[qualification] = (acc[qualification] || 0) + 1;
+    return acc;
+  }, { Diploma: 0, Degree: 0, Masters: 0, 'Prof.': 0, PhD: 0, Other: 0 });
+  const qualificationChartItems = QUALIFICATION_GRAPH_CONFIG.map((item) => ({
+    ...item,
+    count: qualificationCounts[item.key] || 0,
+  }));
+  const knownQualificationCount = qualificationChartItems.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const topQualification = qualificationChartItems.reduce(
+    (best, item) => (Number(item.count || 0) > Number(best?.count || 0) ? item : best),
+    qualificationChartItems[0] || null
+  );
 
   const recentPostNotifications = useMemo(() => {
     return (posts || [])
@@ -2241,7 +2319,7 @@ export default function Dashboard() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 2, fontSize: 13, color: 'var(--text-muted, #6b7280)', fontWeight: 500 }}>
                               <span>{post.time ? new Date(post.time).toLocaleString() : 'Just now'}</span>
                               <span>·</span>
-                              <span>{post.targetRole && post.targetRole !== 'all' ? `Visible to ${post.targetRole}` : 'Visible to everyone'}</span>
+                              <span>{post.targetRole && post.targetRole !== 'all' ? `Visible to ${getDashboardRoleLabel(post.targetRole)}` : 'Visible to everyone'}</span>
                             </div>
                           </div>
                         </div>
@@ -2306,7 +2384,7 @@ export default function Dashboard() {
                             <span style={{ whiteSpace: 'nowrap' }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? '' : 's'}</span>
                           </button>
                           <div style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
-                            {post.targetRole && post.targetRole !== 'all' ? `Visible to ${post.targetRole}` : 'Visible to everyone'}
+                            {post.targetRole && post.targetRole !== 'all' ? `Visible to ${getDashboardRoleLabel(post.targetRole)}` : 'Visible to everyone'}
                           </div>
                         </div>
                         {showOwnerActions ? (
@@ -2350,7 +2428,7 @@ export default function Dashboard() {
                 ...overviewCardStyle,
                 padding: 14,
                 borderRadius: 18,
-                background: 'linear-gradient(165deg, #f9fbff 0%, #eef4ff 58%, #ffffff 100%)',
+                background: 'linear-gradient(165deg, var(--surface-panel, #f9fbff) 0%, var(--surface-accent, #eef4ff) 58%, var(--surface-muted, #ffffff) 100%)',
                 width: '100%',
                 maxWidth: '100%',
                 minWidth: 0,
@@ -2358,8 +2436,8 @@ export default function Dashboard() {
               }}>
                 <div style={{ display: 'flex',  alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                   <div>
-                    <div style={{ fontSize: 19, fontWeight: 900, color: '#0f172a', letterSpacing: '-0.01em' }}>Attendance Rate</div>
-                    <div style={{ marginTop: 4, fontSize: 13, color: '#64748b', fontWeight: 700 }}>Live analytics from Employees_Attendance records</div>
+                    <div style={{ fontSize: 19, fontWeight: 900, color: 'var(--text-primary, #0f172a)', letterSpacing: '-0.01em' }}>Attendance Rate</div>
+                    <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Live analytics from Employees_Attendance records</div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     {['daily', 'weekly', 'monthly'].map((tab) => (
@@ -2371,9 +2449,9 @@ export default function Dashboard() {
                           height: 30,
                           padding: '0 12px',
                           borderRadius: 999,
-                          border: attendanceRecordView === tab ? '1px solid #3157b7' : '1px solid #dbe2f2',
-                          background: attendanceRecordView === tab ? '#e7eeff' : '#fff',
-                          color: attendanceRecordView === tab ? '#1e3a8a' : '#475569',
+                          border: attendanceRecordView === tab ? '1px solid var(--accent-strong, #3157b7)' : '1px solid var(--border-soft, #dbe2f2)',
+                          background: attendanceRecordView === tab ? 'var(--accent-soft, #e7eeff)' : 'var(--surface-panel, #fff)',
+                          color: attendanceRecordView === tab ? 'var(--accent-strong, #1e3a8a)' : 'var(--text-secondary, #475569)',
                           fontSize: 12,
                           fontWeight: 800,
                           cursor: 'pointer',
@@ -2384,17 +2462,17 @@ export default function Dashboard() {
                       </button>
                     ))}
                   </div>
-                  <div style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid #cfdcfa', background: '#ffffff', boxShadow: '0 8px 20px rgba(49,87,183,0.12)' }}>
-                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Latest Rate</div>
-                    <div style={{ fontSize: 28, lineHeight: 1.1, fontWeight: 900, color: '#1e3a8a', marginTop: 2 }}>{attendanceRate}</div>
+                  <div style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid var(--border-soft, #cfdcfa)', background: 'var(--surface-panel, #ffffff)', boxShadow: 'var(--shadow-soft, 0 8px 20px rgba(49,87,183,0.12))' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Latest Rate</div>
+                    <div style={{ fontSize: 28, lineHeight: 1.1, fontWeight: 900, color: 'var(--accent-strong, #1e3a8a)', marginTop: 2 }}>{attendanceRate}</div>
                   </div>
                 </div>
 
-                <div style={{ marginTop: 12, borderRadius: 14, border: '1px solid #dbe2f2', background: '#fff', padding: 10, overflowX: 'auto' }}>
+                <div style={{ marginTop: 12, borderRadius: 14, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', padding: 10, overflowX: 'auto' }}>
                   {attendanceChartPoints.length > 0 ? (
                     <AttendanceTrendChart points={attendanceChartPoints} />
                   ) : (
-                    <div style={{ padding: '26px 10px', textAlign: 'center', fontSize: 13, color: '#64748b', fontWeight: 700 }}>
+                    <div style={{ padding: '26px 10px', textAlign: 'center', fontSize: 13, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
                       Attendance graph will appear once attendance records are available.
                     </div>
                   )}
@@ -2406,80 +2484,80 @@ export default function Dashboard() {
                     onClick={() => handleAttendanceStatusCardClick('present')}
                     style={{
                       borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '1px solid #16a34a' : '1px solid #d1fae5',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '#e9fceb' : '#f0fdf4',
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '1px solid var(--success, #16a34a)' : '1px solid var(--success-border, #d1fae5)',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'present' ? 'color-mix(in srgb, var(--success-soft, #f0fdf4) 72%, var(--surface-panel, #fff) 28%)' : 'var(--success-soft, #f0fdf4)',
                       padding: '10px 12px',
                       textAlign: 'left',
                       cursor: 'pointer',
                     }}
                     title={showAttendancePeopleList && attendanceStatusFilter === 'present' ? 'Hide Present People List' : 'Show Present People List'}
                   >
-                    <div style={{ fontSize: 11, color: '#166534', fontWeight: 800 }}>Present</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: '#14532d', marginTop: 2 }}>{latestAttendanceSnapshot?.presentCount ?? 0}</div>
+                    <div style={{ fontSize: 11, color: 'var(--success, #166534)', fontWeight: 800 }}>Present</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--success, #14532d)', marginTop: 2 }}>{latestAttendanceSnapshot?.presentCount ?? 0}</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => handleAttendanceStatusCardClick('late')}
                     style={{
                       borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '1px solid #d97706' : '1px solid #fde68a',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '#fff4dd' : '#fffbeb',
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '1px solid var(--warning, #d97706)' : '1px solid var(--warning-border, #fde68a)',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'late' ? 'color-mix(in srgb, var(--warning-soft, #fffbeb) 72%, var(--surface-panel, #fff) 28%)' : 'var(--warning-soft, #fffbeb)',
                       padding: '10px 12px',
                       textAlign: 'left',
                       cursor: 'pointer',
                     }}
                     title={showAttendancePeopleList && attendanceStatusFilter === 'late' ? 'Hide Late People List' : 'Show Late People List'}
                   >
-                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 800 }}>Late</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: '#78350f', marginTop: 2 }}>{latestAttendanceSnapshot?.lateCount ?? 0}</div>
+                    <div style={{ fontSize: 11, color: 'var(--warning, #92400e)', fontWeight: 800 }}>Late</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--warning, #78350f)', marginTop: 2 }}>{latestAttendanceSnapshot?.lateCount ?? 0}</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => handleAttendanceStatusCardClick('absent')}
                     style={{
                       borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '1px solid #dc2626' : '1px solid #fecaca',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '#ffebeb' : '#fef2f2',
+                      border: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '1px solid var(--danger, #dc2626)' : '1px solid var(--danger-border, #fecaca)',
+                      background: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? 'color-mix(in srgb, var(--danger-soft, #fef2f2) 72%, var(--surface-panel, #fff) 28%)' : 'var(--danger-soft, #fef2f2)',
                       padding: '10px 12px',
                       textAlign: 'left',
                       cursor: 'pointer',
                     }}
                     title={showAttendancePeopleList && attendanceStatusFilter === 'absent' ? 'Hide Absent People List' : 'Show Absent People List'}
                   >
-                    <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 800 }}>Absent</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: '#7f1d1d', marginTop: 2 }}>{latestAttendanceSnapshot?.absentCount ?? 0}</div>
+                    <div style={{ fontSize: 11, color: 'var(--danger, #991b1b)', fontWeight: 800 }}>Absent</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--danger, #7f1d1d)', marginTop: 2 }}>{latestAttendanceSnapshot?.absentCount ?? 0}</div>
                   </button>
-                  <div style={{ borderRadius: 12, border: '1px solid #dbe2f2', background: '#f8faff', padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: '#475569', fontWeight: 800 }}>Records</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: '#1e293b', marginTop: 2 }}>{latestAttendanceSnapshot?.total ?? 0}</div>
+                  <div style={{ borderRadius: 12, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary, #475569)', fontWeight: 800 }}>Records</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text-primary, #1e293b)', marginTop: 2 }}>{latestAttendanceSnapshot?.total ?? 0}</div>
                   </div>
                 </div>
 
                 {showAttendancePeopleList ? (
-                <div style={{ marginTop: 10, border: '1px solid #dbe2f2', borderRadius: 12, background: '#fff', padding: 10 }}>
+                <div style={{ marginTop: 10, border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 12, background: 'var(--surface-panel, #fff)', padding: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: '#334155', textTransform: 'capitalize' }}>{attendanceStatusFilter} People List</div>
-                      <div style={{ marginTop: 2, fontSize: 11, color: '#64748b', fontWeight: 700 }}>{attendancePeopleDateLabel}</div>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: 'var(--text-secondary, #334155)', textTransform: 'capitalize' }}>{attendanceStatusFilter} People List</div>
+                      <div style={{ marginTop: 2, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{attendancePeopleDateLabel}</div>
                     </div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#334155', textTransform: 'capitalize' }}>Status: {attendanceStatusFilter}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-secondary, #334155)', textTransform: 'capitalize' }}>Status: {attendanceStatusFilter}</div>
                   </div>
 
-                  <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', maxHeight: 160, overflowY: 'auto' }}>
+                  <div style={{ marginTop: 8, border: '1px solid var(--border-soft, #e2e8f0)', borderRadius: 10, overflow: 'hidden', maxHeight: 160, overflowY: 'auto' }}>
                     {attendancePeopleList.length === 0 ? (
-                      <div style={{ padding: '10px 12px', fontSize: 12, color: '#64748b', fontWeight: 700 }}>
+                      <div style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
                         No {attendanceStatusFilter} employees found for this selection.
                       </div>
                     ) : (
                       attendancePeopleList.map((entry, index) => (
-                        <div key={`${entry.employeeId}-${entry.status}-${entry.sourceDate || 'na'}-${entry.bucketKey || 'na'}-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 12px', borderTop: '1px solid #eef2ff' }}>
+                        <div key={`${entry.employeeId}-${entry.status}-${entry.sourceDate || 'na'}-${entry.bucketKey || 'na'}-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 12px', borderTop: '1px solid var(--border-soft, #eef2ff)' }}>
                           <div>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: '#0f172a' }}>{entry.name}</div>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #0f172a)' }}>{entry.name}</div>
                             {attendanceRecordView === 'daily' ? null : (
-                              <div style={{ marginTop: 1, fontSize: 10, color: '#64748b', fontWeight: 700 }}>{entry.bucketLabel} • {entry.sourceDate}</div>
+                              <div style={{ marginTop: 1, fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{entry.bucketLabel} • {entry.sourceDate}</div>
                             )}
                           </div>
-                          <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>{entry.employeeId}</div>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted, #64748b)' }}>{entry.employeeId}</div>
                         </div>
                       ))
                     )}
@@ -2487,9 +2565,9 @@ export default function Dashboard() {
                 </div>
                 ) : null}
 
-                <div style={{ marginTop: 10, border: '1px solid #dbe2f2', borderRadius: 12, overflowX: 'auto' }}>
+                <div style={{ marginTop: 10, border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 12, overflowX: 'auto' }}>
                   <div style={{ minWidth: 620 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', background: '#f8faff', borderBottom: '1px solid #e2e8f0', fontSize: 11, fontWeight: 900, color: '#334155' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', background: 'var(--surface-muted, #f8faff)', borderBottom: '1px solid var(--border-soft, #e2e8f0)', fontSize: 11, fontWeight: 900, color: 'var(--text-secondary, #334155)' }}>
                       <div>{attendanceRecordView === 'monthly' ? 'Month' : 'Day'}</div>
                       <div style={{ textAlign: 'right' }}>Rate</div>
                       <div style={{ textAlign: 'right' }}>Present</div>
@@ -2497,15 +2575,15 @@ export default function Dashboard() {
                       <div style={{ textAlign: 'right' }}>Absent</div>
                     </div>
                     {recentAttendanceRecords.length === 0 ? (
-                      <div style={{ padding: '12px', fontSize: 12, color: '#64748b', fontWeight: 700 }}>No attendance records found.</div>
+                      <div style={{ padding: '12px', fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>No attendance records found.</div>
                     ) : (
                       recentAttendanceRecords.map((record) => (
-                        <div key={record.date} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', borderTop: '1px solid #eef2ff', fontSize: 12, color: '#334155', fontWeight: 700 }}>
+                        <div key={record.date} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', borderTop: '1px solid var(--border-soft, #eef2ff)', fontSize: 12, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>
                           <div>{attendanceRecordView === 'monthly' ? (record.label || record.date) : (record.label || record.date)}</div>
-                          <div style={{ textAlign: 'right', color: '#1e3a8a', fontWeight: 900 }}>{record.rate}%</div>
-                          <div style={{ textAlign: 'right', color: '#166534' }}>{record.presentCount}</div>
-                          <div style={{ textAlign: 'right', color: '#92400e' }}>{record.lateCount}</div>
-                          <div style={{ textAlign: 'right', color: '#991b1b' }}>{record.absentCount}</div>
+                          <div style={{ textAlign: 'right', color: 'var(--accent-strong, #1e3a8a)', fontWeight: 900 }}>{record.rate}%</div>
+                          <div style={{ textAlign: 'right', color: 'var(--success, #166534)' }}>{record.presentCount}</div>
+                          <div style={{ textAlign: 'right', color: 'var(--warning, #92400e)' }}>{record.lateCount}</div>
+                          <div style={{ textAlign: 'right', color: 'var(--danger, #991b1b)' }}>{record.absentCount}</div>
                         </div>
                       ))
                     )}
@@ -2519,8 +2597,8 @@ export default function Dashboard() {
                 <div style={overviewCardStyle}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontSize: 15, fontWeight: 900, color: '#111827' }}>Employee Growth Trend</div>
-                      <div style={{ marginTop: 3, fontSize: 12, color: '#6b7280' }}>Real registrations from employee hire dates</div>
+                      <div style={{ fontSize: 15, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Employee Growth Trend</div>
+                      <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>Real registrations from employee hire dates</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       {['monthly', 'annual'].map((mode) => (
@@ -2531,9 +2609,9 @@ export default function Dashboard() {
                           style={{
                             height: 30,
                             borderRadius: 999,
-                            border: growthTrendView === mode ? '1px solid #3157b7' : '1px solid #dbe2f2',
-                            background: growthTrendView === mode ? '#e7eeff' : '#fff',
-                            color: growthTrendView === mode ? '#1e3a8a' : '#475569',
+                            border: growthTrendView === mode ? '1px solid var(--accent-strong, #3157b7)' : '1px solid var(--border-soft, #dbe2f2)',
+                            background: growthTrendView === mode ? 'var(--accent-soft, #e7eeff)' : 'var(--surface-panel, #fff)',
+                            color: growthTrendView === mode ? 'var(--accent-strong, #1e3a8a)' : 'var(--text-secondary, #475569)',
                             padding: '0 12px',
                             fontSize: 12,
                             fontWeight: 800,
@@ -2548,87 +2626,103 @@ export default function Dashboard() {
                   </div>
 
                   <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 8 }}>
-                    <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '8px 10px' }}>
-                      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>{growthTrendView === 'monthly' ? 'Last 12 Months' : 'Last 6 Years'}</div>
-                      <div style={{ marginTop: 2, fontSize: 20, color: '#1e293b', fontWeight: 900 }}>{currentGrowthTotal}</div>
+                    <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>{growthTrendView === 'monthly' ? 'Last 12 Months' : 'Last 6 Years'}</div>
+                      <div style={{ marginTop: 2, fontSize: 20, color: 'var(--text-primary, #1e293b)', fontWeight: 900 }}>{currentGrowthTotal}</div>
                     </div>
-                    <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '8px 10px' }}>
-                        <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
-                        <div style={{ marginTop: 2, fontSize: 14, color: '#0f172a', fontWeight: 900 }}>
+                    <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '8px 10px' }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
+                        <div style={{ marginTop: 2, fontSize: 14, color: 'var(--text-primary, #0f172a)', fontWeight: 900 }}>
                           {peakGrowthPoint?.label || peakYear || '—'} — {Number(peakGrowthPoint?.totalCount || 0)} employees
                         </div>
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid #e2e8f0', background: '#fff', padding: 8 }}>
+                  <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid var(--border-soft, #e2e8f0)', background: 'var(--surface-panel, #fff)', padding: 8 }}>
                     <GrowthTrendChart points={growthTrendPoints} mode={growthTrendView} />
                   </div>
                 </div>
                 <div style={overviewCardStyle}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
                     <div>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: '#111827' }}>Gender Distribution</div>
-                      <div style={{ marginTop: 3, fontSize: 11, color: '#64748b', fontWeight: 700 }}>Known gender split across employees</div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Gender Distribution</div>
+                      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Known gender split across employees</div>
                     </div>
-                    <div style={{ padding: '5px 9px', borderRadius: 999, background: 'linear-gradient(135deg, #eef2ff 0%, #fdf2f8 100%)', border: '1px solid #dbe2f2', fontSize: 10, fontWeight: 800, color: '#475569' }}>
+                    <div style={{ padding: '5px 9px', borderRadius: 999, background: 'linear-gradient(135deg, var(--surface-accent, #eef2ff) 0%, var(--surface-muted, #fdf2f8) 100%)', border: '1px solid var(--border-soft, #dbe2f2)', fontSize: 10, fontWeight: 800, color: 'var(--text-secondary, #475569)' }}>
                       {genderLeadLabel}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 130 }}>
-                      <DonutChart values={genderValues} colors={['#4b6cb7', '#ec4899']} size={130} centerValue={maleCount + femaleCount} centerLabel="Known" />
+                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 112 }}>
+                      <DonutChart values={genderValues} colors={['#4b6cb7', '#ec4899']} size={112} centerValue={maleCount + femaleCount} centerLabel="Known" />
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, #eef4ff 0%, #f8fbff 100%)', border: '1px solid #c7d2fe' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent-soft, #eef4ff) 84%, var(--surface-panel, #fff) 16%) 0%, var(--surface-panel, #f8fbff) 100%)', border: '1px solid var(--border-strong, #c7d2fe)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                           <span style={{ width: 28, height: 28, borderRadius: '50%', background: '#4b6cb7', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><FaMale /></span>
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: '#1e3a8a' }}>Male</div>
-                            <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{malePercentage}% of known data</div>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--accent-strong, #1e3a8a)' }}>Male</div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{malePercentage}% of known data</div>
                           </div>
                         </div>
-                        <div style={{ fontSize: 20, fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>{maleCount}</div>
+                        <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #0f172a)', lineHeight: 1 }}>{maleCount}</div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, #fdf2f8 0%, #fff8fb 100%)', border: '1px solid #fbcfe8' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, color-mix(in srgb, #ec4899 16%, var(--surface-panel, #fff) 84%) 0%, var(--surface-panel, #fff8fb) 100%)', border: '1px solid color-mix(in srgb, #ec4899 36%, var(--border-soft, #fbcfe8) 64%)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                           <span style={{ width: 28, height: 28, borderRadius: '50%', background: '#ec4899', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><FaFemale /></span>
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: '#be185d' }}>Female</div>
-                            <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{femalePercentage}% of known data</div>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: '#ec4899' }}>Female</div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{femalePercentage}% of known data</div>
                           </div>
                         </div>
-                        <div style={{ fontSize: 20, fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>{femaleCount}</div>
+                        <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #0f172a)', lineHeight: 1 }}>{femaleCount}</div>
                       </div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 10, borderRadius: 12, padding: '8px 10px', background: '#ffffff', border: '1px solid #e5e7eb' }}>
-                    <GenderBar male={maleCount} female={femaleCount} width={250} height={86} />
+                  <div style={{ marginTop: 10, borderRadius: 12, padding: '6px 10px', background: 'var(--surface-panel, #ffffff)', border: '1px solid var(--border-soft, #e5e7eb)' }}>
+                    <GenderBar male={maleCount} female={femaleCount} width={220} height={68} />
+                  </div>
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft, #e5e7eb)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Education Qualification</div>
+                        <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Diploma, Degree, Masters, Prof., PhD and Other from employee records</div>
+                      </div>
+                      <div style={{ padding: '5px 9px', borderRadius: 999, background: 'var(--surface-muted, #f8faff)', border: '1px solid var(--border-soft, #dbe2f2)', fontSize: 10, fontWeight: 800, color: 'var(--text-secondary, #475569)' }}>
+                        {knownQualificationCount > 0 ? `${topQualification?.label || 'Qualification'} lead` : 'No records'}
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
+                      <span>Recorded qualification data</span>
+                      <span>{knownQualificationCount} employees</span>
+                    </div>
+                    <QualificationChart items={qualificationChartItems} total={knownQualificationCount} />
                   </div>
                 </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div style={overviewCardStyle}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Top Positions</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)', marginBottom: 8 }}>Top Positions</div>
                   <PositionChart employees={normalizedEmployees.map((employee) => ({ position: employee._position, role: employee._position }))} maxBars={7} />
                 </div>
 
                 <div style={overviewCardStyle}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 8 }}>Department Breakdown</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)', marginBottom: 8 }}>Department Breakdown</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {normalizedEmployees.length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>No employee data available.</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No employee data available.</div>
                     ) : (
                       employmentOrder.map((etype) => {
                         const cnt = employmentCounts[etype] || 0;
                         const pct = Math.round((cnt / Math.max(1, normalizedEmployees.length)) * 100);
                         return (
                           <div key={etype}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 12, color: '#334155', fontWeight: 700 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 12, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>
                               <span>{etype}</span>
                               <span>{cnt} ({pct}%)</span>
                             </div>
-                            <div style={{ width: '100%', height: 8, borderRadius: 999, background: '#fff7ed', overflow: 'hidden' }}>
+                            <div style={{ width: '100%', height: 8, borderRadius: 999, background: 'var(--surface-accent, #fff7ed)', overflow: 'hidden' }}>
                               <div style={{ width: `${pct}%`, height: '100%', background: etype === 'Full-time' ? 'linear-gradient(90deg, #10b981, #34d399)' : etype === 'Part-time' ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : etype === 'Contract' ? 'linear-gradient(90deg, #ef4444, #f97316)' : 'linear-gradient(90deg, #9ca3af, #d1d5db)' }} />
                             </div>
                           </div>
@@ -3016,7 +3110,7 @@ export default function Dashboard() {
                       title="Post target role"
                     >
                       {targetOptions.map((role) => {
-                        const label = role === 'all' ? 'All Users' : `${role.charAt(0).toUpperCase()}${role.slice(1)}s`;
+                        const label = role === 'all' ? 'All Users' : getDashboardRoleLabel(role);
                         return <option key={role} value={role}>{label}</option>;
                       })}
                     </select>

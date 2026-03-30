@@ -42,7 +42,7 @@ const FIELD_CONFIG = {
   ],
   education: [
     { key: 'highestQualification', label: 'Highest Qualification', type: 'text' },
-    { key: 'degreeType', label: 'Degree Type', type: 'select', options: ['', 'Diploma', 'BSc', 'MSc', 'PhD'] },
+    { key: 'degreeType', label: 'Degree Type', type: 'select', options: ['', 'Diploma', 'BSc', 'MSc', 'PhD', 'Prof.', 'Other'] },
     { key: 'fieldOfStudy', label: 'Field of Study', type: 'text' },
     { key: 'institution', label: 'Institution', type: 'text' },
     { key: 'graduationYear', label: 'Graduation Year', type: 'text' },
@@ -64,7 +64,7 @@ const FIELD_CONFIG = {
     { key: 'department', label: 'Department', type: 'text' },
     { key: 'position', label: 'Position', type: 'text' },
     { key: 'employmentType', label: 'Employment Type', type: 'select', options: ['', 'Full-time', 'Part-time', 'Contract'] },
-    { key: 'employeeCategory', label: 'Employee Category', type: 'select', options: ['', 'Teacher', 'Director', 'Vice Director', 'Finance', 'HR', 'Administrative', 'Management', 'Other'] },
+    { key: 'employeeCategory', label: 'Employee Category', type: 'select', options: ['', 'Teacher', 'Director', 'Vice Director', 'Finance', 'HR', 'Administrative', 'School Admins', 'Other'] },
     { key: 'hireDate', label: 'Hire Date', type: 'date' },
     { key: 'contractStartDate', label: 'Contract Start Date', type: 'date' },
     { key: 'contractEndDate', label: 'Contract End Date', type: 'date' },
@@ -146,7 +146,7 @@ export default function EmployeeDetail() {
       setMeta({
         userId: payload.userId || '',
         teacherId: payload.teacherId || '',
-        managementId: payload.managementId || '',
+        schoolAdminId: payload.schoolAdminId || payload.managementId || '',
         financeId: payload.financeId || '',
         hrId: payload.hrId || ''
       });
@@ -597,7 +597,7 @@ export default function EmployeeDetail() {
                   <span className="meta-chip">Record: {id}</span>
                   {meta.userId ? <span className="meta-chip">User: {meta.userId}</span> : null}
                   {meta.teacherId ? <span className="meta-chip">Teacher ID: {meta.teacherId}</span> : null}
-                  {meta.managementId ? <span className="meta-chip">Management ID: {meta.managementId}</span> : null}
+                  {meta.schoolAdminId ? <span className="meta-chip">School Admin ID: {meta.schoolAdminId}</span> : null}
                   {meta.financeId ? <span className="meta-chip">Finance ID: {meta.financeId}</span> : null}
                   {meta.hrId ? <span className="meta-chip">HR ID: {meta.hrId}</span> : null}
                 </div>

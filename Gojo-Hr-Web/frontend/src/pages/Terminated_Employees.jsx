@@ -116,33 +116,33 @@ export default function TerminatedEmployees() {
         />
 
         <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
-          <div style={{ maxWidth: 1500, margin: '0 auto', background: '#fff', borderRadius: 16, border: '1px solid #e6ecf8', boxShadow: '0 10px 24px rgba(17,24,39,0.08)', padding: 18 }}>
+          <div style={{ maxWidth: 1500, margin: '0 auto', background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8fafc) 100%)', borderRadius: 16, border: '1px solid var(--border-soft, #e6ecf8)', boxShadow: 'var(--shadow-panel, 0 10px 24px rgba(17,24,39,0.08))', padding: 18 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#111827' }}>Terminated Employees</div>
-                <div style={{ marginTop: 4, fontSize: 13, color: '#6b7280' }}>Employee records with status marked as terminated.</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Terminated Employees</div>
+                <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Employee records with status marked as terminated.</div>
               </div>
 
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '7px 11px' }}>
-                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Total</div>
-                  <div style={{ marginTop: 2, fontSize: 18, color: '#111827', fontWeight: 900 }}>{summary.total}</div>
+                <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '7px 11px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>Total</div>
+                  <div style={{ marginTop: 2, fontSize: 18, color: 'var(--text-primary, #111827)', fontWeight: 900 }}>{summary.total}</div>
                 </div>
-                <div style={{ border: '1px solid #dbe2f2', borderRadius: 10, background: '#f8faff', padding: '7px 11px' }}>
-                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 800 }}>Departments</div>
-                  <div style={{ marginTop: 2, fontSize: 18, color: '#111827', fontWeight: 900 }}>{summary.departments}</div>
+                <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '7px 11px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>Departments</div>
+                  <div style={{ marginTop: 2, fontSize: 18, color: 'var(--text-primary, #111827)', fontWeight: 900 }}>{summary.departments}</div>
                 </div>
               </div>
             </div>
 
             {errorMessage ? (
-              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--danger-border, #fecaca)', background: 'var(--danger-soft, #fef2f2)', color: 'var(--danger, #991b1b)', fontSize: 13, fontWeight: 700 }}>
                 {errorMessage}
               </div>
             ) : null}
 
-            <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid #e6ecf8', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2.1fr 1.2fr 1.2fr 1.5fr 1fr', gap: 0, padding: '11px 12px', background: '#f8faff', borderBottom: '1px solid #e6ecf8', fontSize: 12, fontWeight: 900, color: '#334155' }}>
+            <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid var(--border-soft, #e6ecf8)', overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '2.1fr 1.2fr 1.2fr 1.5fr 1fr', gap: 0, padding: '11px 12px', background: 'var(--surface-muted, #f8faff)', borderBottom: '1px solid var(--border-soft, #e6ecf8)', fontSize: 12, fontWeight: 900, color: 'var(--text-secondary, #334155)' }}>
                 <div>Employee</div>
                 <div>Department</div>
                 <div>Position</div>
@@ -151,9 +151,9 @@ export default function TerminatedEmployees() {
               </div>
 
               {isLoading ? (
-                <div style={{ padding: 14, fontSize: 13, color: '#6b7280' }}>Loading terminated employees...</div>
+                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Loading terminated employees...</div>
               ) : terminatedEmployees.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: '#6b7280' }}>No terminated employees found.</div>
+                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>No terminated employees found.</div>
               ) : (
                 terminatedEmployees.map((employee) => (
                   <div
@@ -163,27 +163,27 @@ export default function TerminatedEmployees() {
                       gridTemplateColumns: '2.1fr 1.2fr 1.2fr 1.5fr 1fr',
                       gap: 0,
                       padding: '10px 12px',
-                      borderBottom: '1px solid #eef2ff',
+                      borderBottom: '1px solid var(--border-soft, #eef2ff)',
                       alignItems: 'center',
-                      background: '#fff',
+                      background: 'var(--surface-panel, #fff)',
                     }}
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, color: '#111827' }}>{employee._name}</div>
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>{employee.id || '—'}</div>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{employee._name}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>{employee.id || '—'}</div>
                     </div>
-                    <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._department}</div>
-                    <div style={{ fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee._position}</div>
-                    <div style={{ fontSize: 13, color: '#334155', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee._email}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>{employee._department}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>{employee._position}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary, #334155)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee._email}</div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8 }}>
                       <span
                         style={{
                           fontSize: 12,
                           fontWeight: 900,
                           textTransform: 'capitalize',
-                          color: '#991b1b',
-                          background: '#fef2f2',
-                          border: '1px solid #fecaca',
+                          color: 'var(--danger, #991b1b)',
+                          background: 'var(--danger-soft, #fef2f2)',
+                          border: '1px solid var(--danger-border, #fecaca)',
                           padding: '5px 10px',
                           borderRadius: 999,
                         }}
@@ -193,9 +193,9 @@ export default function TerminatedEmployees() {
                       <button
                         style={{
                           marginLeft: 10,
-                          background: '#e0fbe0',
-                          color: '#166534',
-                          border: '1px solid #bbf7d0',
+                          background: 'var(--success-soft, #e0fbe0)',
+                          color: 'var(--success, #166534)',
+                          border: '1px solid var(--success-border, #bbf7d0)',
                           borderRadius: 8,
                           padding: '5px 14px',
                           fontWeight: 700,
