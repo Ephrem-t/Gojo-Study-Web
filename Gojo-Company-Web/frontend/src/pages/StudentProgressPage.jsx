@@ -41,6 +41,35 @@ function formatPercent(value) {
 	return `${Math.round(value * 100) / 100}%`
 }
 
+function formatGradeLabel(value) {
+	const normalized = String(value || '').trim()
+	if (!normalized) {
+		return 'Unassigned grade'
+	}
+
+	const match = normalized.match(/(\d{1,2})/)
+	if (match) {
+		return `Grade ${match[1]}`
+	}
+
+	return normalized
+		.replace(/[_-]+/g, ' ')
+		.replace(/\b\w/g, (character) => character.toUpperCase())
+}
+
+function compareGrades(left, right) {
+	const leftMatch = String(left || '').match(/(\d{1,2})/)
+	const rightMatch = String(right || '').match(/(\d{1,2})/)
+	const leftValue = leftMatch ? Number(leftMatch[1]) : Number.POSITIVE_INFINITY
+	const rightValue = rightMatch ? Number(rightMatch[1]) : Number.POSITIVE_INFINITY
+
+	if (leftValue !== rightValue) {
+		return leftValue - rightValue
+	}
+
+	return formatGradeLabel(left).localeCompare(formatGradeLabel(right))
+}
+
 function StatCard({ label, value, tone = 'teal' }) {
 	return (
 		<div className={`builder-stat-card tone-${tone}`}>
@@ -59,6 +88,8 @@ export default function StudentProgressPage() {
 		scoredExamEntryCount: 0,
 	})
 	const [loadState, setLoadState] = useState({ loading: true, error: '' })
+	const [searchQuery, setSearchQuery] = useState('')
+	const [selectedGrade, setSelectedGrade] = useState('all')
 
 	useEffect(() => {
 		async function loadStudentProgress() {
@@ -82,58 +113,110 @@ export default function StudentProgressPage() {
 		loadStudentProgress()
 	}, [])
 
-	const activeStudentCount = studentProgressOverview.students.filter((student) => (student.examCount || 0) > 0).length
+	const availableGrades = Array.from(
+		new Set(studentProgressOverview.students.map((student) => String(student.grade || '').trim()).filter(Boolean))
+	).sort(compareGrades)
+	const normalizedSearchQuery = searchQuery.trim().toLowerCase()
+	const filteredStudents = studentProgressOverview.students.filter((student) => {
+		const matchesGrade = selectedGrade === 'all' || String(student.grade || '').trim().toLowerCase() === selectedGrade
+		if (!matchesGrade) {
+			return false
+		}
+
+		if (!normalizedSearchQuery) {
+			return true
+		}
+
+		const searchableFields = [
+			student.studentName,
+			student.studentId,
+			student.schoolCode,
+			student.grade,
+			student.section,
+			student.academicYear,
+			student.gender,
+		]
+
+		return searchableFields.some((value) => String(value || '').toLowerCase().includes(normalizedSearchQuery))
+	})
+	const resolvedStudentCount = filteredStudents.filter((student) => student.studentFound).length
+	const filteredExamEntryCount = filteredStudents.reduce((count, student) => count + (student.examCount || 0), 0)
+	const filteredCompletedEntryCount = filteredStudents.reduce((count, student) => count + (student.completedCount || 0), 0)
+	const filteredScoredEntryCount = filteredStudents.reduce((count, student) => count + (student.scoredCount || 0), 0)
+	const completionRate = filteredExamEntryCount
+		? (filteredCompletedEntryCount / filteredExamEntryCount) * 100
+		: 0
 
 	return (
 		<div className='google-dashboard'>
 			<CompanySidebar />
 			<main className='google-main company-main'>
 				<div className='exam-shell builder-shell'>
-			<section className='hero-panel'>
-				<div className='hero-copy'>
-					<span className='eyebrow'>Student Progress</span>
-					<h1>Student participation and scores in a dedicated progress view.</h1>
-					<p>
-						This page focuses on students who attempted company exams, including their linked school records, score history, and progress details.
-					</p>
-					<div className='hero-actions'>
-						<Link className='primary-action' to='/student-results'>Open student results</Link>
+					<div className='results-command-deck progress-command-deck'>
+						<div className='results-filter-panel progress-filter-panel'>
+							<div className='results-filter-copy'>
+								<span className='section-kicker'>Filter Students</span>
+								<h3>{selectedGrade === 'all' ? 'Browse all student progress records' : `Browsing ${formatGradeLabel(selectedGrade)} progress`}</h3>
+								<p>Search by student name, ID, school code, section, or academic year, then narrow the view to a single grade when needed.</p>
+							</div>
+
+							<div className='filter-bar progress-filter-bar'>
+								<label className='filter-field progress-search-field'>
+									<span>Search student</span>
+									<input
+										type='text'
+										value={searchQuery}
+										onChange={(event) => setSearchQuery(event.target.value)}
+										placeholder='Name, ID, school, section...'
+									/>
+								</label>
+
+								<label className='filter-field'>
+									<span>Grade</span>
+									<select value={selectedGrade} onChange={(event) => setSelectedGrade(event.target.value)}>
+										<option value='all'>All grades</option>
+										{availableGrades.map((grade) => (
+											<option key={grade} value={grade.toLowerCase()}>
+												{formatGradeLabel(grade)}
+											</option>
+										))}
+									</select>
+								</label>
+							</div>
+						</div>
+
+						<div className='builder-stat-grid progress-filter-stats'>
+							<StatCard label='Visible Students' value={filteredStudents.length} tone='gold' />
+							<StatCard label='Resolved Records' value={resolvedStudentCount} tone='teal' />
+							<StatCard label='Scored Entries' value={filteredScoredEntryCount} tone='coral' />
+							<StatCard label='Completion Rate' value={formatPercent(completionRate)} tone='teal' />
+						</div>
 					</div>
+
 					{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
-				</div>
-
-				<div className='hero-card'>
-					<span className='hero-card-label'>Current Snapshot</span>
-					<div className='builder-stat-grid'>
-						<StatCard label='Students' value={studentProgressOverview.count ?? 0} tone='gold' />
-						<StatCard label='Active Students' value={activeStudentCount} tone='teal' />
-						<StatCard label='Exam Entries' value={studentProgressOverview.examEntryCount ?? 0} tone='coral' />
-						<StatCard label='Scored Entries' value={studentProgressOverview.scoredExamEntryCount ?? 0} tone='teal' />
-					</div>
-					<p className='inline-note'>
-						{loadState.loading ? 'Loading student progress data...' : 'Each card resolves the student ID against the school student directory.'}
-					</p>
-				</div>
-			</section>
-
+					
 			<section className='section-block'>
 				<div className='section-header-row'>
 					<div className='section-heading'>
 						<span className='section-kicker'>Student Progress</span>
 						<h2>Students that took and scored exams</h2>
 					</div>
+					<p className='progress-section-note'>Showing {filteredStudents.length} student record{filteredStudents.length === 1 ? '' : 's'} with the current search and grade filters applied.</p>
 				</div>
 
-				{studentProgressOverview.students.length ? (
+				{filteredStudents.length ? (
 					<div className='results-stack student-progress-stack'>
-						{studentProgressOverview.students.map((student) => (
+						{filteredStudents.map((student) => (
 							<article className='catalog-card results-card student-progress-card' key={student.studentId}>
-								<div className='section-header-row'>
+								<div className='section-header-row results-card-header student-progress-card-header'>
 									<div>
 										<div className='catalog-meta-row'>
 											<span className='pill pill-teal'>{student.grade || 'unknown grade'}</span>
 											<span className='pill pill-gold'>{student.schoolCode || 'No school code'}</span>
 											{student.section ? <span className='pill pill-coral'>Section {student.section}</span> : null}
+											<span className={`progress-record-pill${student.studentFound ? ' found' : ''}`}>
+												{student.studentFound ? 'Directory matched' : 'Directory missing'}
+											</span>
 										</div>
 										<h3>{student.studentName || student.studentId}</h3>
 										<p>
@@ -163,6 +246,11 @@ export default function StudentProgressPage() {
 										</div>
 									</div>
 								</div>
+
+								<p className='results-card-note progress-card-note'>
+									{`${student.completedCount ?? 0} of ${student.examCount ?? 0} entries completed.`}
+									{student.scoredCount ? ` ${student.scoredCount} scored attempt${student.scoredCount === 1 ? '' : 's'} are already available.` : ' No scored attempts are available yet.'}
+								</p>
 
 								{student.exams.length ? (
 									<div className='results-table-wrap'>
@@ -203,6 +291,8 @@ export default function StudentProgressPage() {
 							</article>
 						))}
 					</div>
+				) : studentProgressOverview.students.length ? (
+					<div className='empty-state'>No students matched the current search and grade filters.</div>
 				) : (
 					<div className='empty-state'>No students were found in the studentProgress node.</div>
 				)}

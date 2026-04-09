@@ -1436,41 +1436,9 @@ export default function ExamPage() {
 				</div>
 			</section>
 
-			<section className='section-block'>
-				<div className='section-header-row'>
-					<div className='section-heading'>
-						<span className='section-kicker'>Student Progress</span>
-						<h2>Progress moved to a dedicated page</h2>
-					</div>
+			
 
-					<Link className='secondary-action' to='/student-progress'>Open student progress page</Link>
-				</div>
-
-				<div className='catalog-card'>
-					<p>
-						Student progress, school record resolution, exam-attempt history, and score tracking now live on a separate page so this screen stays focused on exam creation.
-					</p>
-					<p className='inline-note'>Use the button above or the top navigation bar to open the dedicated progress view.</p>
-				</div>
-			</section>
-
-			<section className='section-block'>
-				<div className='section-header-row'>
-					<div className='section-heading'>
-						<span className='section-kicker'>Student Results</span>
-						<h2>Results moved to a dedicated page</h2>
-					</div>
-
-					<Link className='secondary-action' to='/student-results'>Open student results page</Link>
-				</div>
-
-				<div className='catalog-card'>
-					<p>
-						Student marks, ranking-point submission, and exam result filters now live on a dedicated page so this screen stays focused on creating exams.
-					</p>
-					<p className='inline-note'>Use the button above to open the separate results view.</p>
-				</div>
-			</section>
+		
 				</div>
 			</main>
 		</div>

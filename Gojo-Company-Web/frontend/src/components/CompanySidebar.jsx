@@ -1,4 +1,4 @@
-import { FaChartLine, FaClipboardList, FaFileAlt } from 'react-icons/fa'
+import { FaBookOpen, FaChartLine, FaClipboardList, FaFileAlt } from 'react-icons/fa'
 import { NavLink } from 'react-router-dom'
 
 const profileImage = `data:image/svg+xml;utf8,${encodeURIComponent(`
@@ -16,6 +16,7 @@ const profileImage = `data:image/svg+xml;utf8,${encodeURIComponent(`
 `)}`
 
 const menuItems = [
+	{ to: '/books', label: 'Books', Icon: FaBookOpen },
 	{ to: '/exams', label: 'Exams', Icon: FaFileAlt },
 	{ to: '/student-progress', label: 'Student Progress', Icon: FaChartLine },
 	{ to: '/student-results', label: 'Student Results', Icon: FaClipboardList },

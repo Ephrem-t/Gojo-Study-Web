@@ -41,6 +41,173 @@ function formatPercent(value) {
 	return `${Math.round(value * 100) / 100}%`
 }
 
+function formatOrdinal(value) {
+	if (!Number.isFinite(value)) {
+		return 'Unranked'
+	}
+
+	const normalized = Math.abs(Number(value))
+	const modHundred = normalized % 100
+	if (modHundred >= 11 && modHundred <= 13) {
+		return `${value}th`
+	}
+
+	switch (normalized % 10) {
+		case 1:
+			return `${value}st`
+		case 2:
+			return `${value}nd`
+		case 3:
+			return `${value}rd`
+		default:
+			return `${value}th`
+	}
+}
+
+function formatGradeLabel(value) {
+	const normalized = String(value || '').trim()
+	if (!normalized) {
+		return 'Unassigned grade'
+	}
+
+	const match = normalized.match(/(\d{1,2})/)
+	if (match) {
+		return `Grade ${match[1]}`
+	}
+
+	return normalized
+		.replace(/[_-]+/g, ' ')
+		.replace(/\b\w/g, (character) => character.toUpperCase())
+}
+
+function compareRankedStudents(left, right) {
+	const leftCountryRank = Number.isFinite(left.countryRank) ? left.countryRank : Number.POSITIVE_INFINITY
+	const rightCountryRank = Number.isFinite(right.countryRank) ? right.countryRank : Number.POSITIVE_INFINITY
+	if (leftCountryRank !== rightCountryRank) {
+		return leftCountryRank - rightCountryRank
+	}
+
+	const leftPoints = Number.isFinite(left.countryTotalPoints) ? left.countryTotalPoints : -1
+	const rightPoints = Number.isFinite(right.countryTotalPoints) ? right.countryTotalPoints : -1
+	if (leftPoints !== rightPoints) {
+		return rightPoints - leftPoints
+	}
+
+	const leftScore = Number.isFinite(left.bestScorePercent) ? left.bestScorePercent : -1
+	const rightScore = Number.isFinite(right.bestScorePercent) ? right.bestScorePercent : -1
+	if (leftScore !== rightScore) {
+		return rightScore - leftScore
+	}
+
+	return String(left.studentName || left.studentId).localeCompare(String(right.studentName || right.studentId))
+}
+
+function compareGrades(left, right) {
+	const leftMatch = String(left || '').match(/(\d{1,2})/)
+	const rightMatch = String(right || '').match(/(\d{1,2})/)
+	const leftValue = leftMatch ? Number(leftMatch[1]) : Number.POSITIVE_INFINITY
+	const rightValue = rightMatch ? Number(rightMatch[1]) : Number.POSITIVE_INFINITY
+
+	if (leftValue !== rightValue) {
+		return leftValue - rightValue
+	}
+
+	return formatGradeLabel(left).localeCompare(formatGradeLabel(right))
+}
+
+function buildTopRankedStudents(results) {
+	const students = new Map()
+
+	for (const result of results) {
+		if (!result || result.mode !== 'competitive') {
+			continue
+		}
+
+		const studentId = String(result.studentId || '').trim()
+		if (!studentId) {
+			continue
+		}
+
+		const current = students.get(studentId)
+		const score = Number.isFinite(result.bestScorePercent) ? result.bestScorePercent : null
+		const points = Number.isFinite(result.countryTotalPoints) ? result.countryTotalPoints : 0
+		const examPoints = Number.isFinite(result.examPoints) ? result.examPoints : 0
+		const countryRank = Number.isFinite(result.countryRank) ? result.countryRank : null
+		const schoolRank = Number.isFinite(result.schoolRank) ? result.schoolRank : null
+
+		if (!current) {
+			students.set(studentId, {
+				studentId,
+				studentName: result.studentName || studentId,
+				schoolCode: result.schoolCode || '',
+				grade: result.grade || '',
+				bestScorePercent: score,
+				countryTotalPoints: points,
+				examPoints,
+				countryRank,
+				schoolRank,
+				featuredExamTitle: result.title || result.examId || '',
+				resultCount: 1,
+			})
+			continue
+		}
+
+		current.resultCount += 1
+		current.studentName = current.studentName || result.studentName || studentId
+		current.schoolCode = current.schoolCode || result.schoolCode || ''
+		current.grade = current.grade || result.grade || ''
+		current.countryTotalPoints = Math.max(current.countryTotalPoints || 0, points)
+		current.examPoints = Math.max(current.examPoints || 0, examPoints)
+
+		if (score !== null && (current.bestScorePercent === null || score > current.bestScorePercent)) {
+			current.bestScorePercent = score
+			current.featuredExamTitle = result.title || result.examId || current.featuredExamTitle
+		}
+
+		if (countryRank !== null && (current.countryRank === null || countryRank < current.countryRank)) {
+			current.countryRank = countryRank
+		}
+
+		if (schoolRank !== null && (current.schoolRank === null || schoolRank < current.schoolRank)) {
+			current.schoolRank = schoolRank
+		}
+	}
+
+	return Array.from(students.values())
+		.sort(compareRankedStudents)
+		.slice(0, 3)
+		.map((student, index) => ({
+			...student,
+			placement: index + 1,
+		}))
+}
+
+function buildTopRankedStudentsByGrade(results) {
+	const groupedResults = new Map()
+
+	for (const result of results) {
+		if (!result || result.mode !== 'competitive') {
+			continue
+		}
+
+		const gradeKey = String(result.grade || '').trim().toLowerCase() || 'unassigned'
+		if (!groupedResults.has(gradeKey)) {
+			groupedResults.set(gradeKey, [])
+		}
+
+		groupedResults.get(gradeKey).push(result)
+	}
+
+	return Array.from(groupedResults.entries())
+		.map(([gradeKey, gradeResults]) => ({
+			gradeKey,
+			gradeLabel: formatGradeLabel(gradeResults[0]?.grade || gradeKey),
+			students: buildTopRankedStudents(gradeResults),
+		}))
+		.filter((group) => group.students.length > 0)
+		.sort((left, right) => compareGrades(left.gradeKey, right.gradeKey))
+}
+
 function StatCard({ label, value, tone = 'teal' }) {
 	return (
 		<div className={`builder-stat-card tone-${tone}`}>
@@ -55,6 +222,7 @@ export default function StudentResultsPage() {
 	const [loadState, setLoadState] = useState({ loading: true, error: '' })
 	const [rankingSubmitState, setRankingSubmitState] = useState({ loading: false, error: '', success: '' })
 	const [selectedResultExamId, setSelectedResultExamId] = useState('all')
+	const [selectedPodiumGrade, setSelectedPodiumGrade] = useState('')
 
 	useEffect(() => {
 		async function loadResults() {
@@ -124,40 +292,105 @@ export default function StudentResultsPage() {
 	const visibleExamResults = selectedResultExamId === 'all'
 		? resultsOverview.byExam
 		: resultsOverview.byExam.filter((exam) => exam.examId === selectedResultExamId)
-	const visibleResultCount = visibleExamResults.reduce((count, exam) => count + (exam.results?.length || 0), 0)
+	const competitiveVisibleExamResults = visibleExamResults.filter((exam) => exam.mode === 'competitive')
+	const visibleCompetitiveResults = competitiveVisibleExamResults.flatMap((exam) => exam.results || [])
+	const competitiveVisibleResultCount = competitiveVisibleExamResults.reduce((count, exam) => count + (exam.results?.length || 0), 0)
+	const visibleCompetitiveStudentCount = new Set(visibleCompetitiveResults.map((result) => result.studentId).filter(Boolean)).size
+	const topRankedStudentsByGrade = buildTopRankedStudentsByGrade(visibleCompetitiveResults)
+	const activePodiumGrade = topRankedStudentsByGrade.find((group) => group.gradeKey === selectedPodiumGrade) || topRankedStudentsByGrade[0] || null
+	const activeExamLabel = selectedResultExamId === 'all' ? 'All exams' : selectedResultExamId
+	const spotlightStudent = activePodiumGrade?.students[0] || null
+
+	useEffect(() => {
+		if (!topRankedStudentsByGrade.length) {
+			if (selectedPodiumGrade) {
+				setSelectedPodiumGrade('')
+			}
+			return
+		}
+
+		if (!topRankedStudentsByGrade.some((group) => group.gradeKey === selectedPodiumGrade)) {
+			setSelectedPodiumGrade(topRankedStudentsByGrade[0].gradeKey)
+		}
+	}, [selectedPodiumGrade, topRankedStudentsByGrade])
 
 	return (
 		<div className='google-dashboard'>
 			<CompanySidebar />
 			<main className='google-main company-main'>
-				<div className='exam-shell builder-shell'>
-			<section className='hero-panel'>
-				<div className='hero-copy'>
-					<span className='eyebrow'>Student Results</span>
-					<h1>Marks, ranking points, and exam submissions in one page.</h1>
-					<p>
-						This page is dedicated to student exam results so the exam builder stays focused on creating and managing exam data.
-					</p>
-					<div className='hero-actions'>
-						<Link className='primary-action' to='/student-progress'>Open student progress</Link>
+				<div className='exam-shell builder-shell'>					
+
+			<section className='section-block podium-section'>
+				<div className='section-header-row'>
+					<div className='section-heading'>
+						<span className='section-kicker'>Leaderboard Spotlight</span>
+						<h2>Top three ranked students by grade</h2>
 					</div>
-					{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
-					{rankingSubmitState.error ? <div className='status-banner warning'>{rankingSubmitState.error}</div> : null}
-					{rankingSubmitState.success ? <div className='status-banner success-banner'>{rankingSubmitState.success}</div> : null}
+					
 				</div>
 
-				<div className='hero-card'>
-					<span className='hero-card-label'>Current Snapshot</span>
-					<div className='builder-stat-grid'>
-						<StatCard label='Students' value={resultsOverview.stats.studentCount ?? 0} tone='gold' />
-						<StatCard label='Exam Results' value={resultsOverview.stats.resultCount ?? 0} tone='teal' />
-						<StatCard label='Completed' value={resultsOverview.stats.completedCount ?? 0} tone='coral' />
-						<StatCard label='Point Rules' value={resultsOverview.pointRules?.length ?? 0} tone='teal' />
+				{topRankedStudentsByGrade.length ? (
+					<div className='podium-grade-stack'>
+						<div className='podium-grade-selector' role='tablist' aria-label='Grade leaderboard selector'>
+							{topRankedStudentsByGrade.map((group) => (
+								<button
+									key={group.gradeKey}
+									className={`podium-grade-button${activePodiumGrade?.gradeKey === group.gradeKey ? ' active' : ''}`}
+									type='button'
+									onClick={() => setSelectedPodiumGrade(group.gradeKey)}
+								>
+									{group.gradeLabel}
+								</button>
+							))}
+						</div>
+
+						{activePodiumGrade ? (
+							<section className='podium-grade-group' key={activePodiumGrade.gradeKey}>
+								<div className='podium-grade-header'>
+									<div className='podium-grade-heading'>
+										<span className='pill pill-teal'>{activePodiumGrade.gradeLabel}</span>
+										<h3>{activePodiumGrade.gradeLabel} leaderboard</h3>
+									</div>
+								</div>
+
+								<div className='results-podium'>
+									{activePodiumGrade.students.map((student) => (
+										<article className={`podium-card rank-${student.placement}`} key={`${activePodiumGrade.gradeKey}-${student.studentId}`}>
+											<div className='podium-rank-chip'>{formatOrdinal(student.placement)}</div>
+											<div className='podium-avatar'>{String(student.studentName || student.studentId).charAt(0).toUpperCase()}</div>
+											<p className='podium-title'>
+												{student.countryRank !== null
+													? `Country rank ${formatOrdinal(student.countryRank)}`
+													: 'Top competitive scorer'}
+											</p>
+											<h3>{student.studentName || student.studentId}</h3>
+											<p className='podium-subtitle'>
+												{student.studentId}
+												{student.schoolCode ? ` • ${student.schoolCode}` : ''}
+											</p>
+											<div className='podium-metrics'>
+												<div>
+													<span>Best score</span>
+													<strong>{formatPercent(student.bestScorePercent)}</strong>
+												</div>
+												<div>
+													<span>Total points</span>
+													<strong>{student.countryTotalPoints ?? 0}</strong>
+												</div>
+											</div>
+											<p className='podium-footnote'>
+												{student.featuredExamTitle || 'Competitive exam result'}
+												{student.resultCount > 1 ? ` • ${student.resultCount} ranked results` : ''}
+											</p>
+										</article>
+									))}
+								</div>
+							</section>
+						) : null}
 					</div>
-					<p className='inline-note'>
-						{loadState.loading ? 'Loading student result data...' : 'Filter by exam and submit visible ranking points from this page.'}
-					</p>
-				</div>
+				) : (
+					<div className='empty-state'>No competitive ranking data is available for the current filter yet.</div>
+				)}
 			</section>
 
 			<section className='section-block'>
@@ -166,43 +399,52 @@ export default function StudentResultsPage() {
 						<span className='section-kicker'>Student Results</span>
 						<h2>Marks and points by exam</h2>
 					</div>
-
-					<div className='filter-bar'>
-						<label className='filter-field'>
-							<span>Exam filter</span>
-							<select value={selectedResultExamId} onChange={(event) => setSelectedResultExamId(event.target.value)}>
-								<option value='all'>All exams</option>
-								{resultsOverview.byExam.map((exam) => (
-									<option key={exam.examId} value={exam.examId}>
-										{exam.examId}
-									</option>
-								))}
-							</select>
-						</label>
-					</div>
 				</div>
 
-				<div className='catalog-grid compact-grid'>
-					{(resultsOverview.pointRules || []).map((rule) => (
-						<div className='catalog-card' key={`${rule.minimumPercent}-${rule.points}`}>
-							<div className='catalog-meta-row'>
-								<span className='pill pill-gold'>Points</span>
-							</div>
-							<h3>{rule.points} point{rule.points === 1 ? '' : 's'}</h3>
-							<p>Score {rule.minimumPercent}% and above.</p>
+				<div className='results-command-deck'>
+					<div className='results-filter-panel'>
+						<div className='results-filter-copy'>
+							<span className='section-kicker'>Command View</span>
+							<h3>{selectedResultExamId === 'all' ? 'Viewing every exam stream' : `Viewing ${selectedResultExamId}`}</h3>
+							<p>Use the exam selector to narrow the leaderboard, summary cards, and detailed result tables at the same time.</p>
 						</div>
-					))}
+
+						<div className='filter-bar'>
+							<label className='filter-field'>
+								<span>Exam filter</span>
+								<select value={selectedResultExamId} onChange={(event) => setSelectedResultExamId(event.target.value)}>
+									<option value='all'>All exams</option>
+									{resultsOverview.byExam.map((exam) => (
+										<option key={exam.examId} value={exam.examId}>
+											{exam.examId}
+										</option>
+									))}
+								</select>
+							</label>
+						</div>
+					</div>
+
+					<div className='results-rule-strip'>
+						{(resultsOverview.pointRules || []).map((rule) => (
+							<div className='results-rule-card' key={`${rule.minimumPercent}-${rule.points}`}>
+								<span className='pill pill-gold'>Points</span>
+								<h3>{rule.points}</h3>
+								<p>Score {rule.minimumPercent}% and above on competitive exams.</p>
+							</div>
+						))}
+					</div>
 				</div>
 
 				{visibleExamResults.length ? (
 					<div className='results-stack'>
 						{visibleExamResults.map((exam) => (
 							<article className='catalog-card results-card' key={exam.examId}>
-								<div className='section-header-row'>
+								<div className='section-header-row results-card-header'>
 									<div>
 										<div className='catalog-meta-row'>
 											<span className='pill pill-teal'>{exam.grade || 'unknown grade'}</span>
 											<span className='pill pill-coral'>{exam.mode || 'practice'}</span>
+											{exam.subject ? <span className='pill'>{exam.subject}</span> : null}
 										</div>
 										<h3>{exam.title || exam.examId}</h3>
 										<p>{exam.examId} • {exam.subject || 'Unknown subject'}</p>
@@ -251,8 +493,8 @@ export default function StudentResultsPage() {
 													</td>
 													<td>{result.roundId}</td>
 													<td>{formatPercent(result.bestScorePercent)}</td>
-													<td>{result.examPoints}</td>
-													<td>{result.pointsSubmitted ? result.storedExamPoints : '-'}</td>
+													<td>{result.mode === 'competitive' ? result.examPoints ?? '-' : '-'}</td>
+													<td>{result.mode === 'competitive' && result.pointsSubmitted ? result.storedExamPoints : '-'}</td>
 													<td>{result.status || '-'}</td>
 													<td>{result.countryRank ?? '-'}</td>
 													<td>{result.schoolRank ?? '-'}</td>
@@ -263,9 +505,10 @@ export default function StudentResultsPage() {
 									</table>
 								</div>
 
-								<p className='inline-note'>
-									Country total points come from the ranking node. Exam points use this page rule: 90%+ = 4, 80%+ = 3,
-									70%+ = 2, 60%+ = 1.
+								<p className='inline-note results-card-note'>
+									{exam.mode === 'competitive'
+										? 'Country total points come from the ranking node. Competitive exam points use this page rule: 90%+ = 4, 80%+ = 3, 70%+ = 2, 60%+ = 1.'
+										: 'This exam is not competitive, so its score percent is not converted into ranking points.'}
 								</p>
 							</article>
 						))}
@@ -276,17 +519,17 @@ export default function StudentResultsPage() {
 
 				<div className='results-submit-row'>
 					<p className='inline-note'>
-						Submit converts the visible student score percent into exam points and writes them to the rankings database.
+						Submit converts visible competitive exam score percent values into points and writes them to the rankings database.
 					</p>
 					<button
 						className='primary-action'
 						type='button'
 						onClick={handleSubmitRankingPoints}
-						disabled={rankingSubmitState.loading || visibleResultCount === 0}
+						disabled={rankingSubmitState.loading || competitiveVisibleResultCount === 0}
 					>
 						{rankingSubmitState.loading
 							? 'Submitting points...'
-							: `Submit ${selectedResultExamId === 'all' ? 'visible' : 'selected exam'} points`}
+							: `Submit ${selectedResultExamId === 'all' ? 'visible competitive' : 'selected competitive exam'} points`}
 					</button>
 				</div>
 			</section>

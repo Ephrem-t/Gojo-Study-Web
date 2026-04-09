@@ -1,11 +1,16 @@
+import mimetypes
 import os
 from functools import lru_cache
 import re
+import time
+from urllib.parse import quote
+from uuid import uuid4
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
+from werkzeug.exceptions import HTTPException
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,10 +19,24 @@ DEFAULT_DATABASE_URL = "https://bale-house-rental-default-rtdb.firebaseio.com/"
 DEFAULT_STORAGE_BUCKET = "bale-house-rental.appspot.com"
 DEFAULT_PLATFORM_ROOT = "Platform1"
 DEFAULT_SCHOOLS_ROOT = "Schools"
+LOCAL_UPLOAD_ROOT = os.path.join(BASE_DIR, "uploaded_assets")
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": [
+                r"http://localhost:\d+",
+                r"http://127\.0\.0\.1:\d+",
+            ]
+        }
+    },
+)
+
+
+LOCAL_DEV_ORIGIN_PATTERN = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
 
 
 def _credential_path():
@@ -129,6 +148,14 @@ def legacy_app_config_ref():
     return root_ref().child("appConfig")
 
 
+def textbooks_ref():
+    return _platform_child("TextBooks")
+
+
+def legacy_textbooks_ref():
+    return root_ref().child("TextBooks")
+
+
 def student_progress_ref():
     return _shared_node_ref("studentProgress")
 
@@ -143,6 +170,15 @@ def legacy_schools_ref():
 
 def storage_bucket():
     return storage.bucket(os.getenv("FIREBASE_STORAGE_BUCKET", DEFAULT_STORAGE_BUCKET))
+
+
+TEXTBOOK_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+TEXTBOOK_DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx"}
+TEXTBOOK_DOCUMENT_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
 
 
 def _extract_grade_token(*values):
@@ -201,6 +237,25 @@ def _require_key(value, field_name):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", text):
         raise ValueError(f"{field_name} may only contain letters, numbers, underscores, dots, and dashes")
     return text
+
+
+@app.after_request
+def _apply_local_dev_cors_headers(response):
+    origin = str(request.headers.get("Origin") or "").strip()
+    if origin and LOCAL_DEV_ORIGIN_PATTERN.fullmatch(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
+@app.errorhandler(Exception)
+def _handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        return jsonify({"error": error.description or error.name}), error.code
+
+    return jsonify({"error": str(error) or "Internal server error"}), 500
 
 
 def _coerce_int(value, field_name, *, allow_none=False, minimum=None):
@@ -280,6 +335,244 @@ def _normalize_grade_value(value):
     if match:
         return f"grade{match.group(1)}"
     return text
+
+
+def _normalize_textbook_subject_key(value, field_name):
+    normalized = re.sub(r"[^a-z0-9]+", "_", _non_empty_string(value).lower()).strip("_")
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    return normalized
+
+
+def _require_grade_key(value, field_name):
+    normalized = _normalize_grade_value(value)
+    if not normalized:
+        raise ValueError(f"{field_name} is required")
+    return normalized
+
+
+def _grade_sort_value(value):
+    match = re.search(r"(\d+)", str(value or ""))
+    return int(match.group(1)) if match else 999
+
+
+def _sanitize_storage_segment(value, default_value="file"):
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", _non_empty_string(value)).strip("._")
+    return normalized or default_value
+
+
+def _firebase_storage_download_url(bucket_name, blob_name, token):
+    encoded_name = quote(blob_name, safe="")
+    return f"https://firebasestorage.googleapis.com/v0/b/{bucket_name}/o/{encoded_name}?alt=media&token={token}"
+
+
+def _local_uploaded_asset_url(asset_path):
+    normalized_path = str(asset_path or "").replace("\\", "/").strip("/")
+    encoded_path = quote(normalized_path, safe="/")
+    return f"{request.host_url.rstrip('/')}/uploaded-assets/{encoded_path}"
+
+
+def _validate_textbook_asset_file(file_storage, asset_type):
+    if file_storage is None:
+        raise ValueError("file is required")
+
+    original_name = _sanitize_storage_segment(file_storage.filename, "upload")
+    extension = os.path.splitext(original_name)[1].lower()
+    content_type = _non_empty_string(file_storage.mimetype) or mimetypes.guess_type(original_name)[0] or "application/octet-stream"
+
+    if asset_type == "cover":
+        is_valid = extension in TEXTBOOK_IMAGE_EXTENSIONS or content_type.startswith("image/")
+        if not is_valid:
+            raise ValueError("cover uploads must be image files")
+    elif asset_type == "unit":
+        is_valid = extension in TEXTBOOK_DOCUMENT_EXTENSIONS or content_type in TEXTBOOK_DOCUMENT_MIME_TYPES
+        if not is_valid:
+            raise ValueError("unit uploads must be PDF, DOC, or DOCX files")
+    else:
+        raise ValueError("assetType must be cover or unit")
+
+    return {
+        "fileName": original_name,
+        "contentType": content_type,
+    }
+
+
+def _upload_textbook_asset(file_storage, asset_type, grade_key, subject_key, unit_key=""):
+    validated_file = _validate_textbook_asset_file(file_storage, asset_type)
+    timestamp = int(time.time() * 1000)
+
+    if asset_type == "cover":
+        storage_prefix = f"TextBooks/{grade_key}/{subject_key}/cover"
+    else:
+        storage_prefix = f"TextBooks/{grade_key}/{subject_key}/units/{_sanitize_storage_segment(unit_key, 'unit')}"
+
+    local_asset_path = f"textbooks/{storage_prefix}/{timestamp}_{validated_file['fileName']}"
+
+    blob_name = f"{storage_prefix}/{timestamp}_{validated_file['fileName']}"
+    download_token = uuid4().hex
+    try:
+        bucket = storage_bucket()
+        blob = bucket.blob(blob_name)
+        blob.metadata = {"firebaseStorageDownloadTokens": download_token}
+        blob.cache_control = "public, max-age=3600"
+
+        try:
+            file_storage.stream.seek(0)
+        except (AttributeError, OSError):
+            pass
+
+        blob.upload_from_file(file_storage.stream, content_type=validated_file["contentType"])
+
+        blob.metadata = {"firebaseStorageDownloadTokens": download_token}
+        blob.patch()
+
+        public_url = ""
+        try:
+            blob.make_public()
+            public_url = blob.public_url
+        except Exception:
+            public_url = ""
+
+        download_url = _firebase_storage_download_url(bucket.name, blob_name, download_token)
+        working_url = public_url or download_url
+
+        return {
+            "url": working_url,
+            "publicUrl": public_url,
+            "downloadUrl": download_url,
+            "storageBackend": "firebase",
+            "storagePath": blob_name,
+            "contentType": validated_file["contentType"],
+            "fileName": validated_file["fileName"],
+        }
+    except Exception as cloud_error:
+        local_full_path = os.path.join(LOCAL_UPLOAD_ROOT, *local_asset_path.split("/"))
+        os.makedirs(os.path.dirname(local_full_path), exist_ok=True)
+
+        try:
+            file_storage.stream.seek(0)
+        except (AttributeError, OSError):
+            pass
+
+        file_storage.save(local_full_path)
+        local_url = _local_uploaded_asset_url(local_asset_path)
+
+        return {
+            "url": local_url,
+            "publicUrl": local_url,
+            "downloadUrl": local_url,
+            "storageBackend": "local",
+            "storagePath": local_asset_path,
+            "contentType": validated_file["contentType"],
+            "fileName": validated_file["fileName"],
+            "fallbackReason": str(cloud_error),
+        }
+
+
+def _validate_textbook_node(node):
+    if not isinstance(node, dict):
+        raise ValueError("textbook must be an object")
+
+    units = node.get("units")
+    if not isinstance(units, dict) or not units:
+        raise ValueError("textbook.units must be a non-empty object")
+
+    validated_units = {}
+    for unit_key, unit_payload in units.items():
+        normalized_unit_key = _require_key(unit_key, "textbook unit key")
+        if not isinstance(unit_payload, dict):
+            raise ValueError(f"textbook.units.{normalized_unit_key} must be an object")
+
+        validated_units[normalized_unit_key] = {
+            "pdfUrl": _require_string(unit_payload.get("pdfUrl"), f"textbook.units.{normalized_unit_key}.pdfUrl"),
+            "title": _require_string(unit_payload.get("title"), f"textbook.units.{normalized_unit_key}.title"),
+        }
+
+    return {
+        "coverUrl": _require_string(node.get("coverUrl"), "textbook.coverUrl"),
+        "language": _require_string(node.get("language"), "textbook.language"),
+        "region": _require_string(node.get("region"), "textbook.region"),
+        "title": _require_string(node.get("title"), "textbook.title"),
+        "units": validated_units,
+    }
+
+
+def _normalize_textbook_record(grade_key, subject_key, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    units = payload.get("units") if isinstance(payload.get("units"), dict) else {}
+    normalized_units = [
+        {
+            "unitKey": unit_key,
+            "title": unit_payload.get("title") or unit_key,
+            "pdfUrl": unit_payload.get("pdfUrl") or "",
+        }
+        for unit_key, unit_payload in units.items()
+        if isinstance(unit_payload, dict)
+    ]
+    normalized_units.sort(key=lambda item: item["unitKey"])
+
+    document_units = [unit for unit in normalized_units if _non_empty_string(unit.get("pdfUrl"))]
+    pdf_units = [
+        unit
+        for unit in document_units
+        if _non_empty_string(unit.get("pdfUrl")).lower().split("?", 1)[0].endswith(".pdf")
+    ]
+
+    return {
+        "grade": grade_key,
+        "subjectKey": subject_key,
+        "title": payload.get("title") or subject_key,
+        "language": payload.get("language") or "",
+        "region": payload.get("region") or "",
+        "coverUrl": payload.get("coverUrl") or "",
+        "documentCount": len(document_units),
+        "pdfUnitCount": len(pdf_units),
+        "firstDocumentUrl": document_units[0]["pdfUrl"] if document_units else "",
+        "previewPdfUrl": pdf_units[0]["pdfUrl"] if pdf_units else "",
+        "unitCount": len(normalized_units),
+        "units": normalized_units,
+    }
+
+
+def _textbooks_dashboard():
+    snapshot = _deep_merge_dicts(
+        legacy_textbooks_ref().get() or {},
+        textbooks_ref().get() or {},
+    )
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    textbooks = []
+    total_units = 0
+    for grade_key, grade_payload in snapshot.items():
+        if not isinstance(grade_payload, dict):
+            continue
+
+        for subject_key, textbook_payload in grade_payload.items():
+            if not isinstance(textbook_payload, dict):
+                continue
+
+            normalized_textbook = _normalize_textbook_record(grade_key, subject_key, textbook_payload)
+            textbooks.append(normalized_textbook)
+            total_units += normalized_textbook["unitCount"]
+
+    textbooks.sort(
+        key=lambda item: (
+            _grade_sort_value(item.get("grade")),
+            item.get("subjectKey") or "",
+            item.get("title") or "",
+        )
+    )
+
+    return {
+        "textbooks": textbooks,
+        "tree": snapshot,
+        "stats": {
+            "gradeCount": len([key for key, value in snapshot.items() if isinstance(value, dict)]),
+            "textbookCount": len(textbooks),
+            "unitCount": total_units,
+        },
+    }
 
 
 def _student_directory():
@@ -525,18 +818,31 @@ def _company_exam_awards_snapshot(rankings_snapshot):
 def _submit_company_exam_points(exam_id=None):
     rankings_snapshot = rankings_ref().get() or {}
     results_snapshot = _company_exam_results()
+    exams_by_id = {
+        exam.get("examId"): exam
+        for exam in results_snapshot.get("byExam", [])
+        if isinstance(exam, dict) and exam.get("examId")
+    }
     available_results = results_snapshot.get("results") if isinstance(results_snapshot.get("results"), list) else []
+
+    if exam_id and exam_id not in exams_by_id:
+        raise ValueError(f"No exam results found for {exam_id}")
+
+    if exam_id and exams_by_id.get(exam_id, {}).get("mode") != "competitive":
+        raise ValueError("Only competitive exam scores can be converted to points")
+
     filtered_results = [
         result
         for result in available_results
         if (not exam_id or result.get("examId") == exam_id)
+        and result.get("mode") == "competitive"
         and isinstance(result.get("bestScorePercent"), (int, float))
     ]
 
     if exam_id and not filtered_results:
-        raise ValueError(f"No exam results found for {exam_id}")
+        raise ValueError(f"No completed competitive exam results with scores were found for {exam_id}")
     if not filtered_results:
-        raise ValueError("No completed exam results with scores were found")
+        raise ValueError("No completed competitive exam results with scores were found")
 
     awards_snapshot = _company_exam_awards_snapshot(rankings_snapshot)
     country_cache = {}
@@ -659,6 +965,7 @@ def _company_exam_results():
                 country_entry = country_cache.get(grade, {}).get(student_id, {}) if grade else {}
                 school_entry = school_cache.get(grade, {}).get(student_id, {}) if grade else {}
                 best_score = exam_progress.get("bestScorePercent")
+                exam_mode = exam_meta.get("mode") or "practice"
                 award_payload = awards_snapshot.get(exam_id, {}).get(student_id, {}) if isinstance(awards_snapshot.get(exam_id), dict) else {}
 
                 results.append(
@@ -670,10 +977,10 @@ def _company_exam_results():
                         "title": exam_meta.get("title") or exam_id,
                         "grade": grade,
                         "subject": exam_meta.get("subject") or "",
-                        "mode": exam_meta.get("mode") or "practice",
+                        "mode": exam_mode,
                         "schoolCode": school_entry.get("schoolCode") or student_meta.get("schoolCode"),
                         "bestScorePercent": best_score if isinstance(best_score, (int, float)) else None,
-                        "examPoints": _score_to_points(best_score),
+                        "examPoints": _score_to_points(best_score) if exam_mode == "competitive" else None,
                         "storedExamPoints": int(award_payload.get("points") or 0) if isinstance(award_payload, dict) else 0,
                         "pointsSubmitted": isinstance(award_payload, dict) and "points" in award_payload,
                         "attemptsUsed": exam_progress.get("attemptsUsed") if isinstance(exam_progress.get("attemptsUsed"), int) else 0,
@@ -1193,6 +1500,46 @@ def company_exams_overview():
     return jsonify(dashboard)
 
 
+@app.get("/api/textbooks")
+def textbooks_list():
+    return jsonify(_textbooks_dashboard())
+
+
+@app.get("/uploaded-assets/<path:asset_path>")
+def uploaded_assets(asset_path):
+    return send_from_directory(LOCAL_UPLOAD_ROOT, asset_path, as_attachment=False)
+
+
+@app.post("/api/textbooks/upload-asset")
+def upload_textbook_asset():
+    form_payload = request.form or {}
+    file_storage = request.files.get("file")
+
+    try:
+        asset_type = _require_string(form_payload.get("assetType"), "assetType").lower()
+        grade_key = _require_grade_key(form_payload.get("gradeKey") or form_payload.get("grade"), "gradeKey")
+        subject_key = _normalize_textbook_subject_key(form_payload.get("subjectKey") or form_payload.get("subject"), "subjectKey")
+        unit_key = _non_empty_string(form_payload.get("unitKey")) or "unit"
+        uploaded_asset = _upload_textbook_asset(file_storage, asset_type, grade_key, subject_key, unit_key)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": f"Textbook upload failed: {error}"}), 500
+
+    return jsonify(
+        {
+            "status": "uploaded",
+            "assetType": asset_type,
+            "fieldName": "coverUrl" if asset_type == "cover" else "pdfUrl",
+            "gradeKey": grade_key,
+            "subjectKey": subject_key,
+            "unitKey": unit_key if asset_type == "unit" else "",
+            "downloadUrl": uploaded_asset.get("url"),
+            **uploaded_asset,
+        }
+    )
+
+
 @app.get("/api/company-exams/exams")
 def company_exams_list():
     dashboard = _company_exam_dashboard()
@@ -1238,6 +1585,42 @@ def company_exam_submit_points():
         "status": "saved",
         "summary": summary,
     })
+
+
+@app.post("/api/textbooks/save-record")
+def save_textbook_record():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        grade_key = _require_grade_key(payload.get("gradeKey") or payload.get("grade"), "gradeKey")
+        subject_key = _normalize_textbook_subject_key(payload.get("subjectKey") or payload.get("subject"), "subjectKey")
+        overwrite = _coerce_bool(payload.get("overwrite", False), "overwrite")
+        validated_textbook = _validate_textbook_node(payload.get("textbook"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": f"Textbook save failed: {error}"}), 500
+
+    existing_textbook = textbooks_ref().child(grade_key).child(subject_key).get()
+    if existing_textbook is not None and not overwrite:
+        return jsonify({"error": f"Platform1/TextBooks/{grade_key}/{subject_key} already exists"}), 409
+
+    updates = {
+        f"{str(os.getenv('PLATFORM_ROOT', DEFAULT_PLATFORM_ROOT)).strip('/')}/TextBooks/{grade_key}/{subject_key}": validated_textbook,
+    }
+    root_ref().update(updates)
+
+    return jsonify(
+        {
+            "status": "saved",
+            "location": f"Platform1/TextBooks/{grade_key}/{subject_key}",
+            "saved": {
+                "gradeKey": grade_key,
+                "subjectKey": subject_key,
+            },
+            "writeCount": len(updates),
+        }
+    ), 201
 
 
 @app.post("/api/platform/company-exams/save-record")
