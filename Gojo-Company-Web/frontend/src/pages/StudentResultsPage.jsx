@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
@@ -78,6 +77,15 @@ function formatGradeLabel(value) {
 	return normalized
 		.replace(/[_-]+/g, ' ')
 		.replace(/\b\w/g, (character) => character.toUpperCase())
+}
+
+function normalizeSearchValue(value) {
+	return String(value || '').trim().toLowerCase()
+}
+
+function formatSchoolLabel(value) {
+	const normalized = String(value || '').trim()
+	return normalized || 'Unknown school'
 }
 
 function compareRankedStudents(left, right) {
@@ -208,6 +216,22 @@ function buildTopRankedStudentsByGrade(results) {
 		.sort((left, right) => compareGrades(left.gradeKey, right.gradeKey))
 }
 
+function summarizeExamResults(results) {
+	const scoredResults = results.filter((result) => Number.isFinite(result.bestScorePercent))
+	const averageScorePercent = scoredResults.length
+		? scoredResults.reduce((total, result) => total + result.bestScorePercent, 0) / scoredResults.length
+		: null
+	const topScorePercent = scoredResults.length
+		? Math.max(...scoredResults.map((result) => result.bestScorePercent))
+		: null
+
+	return {
+		studentCount: results.length,
+		averageScorePercent,
+		topScorePercent,
+	}
+}
+
 function StatCard({ label, value, tone = 'teal' }) {
 	return (
 		<div className={`builder-stat-card tone-${tone}`}>
@@ -222,6 +246,9 @@ export default function StudentResultsPage() {
 	const [loadState, setLoadState] = useState({ loading: true, error: '' })
 	const [rankingSubmitState, setRankingSubmitState] = useState({ loading: false, error: '', success: '' })
 	const [selectedResultExamId, setSelectedResultExamId] = useState('all')
+	const [selectedGrade, setSelectedGrade] = useState('all')
+	const [selectedSchool, setSelectedSchool] = useState('all')
+	const [searchQuery, setSearchQuery] = useState('')
 	const [selectedPodiumGrade, setSelectedPodiumGrade] = useState('')
 
 	useEffect(() => {
@@ -289,17 +316,123 @@ export default function StudentResultsPage() {
 		}
 	}
 
-	const visibleExamResults = selectedResultExamId === 'all'
-		? resultsOverview.byExam
-		: resultsOverview.byExam.filter((exam) => exam.examId === selectedResultExamId)
-	const competitiveVisibleExamResults = visibleExamResults.filter((exam) => exam.mode === 'competitive')
-	const visibleCompetitiveResults = competitiveVisibleExamResults.flatMap((exam) => exam.results || [])
-	const competitiveVisibleResultCount = competitiveVisibleExamResults.reduce((count, exam) => count + (exam.results?.length || 0), 0)
-	const visibleCompetitiveStudentCount = new Set(visibleCompetitiveResults.map((result) => result.studentId).filter(Boolean)).size
+	const competitiveExamResults = resultsOverview.byExam.filter((exam) => exam.mode === 'competitive')
+	const competitiveResultsPool = competitiveExamResults.flatMap((exam) =>
+		(exam.results || []).map((result) => ({
+			...result,
+			examId: result.examId || exam.examId,
+			title: result.title || exam.title || result.examId || exam.examId,
+			subject: result.subject || exam.subject || '',
+			grade: result.grade || exam.grade || '',
+			schoolCode: result.schoolCode || '',
+		}))
+	)
+	const availableGrades = Array.from(
+		competitiveResultsPool.reduce((gradeMap, result) => {
+			const normalizedGrade = String(result.grade || '').trim()
+			if (!normalizedGrade) {
+				return gradeMap
+			}
+
+			const gradeKey = normalizeSearchValue(normalizedGrade)
+			if (!gradeMap.has(gradeKey)) {
+				gradeMap.set(gradeKey, { value: gradeKey, raw: normalizedGrade, label: formatGradeLabel(normalizedGrade) })
+			}
+
+			return gradeMap
+		}, new Map()).values()
+	).sort((left, right) => compareGrades(left.raw, right.raw))
+	const schoolScopeResults = competitiveResultsPool.filter((result) => {
+		if (selectedResultExamId !== 'all' && result.examId !== selectedResultExamId) {
+			return false
+		}
+
+		if (selectedGrade !== 'all' && normalizeSearchValue(result.grade) !== selectedGrade) {
+			return false
+		}
+
+		return true
+	})
+	const availableSchools = Array.from(
+		schoolScopeResults.reduce((schoolMap, result) => {
+			const schoolCode = String(result.schoolCode || '').trim()
+			if (!schoolCode) {
+				return schoolMap
+			}
+
+			const schoolKey = normalizeSearchValue(schoolCode)
+			if (!schoolMap.has(schoolKey)) {
+				schoolMap.set(schoolKey, { value: schoolKey, label: formatSchoolLabel(schoolCode) })
+			}
+
+			return schoolMap
+		}, new Map()).values()
+	).sort((left, right) => left.label.localeCompare(right.label))
+	const normalizedSearchQuery = normalizeSearchValue(searchQuery)
+	const visibleExamResults = competitiveExamResults
+		.filter((exam) => selectedResultExamId === 'all' || exam.examId === selectedResultExamId)
+		.map((exam) => {
+			const filteredResults = (exam.results || [])
+				.map((result) => ({
+					...result,
+					examId: result.examId || exam.examId,
+					title: result.title || exam.title || result.examId || exam.examId,
+					subject: result.subject || exam.subject || '',
+					grade: result.grade || exam.grade || '',
+					schoolCode: result.schoolCode || '',
+				}))
+				.filter((result) => {
+					if (selectedGrade !== 'all' && normalizeSearchValue(result.grade) !== selectedGrade) {
+						return false
+					}
+
+					if (selectedSchool !== 'all' && normalizeSearchValue(result.schoolCode) !== selectedSchool) {
+						return false
+					}
+
+					if (!normalizedSearchQuery) {
+						return true
+					}
+
+					const searchFields = [
+						result.studentName,
+						result.studentId,
+						result.schoolCode,
+						result.roundId,
+						result.status,
+						result.grade,
+						exam.examId,
+						exam.title,
+						exam.subject,
+					]
+
+					return searchFields.some((field) => normalizeSearchValue(field).includes(normalizedSearchQuery))
+				})
+			const summary = summarizeExamResults(filteredResults)
+
+			return {
+				...exam,
+				results: filteredResults,
+				studentCount: summary.studentCount,
+				averageScorePercent: summary.averageScorePercent,
+				topScorePercent: summary.topScorePercent,
+			}
+		})
+		.filter((exam) => exam.results.length > 0)
+	const visibleCompetitiveResults = visibleExamResults.flatMap((exam) => exam.results || [])
+	const competitiveVisibleResultCount = visibleExamResults.reduce((count, exam) => count + (exam.results?.length || 0), 0)
 	const topRankedStudentsByGrade = buildTopRankedStudentsByGrade(visibleCompetitiveResults)
 	const activePodiumGrade = topRankedStudentsByGrade.find((group) => group.gradeKey === selectedPodiumGrade) || topRankedStudentsByGrade[0] || null
-	const activeExamLabel = selectedResultExamId === 'all' ? 'All exams' : selectedResultExamId
-	const spotlightStudent = activePodiumGrade?.students[0] || null
+
+	useEffect(() => {
+		if (selectedSchool === 'all') {
+			return
+		}
+
+		if (!availableSchools.some((school) => school.value === selectedSchool)) {
+			setSelectedSchool('all')
+		}
+	}, [availableSchools, selectedSchool])
 
 	useEffect(() => {
 		if (!topRankedStudentsByGrade.length) {
@@ -397,7 +530,7 @@ export default function StudentResultsPage() {
 				<div className='section-header-row'>
 					<div className='section-heading'>
 						<span className='section-kicker'>Student Results</span>
-						<h2>Marks and points by exam</h2>
+						<h2>Competitive marks and points by exam</h2>
 					</div>
 				</div>
 
@@ -405,16 +538,50 @@ export default function StudentResultsPage() {
 					<div className='results-filter-panel'>
 						<div className='results-filter-copy'>
 							<span className='section-kicker'>Command View</span>
-							<h3>{selectedResultExamId === 'all' ? 'Viewing every exam stream' : `Viewing ${selectedResultExamId}`}</h3>
-							<p>Use the exam selector to narrow the leaderboard, summary cards, and detailed result tables at the same time.</p>
+								<h3>{selectedResultExamId === 'all' ? 'Viewing every competitive exam' : `Viewing ${selectedResultExamId}`}</h3>
+								<p>Use exam, grade, school, and search filters together to narrow the leaderboard, summaries, and detailed competitive result tables.</p>
 						</div>
 
-						<div className='filter-bar'>
+							<div className='filter-bar results-filter-bar'>
+								<label className='filter-field results-search-field'>
+									<span>Search</span>
+									<input
+										type='text'
+										value={searchQuery}
+										onChange={(event) => setSearchQuery(event.target.value)}
+										placeholder='Student, ID, school, exam, round...'
+									/>
+								</label>
+
+								<label className='filter-field'>
+									<span>Grade</span>
+									<select value={selectedGrade} onChange={(event) => setSelectedGrade(event.target.value)}>
+										<option value='all'>All grades</option>
+										{availableGrades.map((grade) => (
+											<option key={grade.value} value={grade.value}>
+												{grade.label}
+											</option>
+										))}
+									</select>
+								</label>
+
+								<label className='filter-field'>
+									<span>School</span>
+									<select value={selectedSchool} onChange={(event) => setSelectedSchool(event.target.value)}>
+										<option value='all'>All schools</option>
+										{availableSchools.map((school) => (
+											<option key={school.value} value={school.value}>
+												{school.label}
+											</option>
+										))}
+									</select>
+								</label>
+
 							<label className='filter-field'>
 								<span>Exam filter</span>
 								<select value={selectedResultExamId} onChange={(event) => setSelectedResultExamId(event.target.value)}>
-									<option value='all'>All exams</option>
-									{resultsOverview.byExam.map((exam) => (
+									<option value='all'>All competitive exams</option>
+									{competitiveExamResults.map((exam) => (
 										<option key={exam.examId} value={exam.examId}>
 											{exam.examId}
 										</option>
@@ -474,7 +641,7 @@ export default function StudentResultsPage() {
 												<th>Round</th>
 												<th>Mark</th>
 												<th>Points</th>
-												<th>Stored</th>
+												<th>Country Total</th>
 												<th>Status</th>
 												<th>Country Rank</th>
 												<th>School Rank</th>
@@ -493,8 +660,8 @@ export default function StudentResultsPage() {
 													</td>
 													<td>{result.roundId}</td>
 													<td>{formatPercent(result.bestScorePercent)}</td>
-													<td>{result.mode === 'competitive' ? result.examPoints ?? '-' : '-'}</td>
-													<td>{result.mode === 'competitive' && result.pointsSubmitted ? result.storedExamPoints : '-'}</td>
+													<td>{result.examPoints ?? '-'}</td>
+													<td>{result.countryTotalPoints ?? '-'}</td>
 													<td>{result.status || '-'}</td>
 													<td>{result.countryRank ?? '-'}</td>
 													<td>{result.schoolRank ?? '-'}</td>
@@ -506,15 +673,13 @@ export default function StudentResultsPage() {
 								</div>
 
 								<p className='inline-note results-card-note'>
-									{exam.mode === 'competitive'
-										? 'Country total points come from the ranking node. Competitive exam points use this page rule: 90%+ = 4, 80%+ = 3, 70%+ = 2, 60%+ = 1.'
-										: 'This exam is not competitive, so its score percent is not converted into ranking points.'}
+									Country total points come from the ranking node. Competitive exam points use this page rule: 90%+ = 4, 80%+ = 3, 70%+ = 2, 60%+ = 1.
 								</p>
 							</article>
 						))}
 					</div>
 				) : (
-					<div className='empty-state'>No student results found for the selected exam yet.</div>
+					<div className='empty-state'>No competitive student results found for the selected exam yet.</div>
 				)}
 
 				<div className='results-submit-row'>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
+const DRAFT_STORAGE_PREFIX = 'gojo-company-exam-draft'
 
 const SUBJECT_CODE_MAP = {
 	GENERAL_SCIENCE: 'GS',
@@ -108,6 +108,36 @@ const defaultForm = {
 	},
 }
 
+function createInitialForm(routeMode) {
+	const nextMode = normalizeExamMode(routeMode)
+
+	return {
+		...defaultForm,
+		questionBank: {
+			...defaultForm.questionBank,
+			metadata: {
+				...defaultForm.questionBank.metadata,
+			},
+			questions: [createQuestion(1)],
+		},
+		exam: {
+			...defaultForm.exam,
+			textItems: [...defaultForm.exam.textItems],
+			scoring: {
+				...defaultForm.exam.scoring,
+			},
+		},
+		package: {
+			...defaultForm.package,
+			type: nextMode,
+			roundId: nextMode === 'entrance' ? 'E1' : nextMode === 'competitive' ? 'R1' : 'P1',
+			round: {
+				...defaultForm.package.round,
+			},
+		},
+	}
+}
+
 const roundTimestampFields = [
 	{
 		key: 'createdAt',
@@ -142,6 +172,138 @@ function trimText(value) {
 
 function hasContent(value) {
 	return trimText(value).length > 0
+}
+
+function createManualIdState() {
+	return {
+		questionBank: false,
+		exam: false,
+		package: false,
+	}
+}
+
+function isPlainObject(value) {
+	return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function formatModeLabel(value) {
+	const normalized = normalizeExamMode(value)
+	return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
+function createDraftStorageKey(routeMode) {
+	return `${DRAFT_STORAGE_PREFIX}:${normalizeExamMode(routeMode)}`
+}
+
+function normalizeDraftQuestion(question, index) {
+	const baseQuestion = createQuestion(index + 1)
+	const draftQuestion = isPlainObject(question) ? question : {}
+
+	return {
+		...baseQuestion,
+		...draftQuestion,
+		key: trimText(draftQuestion.key) || baseQuestion.key,
+		options: {
+			...baseQuestion.options,
+			...(isPlainObject(draftQuestion.options) ? draftQuestion.options : {}),
+		},
+	}
+}
+
+function normalizeDraftForm(savedForm, routeMode) {
+	const baseForm = createInitialForm(routeMode)
+	const draftForm = isPlainObject(savedForm) ? savedForm : {}
+	const draftQuestionBank = isPlainObject(draftForm.questionBank) ? draftForm.questionBank : {}
+	const draftExam = isPlainObject(draftForm.exam) ? draftForm.exam : {}
+	const draftPackage = isPlainObject(draftForm.package) ? draftForm.package : {}
+	const draftQuestions = Array.isArray(draftQuestionBank.questions) && draftQuestionBank.questions.length
+		? draftQuestionBank.questions.map((question, index) => normalizeDraftQuestion(question, index))
+		: baseForm.questionBank.questions
+	const draftTextItems = Array.isArray(draftExam.textItems) && draftExam.textItems.length
+		? draftExam.textItems.map((item) => String(item ?? ''))
+		: [...baseForm.exam.textItems]
+
+	return {
+		...baseForm,
+		questionBankId: typeof draftForm.questionBankId === 'string' ? draftForm.questionBankId : baseForm.questionBankId,
+		examId: typeof draftForm.examId === 'string' ? draftForm.examId : baseForm.examId,
+		packageId: typeof draftForm.packageId === 'string' ? draftForm.packageId : baseForm.packageId,
+		questionBank: {
+			...baseForm.questionBank,
+			...draftQuestionBank,
+			metadata: {
+				...baseForm.questionBank.metadata,
+				...(isPlainObject(draftQuestionBank.metadata) ? draftQuestionBank.metadata : {}),
+			},
+			questions: draftQuestions,
+		},
+		exam: {
+			...baseForm.exam,
+			...draftExam,
+			textItems: draftTextItems,
+			scoring: {
+				...baseForm.exam.scoring,
+				...(isPlainObject(draftExam.scoring) ? draftExam.scoring : {}),
+			},
+		},
+		package: {
+			...baseForm.package,
+			...draftPackage,
+			type: normalizeExamMode(draftPackage.type || routeMode),
+			roundId: trimText(draftPackage.roundId) || baseForm.package.roundId,
+			round: {
+				...baseForm.package.round,
+				...(isPlainObject(draftPackage.round) ? draftPackage.round : {}),
+			},
+		},
+	}
+}
+
+function normalizeManualIds(value) {
+	const manualIds = isPlainObject(value) ? value : {}
+	return {
+		questionBank: Boolean(manualIds.questionBank),
+		exam: Boolean(manualIds.exam),
+		package: Boolean(manualIds.package),
+	}
+}
+
+function readSavedDraft(routeMode) {
+	if (typeof window === 'undefined') {
+		return null
+	}
+
+	const rawDraft = window.localStorage.getItem(createDraftStorageKey(routeMode))
+	if (!rawDraft) {
+		return null
+	}
+
+	try {
+		const parsedDraft = JSON.parse(rawDraft)
+		return {
+			savedAt: toOptionalTimestamp(parsedDraft?.savedAt),
+			form: normalizeDraftForm(parsedDraft?.form, routeMode),
+			manualIds: normalizeManualIds(parsedDraft?.manualIds),
+		}
+	} catch {
+		return {
+			error: `Unable to load the ${formatModeLabel(routeMode).toLowerCase()} draft from this browser.`,
+		}
+	}
+}
+
+function clearSavedDraft(routeMode) {
+	if (typeof window === 'undefined') {
+		return
+	}
+
+	window.localStorage.removeItem(createDraftStorageKey(routeMode))
+}
+
+function countStartedQuestions(form) {
+	return form.questionBank.questions.filter((item) => {
+		return hasContent(item.question) || Object.values(item.options).some(hasContent)
+	}).length
 }
 
 function toOptionalNumber(value) {
@@ -603,13 +765,15 @@ function StatCard({ label, value, tone = 'teal' }) {
 	)
 }
 
-export default function ExamPage() {
-	const [form, setForm] = useState(defaultForm)
+export default function ExamPage({ routeMode = 'practice' }) {
+	const normalizedRouteMode = normalizeExamMode(routeMode)
+	const [form, setForm] = useState(() => createInitialForm(normalizedRouteMode))
 	const [overview, setOverview] = useState({ stats: {}, exams: [], packages: [], questionBanks: [] })
 	const [loadState, setLoadState] = useState({ loading: true, error: '' })
 	const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' })
+	const [draftState, setDraftState] = useState({ error: '', success: '', lastSavedAt: null, hasDraft: false })
 	const [allowOverwrite, setAllowOverwrite] = useState(false)
-	const [manualIds, setManualIds] = useState({ questionBank: false, exam: false, package: false })
+	const [manualIds, setManualIds] = useState(() => createManualIdState())
 
 	const { payload, preview } = buildSubmission(form, allowOverwrite)
 	const generatedIds = buildGeneratedIds(form)
@@ -619,6 +783,35 @@ export default function ExamPage() {
 	const competitiveExams = overview.exams.filter((item) => item.mode === 'competitive')
 	const practiceExams = overview.exams.filter((item) => item.mode === 'practice')
 	const entranceExams = overview.exams.filter((item) => item.mode === 'entrance')
+
+	useEffect(() => {
+		const savedDraft = readSavedDraft(normalizedRouteMode)
+		setSubmitState({ loading: false, error: '', success: '' })
+		setAllowOverwrite(false)
+
+		if (savedDraft?.error) {
+			setForm(createInitialForm(normalizedRouteMode))
+			setManualIds(createManualIdState())
+			setDraftState({ error: savedDraft.error, success: '', lastSavedAt: null, hasDraft: false })
+			return
+		}
+
+		if (savedDraft) {
+			setForm(savedDraft.form)
+			setManualIds(savedDraft.manualIds)
+			setDraftState({
+				error: '',
+				success: `${formatModeLabel(normalizedRouteMode)} draft loaded from this browser. Only Save record writes to Firebase.`,
+				lastSavedAt: savedDraft.savedAt,
+				hasDraft: true,
+			})
+			return
+		}
+
+		setForm(createInitialForm(normalizedRouteMode))
+		setManualIds(createManualIdState())
+		setDraftState({ error: '', success: '', lastSavedAt: null, hasDraft: false })
+	}, [normalizedRouteMode])
 
 	useEffect(() => {
 		async function loadOverview() {
@@ -724,16 +917,6 @@ export default function ExamPage() {
 			exam: {
 				...current.exam,
 				[field]: value,
-			},
-		}))
-	}
-
-	function updateExamMode(value) {
-		updateForm((current) => ({
-			...current,
-			package: {
-				...current.package,
-				type: normalizeExamMode(value),
 			},
 		}))
 	}
@@ -870,6 +1053,56 @@ export default function ExamPage() {
 		}
 	}
 
+	function handleSaveDraft() {
+		try {
+			if (typeof window === 'undefined') {
+				throw new Error('Draft save is available only in the browser.')
+			}
+
+			const savedAt = Date.now()
+			window.localStorage.setItem(
+				createDraftStorageKey(normalizedRouteMode),
+				JSON.stringify({
+					savedAt,
+					form,
+					manualIds,
+				})
+			)
+
+			const startedQuestionCount = countStartedQuestions(form)
+			setDraftState({
+				error: '',
+				success: `${formatModeLabel(normalizedRouteMode)} draft saved in this browser with ${startedQuestionCount} started question${startedQuestionCount === 1 ? '' : 's'}. Nothing was sent to Firebase.`,
+				lastSavedAt: savedAt,
+				hasDraft: true,
+			})
+		} catch (error) {
+			setDraftState({
+				error: error.message || 'Unable to save draft in this browser.',
+				success: '',
+				lastSavedAt: null,
+				hasDraft: false,
+			})
+		}
+	}
+
+	function handleClearDraft() {
+		if (typeof window !== 'undefined') {
+			const shouldClear = window.confirm(`Clear the saved ${formatModeLabel(normalizedRouteMode).toLowerCase()} draft from this browser?`)
+			if (!shouldClear) {
+				return
+			}
+		}
+
+		clearSavedDraft(normalizedRouteMode)
+		setDraftState({
+			error: '',
+			success: `${formatModeLabel(normalizedRouteMode)} draft removed from this browser. Current form values stay on screen until you leave the page.`,
+			lastSavedAt: null,
+			hasDraft: false,
+		})
+	}
+
 	async function handleSubmit(event) {
 		event.preventDefault()
 		setSubmitState({ loading: true, error: '', success: '' })
@@ -888,10 +1121,13 @@ export default function ExamPage() {
 				throw new Error(data.error || 'Save failed')
 			}
 
+			clearSavedDraft(normalizedRouteMode)
+			setDraftState({ error: '', success: '', lastSavedAt: null, hasDraft: false })
+
 			setSubmitState({
 				loading: false,
 				error: '',
-				success: `Saved ${data.saved.questionBankId}, ${data.saved.examId}, and ${data.saved.packageId} into ${data.location}.`,
+				success: `Saved ${data.saved.questionBankId}, ${data.saved.examId}, and ${data.saved.packageId} into ${data.location}. The local draft was cleared, and students only see this published record.`,
 			})
 			await reloadOverview()
 		} catch (error) {
@@ -916,6 +1152,8 @@ export default function ExamPage() {
 						<a className='primary-action' href='#builder-form'>Create a record</a>
 					</div>
 					{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
+					{draftState.error ? <div className='status-banner warning'>{draftState.error}</div> : null}
+					{draftState.success ? <div className='status-banner success-banner'>{draftState.success}</div> : null}
 					{submitState.error ? <div className='status-banner warning'>{submitState.error}</div> : null}
 					{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 				</div>
@@ -1107,13 +1345,9 @@ export default function ExamPage() {
 
 									<label className='field'>
 										<span>Exam type</span>
-										<select value={form.package.type} onChange={(event) => updateExamMode(event.target.value)}>
-											<option value='practice'>practice</option>
-											<option value='competitive'>competitive</option>
-											<option value='entrance'>entrance</option>
-										</select>
+										<input className='field-auto-input' value={formatModeLabel(examMode)} readOnly />
 										<small className='field-hint'>
-											Practice, competitive, and entrance save as separate exam modes.
+											Exam type comes from the current Exams sidebar group you opened.
 										</small>
 									</label>
 
@@ -1359,10 +1593,24 @@ export default function ExamPage() {
 						</section>
 
 						<div className='submit-row'>
-							<button className='primary-action' type='submit' disabled={submitState.loading}>
-								{submitState.loading ? 'Saving to Platform1...' : 'Save record'}
-							</button>
-							<p className='inline-note'>One backend request. One batched Firebase update. No polling loop.</p>
+							<div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+								<button className='secondary-action' type='button' onClick={handleSaveDraft} disabled={submitState.loading}>
+									Save draft
+								</button>
+								{draftState.hasDraft ? (
+									<button className='ghost-button' type='button' onClick={handleClearDraft} disabled={submitState.loading}>
+										Clear draft
+									</button>
+								) : null}
+								<button className='primary-action' type='submit' disabled={submitState.loading}>
+									{submitState.loading ? 'Saving to Platform1...' : 'Save record'}
+								</button>
+							</div>
+							<p className='inline-note'>
+								{draftState.lastSavedAt
+									? `Last draft saved ${formatDateTime(draftState.lastSavedAt)} in this browser only. Firebase updates only when you use Save record.`
+									: 'Draft saves stay in this browser only. Firebase is updated only when you use Save record.'}
+							</p>
 						</div>
 					</form>
 

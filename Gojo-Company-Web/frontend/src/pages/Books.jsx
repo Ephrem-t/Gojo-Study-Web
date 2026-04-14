@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
@@ -100,7 +101,7 @@ function StatCard({ label, value, tone = 'teal' }) {
 	)
 }
 
-export default function Books() {
+export default function Books({ view = 'save' }) {
 	const [form, setForm] = useState(defaultForm)
 	const [overview, setOverview] = useState({ textbooks: [], stats: {}, tree: {} })
 	const [loadState, setLoadState] = useState({ loading: true, error: '' })
@@ -112,20 +113,14 @@ export default function Books() {
 	const resolvedGradeKey = normalizeGradeKey(form.gradeKey) || 'grade7'
 	const resolvedSubjectKey = trimText(form.subjectKey) || normalizeSubjectKey(form.subjectName) || 'subject_key'
 	const textbookNode = buildTextbookNode(form)
+	const normalizedView = view === 'library' ? 'library' : 'save'
+	const showSaveView = normalizedView === 'save'
+	const previewPdfCount = overview.textbooks.filter((textbook) => Boolean(textbook.previewPdfUrl)).length
 	const payload = {
 		gradeKey: resolvedGradeKey,
 		subjectKey: resolvedSubjectKey,
 		textbook: textbookNode,
 		overwrite: allowOverwrite,
-	}
-	const preview = {
-		Platform1: {
-			TextBooks: {
-				[resolvedGradeKey]: {
-					[resolvedSubjectKey]: textbookNode,
-				},
-			},
-		},
 	}
 
 	const groupedTextbooks = useMemo(() => {
@@ -310,10 +305,13 @@ export default function Books() {
 				throw new Error(data.error || 'Save failed')
 			}
 
+			const totalUnits = Number(data.saved?.unitCount) || Object.keys(textbookNode.units).length
+			const actionLabel = data.action === 'merged' ? 'Merged' : data.action === 'updated' ? 'Updated' : 'Saved'
+
 			setSubmitState({
 				loading: false,
 				error: '',
-				success: `Saved textbook into ${data.location}.`,
+				success: `${actionLabel} textbook into ${data.location} with ${totalUnits} total unit${totalUnits === 1 ? '' : 's'}.`,
 			})
 			await reloadOverview()
 		} catch (error) {
@@ -329,24 +327,16 @@ export default function Books() {
 					<section className='hero-panel books-hero-panel'>
 						<div className='hero-copy books-hero-copy'>
 							<span className='eyebrow'>TextBooks Registry</span>
-							<h1>Write textbook records into the database</h1>
-							<p>
-								Create one textbook entry at a time and save it directly into the Platform1/TextBooks/grade/subject
-								structure used by your current Firebase export.
-							</p>
+							<h1>{showSaveView ? 'Create Textbook records' : 'Browse saved textbook records'}</h1>
+							
 							<div className='hero-actions'>
-								<a className='primary-action' href='#books-form'>Create textbook record</a>
+								{showSaveView ? (
+									<a className='primary-action' href='#books-form'>Create textbook record</a>
+								) : (
+									<Link className='primary-action' to='/books/save'>Open save books</Link>
+								)}
 							</div>
-							<div className='books-hero-meta'>
-								<div className='books-hero-note'>
-									<strong>Database Path</strong>
-									<span>{`Platform1/TextBooks/${resolvedGradeKey}/${resolvedSubjectKey}`}</span>
-								</div>
-								<div className='books-hero-note'>
-									<strong>Stored Shape</strong>
-									<span>Cover, language, region, title, then nested units with pdfUrl and title.</span>
-								</div>
-							</div>
+							
 							{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
 							{assetUploadState.error ? <div className='status-banner warning'>{assetUploadState.error}</div> : null}
 							{assetUploadState.success ? <div className='status-banner success-banner'>{assetUploadState.success}</div> : null}
@@ -358,51 +348,20 @@ export default function Books() {
 								<StatCard label='Grades in library' value={overview.stats.gradeCount || 0} tone='teal' />
 								<StatCard label='Textbook records' value={overview.stats.textbookCount || 0} tone='gold' />
 								<StatCard label='Units indexed' value={overview.stats.unitCount || 0} tone='coral' />
-								<StatCard label='Units in draft' value={Object.keys(textbookNode.units).length} tone='teal' />
-							</div>
-							<div className='books-insight-strip'>
-								<div className='books-insight-card'>
-									<h3>{formatGradeLabel(resolvedGradeKey)}</h3>
-									<p>Current draft grade bucket. This becomes the first key under Platform1/TextBooks.</p>
-								</div>
-								<div className='books-insight-card accent'>
-									<h3>{formatSubjectLabel(resolvedSubjectKey) || 'Subject key'}</h3>
-									<p>Current subject bucket. Use a stable key like mathematics, biology, or sidama_language.</p>
-								</div>
+								{showSaveView ? (
+									<StatCard label='Units in draft' value={Object.keys(textbookNode.units).length} tone='teal' />
+								) : (
+									<StatCard label='Preview PDFs' value={previewPdfCount} tone='teal' />
+								)}
 							</div>
 						</div>
 					</section>
 
-					<section className='section-block books-command-deck'>
-						<div className='results-filter-panel books-structure-panel'>
-							<div className='results-filter-copy'>
-								<span className='section-kicker'>Expected shape</span>
-								<h3>Each save writes one subject book under one grade.</h3>
-								<p>
-									The page sends a single textbook payload and the backend stores it exactly like your export:
-									Platform1/TextBooks/grade7/mathematics, Platform1/TextBooks/grade8/english, and so on.
-								</p>
-							</div>
-							<div className='books-structure-list'>
-								<div>
-									<span className='config-key'>Level 1</span>
-									<strong>Platform1</strong>
-								</div>
-								<div>
-									<span className='config-key'>Level 2</span>
-									<strong>TextBooks + Grade Key</strong>
-								</div>
-								<div>
-									<span className='config-key'>Level 3</span>
-									<strong>Subject Key + Book Details</strong>
-								</div>
-							</div>
-						</div>
-					</section>
-
-					<div className='builder-grid books-builder-grid' id='books-form'>
-						<form className='builder-form-panel books-form-panel' onSubmit={handleSubmit}>
-							<section className='form-card'>
+				
+					{showSaveView ? (
+						<div className='builder-grid books-builder-grid' id='books-form'>
+							<form className='builder-form-panel books-form-panel' onSubmit={handleSubmit}>
+							<section className='form-card books-location-card'>
 								<div className='compact-heading'>
 									<span className='section-kicker'>Location</span>
 									<h2>Grade and subject bucket</h2>
@@ -446,7 +405,7 @@ export default function Books() {
 								</div>
 							</section>
 
-							<section className='form-card package-card'>
+							<section className='form-card books-details-card'>
 								<div className='compact-heading'>
 									<span className='section-kicker'>Textbook details</span>
 									<h2>Book metadata</h2>
@@ -495,7 +454,7 @@ export default function Books() {
 								</div>
 							</section>
 
-							<section className='form-card package-card'>
+							<section className='form-card package-card books-units-card'>
 								<div className='row-header'>
 									<div>
 										<span className='section-kicker'>Units</span>
@@ -557,43 +516,27 @@ export default function Books() {
 								</div>
 							</section>
 
-							<div className='submit-row'>
+							<div className='submit-row books-submit-row'>
 								<label className='toggle-field'>
 									<input type='checkbox' checked={allowOverwrite} onChange={(event) => setAllowOverwrite(event.target.checked)} />
-									<span>Overwrite existing textbook if the path already exists</span>
+									<span>Allow replacing existing unit keys if they already exist</span>
 								</label>
 								<button className='primary-action' type='submit' disabled={submitState.loading}>
 									{submitState.loading ? 'Saving...' : 'Save textbook'}
 								</button>
 							</div>
-						</form>
+							</form>
 
-						<aside className='preview-panel books-preview-panel'>
-							<div className='compact-heading'>
-								<span className='section-kicker'>Live preview</span>
-								<h2>Firebase payload</h2>
-							</div>
-							<div className='books-preview-summary'>
-								<div>
-									<span className='config-key'>Write path</span>
-									<strong>{`Platform1/TextBooks/${resolvedGradeKey}/${resolvedSubjectKey}`}</strong>
-								</div>
-								<div>
-									<span className='config-key'>Unit count</span>
-									<strong>{Object.keys(textbookNode.units).length}</strong>
-								</div>
-							</div>
-							<pre className='code-preview'>{JSON.stringify(preview, null, 2)}</pre>
-						</aside>
-					</div>
+						</div>
+					) : null}
 
-					<section className='section-block'>
+					{!showSaveView ? (
+						<section className='section-block books-library-section' id='books-library'>
 						<div className='section-header-row'>
 							<div className='section-heading'>
 								<span className='section-kicker'>Existing library</span>
 								<h2>Current textbook records</h2>
 							</div>
-							<p className='inline-note'>Loaded from Platform1/TextBooks so you can avoid duplicate keys. Legacy root records are still merged into the list.</p>
 						</div>
 
 						{loadState.loading ? <p className='empty-state'>Loading textbooks...</p> : null}
@@ -674,7 +617,8 @@ export default function Books() {
 									</div>
 								))}
 						</div>
-					</section>
+						</section>
+					) : null}
 				</div>
 			</main>
 		</div>

@@ -630,6 +630,23 @@ def _student_directory():
     return directory
 
 
+def _derive_exam_mode(exam_meta, round_id, exam_id):
+    if isinstance(exam_meta, dict):
+        normalized_mode = _non_empty_string(exam_meta.get("mode"))
+        if normalized_mode:
+            normalized_mode = normalized_mode.lower()
+            if normalized_mode in {"practice", "competitive", "entrance"}:
+                return normalized_mode
+
+    normalized_round_id = str(round_id or "").strip().lower()
+    normalized_exam_id = str(exam_id or "").strip().upper()
+    if normalized_round_id.startswith("r"):
+        return "competitive"
+    if normalized_round_id.startswith("e") or "_ENT_" in normalized_exam_id or "ENTRANCE" in normalized_exam_id:
+        return "entrance"
+    return "practice"
+
+
 def _student_progress_students():
     progress_snapshot = student_progress_ref().get() or {}
     student_directory = _student_directory()
@@ -660,6 +677,7 @@ def _student_progress_students():
 
                 exam_meta = exams_by_id.get(exam_id, {})
                 best_score = exam_progress.get("bestScorePercent")
+                exam_mode = _derive_exam_mode(exam_meta, round_id, exam_id)
                 exam_entries.append(
                     {
                         "roundId": round_id,
@@ -667,6 +685,7 @@ def _student_progress_students():
                         "title": exam_meta.get("title") or exam_id,
                         "grade": exam_meta.get("grade") or student_meta.get("grade") or "",
                         "subject": exam_meta.get("subject") or "",
+                        "mode": exam_mode,
                         "attemptsUsed": exam_progress.get("attemptsUsed") if isinstance(exam_progress.get("attemptsUsed"), int) else 0,
                         "bestScorePercent": best_score if isinstance(best_score, (int, float)) else None,
                         "status": exam_progress.get("status") or "in_progress",
@@ -810,9 +829,34 @@ def _rank_leaderboard(entries):
     return ranked
 
 
-def _company_exam_awards_snapshot(rankings_snapshot):
-    awards = rankings_snapshot.get("companyExamAwards")
-    return awards if isinstance(awards, dict) else {}
+def _competitive_scored_results(results, *, grade_filters=None):
+    normalized_grade_filters = {
+        _normalize_grade_value(grade)
+        for grade in (grade_filters or set())
+        if _normalize_grade_value(grade)
+    }
+
+    filtered_results = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("mode") != "competitive":
+            continue
+        if not isinstance(result.get("bestScorePercent"), (int, float)):
+            continue
+
+        grade = _normalize_grade_value(result.get("grade"))
+        if not grade:
+            continue
+        if normalized_grade_filters and grade not in normalized_grade_filters:
+            continue
+
+        filtered_results.append(result)
+
+    return filtered_results
+
+
+
 
 
 def _submit_company_exam_points(exam_id=None):
@@ -831,12 +875,11 @@ def _submit_company_exam_points(exam_id=None):
     if exam_id and exams_by_id.get(exam_id, {}).get("mode") != "competitive":
         raise ValueError("Only competitive exam scores can be converted to points")
 
+    competitive_results = _competitive_scored_results(available_results)
     filtered_results = [
         result
-        for result in available_results
-        if (not exam_id or result.get("examId") == exam_id)
-        and result.get("mode") == "competitive"
-        and isinstance(result.get("bestScorePercent"), (int, float))
+        for result in competitive_results
+        if not exam_id or result.get("examId") == exam_id
     ]
 
     if exam_id and not filtered_results:
@@ -844,66 +887,45 @@ def _submit_company_exam_points(exam_id=None):
     if not filtered_results:
         raise ValueError("No completed competitive exam results with scores were found")
 
-    awards_snapshot = _company_exam_awards_snapshot(rankings_snapshot)
-    country_cache = {}
+    relevant_grades = {
+        _normalize_grade_value(result.get("grade"))
+        for result in filtered_results
+        if _normalize_grade_value(result.get("grade"))
+    }
+
+    country_cache = {grade: {} for grade in relevant_grades}
     school_cache = {}
     school_modes = {}
-    touched_country_grades = set()
-    touched_school_grades = set()
     updates = {}
-    now_timestamp = int(__import__("time").time() * 1000)
 
-    for result in filtered_results:
+    for result in _competitive_scored_results(available_results, grade_filters=relevant_grades):
         grade = _normalize_grade_value(result.get("grade"))
         student_id = str(result.get("studentId") or "").strip()
-        result_exam_id = str(result.get("examId") or "").strip()
         school_code = _non_empty_string(result.get("schoolCode"))
         points = _score_to_points(result.get("bestScorePercent"))
 
-        if not grade or not student_id or not result_exam_id:
+        if not grade or not student_id:
             continue
 
-        if grade not in country_cache:
-            country_cache[grade] = _current_grade_leaderboard(rankings_snapshot, grade)
-
         current_country_entry = country_cache[grade].setdefault(student_id, {"rank": None, "totalPoints": 0})
-
-        award_payload = awards_snapshot.get(result_exam_id, {}).get(student_id, {}) if isinstance(awards_snapshot.get(result_exam_id), dict) else {}
-        previous_points = int(award_payload.get("points") or 0) if isinstance(award_payload, dict) else 0
-        delta = points - previous_points
-        if delta:
-            current_country_entry["totalPoints"] = int(current_country_entry.get("totalPoints") or 0) + delta
-            touched_country_grades.add(grade)
-
-        updates[_shared_node_update_path("rankings", "companyExamAwards", result_exam_id, student_id)] = {
-            "examId": result_exam_id,
-            "grade": grade,
-            "lastSubmittedAt": result.get("lastSubmittedAt"),
-            "points": points,
-            "roundId": result.get("roundId") or "",
-            "schoolCode": school_code,
-            "scorePercent": result.get("bestScorePercent"),
-            "studentName": result.get("studentName") or student_id,
-            "updatedAt": now_timestamp,
-        }
+        current_country_entry["totalPoints"] = int(current_country_entry.get("totalPoints") or 0) + points
 
         if school_code:
             cache_key = (school_code, grade)
             if cache_key not in school_cache:
-                school_cache[cache_key], school_modes[cache_key] = _current_school_grade_entries(rankings_snapshot, school_code, grade)
+                _, school_modes[cache_key] = _current_school_grade_entries(rankings_snapshot, school_code, grade)
+                school_cache[cache_key] = {}
 
             current_school_entry = school_cache[cache_key].setdefault(student_id, {"rank": None, "totalPoints": 0})
-            if delta:
-                current_school_entry["totalPoints"] = int(current_school_entry.get("totalPoints") or 0) + delta
-                touched_school_grades.add(cache_key)
+            current_school_entry["totalPoints"] = int(current_school_entry.get("totalPoints") or 0) + points
 
     processed_results = 0
-    for grade in touched_country_grades:
+    for grade in relevant_grades:
         ranked_entries = _rank_leaderboard(country_cache[grade])
         updates[_shared_node_update_path("rankings", "country", "Ethiopia", grade, "leaderboard")] = ranked_entries
         processed_results += len(ranked_entries)
 
-    for school_code, grade in touched_school_grades:
+    for school_code, grade in school_cache:
         ranked_entries = _rank_leaderboard(school_cache[(school_code, grade)])
         school_mode = school_modes[(school_code, grade)]
         school_path = _shared_node_update_path("rankings", "schools", school_code, grade)
@@ -912,12 +934,14 @@ def _submit_company_exam_points(exam_id=None):
         else:
             updates[school_path] = ranked_entries
 
+    updates[_shared_node_update_path("rankings", "companyExamAwards")] = None
+
     root_ref().update(updates)
     return {
         "examId": exam_id or "all",
         "processedResultCount": len(filtered_results),
-        "updatedGradeCount": len(touched_country_grades),
-        "updatedSchoolGradeCount": len(touched_school_grades),
+        "updatedGradeCount": len(relevant_grades),
+        "updatedSchoolGradeCount": len(school_cache),
         "writeCount": len(updates),
     }
 
@@ -926,7 +950,6 @@ def _company_exam_results():
     dashboard = _company_exam_dashboard()
     exams_by_id = {exam["examId"]: exam for exam in dashboard["exams"]}
     student_directory = _student_directory()
-    awards_snapshot = _company_exam_awards_snapshot(rankings_ref().get() or {})
 
     progress_snapshot = student_progress_ref().get() or {}
     rankings_snapshot = rankings_ref().get() or {}
@@ -966,7 +989,6 @@ def _company_exam_results():
                 school_entry = school_cache.get(grade, {}).get(student_id, {}) if grade else {}
                 best_score = exam_progress.get("bestScorePercent")
                 exam_mode = exam_meta.get("mode") or "practice"
-                award_payload = awards_snapshot.get(exam_id, {}).get(student_id, {}) if isinstance(awards_snapshot.get(exam_id), dict) else {}
 
                 results.append(
                     {
@@ -981,8 +1003,8 @@ def _company_exam_results():
                         "schoolCode": school_entry.get("schoolCode") or student_meta.get("schoolCode"),
                         "bestScorePercent": best_score if isinstance(best_score, (int, float)) else None,
                         "examPoints": _score_to_points(best_score) if exam_mode == "competitive" else None,
-                        "storedExamPoints": int(award_payload.get("points") or 0) if isinstance(award_payload, dict) else 0,
-                        "pointsSubmitted": isinstance(award_payload, dict) and "points" in award_payload,
+                        "storedExamPoints": None,
+                        "pointsSubmitted": False,
                         "attemptsUsed": exam_progress.get("attemptsUsed") if isinstance(exam_progress.get("attemptsUsed"), int) else 0,
                         "status": exam_progress.get("status") or "in_progress",
                         "lastAttemptId": exam_progress.get("lastAttemptId") or "",
@@ -1601,26 +1623,46 @@ def save_textbook_record():
     except Exception as error:
         return jsonify({"error": f"Textbook save failed: {error}"}), 500
 
-    existing_textbook = textbooks_ref().child(grade_key).child(subject_key).get()
-    if existing_textbook is not None and not overwrite:
-        return jsonify({"error": f"Platform1/TextBooks/{grade_key}/{subject_key} already exists"}), 409
+    existing_textbook = _deep_merge_dicts(
+        legacy_textbooks_ref().child(grade_key).child(subject_key).get() or {},
+        textbooks_ref().child(grade_key).child(subject_key).get() or {},
+    )
+    existing_units = existing_textbook.get("units") if isinstance(existing_textbook.get("units"), dict) else {}
+    incoming_units = validated_textbook.get("units") if isinstance(validated_textbook.get("units"), dict) else {}
+    conflicting_unit_keys = sorted(set(existing_units).intersection(incoming_units))
+
+    if conflicting_unit_keys and not overwrite:
+        return jsonify({
+            "error": (
+                f"Units already exist for Platform1/TextBooks/{grade_key}/{subject_key}: "
+                f"{', '.join(conflicting_unit_keys)}. Use a different unit key or enable overwrite to replace those unit keys."
+            )
+        }), 409
+
+    saved_textbook = _deep_merge_dicts(existing_textbook, validated_textbook)
+    action = "created"
+    if existing_textbook:
+        action = "updated" if conflicting_unit_keys else "merged"
 
     updates = {
-        f"{str(os.getenv('PLATFORM_ROOT', DEFAULT_PLATFORM_ROOT)).strip('/')}/TextBooks/{grade_key}/{subject_key}": validated_textbook,
+        f"{str(os.getenv('PLATFORM_ROOT', DEFAULT_PLATFORM_ROOT)).strip('/')}/TextBooks/{grade_key}/{subject_key}": saved_textbook,
     }
     root_ref().update(updates)
 
     return jsonify(
         {
             "status": "saved",
+            "action": action,
             "location": f"Platform1/TextBooks/{grade_key}/{subject_key}",
             "saved": {
                 "gradeKey": grade_key,
                 "subjectKey": subject_key,
+                "unitCount": len(saved_textbook.get("units") or {}),
+                "unitKeys": sorted((saved_textbook.get("units") or {}).keys()),
             },
             "writeCount": len(updates),
         }
-    ), 201
+    ), 201 if action == "created" else 200
 
 
 @app.post("/api/platform/company-exams/save-record")
