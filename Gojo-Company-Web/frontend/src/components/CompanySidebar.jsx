@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FaBookOpen, FaChartLine, FaChevronDown, FaClipboardList, FaFileAlt } from 'react-icons/fa'
+import { FaBookOpen, FaChartLine, FaChevronDown, FaClipboardList, FaFileAlt, FaSchool } from 'react-icons/fa'
 import { Link, useLocation } from 'react-router-dom'
 
 const profileImage = `data:image/svg+xml;utf8,${encodeURIComponent(`
@@ -18,6 +18,15 @@ const profileImage = `data:image/svg+xml;utf8,${encodeURIComponent(`
 
 const SIDEBAR_SECTIONS = [
 	{
+		key: 'schools',
+		title: 'Schools',
+		icon: FaSchool,
+		items: [
+			{ to: '/schools/overview', label: 'School Overview', icon: FaSchool },
+			{ to: '/schools/create', label: 'School Registry', icon: FaSchool },
+		],
+	},
+	{
 		key: 'books',
 		title: 'Books',
 		icon: FaBookOpen,
@@ -33,7 +42,7 @@ const SIDEBAR_SECTIONS = [
 		items: [
 			{ to: '/exams/competitive', label: 'Competitive Exams', icon: FaFileAlt },
 			{ to: '/exams/practice', label: 'Practice Exams', icon: FaFileAlt },
-			{ to: '/exams/entrance', label: 'Entrance Exams', icon: FaFileAlt },
+			
 		],
 	},
 	{
