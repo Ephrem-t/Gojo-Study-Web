@@ -342,7 +342,7 @@ export default function StudentProgressPage() {
 		<div className='google-dashboard'>
 			<CompanySidebar />
 			<main className='google-main company-main'>
-				<div className='exam-shell builder-shell'>
+				<div className='exam-shell builder-shell progress-page-shell'>
 					<section className='hero-panel progress-hero-panel'>
 						<div className='hero-copy progress-hero-copy'>
 							<span className='eyebrow'>Competitive Exam Analytics</span>

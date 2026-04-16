@@ -2,19 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import {
 	FaArrowRight,
 	FaBuilding,
-	FaChartBar,
-	FaCheckCircle,
 	FaGraduationCap,
 	FaImage,
 	FaLayerGroup,
-	FaMapMarkerAlt,
-	FaPhoneAlt,
 	FaSave,
 	FaSchool,
 	FaSearch,
 	FaSyncAlt,
-	FaUserTie,
-	FaUsers,
 } from 'react-icons/fa'
 import { Link } from 'react-router-dom'
 import CompanySidebar from '../components/CompanySidebar'
@@ -24,9 +18,11 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:500
 const LANGUAGE_OPTIONS = [
 	{ key: 'am', label: 'Amharic' },
 	{ key: 'en', label: 'English' },
+	{ key: 'om', label: 'Oromic' },
 ]
 
 const LEVEL_OPTIONS = [
+	{ key: 'preprimary', label: 'Pre-primary' },
 	{ key: 'elementary', label: 'Elementary' },
 	{ key: 'secondary', label: 'Secondary' },
 ]
@@ -76,6 +72,29 @@ function formatRatio(value, suffix) {
 	return `${Number(value).toFixed(1)} ${suffix}`
 }
 
+function formatListSummary(values, fallback) {
+	const labels = values
+		.map((value) => trimText(value))
+		.filter(Boolean)
+
+	return labels.length ? labels.join(' • ') : fallback
+}
+
+function getInitials(value, fallback = 'NA') {
+	const parts = trimText(value)
+		.split(/\s+/)
+		.filter(Boolean)
+
+	if (!parts.length) {
+		return fallback
+	}
+
+	return parts
+		.slice(0, 2)
+		.map((part) => part[0].toUpperCase())
+		.join('')
+}
+
 function createEditorState() {
 	return {
 		name: '',
@@ -92,8 +111,8 @@ function createEditorState() {
 		logoUrl: '',
 		coverImageUrl: '',
 		active: true,
-		languages: { am: true, en: true },
-		levels: { elementary: true, secondary: false },
+		languages: { am: true, en: true, om: false },
+		levels: { preprimary: false, elementary: true, secondary: false },
 	}
 }
 
@@ -120,8 +139,10 @@ function createEditorFromSchool(school) {
 		languages: {
 			am: Boolean(school.languages?.am),
 			en: Boolean(school.languages?.en),
+			om: Boolean(school.languages?.om),
 		},
 		levels: {
+			preprimary: Boolean(school.levels?.preprimary),
 			elementary: Boolean(school.levels?.elementary),
 			secondary: Boolean(school.levels?.secondary),
 		},
@@ -147,8 +168,10 @@ function buildUpdatePayload(editor) {
 		languages: {
 			am: Boolean(editor.languages?.am),
 			en: Boolean(editor.languages?.en),
+			om: Boolean(editor.languages?.om),
 		},
 		levels: {
+			preprimary: Boolean(editor.levels?.preprimary),
 			elementary: Boolean(editor.levels?.elementary),
 			secondary: Boolean(editor.levels?.secondary),
 		},
@@ -165,19 +188,34 @@ function StatCard({ label, value, tone = 'teal' }) {
 }
 
 function DirectoryMember({ member, label }) {
+	const displayName = trimText(member.name) || trimText(member.id) || label
+	const badgeText = getInitials(displayName, label.slice(0, 2).toUpperCase())
+	const memberId = trimText(member.id)
+	const memberRole = trimText(member.position || member.role)
+	const contactDetails = [member.email, member.phone].map((value) => trimText(value)).filter(Boolean)
+
 	return (
 		<article className='school-overview-contact-card'>
 			<div className='school-overview-contact-top'>
-				<div>
-					<span>{label}</span>
-					<strong>{member.name || member.id}</strong>
+				<div className='school-overview-contact-person'>
+					<div className='school-overview-contact-avatar'>
+						{member.profileImage ? <img alt={displayName} src={member.profileImage} /> : badgeText}
+					</div>
+					<div>
+						<span>{label}</span>
+						<strong>{displayName}</strong>
+					</div>
 				</div>
 				<span className={`progress-school-chip${member.status === 'active' ? ' strong' : ''}`}>{member.status || 'active'}</span>
 			</div>
-			<p>{member.id}</p>
+			{memberId || memberRole ? (
+				<div className='school-overview-contact-stack'>
+					{memberId ? <span>{memberId}</span> : null}
+					{memberRole ? <span>{memberRole}</span> : null}
+				</div>
+			) : null}
 			<div className='school-overview-contact-meta'>
-				<span>{member.email || 'Email pending'}</span>
-				<span>{member.phone || 'Phone pending'}</span>
+				{contactDetails.length ? contactDetails.map((item) => <span key={item}>{item}</span>) : <span>Contact details pending</span>}
 			</div>
 		</article>
 	)
@@ -189,6 +227,7 @@ export default function SchoolOverview() {
 	const [detailState, setDetailState] = useState({ loading: false, error: '', detail: null })
 	const [selectedSchoolCode, setSelectedSchoolCode] = useState('')
 	const [searchTerm, setSearchTerm] = useState('')
+	const [statusFilter, setStatusFilter] = useState('all')
 	const [editor, setEditor] = useState(() => createEditorState())
 	const [editorBaseline, setEditorBaseline] = useState('')
 	const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' })
@@ -196,15 +235,14 @@ export default function SchoolOverview() {
 
 	const filteredSchools = useMemo(() => {
 		const query = trimText(searchTerm).toLowerCase()
-		if (!query) {
-			return directory.schools
-		}
 
 		return directory.schools.filter((school) => {
-			return [school.name, school.code, school.shortName, school.city, school.region]
+			const matchesQuery = !query || [school.name, school.code, school.shortName, school.city, school.region]
 				.some((value) => trimText(value).toLowerCase().includes(query))
+			const matchesStatus = statusFilter === 'all' || (statusFilter === 'active' ? Boolean(school.active) : !school.active)
+			return matchesQuery && matchesStatus
 		})
-	}, [directory.schools, searchTerm])
+	}, [directory.schools, searchTerm, statusFilter])
 
 	const selectedSummary = useMemo(
 		() => directory.schools.find((school) => school.code === selectedSchoolCode) || null,
@@ -229,6 +267,26 @@ export default function SchoolOverview() {
 	const editorPayload = useMemo(() => buildUpdatePayload(editor), [editor])
 	const isDirty = Boolean(school) && JSON.stringify(editorPayload) !== editorBaseline
 	const totalVisibleSchools = filteredSchools.length
+	const operatorPortfolioCount = directory.hrAccountCount + directory.registererAccountCount
+	const selectedLocation = [selectedSummary?.city, selectedSummary?.region].filter((value) => trimText(value)).join(', ') || 'Awaiting school selection'
+	const selectedStatusLabel = selectedSummary ? (selectedSummary.active ? 'System access enabled' : 'System access blocked') : 'Selection pending'
+	const directoryFilterLabel = statusFilter === 'active' ? 'Active schools' : statusFilter === 'inactive' ? 'Inactive schools' : 'All schools'
+	const accessStatusChanged = Boolean(school) && editor.active !== Boolean(school.active)
+	const accessStatusLabel = editor.active ? 'Active' : 'Inactive'
+	const accessStatusSummary = accessStatusChanged
+		? editor.active
+			? 'Save to reactivate this school and allow it to use the system again.'
+			: 'Save to block this school from using the system.'
+		: editor.active
+			? 'This school is currently allowed to use the system.'
+			: 'This school is currently blocked from using the system.'
+	const submitButtonLabel = saveState.loading
+		? 'Saving...'
+		: accessStatusChanged
+			? editor.active
+				? 'Save and activate school'
+				: 'Save and deactivate school'
+			: 'Save school changes'
 
 	useEffect(() => {
 		loadDirectory()
@@ -240,6 +298,16 @@ export default function SchoolOverview() {
 		}
 		loadSchoolDetail(selectedSchoolCode)
 	}, [selectedSchoolCode])
+
+	useEffect(() => {
+		if (!filteredSchools.length) {
+			return
+		}
+
+		if (!selectedSchoolCode || !filteredSchools.some((school) => school.code === selectedSchoolCode)) {
+			setSelectedSchoolCode(filteredSchools[0].code)
+		}
+	}, [filteredSchools, selectedSchoolCode])
 
 	async function loadDirectory(preferredSchoolCode = '') {
 		setDirectoryState({ loading: true, error: '' })
@@ -302,6 +370,18 @@ export default function SchoolOverview() {
 		setEditor((current) => ({
 			...current,
 			[field]: value,
+		}))
+	}
+
+	function setSchoolAccessStatus(nextActive) {
+		setEditor((current) => ({
+			...current,
+			active: nextActive,
+		}))
+		setSaveState((current) => ({
+			...current,
+			error: '',
+			success: '',
 		}))
 	}
 
@@ -399,55 +479,42 @@ export default function SchoolOverview() {
 				<div className='exam-shell builder-shell school-overview-shell'>
 					<section className='hero-panel school-hero-panel school-overview-hero'>
 						<div className='hero-copy school-overview-hero-copy'>
-							<span className='eyebrow'>School Intelligence Hub</span>
-							<h1>Review every school, open its operational profile, and edit live school information from one screen.</h1>
+							<div className='school-overview-hero-kicker-row'>
+								<span className='eyebrow'>School Intelligence Hub</span>
+								<span className='school-overview-hero-live-chip'>{selectedSummary?.active ? 'School access enabled' : 'School access blocked'}</span>
+							</div>
+							<h1>Manage the school directory.</h1>
 							<p>
-								This workspace combines the school directory, leadership visibility, academic structure signals, and a clean edit
-								panel so the company team can manage schools without leaving the dashboard.
+								Focus on the active school, review the core analytics, and publish profile or access changes without leaving the dashboard.
 							</p>
 							<div className='hero-actions'>
 								<a className='primary-action' href='#school-directory'>Open school directory</a>
-								<a className='secondary-action' href='#school-editor'>Edit active school</a>
-							</div>
-							<div className='progress-analytics-meta'>
-								<div className='progress-hero-note'>
-									<strong>Live school scope</strong>
-									<span>{directory.count ? `${formatNumber(directory.count)} schools are now visible in the company registry.` : 'No schools have been created yet.'}</span>
-								</div>
-								<div className='progress-hero-note'>
-									<strong>Management flow</strong>
-									<span>Pick a school to inspect its counts, graph bars, operator directory, academic years, and editable profile data.</span>
-								</div>
+								<a className='secondary-action' href='#school-editor'>Edit selected school</a>
 							</div>
 						</div>
 
 						<div className='school-overview-hero-card'>
-							<div className='builder-stat-grid school-overview-hero-stats'>
-								<StatCard label='Schools' value={formatNumber(directory.count)} tone='gold' />
-								<StatCard label='Active Schools' value={formatNumber(directory.activeCount)} tone='teal' />
-								<StatCard label='HR Accounts' value={formatNumber(directory.hrAccountCount)} tone='coral' />
-								<StatCard label='Registerers' value={formatNumber(directory.registererAccountCount)} tone='teal' />
-							</div>
-
-							<div className='school-overview-hero-spotlight'>
+							<div className='school-overview-hero-card-top'>
 								<div>
-									<span className='pill pill-gold'>Selected School</span>
+									<span className='pill pill-gold'>Executive Snapshot</span>
 									<h3>{selectedSummary?.name || 'Choose a school from the directory'}</h3>
 									<p>
 										{selectedSummary
-											? `${selectedSummary.city || 'City pending'}, ${selectedSummary.region || 'Region pending'} with ${formatNumber(selectedSummary.studentCount)} students and ${formatNumber(selectedSummary.employeeCount)} employees in the summary view.`
-											: 'Once you select a school, the profile panel and analytics cards will update here.'}
+											? `${selectedLocation}. ${selectedStatusLabel}. Analytics and editing below are focused on this school.`
+											: 'Once a school is selected, its summary deck, analytics, and editor all update together.'}
 									</p>
 								</div>
-								<div className='school-overview-hero-actions'>
-									<button className='secondary-action school-overview-inline-button' type='button' onClick={() => loadDirectory(selectedSchoolCode)}>
-										<FaSyncAlt /> Refresh directory
-									</button>
-									<Link className='primary-action school-overview-inline-button' to='/schools/create'>
-										<FaArrowRight /> Create school
-									</Link>
+								<div className='school-overview-hero-card-badge'>
+									<span>School code</span>
+									<strong>{selectedSummary?.code || 'Pending selection'}</strong>
+									<small>{selectedSummary?.shortName || 'Company registry'}</small>
 								</div>
 							</div>
+
+							<div className='builder-stat-grid school-overview-hero-stats'>
+								<StatCard label='Schools' value={formatNumber(directory.count)} tone='gold' />
+								<StatCard label='Active Schools' value={formatNumber(directory.activeCount)} tone='teal' />
+								</div>
 						</div>
 					</section>
 
@@ -457,27 +524,53 @@ export default function SchoolOverview() {
 								<span className='section-kicker'>Directory + Detail</span>
 								<h2>Switch between schools and inspect the current operating picture</h2>
 							</div>
-							<p className='progress-section-note'>The selected school drives the graph bars, operator directory, and edit form on the right.</p>
+							<p className='progress-section-note'>Select a school to load its analytics and editing workspace.</p>
 						</div>
 
 						<div className='school-overview-layout'>
-							<aside className='catalog-card school-overview-directory-card'>
+							<section className='catalog-card school-overview-directory-card school-overview-directory-rail-card'>
 								<div className='school-overview-directory-head'>
-									<div>
-										<span className='pill pill-teal'>All Schools</span>
-										<h3>Company school directory</h3>
+									<div className='school-overview-directory-head-top'>
+										<div>
+											<span className='pill pill-teal'>All Schools</span>
+											<h3>Choose a school</h3>
+										</div>
+										<button className='school-overview-ghost-action' type='button' onClick={() => loadDirectory(selectedSchoolCode)}>
+											<FaSyncAlt /> Refresh
+										</button>
 									</div>
-									<p>{directory.count ? `Showing ${formatNumber(totalVisibleSchools)} of ${formatNumber(directory.count)} schools.` : 'The directory is waiting for the first school.'}</p>
+									<p>{directory.count ? `${directoryFilterLabel} · ${formatNumber(totalVisibleSchools)} of ${formatNumber(directory.count)} visible.` : 'The directory is waiting for the first school.'}</p>
 								</div>
-								<label className='school-overview-search'>
-									<FaSearch aria-hidden='true' />
-									<input
-										type='search'
-										placeholder='Search by name, code, city, or short name'
-										value={searchTerm}
-										onChange={(event) => setSearchTerm(event.target.value)}
-									/>
-								</label>
+
+								<div className='school-overview-directory-toolbar'>
+									<label className='school-overview-search'>
+										<FaSearch aria-hidden='true' />
+										<input
+											type='search'
+											placeholder='Search by name, code, city, or short name'
+											value={searchTerm}
+											onChange={(event) => setSearchTerm(event.target.value)}
+										/>
+									</label>
+									<label className='school-overview-filter'>
+										<span>Show</span>
+										<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+											<option value='all'>All schools</option>
+											<option value='active'>Active only</option>
+											<option value='inactive'>Inactive only</option>
+										</select>
+									</label>
+									<div className='school-overview-directory-metrics'>
+										<div>
+											<span>Visible</span>
+											<strong>{formatNumber(totalVisibleSchools)}</strong>
+										</div>
+										<div>
+											<span>Operators</span>
+											<strong>{formatNumber(operatorPortfolioCount)}</strong>
+										</div>
+									</div>
+								</div>
 
 								{directoryState.loading ? <div className='school-overview-empty'>Loading school directory...</div> : null}
 								{directoryState.error ? <div className='form-feedback error'>{directoryState.error}</div> : null}
@@ -501,11 +594,13 @@ export default function SchoolOverview() {
 												<div className='school-overview-directory-badge'>
 													{schoolItem.logoUrl ? <img alt={schoolItem.name} src={schoolItem.logoUrl} /> : <FaSchool />}
 												</div>
-												<div>
-													<strong>{schoolItem.name}</strong>
+												<div className='school-overview-directory-item-copy'>
+													<div className='school-overview-directory-item-header'>
+														<strong>{schoolItem.name}</strong>
+														<span className={`progress-school-chip${schoolItem.active ? ' strong' : ''}`}>{schoolItem.active ? 'Active' : 'Inactive'}</span>
+													</div>
 													<span>{schoolItem.code}</span>
 												</div>
-												<span className={`progress-school-chip${schoolItem.active ? ' strong' : ''}`}>{schoolItem.active ? 'Active' : 'Review'}</span>
 											</div>
 											<div className='school-overview-directory-item-meta'>
 												<span>{schoolItem.city || 'City pending'}</span>
@@ -515,7 +610,7 @@ export default function SchoolOverview() {
 										</button>
 									))}
 								</div>
-							</aside>
+							</section>
 
 							<div className='school-overview-detail-stack'>
 								{!directory.count && !directoryState.loading ? (
@@ -551,7 +646,7 @@ export default function SchoolOverview() {
 																{school.logoUrl ? <img alt={school.name} src={school.logoUrl} /> : <FaBuilding />}
 															</div>
 															<div>
-																<span className='eyebrow'>Active School Profile</span>
+																<span className='eyebrow'>{school.active ? 'Active School Profile' : 'Inactive School Profile'}</span>
 																<h3>{school.name}</h3>
 																<p>{school.locationLabel || 'Location details are still being completed.'}</p>
 															</div>
@@ -559,7 +654,7 @@ export default function SchoolOverview() {
 														<div className='school-overview-banner-chips'>
 															<span>{school.code}</span>
 															<span>{formatAcademicYearLabel(school.currentAcademicYear)}</span>
-															<span>{school.active ? 'Active' : 'Review mode'}</span>
+															<span>{school.active ? 'Active' : 'Inactive'}</span>
 														</div>
 													</div>
 													<div className='builder-stat-grid school-overview-banner-stats'>
@@ -590,10 +685,10 @@ export default function SchoolOverview() {
 															<small>{school.phone || 'Phone not set'} · {school.email || 'Email not set'}</small>
 														</div>
 													</div>
-												</section>
+											</section>
 
 												<section className='school-overview-analytics-grid'>
-													<article className='catalog-card'>
+													<article className='catalog-card school-overview-analytics-card school-overview-volume-card'>
 														<div className='progress-chart-header'>
 															<div className='progress-chart-heading'>
 																<span className='pill pill-teal'>Population Bars</span>
@@ -624,7 +719,7 @@ export default function SchoolOverview() {
 														</div>
 													</article>
 
-													<article className='catalog-card school-overview-grades-card'>
+													<article className='catalog-card school-overview-analytics-card school-overview-grades-card'>
 														<div className='progress-chart-header'>
 															<div className='progress-chart-heading'>
 																<span className='pill pill-gold'>Grade Bars</span>
@@ -666,7 +761,7 @@ export default function SchoolOverview() {
 												</section>
 
 												<section className='school-overview-meta-grid'>
-													<article className='catalog-card school-overview-ops-card'>
+													<article className='catalog-card school-overview-meta-card school-overview-ops-card'>
 														<div className='progress-chart-header'>
 															<div className='progress-chart-heading'>
 																<span className='pill pill-coral'>Team Directory</span>
@@ -697,7 +792,7 @@ export default function SchoolOverview() {
 														</div>
 													</article>
 
-													<article className='catalog-card school-overview-activity-card'>
+													<article className='catalog-card school-overview-meta-card school-overview-activity-card'>
 														<div className='progress-chart-header'>
 															<div className='progress-chart-heading'>
 																<span className='pill pill-teal'>School Activity</span>
@@ -737,118 +832,214 @@ export default function SchoolOverview() {
 															<span className='pill pill-gold'>Edit School</span>
 															<h3>Update school information</h3>
 														</div>
-														<p>This panel saves changes directly back to the active school profile without changing school codes or seeded operator IDs.</p>
+														<p>Update the selected school profile and publish access changes from one clean editor.</p>
 													</div>
 
-													<div className='school-overview-editor-grid'>
-														<label className='field'>
-															<span>School name</span>
-															<input type='text' value={editor.name} onChange={(event) => updateEditorField('name', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Contact email</span>
-															<input type='email' value={editor.email} onChange={(event) => updateEditorField('email', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Phone</span>
-															<input type='text' value={editor.phone} onChange={(event) => updateEditorField('phone', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Alternative phone</span>
-															<input type='text' value={editor.alternativePhone} onChange={(event) => updateEditorField('alternativePhone', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Country</span>
-															<input type='text' value={editor.country} onChange={(event) => updateEditorField('country', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Region</span>
-															<input type='text' value={editor.region} onChange={(event) => updateEditorField('region', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>City</span>
-															<input type='text' value={editor.city} onChange={(event) => updateEditorField('city', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Sub city</span>
-															<input type='text' value={editor.subCity} onChange={(event) => updateEditorField('subCity', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Kebele</span>
-															<input type='text' value={editor.kebele} onChange={(event) => updateEditorField('kebele', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Address line</span>
-															<input type='text' value={editor.addressLine} onChange={(event) => updateEditorField('addressLine', event.target.value)} />
-														</label>
-														<label className='field'>
-															<span>Current academic year</span>
-															<input type='text' value={editor.currentAcademicYear} onChange={(event) => updateEditorField('currentAcademicYear', event.target.value)} placeholder='2026_2027' />
-														</label>
-														<label className='field school-overview-active-field'>
-															<span>School status</span>
-															<label className='school-overview-inline-check'>
-																<input type='checkbox' checked={editor.active} onChange={(event) => updateEditorField('active', event.target.checked)} />
-																<span>Keep this school active</span>
-															</label>
-														</label>
-													</div>
+													<div className='school-overview-editor-status-grid'>
+														<article className='school-overview-editor-status-card accent-teal'>
+															<span>Save state</span>
+															<strong>{isDirty ? 'Pending publish' : 'Synced'}</strong>
+															<p>{isDirty ? 'Changes are staged locally until you publish this form.' : 'The live school profile already matches the current editor state.'}</p>
+														</article>
+														<article className={`school-overview-editor-status-card ${editor.active ? 'accent-teal' : 'accent-coral'}`}>
+															<span>System access</span>
+															<strong>{accessStatusLabel}</strong>
+															<p>{accessStatusSummary}</p>
+														</article>
+												</div>
 
-													<div className='school-overview-editor-media'>
-														<div className='field'>
-															<span>Logo URL</span>
-															<input type='text' value={editor.logoUrl} onChange={(event) => updateEditorField('logoUrl', event.target.value)} />
-														</div>
-														<label className='school-overview-upload'>
-															<FaImage />
-															<span>{uploadState.loadingKey === 'logo' ? 'Uploading logo...' : 'Upload logo image'}</span>
-															<input type='file' accept='image/*' onChange={(event) => handleAssetUpload(event.target.files?.[0], 'logo')} />
-														</label>
-														<div className='field'>
-															<span>Cover image URL</span>
-															<input type='text' value={editor.coverImageUrl} onChange={(event) => updateEditorField('coverImageUrl', event.target.value)} />
-														</div>
-														<label className='school-overview-upload'>
-															<FaImage />
-															<span>{uploadState.loadingKey === 'cover' ? 'Uploading cover...' : 'Upload cover image'}</span>
-															<input type='file' accept='image/*' onChange={(event) => handleAssetUpload(event.target.files?.[0], 'cover')} />
-														</label>
-													</div>
+													<div className='school-overview-editor-sections'>
+														<section className='school-overview-editor-section'>
+															<div className='school-overview-editor-section-head'>
+																<span>Identity and contact</span>
+																<h4>Keep the public-facing school identity polished and reachable.</h4>
+															<p>These details appear across the directory and the selected-school header.</p>
+															</div>
+															<div className='school-overview-editor-grid'>
+																<label className='field'>
+																	<span>School name</span>
+																	<input type='text' value={editor.name} onChange={(event) => updateEditorField('name', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Contact email</span>
+																	<input type='email' value={editor.email} onChange={(event) => updateEditorField('email', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Phone</span>
+																	<input type='text' value={editor.phone} onChange={(event) => updateEditorField('phone', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Alternative phone</span>
+																	<input type='text' value={editor.alternativePhone} onChange={(event) => updateEditorField('alternativePhone', event.target.value)} />
+																</label>
+															</div>
+														</section>
 
-													<div className='school-overview-toggle-groups'>
-														<div className='school-overview-toggle-group'>
-															<div className='school-overview-toggle-head'>
-																<FaGraduationCap />
-																<div>
-																	<strong>Academic Levels</strong>
-																	<span>Control which levels are signaled on the school profile.</span>
+														<section className='school-overview-editor-section'>
+															<div className='school-overview-editor-section-head'>
+																<span>Location and operations</span>
+																<h4>Control the location footprint and live operating status.</h4>
+																<p>Keep the school discoverable, aligned to the right academic year, and active or inactive in the system.</p>
+															</div>
+															<div className='school-overview-editor-grid'>
+																<label className='field'>
+																	<span>Country</span>
+																	<input type='text' value={editor.country} onChange={(event) => updateEditorField('country', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Region</span>
+																	<input type='text' value={editor.region} onChange={(event) => updateEditorField('region', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>City</span>
+																	<input type='text' value={editor.city} onChange={(event) => updateEditorField('city', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Sub city</span>
+																	<input type='text' value={editor.subCity} onChange={(event) => updateEditorField('subCity', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Kebele</span>
+																	<input type='text' value={editor.kebele} onChange={(event) => updateEditorField('kebele', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Address line</span>
+																	<input type='text' value={editor.addressLine} onChange={(event) => updateEditorField('addressLine', event.target.value)} />
+																</label>
+																<label className='field'>
+																	<span>Current academic year</span>
+																	<input type='text' value={editor.currentAcademicYear} onChange={(event) => updateEditorField('currentAcademicYear', event.target.value)} placeholder='2026_2027' />
+																</label>
+																<div className='field school-overview-active-field'>
+																	<span>System access</span>
+																	<div aria-label='School access status' className='school-overview-status-toggle' role='group'>
+																		<button
+																			className={`school-overview-status-button school-overview-status-button-allow${editor.active ? ' is-active' : ''}`}
+																			type='button'
+																			onClick={() => setSchoolAccessStatus(true)}
+																		>
+																			Active
+																		</button>
+																		<button
+																			className={`school-overview-status-button school-overview-status-button-block${!editor.active ? ' is-active' : ''}`}
+																			type='button'
+																			onClick={() => setSchoolAccessStatus(false)}
+																		>
+																			Inactive
+																		</button>
+																	</div>
+																	<small className='field-hint'>{accessStatusSummary}</small>
 																</div>
 															</div>
-															<div className='school-overview-toggle-list'>
-																{LEVEL_OPTIONS.map((option) => (
-																	<button className={`school-overview-toggle-pill${editor.levels[option.key] ? ' is-active' : ''}`} key={option.key} type='button' onClick={() => toggleSelection('levels', option.key)}>
-																		{option.label}
-																	</button>
-																))}
-															</div>
-														</div>
+														</section>
 
-														<div className='school-overview-toggle-group'>
-															<div className='school-overview-toggle-head'>
-																<FaLayerGroup />
-																<div>
-																	<strong>School Languages</strong>
-																	<span>Keep the school language indicators aligned with its current setup.</span>
+														<section className='school-overview-editor-section'>
+															<div className='school-overview-editor-section-head'>
+																<span>Visual identity</span>
+																<h4>Keep the banner and directory imagery sharp and consistent.</h4>
+																<p>Upload the two core school images used across the profile.</p>
+															</div>
+
+															<div className='school-overview-editor-media'>
+																<article className='school-overview-media-card'>
+																	<div className='school-overview-media-card-head'>
+																		<div>
+																			<span>Logo image</span>
+																			<strong>{editor.logoUrl ? 'Stored and ready' : 'No logo uploaded yet'}</strong>
+																		</div>
+																		<div className='school-overview-media-state'>{editor.logoUrl ? 'Stored' : 'Pending'}</div>
+																	</div>
+
+																	<div className={`school-overview-media-preview${editor.logoUrl ? ' has-image' : ''}`}>
+																		{editor.logoUrl ? (
+																			<img alt='School logo preview' className='school-overview-media-preview-image' src={editor.logoUrl} />
+																		) : (
+																			<>
+																				<FaImage />
+																				<span>Upload a square logo for the directory badge and hero brand mark.</span>
+																			</>
+																		)}
+																	</div>
+
+																	<label className='school-overview-upload'>
+																		<FaImage />
+																		<span>{uploadState.loadingKey === 'logo' ? 'Uploading logo...' : 'Upload logo image'}</span>
+																		<input type='file' accept='image/*' onChange={(event) => handleAssetUpload(event.target.files?.[0], 'logo')} />
+																	</label>
+																</article>
+
+																<article className='school-overview-media-card'>
+																	<div className='school-overview-media-card-head'>
+																		<div>
+																			<span>Cover image</span>
+																			<strong>{editor.coverImageUrl ? 'Stored and ready' : 'No cover uploaded yet'}</strong>
+																		</div>
+																		<div className='school-overview-media-state'>{editor.coverImageUrl ? 'Stored' : 'Pending'}</div>
+																	</div>
+
+																	<div className={`school-overview-media-preview${editor.coverImageUrl ? ' has-image' : ''}`}>
+																		{editor.coverImageUrl ? (
+																			<img alt='School cover preview' className='school-overview-media-preview-image' src={editor.coverImageUrl} />
+																		) : (
+																			<>
+																				<FaImage />
+																				<span>Upload a wide cover image to elevate the hero banner and school profile.</span>
+																			</>
+																		)}
+																	</div>
+
+																	<label className='school-overview-upload'>
+																		<FaImage />
+																		<span>{uploadState.loadingKey === 'cover' ? 'Uploading cover...' : 'Upload cover image'}</span>
+																		<input type='file' accept='image/*' onChange={(event) => handleAssetUpload(event.target.files?.[0], 'cover')} />
+																	</label>
+																</article>
+															</div>
+														</section>
+
+														<section className='school-overview-editor-section'>
+															<div className='school-overview-editor-section-head'>
+																<span>Academic signal system</span>
+																<h4>Keep the school profile aligned with its academic structure.</h4>
+																<p>Keep the visible levels and languages aligned with the current setup.</p>
+															</div>
+
+															<div className='school-overview-toggle-groups'>
+																<div className='school-overview-toggle-group'>
+																	<div className='school-overview-toggle-head'>
+																		<FaGraduationCap />
+																		<div>
+																			<strong>Academic Levels</strong>
+																			<span>Control which levels are signaled on the school profile.</span>
+																		</div>
+																	</div>
+																	<div className='school-overview-toggle-list'>
+																		{LEVEL_OPTIONS.map((option) => (
+																			<button className={`school-overview-toggle-pill${editor.levels[option.key] ? ' is-active' : ''}`} key={option.key} type='button' onClick={() => toggleSelection('levels', option.key)}>
+																				{option.label}
+																			</button>
+																		))}
+																	</div>
+																</div>
+
+																<div className='school-overview-toggle-group'>
+																	<div className='school-overview-toggle-head'>
+																		<FaLayerGroup />
+																		<div>
+																			<strong>School Languages</strong>
+																			<span>Keep the school language indicators aligned with its current setup.</span>
+																		</div>
+																	</div>
+																	<div className='school-overview-toggle-list'>
+																		{LANGUAGE_OPTIONS.map((option) => (
+																			<button className={`school-overview-toggle-pill${editor.languages[option.key] ? ' is-active' : ''}`} key={option.key} type='button' onClick={() => toggleSelection('languages', option.key)}>
+																				{option.label}
+																			</button>
+																		))}
+																	</div>
 																</div>
 															</div>
-															<div className='school-overview-toggle-list'>
-																{LANGUAGE_OPTIONS.map((option) => (
-																	<button className={`school-overview-toggle-pill${editor.languages[option.key] ? ' is-active' : ''}`} key={option.key} type='button' onClick={() => toggleSelection('languages', option.key)}>
-																		{option.label}
-																	</button>
-																))}
-															</div>
-														</div>
+														</section>
 													</div>
 
 													{uploadState.error ? <div className='form-feedback error'>{uploadState.error}</div> : null}
@@ -859,10 +1050,10 @@ export default function SchoolOverview() {
 													<div className='school-overview-submit-row'>
 														<div className='school-overview-submit-copy'>
 															<strong>{isDirty ? 'Unsaved changes are ready to publish.' : 'School information is synced.'}</strong>
-															<span>School codes, short names, and seeded operator IDs stay fixed while profile data is updated.</span>
+															<span>School codes, short names, and seeded operator IDs stay fixed while profile data and access status are updated.</span>
 														</div>
 														<button className='primary-action school-overview-inline-button' disabled={!isDirty || saveState.loading} type='submit'>
-															<FaSave /> {saveState.loading ? 'Saving...' : 'Save school changes'}
+															<FaSave /> {submitButtonLabel}
 														</button>
 													</div>
 												</form>

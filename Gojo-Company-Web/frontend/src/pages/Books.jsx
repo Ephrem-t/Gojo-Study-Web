@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { FaArrowRight, FaBook, FaFilePdf, FaFilter, FaLayerGroup } from 'react-icons/fa'
 import { Link } from 'react-router-dom'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 
-const gradeOptions = ['grade7', 'grade8', 'grade9', 'grade10', 'grade11', 'grade12']
+const gradeOptions = ['grade1', 'grade2', 'grade3', 'grade4', 'grade5', 'grade6', 'grade7', 'grade8', 'grade9', 'grade10', 'grade11', 'grade12']
 
 function createUnit(index) {
 	return {
@@ -15,7 +16,7 @@ function createUnit(index) {
 }
 
 const defaultForm = {
-	gradeKey: 'grade7',
+	gradeKey: 'grade1',
 	subjectName: '',
 	subjectKey: '',
 	textbook: {
@@ -55,6 +56,11 @@ function normalizeSubjectKey(value) {
 function formatGradeLabel(value) {
 	const match = String(value || '').match(/(\d+)/)
 	return match ? `Grade ${match[1]}` : value || 'Grade'
+}
+
+function getGradeOrder(value) {
+	const match = String(value || '').match(/(\d+)/)
+	return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER
 }
 
 function formatSubjectLabel(value) {
@@ -101,6 +107,21 @@ function StatCard({ label, value, tone = 'teal' }) {
 	)
 }
 
+function CommandCard({ icon: Icon, label, value, detail, tone = 'teal' }) {
+	return (
+		<article className={`books-command-card accent-${tone}`}>
+			<div className='books-command-icon'>
+				<Icon />
+			</div>
+			<div>
+				<span>{label}</span>
+				<strong>{value}</strong>
+				<p>{detail}</p>
+			</div>
+		</article>
+	)
+}
+
 export default function Books({ view = 'save' }) {
 	const [form, setForm] = useState(defaultForm)
 	const [overview, setOverview] = useState({ textbooks: [], stats: {}, tree: {} })
@@ -109,13 +130,13 @@ export default function Books({ view = 'save' }) {
 	const [assetUploadState, setAssetUploadState] = useState({ loadingKey: '', error: '', success: '' })
 	const [allowOverwrite, setAllowOverwrite] = useState(false)
 	const [manualSubjectKey, setManualSubjectKey] = useState(false)
+	const [selectedLibraryGrade, setSelectedLibraryGrade] = useState('all')
 
 	const resolvedGradeKey = normalizeGradeKey(form.gradeKey) || 'grade7'
 	const resolvedSubjectKey = trimText(form.subjectKey) || normalizeSubjectKey(form.subjectName) || 'subject_key'
 	const textbookNode = buildTextbookNode(form)
 	const normalizedView = view === 'library' ? 'library' : 'save'
 	const showSaveView = normalizedView === 'save'
-	const previewPdfCount = overview.textbooks.filter((textbook) => Boolean(textbook.previewPdfUrl)).length
 	const payload = {
 		gradeKey: resolvedGradeKey,
 		subjectKey: resolvedSubjectKey,
@@ -123,14 +144,63 @@ export default function Books({ view = 'save' }) {
 		overwrite: allowOverwrite,
 	}
 
-	const groupedTextbooks = useMemo(() => {
-		return overview.textbooks.reduce((result, textbook) => {
-			const gradeKey = textbook.grade || 'grade'
-			result[gradeKey] = result[gradeKey] || []
-			result[gradeKey].push(textbook)
-			return result
-		}, {})
+	const libraryGradeOptions = useMemo(() => {
+		return [...new Set(
+			overview.textbooks
+				.map((textbook) => normalizeGradeKey(textbook.grade))
+				.filter(Boolean),
+		)].sort((left, right) => getGradeOrder(left) - getGradeOrder(right))
 	}, [overview.textbooks])
+
+	const filteredTextbooks = useMemo(() => {
+		const visibleTextbooks = selectedLibraryGrade === 'all'
+			? overview.textbooks
+			: overview.textbooks.filter((textbook) => normalizeGradeKey(textbook.grade) === selectedLibraryGrade)
+
+		return [...visibleTextbooks].sort((left, right) => {
+			const gradeDifference = getGradeOrder(left.grade) - getGradeOrder(right.grade)
+			if (gradeDifference !== 0) {
+				return gradeDifference
+			}
+
+			return formatSubjectLabel(left.subjectKey).localeCompare(formatSubjectLabel(right.subjectKey))
+		})
+	}, [overview.textbooks, selectedLibraryGrade])
+
+	const booksWithPdfCount = filteredTextbooks.filter((textbook) => Boolean(textbook.previewPdfUrl)).length
+	const activeLibraryGradeLabel = selectedLibraryGrade === 'all' ? 'All grades' : formatGradeLabel(selectedLibraryGrade)
+	const visibleTextbookCount = filteredTextbooks.length
+	const draftUnitCount = form.textbook.units.length
+	const populatedDraftUnitCount = Object.keys(textbookNode.units).length
+	const hasCoverAsset = hasContent(form.textbook.coverUrl)
+	const draftSubjectLabel = formatSubjectLabel(resolvedSubjectKey) || 'Subject pending'
+	const heroDescription = showSaveView
+		? 'Build textbook metadata, upload covers, attach unit files, and write the record into the correct grade bucket from one cleaner premium workspace.'
+		: 'Browse the full textbook library in a wider premium grid, filter by grade instantly, and open the available book files without leaving the page.'
+	const heroLiveChip = showSaveView
+		? `${formatGradeLabel(resolvedGradeKey)} save flow`
+		: `${visibleTextbookCount} books visible`
+	const heroCommands = showSaveView
+		? [
+			{ icon: FaLayerGroup, label: 'Grade bucket', value: formatGradeLabel(resolvedGradeKey), detail: `${draftSubjectLabel} will be stored under the selected grade node.`, tone: 'teal' },
+			{ icon: FaBook, label: 'Draft scope', value: `${draftUnitCount} unit slot${draftUnitCount === 1 ? '' : 's'}`, detail: `${populatedDraftUnitCount} populated unit record${populatedDraftUnitCount === 1 ? '' : 's'} are currently ready for save.`, tone: 'gold' },
+			{ icon: FaFilePdf, label: 'Asset readiness', value: hasCoverAsset ? 'Cover ready' : 'Cover pending', detail: 'Cover and unit uploads can link directly into the textbook record before publishing.', tone: 'coral' },
+		]
+		: [
+			{ icon: FaFilter, label: 'Active grade', value: activeLibraryGradeLabel, detail: `${visibleTextbookCount} textbook record${visibleTextbookCount === 1 ? '' : 's'} match the current grade filter.`, tone: 'teal' },
+			{ icon: FaBook, label: 'Library coverage', value: `${overview.stats.textbookCount || 0} total books`, detail: `${overview.stats.gradeCount || libraryGradeOptions.length || 0} grade bucket${(overview.stats.gradeCount || libraryGradeOptions.length || 0) === 1 ? '' : 's'} are represented in the library.`, tone: 'gold' },
+			{ icon: FaFilePdf, label: 'PDF availability', value: `${booksWithPdfCount} books linked`, detail: 'Books with linked PDF units can be opened directly from the unit actions.', tone: 'coral' },
+		]
+
+	useEffect(() => {
+		if (selectedLibraryGrade === 'all') {
+			return
+		}
+
+		if (!libraryGradeOptions.includes(selectedLibraryGrade)) {
+			setSelectedLibraryGrade('all')
+		}
+	}, [libraryGradeOptions, selectedLibraryGrade])
 
 	useEffect(() => {
 		async function loadTextbooks() {
@@ -267,7 +337,7 @@ export default function Books({ view = 'save' }) {
 			setAssetUploadState({
 				loadingKey: '',
 				error: '',
-				success: `${file.name} uploaded and linked successfully. URL: ${uploadedUrl}`,
+				success: `${file.name} uploaded and linked successfully.`,
 			})
 		} catch (error) {
 			setAssetUploadState({ loadingKey: '', error: error.message || 'Upload failed', success: '' })
@@ -326,14 +396,36 @@ export default function Books({ view = 'save' }) {
 				<div className='exam-shell books-shell'>
 					<section className='hero-panel books-hero-panel'>
 						<div className='hero-copy books-hero-copy'>
-							<span className='eyebrow'>TextBooks Registry</span>
-							<h1>{showSaveView ? 'Create Textbook records' : 'Browse saved textbook records'}</h1>
+							<div className='books-hero-kicker-row'>
+								<span className='eyebrow'>TextBooks Registry</span>
+								<span className='books-hero-live-chip'>{heroLiveChip}</span>
+							</div>
+							<h1>{showSaveView ? 'Build textbook records and upload files from one premium workspace.' : 'Browse the full textbook library with a premium five-column catalog.'}</h1>
+							<p>{heroDescription}</p>
+							<div className='books-command-grid'>
+								{heroCommands.map((command) => (
+									<CommandCard
+										key={command.label}
+										detail={command.detail}
+										icon={command.icon}
+										label={command.label}
+										tone={command.tone}
+										value={command.value}
+									/>
+								))}
+							</div>
 							
 							<div className='hero-actions'>
 								{showSaveView ? (
-									<a className='primary-action' href='#books-form'>Create textbook record</a>
+									<>
+										<a className='primary-action' href='#books-form'>Create textbook record <FaArrowRight aria-hidden='true' /></a>
+										<Link className='secondary-action' to='/books/library'>Open library</Link>
+									</>
 								) : (
-									<Link className='primary-action' to='/books/save'>Open save books</Link>
+									<>
+										<Link className='primary-action' to='/books/save'>Open save books <FaArrowRight aria-hidden='true' /></Link>
+										<a className='secondary-action' href='#books-library'>Jump to catalog</a>
+									</>
 								)}
 							</div>
 							
@@ -344,15 +436,43 @@ export default function Books({ view = 'save' }) {
 							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 						</div>
 						<div className='hero-card books-hero-card'>
+							<div className='books-hero-card-top'>
+								<div>
+									<span className='pill pill-gold'>{showSaveView ? 'Draft Snapshot' : 'Library Snapshot'}</span>
+									<h3>{showSaveView ? trimText(form.textbook.title) || 'Current textbook draft' : activeLibraryGradeLabel}</h3>
+									<p>
+										{showSaveView
+											? `${draftSubjectLabel} is targeted to ${formatGradeLabel(resolvedGradeKey)} with ${draftUnitCount} editable unit slot${draftUnitCount === 1 ? '' : 's'}.`
+											: `${visibleTextbookCount} textbook record${visibleTextbookCount === 1 ? '' : 's'} are visible in the current filtered catalog.`}
+									</p>
+								</div>
+								<div className='books-hero-card-badge'>
+									<span>{showSaveView ? 'Target node' : 'Active grade filter'}</span>
+									<strong>{showSaveView ? `${formatGradeLabel(resolvedGradeKey)} / ${draftSubjectLabel}` : activeLibraryGradeLabel}</strong>
+									<small>{showSaveView ? (hasCoverAsset ? 'Cover linked and ready for save.' : 'Add a cover and unit files before publishing.') : `${booksWithPdfCount} book${booksWithPdfCount === 1 ? '' : 's'} with linked PDFs in the current filter.`}</small>
+								</div>
+							</div>
 							<div className='builder-stat-grid books-hero-stats'>
 								<StatCard label='Grades in library' value={overview.stats.gradeCount || 0} tone='teal' />
 								<StatCard label='Textbook records' value={overview.stats.textbookCount || 0} tone='gold' />
 								<StatCard label='Units indexed' value={overview.stats.unitCount || 0} tone='coral' />
 								{showSaveView ? (
-									<StatCard label='Units in draft' value={Object.keys(textbookNode.units).length} tone='teal' />
+									<StatCard label='Units in draft' value={draftUnitCount} tone='teal' />
 								) : (
-									<StatCard label='Preview PDFs' value={previewPdfCount} tone='teal' />
+									<StatCard label='Books with PDFs' value={booksWithPdfCount} tone='teal' />
 								)}
+							</div>
+							<div className='books-hero-summary-grid'>
+								<article className='books-hero-summary-card'>
+									<span>{showSaveView ? 'Subject key' : 'Visible books'}</span>
+									<strong>{showSaveView ? resolvedSubjectKey : visibleTextbookCount}</strong>
+									<small>{showSaveView ? 'Firebase subject bucket generated from the current form.' : 'Cards currently rendered in the filtered premium grid.'}</small>
+								</article>
+								<article className='books-hero-summary-card'>
+									<span>{showSaveView ? 'Cover asset' : 'Grade options'}</span>
+									<strong>{showSaveView ? (hasCoverAsset ? 'Linked' : 'Pending') : libraryGradeOptions.length}</strong>
+									<small>{showSaveView ? 'Cover uploads feed directly into the textbook node.' : 'Available grade filters with textbook records in the library.'}</small>
+								</article>
 							</div>
 						</div>
 					</section>
@@ -391,7 +511,7 @@ export default function Books({ view = 'save' }) {
 											placeholder='mathematics'
 											readOnly={!manualSubjectKey}
 										/>
-										<span className='field-hint'>Stable key used in Firebase under the selected grade.</span>
+										
 									</label>
 									<label className='field field-span-2'>
 										<span>Subject name</span>
@@ -424,11 +544,6 @@ export default function Books({ view = 'save' }) {
 										<input value={form.textbook.region} onChange={(event) => updateTextbookField('region', event.target.value)} placeholder='national' />
 									</label>
 									<label className='field field-span-2'>
-										<span>Cover URL</span>
-										<input value={form.textbook.coverUrl} onChange={(event) => updateTextbookField('coverUrl', event.target.value)} placeholder='https://example.com/covers/math7.jpg' />
-										<span className='field-hint'>Paste an existing image URL or upload an image file and this field will be filled automatically.</span>
-									</label>
-									<label className='field field-span-2'>
 										<span>Upload cover image</span>
 										<input
 											type='file'
@@ -440,13 +555,11 @@ export default function Books({ view = 'save' }) {
 											}}
 											disabled={assetUploadState.loadingKey === 'cover'}
 										/>
-										<span className='field-hint'>Accepted: JPG, PNG, WEBP, GIF. Uploaded file URL is stored in coverUrl.</span>
+											<span className='field-hint'>Accepted: JPG, PNG, WEBP, GIF. The cover image is stored in the database without exposing its raw URL in this form.</span>
 										{form.textbook.coverUrl ? (
-											<div className='asset-url-display'>
-												<strong>Stored cover URL</strong>
-												<a href={form.textbook.coverUrl} target='_blank' rel='noreferrer'>
-													{form.textbook.coverUrl}
-												</a>
+												<div className='books-file-state'>
+													<strong>Cover image stored</strong>
+													<span>The uploaded cover is linked to this textbook record.</span>
 												<img className='asset-preview-image' src={form.textbook.coverUrl} alt='Uploaded cover preview' />
 											</div>
 										) : null}
@@ -483,11 +596,6 @@ export default function Books({ view = 'save' }) {
 													<input value={unit.title} onChange={(event) => updateUnit(index, 'title', event.target.value)} placeholder='Integers' />
 												</label>
 												<label className='field field-span-2'>
-													<span>PDF / DOC / DOCX URL</span>
-													<input value={unit.pdfUrl} onChange={(event) => updateUnit(index, 'pdfUrl', event.target.value)} placeholder='https://example.com/books/grade7/math/unit1.pdf' />
-													<span className='field-hint'>Paste an existing document URL or upload a PDF, DOC, or DOCX file below.</span>
-												</label>
-												<label className='field field-span-2'>
 													<span>Upload unit document</span>
 													<input
 														type='file'
@@ -499,15 +607,13 @@ export default function Books({ view = 'save' }) {
 														}}
 														disabled={assetUploadState.loadingKey === `unit-${index}`}
 													/>
-													<span className='field-hint'>Accepted: PDF, DOC, DOCX. Uploaded file URL is stored in pdfUrl.</span>
+														<span className='field-hint'>Accepted: PDF, DOC, DOCX. The unit document is stored in the database without exposing its raw URL in this form.</span>
 													{unit.pdfUrl ? (
-														<div className='asset-url-display'>
-															<strong>Stored unit URL</strong>
-															<a href={unit.pdfUrl} target='_blank' rel='noreferrer'>
-																{unit.pdfUrl}
-															</a>
-															<a className='inline-button asset-inline-link' href={unit.pdfUrl} target='_blank' rel='noreferrer'>Open uploaded file</a>
-														</div>
+															<div className='books-file-state compact'>
+																<strong>Unit document stored</strong>
+																<span>The file is attached and ready for opening from the unit record.</span>
+																<a className='inline-button asset-inline-link' href={unit.pdfUrl} target='_blank' rel='noreferrer'>Open uploaded file</a>
+															</div>
 													) : null}
 												</label>
 											</div>
@@ -537,86 +643,69 @@ export default function Books({ view = 'save' }) {
 								<span className='section-kicker'>Existing library</span>
 								<h2>Current textbook records</h2>
 							</div>
+							<div className='books-library-toolbar'>
+								<div className='books-library-count-card'>
+									<span>Library view</span>
+									<strong>{activeLibraryGradeLabel}</strong>
+									<small>{`${visibleTextbookCount} textbook record${visibleTextbookCount === 1 ? '' : 's'} currently visible.`}</small>
+								</div>
+								<div className='books-grade-filter-panel'>
+									<span>Grade filter</span>
+									<div className='books-grade-filter-row'>
+										<button className={`books-grade-filter-pill${selectedLibraryGrade === 'all' ? ' is-active' : ''}`} type='button' onClick={() => setSelectedLibraryGrade('all')}>
+											All grades
+										</button>
+										{libraryGradeOptions.map((gradeKey) => (
+											<button className={`books-grade-filter-pill${selectedLibraryGrade === gradeKey ? ' is-active' : ''}`} key={gradeKey} type='button' onClick={() => setSelectedLibraryGrade(gradeKey)}>
+												{formatGradeLabel(gradeKey)}
+											</button>
+										))}
+									</div>
+								</div>
+							</div>
 						</div>
 
 						{loadState.loading ? <p className='empty-state'>Loading textbooks...</p> : null}
 						{!loadState.loading && !overview.textbooks.length ? <p className='empty-state'>No textbook records found yet.</p> : null}
+						{!loadState.loading && overview.textbooks.length && !filteredTextbooks.length ? <p className='empty-state'>No textbook records matched the selected grade filter.</p> : null}
 
-						<div className='books-grade-stack'>
-							{Object.entries(groupedTextbooks)
-								.sort((left, right) => Number(left[0].replace(/[^0-9]/g, '')) - Number(right[0].replace(/[^0-9]/g, '')))
-								.map(([gradeKey, textbooks]) => (
-									<div className='books-grade-group' key={gradeKey}>
-										<div className='podium-grade-header'>
-											<div className='podium-grade-heading'>
-												<span className='section-kicker'>{formatGradeLabel(gradeKey)}</span>
-												<h3>{textbooks.length} textbook records</h3>
-											</div>
-											<p className='podium-grade-note'>Each card reflects one subject entry stored under this grade node.</p>
+						{!loadState.loading && filteredTextbooks.length ? (
+							<div className='catalog-grid books-catalog-grid'>
+								{filteredTextbooks.map((textbook) => (
+									<article className='catalog-card books-catalog-card' key={`${textbook.grade}-${textbook.subjectKey}`}>
+										<div className='catalog-meta-row'>
+											<span className='pill pill-teal'>{formatGradeLabel(textbook.grade)}</span>
+											<span className='pill pill-gold'>{formatSubjectLabel(textbook.subjectKey)}</span>
+											<span className='pill pill-coral'>{textbook.language || 'Language missing'}</span>
 										</div>
-										<div className='catalog-grid books-catalog-grid'>
-											{textbooks.map((textbook) => (
-												<article className='catalog-card books-catalog-card' key={`${textbook.grade}-${textbook.subjectKey}`}>
-													<div className='catalog-meta-row'>
-														<span className='pill pill-teal'>{formatSubjectLabel(textbook.subjectKey)}</span>
-														<span className='pill pill-gold'>{textbook.language || 'Language missing'}</span>
-														<span className='pill pill-coral'>{textbook.region || 'Region missing'}</span>
+										{textbook.coverUrl ? (
+											<a href={textbook.coverUrl} target='_blank' rel='noreferrer' className='books-cover-link'>
+												<img className='asset-preview-image books-cover-preview' src={textbook.coverUrl} alt={`${textbook.title} cover`} />
+											</a>
+										) : null}
+										<h3>{textbook.title}</h3>
+										<p className='catalog-footnote'>{`Platform1/TextBooks/${textbook.grade}/${textbook.subjectKey}`}</p>
+										<ul className='catalog-list'>
+											{textbook.units.map((unit) => (
+												<li className='books-unit-item' key={unit.unitKey}>
+													<div className='books-unit-copy'>
+														<strong>{unit.unitKey}</strong>
+														<span>{unit.title}</span>
 													</div>
-													{textbook.coverUrl ? (
-														<a href={textbook.coverUrl} target='_blank' rel='noreferrer' className='books-cover-link'>
-															<img className='asset-preview-image books-cover-preview' src={textbook.coverUrl} alt={`${textbook.title} cover`} />
+													{unit.pdfUrl ? (
+														<a className='books-unit-link' href={unit.pdfUrl} target='_blank' rel='noreferrer'>
+															{isPdfUrl(unit.pdfUrl) ? 'Download PDF' : 'Open file'}
 														</a>
-													) : null}
-													<h3>{textbook.title}</h3>
-													<p className='catalog-footnote'>{`Platform1/TextBooks/${textbook.grade}/${textbook.subjectKey}`}</p>
-													{textbook.previewPdfUrl ? (
-														<div className='books-document-panel'>
-															<div className='books-document-header'>
-																<strong>Fetched Book PDF</strong>
-																<span>{textbook.pdfUnitCount || 1} PDF unit{textbook.pdfUnitCount === 1 ? '' : 's'} available</span>
-															</div>
-															<iframe
-																className='books-pdf-preview'
-																src={textbook.previewPdfUrl}
-																title={`${textbook.title} PDF preview`}
-																loading='lazy'
-															/>
-															<div className='books-document-actions'>
-																<a className='inline-button asset-inline-link' href={textbook.previewPdfUrl} target='_blank' rel='noreferrer'>Open book PDF</a>
-															</div>
-														</div>
-													) : textbook.firstDocumentUrl ? (
-														<div className='books-document-panel compact'>
-															<div className='books-document-header'>
-																<strong>Fetched Book File</strong>
-																<span>{textbook.documentCount || 1} document unit{textbook.documentCount === 1 ? '' : 's'} available</span>
-															</div>
-															<p className='books-document-note'>This record has linked documents, but no PDF previewable file. Open the first document below.</p>
-															<div className='books-document-actions'>
-																<a className='inline-button asset-inline-link' href={textbook.firstDocumentUrl} target='_blank' rel='noreferrer'>Open first document</a>
-															</div>
-														</div>
-													) : null}
-													<ul className='catalog-list'>
-														{textbook.units.map((unit) => (
-															<li key={unit.unitKey}>
-																<strong>{unit.unitKey}</strong>: {unit.title}
-																{unit.pdfUrl ? (
-																	<>
-																		{' '}
-																		<a href={unit.pdfUrl} target='_blank' rel='noreferrer'>Open file</a>
-																		{isPdfUrl(unit.pdfUrl) ? <span>{' • PDF'}</span> : null}
-																	</>
-																) : null}
-															</li>
-														))}
-													</ul>
-												</article>
+													) : (
+														<span className='books-unit-muted'>File pending</span>
+													)}
+												</li>
 											))}
-										</div>
-									</div>
+										</ul>
+									</article>
 								))}
-						</div>
+							</div>
+						) : null}
 						</section>
 					) : null}
 				</div>

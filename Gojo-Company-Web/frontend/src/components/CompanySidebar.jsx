@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { FaBookOpen, FaChartLine, FaChevronDown, FaClipboardList, FaFileAlt, FaSchool } from 'react-icons/fa'
+import { useEffect, useState } from 'react'
+import { FaBars, FaBookOpen, FaChartLine, FaChevronDown, FaClipboardList, FaFileAlt, FaSchool, FaTimes } from 'react-icons/fa'
 import { Link, useLocation } from 'react-router-dom'
 
 const profileImage = `data:image/svg+xml;utf8,${encodeURIComponent(`
@@ -89,6 +89,16 @@ const readStoredSidebarSections = () => {
 
 let sidebarSectionsState = readStoredSidebarSections()
 
+const COMPACT_SIDEBAR_MEDIA_QUERY = '(max-width: 1100px)'
+
+const readCompactViewportState = () => {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+		return false
+	}
+
+	return window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY).matches
+}
+
 const sidebarLinkBaseStyle = {
 	display: 'flex',
 	alignItems: 'center',
@@ -111,7 +121,7 @@ const sidebarLinkActiveStyle = {
 	boxShadow: 'var(--shadow-glow)',
 }
 
-const rootStyle = {
+const desktopRootStyle = {
 	width: 'var(--sidebar-width)',
 	marginLeft: -10,
 	marginRight: 0,
@@ -169,6 +179,58 @@ export default function CompanySidebar() {
 	const location = useLocation()
 	const currentPath = location.pathname
 	const [sidebarSections, setSidebarSections] = useState(() => ({ ...sidebarSectionsState }))
+	const [isCompactViewport, setIsCompactViewport] = useState(readCompactViewportState)
+	const [isDrawerOpen, setIsDrawerOpen] = useState(false)
+
+	useEffect(() => {
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+			return undefined
+		}
+
+		const mediaQuery = window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY)
+		const handleViewportChange = (event) => {
+			setIsCompactViewport(event.matches)
+			if (!event.matches) {
+				setIsDrawerOpen(false)
+			}
+		}
+
+		setIsCompactViewport(mediaQuery.matches)
+
+		if (typeof mediaQuery.addEventListener === 'function') {
+			mediaQuery.addEventListener('change', handleViewportChange)
+			return () => mediaQuery.removeEventListener('change', handleViewportChange)
+		}
+
+		mediaQuery.addListener(handleViewportChange)
+		return () => mediaQuery.removeListener(handleViewportChange)
+	}, [])
+
+	useEffect(() => {
+		if (!isCompactViewport) {
+			return undefined
+		}
+
+		setIsDrawerOpen(false)
+		return undefined
+	}, [currentPath, isCompactViewport])
+
+	useEffect(() => {
+		if (typeof document === 'undefined') {
+			return undefined
+		}
+
+		const previousOverflow = document.body.style.overflow
+		if (isCompactViewport && isDrawerOpen) {
+			document.body.style.overflow = 'hidden'
+			return () => {
+				document.body.style.overflow = previousOverflow
+			}
+		}
+
+		document.body.style.overflow = previousOverflow
+		return undefined
+	}, [isCompactViewport, isDrawerOpen])
 
 	const isSectionActive = sectionKey =>
 		SIDEBAR_SECTIONS.find(section => section.key === sectionKey)?.items.some(
@@ -207,9 +269,78 @@ export default function CompanySidebar() {
 		})
 	}
 
+	const computedRootStyle = isCompactViewport
+		? {
+				width: 'min(88vw, 360px)',
+				marginLeft: 0,
+				marginRight: 0,
+				padding: 18,
+				borderRadius: '0 28px 28px 0',
+				background: 'var(--surface-panel)',
+				border: '1px solid var(--border-soft)',
+				boxShadow: '0 34px 90px rgba(15, 23, 42, 0.28)',
+				height: '100dvh',
+				maxHeight: '100dvh',
+				minHeight: '100dvh',
+				overflowY: 'auto',
+				overflowX: 'hidden',
+				boxSizing: 'border-box',
+				display: 'flex',
+				flexDirection: 'column',
+				alignSelf: 'stretch',
+				fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+				scrollbarWidth: 'thin',
+				scrollbarColor: 'var(--border-strong) transparent',
+				transition: 'transform 220ms ease, box-shadow 220ms ease, opacity 180ms ease, filter 180ms ease',
+				position: 'fixed',
+				top: 0,
+				left: 0,
+				zIndex: 90,
+				transform: isDrawerOpen ? 'translateX(0)' : 'translateX(calc(-100% - 24px))',
+			}
+		: desktopRootStyle
+
 	return (
-		<aside className='google-sidebar company-sidebar-admin' style={rootStyle}>
-			<div
+		<>
+			{isCompactViewport ? (
+				<>
+					<button
+						className={`company-sidebar-toggle${isDrawerOpen ? ' is-open' : ''}`}
+						type='button'
+						onClick={() => setIsDrawerOpen((currentValue) => !currentValue)}
+						aria-expanded={isDrawerOpen}
+						aria-controls='company-sidebar-navigation'
+					>
+						{isDrawerOpen ? <FaTimes aria-hidden='true' /> : <FaBars aria-hidden='true' />}
+						<span>{isDrawerOpen ? 'Close menu' : 'Open menu'}</span>
+					</button>
+					<button
+						className={`company-sidebar-overlay${isDrawerOpen ? ' is-visible' : ''}`}
+						type='button'
+						onClick={() => setIsDrawerOpen(false)}
+						aria-label='Close navigation menu'
+					/>
+				</>
+			) : null}
+
+			<aside
+				className={`google-sidebar company-sidebar-admin${isCompactViewport ? ' compact-viewport' : ''}${isDrawerOpen ? ' is-mobile-open' : ''}`}
+				style={computedRootStyle}
+				id='company-sidebar-navigation'
+			>
+				{isCompactViewport ? (
+					<div className='company-sidebar-mobile-head'>
+						<div>
+							<span>Navigation</span>
+							<strong>Gojo Company</strong>
+						</div>
+						<button type='button' onClick={() => setIsDrawerOpen(false)} aria-label='Close sidebar'>
+							<FaTimes aria-hidden='true' />
+						</button>
+					</div>
+				) : null}
+
+				<div
 				className='sidebar-profile'
 				style={{
 					display: 'flex',
@@ -256,7 +387,7 @@ export default function CompanySidebar() {
 				<p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>Main Center</p>
 			</div>
 
-			<div
+				<div
 				className='sidebar-menu'
 				style={{
 					display: 'flex',
@@ -294,7 +425,17 @@ export default function CompanySidebar() {
 							{isOpen ? (
 								<div style={sidebarSectionChildrenStyle}>
 									{section.items.map(({ to, label, icon: Icon }) => (
-										<Link key={to} className='sidebar-btn' to={to} style={getSidebarLinkStyle(to)}>
+										<Link
+											key={to}
+											className='sidebar-btn'
+											to={to}
+											style={getSidebarLinkStyle(to)}
+											onClick={() => {
+												if (isCompactViewport) {
+													setIsDrawerOpen(false)
+												}
+											}}
+										>
 											<Icon style={{ width: 17, height: 17 }} />
 											<span className='sidebar-label'>{label}</span>
 										</Link>
@@ -304,7 +445,8 @@ export default function CompanySidebar() {
 						</div>
 					)
 				})}
-			</div>
-		</aside>
+				</div>
+			</aside>
+		</>
 	)
 }

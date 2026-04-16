@@ -327,10 +327,14 @@ def _preferred_school_language(languages, preferred_value=""):
     preferred = _non_empty_string(preferred_value).lower()
     if preferred in {"am", "amharic"}:
         return "Amharic"
+    if preferred in {"om", "oromic", "oromo", "afaan oromo", "afaanoromo"}:
+        return "Oromic"
     if preferred in {"en", "english"}:
         return "English"
     if languages.get("am"):
         return "Amharic"
+    if languages.get("om"):
+        return "Oromic"
     if languages.get("en"):
         return "English"
     return "English"
@@ -373,24 +377,24 @@ def _join_name_parts(*parts):
     return " ".join(part for part in (_non_empty_string(value) for value in parts) if part)
 
 
-def _build_school_info_payload(school_payload, school_code, short_name, current_academic_year, created_at_iso):
+def _build_school_info_payload(school_payload, school_code, short_name, current_academic_year, created_at_iso, *, strict=True):
     country_name = _non_empty_string(school_payload.get("country")) or "Ethiopia"
-    region_name = _require_string(school_payload.get("region"), "school.region")
-    city_name = _require_string(school_payload.get("city"), "school.city")
-    phone = _require_string(school_payload.get("phone"), "school.phone")
-    email = _require_string(school_payload.get("email"), "school.email")
+    region_name = _require_string(school_payload.get("region"), "school.region") if strict else _non_empty_string(school_payload.get("region"))
+    city_name = _require_string(school_payload.get("city"), "school.city") if strict else _non_empty_string(school_payload.get("city"))
+    phone = _require_string(school_payload.get("phone"), "school.phone") if strict else _non_empty_string(school_payload.get("phone"))
+    email = _require_string(school_payload.get("email"), "school.email") if strict else _non_empty_string(school_payload.get("email"))
 
     languages = _normalize_boolean_selection(
         school_payload.get("languages"),
-        ["am", "en"],
+        ["am", "en", "om"],
         "school.languages",
-        defaults={"am": True, "en": True},
+        defaults={"am": True, "en": True, "om": False},
     )
     levels = _normalize_boolean_selection(
         school_payload.get("levels"),
-        ["elementary", "secondary"],
+        ["preprimary", "elementary", "secondary"],
         "school.levels",
-        defaults={"elementary": True, "secondary": False},
+        defaults={"preprimary": False, "elementary": True, "secondary": False},
     )
 
     return {
@@ -557,20 +561,129 @@ def _build_hr_payload(hr_payload, school_info, school_code, short_name, employee
     }
 
 
-def _build_registerer_payload(registerer_payload, school_code, registerer_id, user_id):
-    name = _require_string(registerer_payload.get("name"), "registerer.name")
+def _build_registerer_payload(registerer_payload, school_info, school_code, employee_id, registerer_id, user_id, created_at_iso):
+    first_name = _require_string(registerer_payload.get("firstName"), "registerer.firstName")
+    middle_name = _non_empty_string(registerer_payload.get("middleName"))
+    last_name = _require_string(registerer_payload.get("lastName"), "registerer.lastName")
     email = _require_string(registerer_payload.get("email"), "registerer.email")
     phone = _require_string(registerer_payload.get("phone"), "registerer.phone")
     password = _require_string(registerer_payload.get("password"), "registerer.password")
     gender = _non_empty_string(registerer_payload.get("gender")) or "Male"
     profile_image = _non_empty_string(registerer_payload.get("profileImage")) or "/default-profile.png"
-    created_at_iso = _utc_iso_now()
+    full_name = _join_name_parts(first_name, middle_name, last_name)
+    hire_date = created_at_iso[:10]
+
+    contact = {
+        "address": _non_empty_string((school_info.get("address") or {}).get("addressLine")),
+        "altEmail": _non_empty_string(registerer_payload.get("alternativeEmail")),
+        "city": school_info.get("city") or "",
+        "email": email,
+        "phone1": phone,
+        "phone2": _non_empty_string(registerer_payload.get("alternativePhone")),
+        "subCity": _non_empty_string((school_info.get("address") or {}).get("subCity")),
+        "woreda": _non_empty_string(registerer_payload.get("woreda")),
+    }
+    education = {
+        "additionalCertifications": "",
+        "degreeType": _non_empty_string(registerer_payload.get("degreeType")),
+        "fieldOfStudy": _non_empty_string(registerer_payload.get("fieldOfStudy")),
+        "gpa": "",
+        "graduationYear": "",
+        "highestQualification": _non_empty_string(registerer_payload.get("highestQualification")),
+        "institution": _non_empty_string(registerer_payload.get("institution")),
+        "professionalLicenseNumber": "",
+        "workExperience": "",
+    }
+    family = {
+        "childrenNames": "",
+        "fatherName": "",
+        "maritalStatus": "",
+        "motherName": "",
+        "numChildren": "",
+        "spouseName": "",
+        "spouseOccupation": "",
+    }
+    financial = {
+        "accountHolderName": "",
+        "accountNumber": "",
+        "allowances": "",
+        "bankBranch": "",
+        "bankName": "",
+        "basicSalary": "",
+        "bonusEligibility": False,
+        "overtimeRate": "",
+        "paymentMethod": "Bank Transfer",
+    }
+    job = {
+        "contractEndDate": "",
+        "contractStartDate": hire_date,
+        "department": _non_empty_string(registerer_payload.get("department")) or "Registration",
+        "employeeCategory": "Registerer",
+        "employmentType": _non_empty_string(registerer_payload.get("employmentType")) or "Full-time",
+        "hireDate": hire_date,
+        "position": _non_empty_string(registerer_payload.get("position")) or "Registerer",
+        "reportingManager": "",
+        "status": "Active",
+        "workLocation": school_code,
+        "workShift": "",
+    }
+    personal = {
+        "bloodGroup": "",
+        "disabilityStatus": "",
+        "dob": _non_empty_string(registerer_payload.get("dob")),
+        "employeeId": employee_id,
+        "firstName": first_name,
+        "gender": gender,
+        "lastName": last_name,
+        "middleName": middle_name,
+        "nationalId": _non_empty_string(registerer_payload.get("nationalId")),
+        "nationality": _non_empty_string((school_info.get("address") or {}).get("country")) or "Ethiopia",
+        "password": password,
+        "placeOfBirth": school_info.get("city") or "",
+        "profileImageName": profile_image,
+        "religion": _non_empty_string(registerer_payload.get("religion")),
+    }
+
+    employee_payload = {
+        "contact": contact,
+        "education": education,
+        "family": family,
+        "financeId": "",
+        "financial": financial,
+        "gender": gender,
+        "hrId": "",
+        "job": job,
+        "managementId": "",
+        "personal": personal,
+        "profileData": {
+            "contact": contact,
+            "education": education,
+            "family": family,
+            "financial": financial,
+            "job": job,
+            "personal": personal,
+        },
+        "registererId": registerer_id,
+        "schoolAdminId": "",
+        "teacherId": "",
+        "userId": user_id,
+    }
 
     return {
+        "employee": employee_payload,
         "node": {
+            "alternativePhone": contact["phone2"],
             "createdAt": created_at_iso,
             "email": email,
+            "employeeId": employee_id,
+            "firstName": first_name,
+            "gender": gender,
+            "lastName": last_name,
+            "middleName": middle_name,
+            "name": full_name,
             "phone": phone,
+            "position": job["position"],
+            "profileImage": profile_image,
             "registererId": registerer_id,
             "schoolCode": school_code,
             "status": "active",
@@ -578,13 +691,14 @@ def _build_registerer_payload(registerer_payload, school_code, registerer_id, us
         },
         "user": {
             "email": email,
-            "employeeId": registerer_id,
+            "employeeId": employee_id,
             "gender": gender,
             "isActive": True,
-            "name": name,
+            "name": full_name,
             "password": password,
             "phone": phone,
             "profileImage": profile_image,
+            "registererId": registerer_id,
             "role": "registerer",
             "schoolCode": school_code,
             "userId": user_id,
@@ -993,7 +1107,7 @@ def _apply_local_dev_cors_headers(response):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     return response
 
 
@@ -1255,6 +1369,25 @@ def _upload_school_asset(file_storage, asset_type, school_short_name=""):
 
     storage_path = f"Schools/{safe_short_name}/{path_suffix}/{timestamp}_{validated_file['fileName']}"
     local_asset_path = f"schools/{safe_short_name}/{path_suffix}/{timestamp}_{validated_file['fileName']}"
+    return _store_uploaded_asset(file_storage, validated_file, storage_path, local_asset_path)
+
+
+def _upload_company_exam_asset(file_storage, asset_type, package_id="", package_name="", exam_mode="practice"):
+    normalized_asset_type = _non_empty_string(asset_type).lower()
+    asset_paths = {
+        "package-icon": "branding/package-icon",
+    }
+    path_suffix = asset_paths.get(normalized_asset_type)
+    if not path_suffix:
+        raise ValueError("assetType must be package-icon")
+
+    normalized_mode = _normalize_exam_mode(exam_mode, "examMode")
+    validated_file = _validate_image_asset_file(file_storage, "package icon")
+    timestamp = int(time.time() * 1000)
+    safe_package_key = _sanitize_storage_segment(package_id or package_name, "package")
+
+    storage_path = f"CompanyExams/{normalized_mode}/{safe_package_key}/{path_suffix}/{timestamp}_{validated_file['fileName']}"
+    local_asset_path = f"company-exams/{normalized_mode}/{safe_package_key}/{path_suffix}/{timestamp}_{validated_file['fileName']}"
     return _store_uploaded_asset(file_storage, validated_file, storage_path, local_asset_path)
 
 
@@ -2495,6 +2628,7 @@ def update_school(school_code):
             existing_short_name,
             current_academic_year,
             created_at_iso,
+            strict=False,
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
@@ -2507,22 +2641,38 @@ def update_school(school_code):
         f"{base_path}/schoolInfo": updated_school_info,
     }
 
+    current_year_exists = False
     for year_key, year_payload in _iter_node_items(academic_years_node):
         if not isinstance(year_payload, dict):
             continue
-        updates[f"{base_path}/AcademicYears/{year_key}/isCurrent"] = year_key == current_academic_year
-        updates[f"{base_path}/AcademicYears/{year_key}/updatedAt"] = updated_at_iso
+        next_year_payload = {
+            **year_payload,
+            "isCurrent": year_key == current_academic_year,
+            "updatedAt": updated_at_iso,
+        }
 
-    current_year_payload = academic_years_node.get(current_academic_year) if isinstance(academic_years_node.get(current_academic_year), dict) else {}
-    updates[f"{base_path}/AcademicYears/{current_academic_year}"] = {
-        **current_year_payload,
-        "academicYear": current_academic_year,
-        "createdAt": _non_empty_string(current_year_payload.get("createdAt")) or updated_at_iso,
-        "isCurrent": True,
-        "label": _academic_year_label(current_academic_year),
-        "status": _non_empty_string(current_year_payload.get("status")) or "active",
-        "updatedAt": updated_at_iso,
-    }
+        if year_key == current_academic_year:
+            current_year_exists = True
+            next_year_payload.update(
+                {
+                    "academicYear": current_academic_year,
+                    "createdAt": _non_empty_string(year_payload.get("createdAt")) or updated_at_iso,
+                    "label": _academic_year_label(current_academic_year),
+                    "status": _non_empty_string(year_payload.get("status")) or "active",
+                }
+            )
+
+        updates[f"{base_path}/AcademicYears/{year_key}"] = next_year_payload
+
+    if not current_year_exists:
+        updates[f"{base_path}/AcademicYears/{current_academic_year}"] = {
+            "academicYear": current_academic_year,
+            "createdAt": updated_at_iso,
+            "isCurrent": True,
+            "label": _academic_year_label(current_academic_year),
+            "status": "active",
+            "updatedAt": updated_at_iso,
+        }
 
     try:
         root_ref().update(updates)
@@ -2626,15 +2776,16 @@ def create_school():
         return jsonify({"error": "Unable to allocate Firebase user IDs for the new school"}), 500
 
     year_suffix = _current_year_suffix()
-    employee_id = f"EMP_{1:04d}_{year_suffix:02d}"
+    hr_employee_id = f"EMP_{1:04d}_{year_suffix:02d}"
+    registerer_employee_id = f"EMP_{2:04d}_{year_suffix:02d}"
     hr_id = f"{short_name}H_{1:04d}_{year_suffix:02d}"
     registerer_id = f"{short_name}R_{1:04d}_{year_suffix:02d}"
     created_at_iso = _utc_iso_now()
 
     try:
         school_info = _build_school_info_payload(school_payload, school_code, short_name, current_academic_year, created_at_iso)
-        hr_bundle = _build_hr_payload(hr_payload, school_info, school_code, short_name, employee_id, hr_id, hr_user_id, created_at_iso)
-        registerer_bundle = _build_registerer_payload(registerer_payload, school_code, registerer_id, registerer_user_id)
+        hr_bundle = _build_hr_payload(hr_payload, school_info, school_code, short_name, hr_employee_id, hr_id, hr_user_id, created_at_iso)
+        registerer_bundle = _build_registerer_payload(registerer_payload, school_info, school_code, registerer_employee_id, registerer_id, registerer_user_id, created_at_iso)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -2652,7 +2803,8 @@ def create_school():
         },
         f"{platform_root_key}/Schools/{school_code}/Users/{hr_user_id}": hr_bundle["user"],
         f"{platform_root_key}/Schools/{school_code}/Users/{registerer_user_id}": registerer_bundle["user"],
-        f"{platform_root_key}/Schools/{school_code}/Employees/{employee_id}": hr_bundle["employee"],
+        f"{platform_root_key}/Schools/{school_code}/Employees/{hr_employee_id}": hr_bundle["employee"],
+        f"{platform_root_key}/Schools/{school_code}/Employees/{registerer_employee_id}": registerer_bundle["employee"],
         f"{platform_root_key}/Schools/{school_code}/HR/{hr_id}": hr_bundle["role"],
         f"{platform_root_key}/Schools/{school_code}/Registerers/{registerer_id}": registerer_bundle["node"],
         f"{platform_root_key}/Schools/{school_code}/counters": {
@@ -2680,9 +2832,11 @@ def create_school():
                 "schoolName": school_info.get("name"),
                 "currentAcademicYear": current_academic_year,
                 "hrId": hr_id,
-                "employeeId": employee_id,
+                "employeeId": hr_employee_id,
+                "hrEmployeeId": hr_employee_id,
                 "hrUserId": hr_user_id,
                 "registererId": registerer_id,
+                "registererEmployeeId": registerer_employee_id,
                 "registererUserId": registerer_user_id,
             },
         }
@@ -2800,6 +2954,36 @@ def upload_school_asset():
     )
 
 
+@app.post("/api/company-exams/upload-asset")
+def upload_company_exam_asset():
+    form_payload = request.form or {}
+    file_storage = request.files.get("file")
+
+    try:
+        asset_type = _require_string(form_payload.get("assetType"), "assetType").lower()
+        exam_mode = _normalize_exam_mode(form_payload.get("examMode") or "practice", "examMode")
+        package_id = _non_empty_string(form_payload.get("packageId"))
+        package_name = _non_empty_string(form_payload.get("packageName"))
+        uploaded_asset = _upload_company_exam_asset(file_storage, asset_type, package_id, package_name, exam_mode)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": f"Company exam asset upload failed: {error}"}), 500
+
+    return jsonify(
+        {
+            "status": "uploaded",
+            "assetType": asset_type,
+            "fieldName": "packageIcon",
+            "target": "package",
+            "examMode": exam_mode,
+            "packageKey": _sanitize_storage_segment(package_id or package_name, "package"),
+            "downloadUrl": uploaded_asset.get("url"),
+            **uploaded_asset,
+        }
+    )
+
+
 @app.get("/api/company-exams/exams")
 def company_exams_list():
     dashboard = _company_exam_dashboard()
@@ -2896,8 +3080,7 @@ def save_company_exam_draft():
     ), 201 if not isinstance(existing_draft, dict) else 200
 
 
-@app.delete("/api/company-exams/drafts/<draft_id>")
-def delete_company_exam_draft(draft_id):
+def _delete_company_exam_draft_response(draft_id):
     try:
         draft_id = _require_key(draft_id, "draftId")
     except ValueError as error:
@@ -2908,6 +3091,8 @@ def delete_company_exam_draft(draft_id):
         return jsonify({"error": f"Draft {draft_id} was not found"}), 404
 
     platform_root_key = str(os.getenv("PLATFORM_ROOT", DEFAULT_PLATFORM_ROOT)).strip("/")
+    normalized_draft = _normalize_company_exam_draft(draft_id, existing_draft)
+
     root_ref().update({f"{platform_root_key}/companyExamDrafts/{draft_id}": None})
 
     return jsonify(
@@ -2915,8 +3100,19 @@ def delete_company_exam_draft(draft_id):
             "status": "deleted",
             "location": f"{platform_root_key}/companyExamDrafts/{draft_id}",
             "deletedDraftId": draft_id,
+            "deleted": normalized_draft,
         }
     )
+
+
+@app.delete("/api/company-exams/drafts/<draft_id>")
+def delete_company_exam_draft(draft_id):
+    return _delete_company_exam_draft_response(draft_id)
+
+
+@app.post("/api/company-exams/drafts/<draft_id>/delete")
+def delete_company_exam_draft_via_post(draft_id):
+    return _delete_company_exam_draft_response(draft_id)
 
 
 @app.post("/api/textbooks/save-record")

@@ -423,6 +423,26 @@ export default function StudentResultsPage() {
 	const competitiveVisibleResultCount = visibleExamResults.reduce((count, exam) => count + (exam.results?.length || 0), 0)
 	const topRankedStudentsByGrade = buildTopRankedStudentsByGrade(visibleCompetitiveResults)
 	const activePodiumGrade = topRankedStudentsByGrade.find((group) => group.gradeKey === selectedPodiumGrade) || topRankedStudentsByGrade[0] || null
+	const scoredVisibleResults = visibleCompetitiveResults.filter((result) => Number.isFinite(result.bestScorePercent))
+	const averageVisibleScorePercent = scoredVisibleResults.length
+		? scoredVisibleResults.reduce((total, result) => total + result.bestScorePercent, 0) / scoredVisibleResults.length
+		: null
+	const activeSchoolCount = new Set(visibleCompetitiveResults.map((result) => formatSchoolLabel(result.schoolCode))).size
+	const activeGradeCount = new Set(visibleCompetitiveResults.map((result) => formatGradeLabel(result.grade))).size
+	const featuredExam = [...visibleExamResults].sort((left, right) => {
+		if ((right.studentCount || 0) !== (left.studentCount || 0)) {
+			return (right.studentCount || 0) - (left.studentCount || 0)
+		}
+
+		return (right.topScorePercent || 0) - (left.topScorePercent || 0)
+	})[0] || null
+	const featuredLeaderboardStudent = topRankedStudentsByGrade
+		.flatMap((group) => group.students)
+		.sort(compareRankedStudents)[0] || null
+	const activeSchoolLabel =
+		selectedSchool === 'all'
+			? 'All schools'
+			: availableSchools.find((school) => school.value === selectedSchool)?.label || formatSchoolLabel(selectedSchool)
 
 	useEffect(() => {
 		if (selectedSchool === 'all') {
@@ -451,9 +471,64 @@ export default function StudentResultsPage() {
 		<div className='google-dashboard'>
 			<CompanySidebar />
 			<main className='google-main company-main'>
-				<div className='exam-shell builder-shell'>					
+				<div className='exam-shell builder-shell results-page-shell'>
+					<section className='hero-panel results-hero-panel'>
+						<div className='hero-copy results-hero-copy'>
+							<span className='eyebrow'>Competitive Results Center</span>
+							<h1>Wider result views for marks, ranks, and leaderboard momentum.</h1>
+							<p>
+								Track competitive exam marks across schools and grades, then push visible score-derived points into the ranking system from one premium command view.
+							</p>
+							<div className='hero-actions'>
+								<a className='primary-action' href='#student-results'>Open result tables</a>
+								<a className='secondary-action' href='#results-podium'>View leaderboard</a>
+							</div>
+							<div className='results-hero-meta'>
+								<div className='results-hero-note'>
+									<strong>{selectedResultExamId === 'all' ? 'All competitive exams' : selectedResultExamId}</strong>
+									<span>
+										Current filters expose {visibleExamResults.length} exam view{visibleExamResults.length === 1 ? '' : 's'} across {activeGradeCount} grade{activeGradeCount === 1 ? '' : 's'}.
+									</span>
+								</div>
+								<div className='results-hero-note'>
+									<strong>{selectedSchool === 'all' ? 'Open school scope' : activeSchoolLabel}</strong>
+									<span>
+										{activeSchoolCount} school{activeSchoolCount === 1 ? '' : 's'} remain in the current ranking lens with {competitiveVisibleResultCount} visible result{competitiveVisibleResultCount === 1 ? '' : 's'}.
+									</span>
+								</div>
+							</div>
+						</div>
 
-			<section className='section-block podium-section'>
+						<div className='results-hero-card'>
+							<div className='builder-stat-grid results-hero-stats'>
+								<StatCard label='Visible Results' value={competitiveVisibleResultCount} tone='gold' />
+								<StatCard label='Competitive Exams' value={visibleExamResults.length} tone='teal' />
+								<StatCard label='Schools In View' value={activeSchoolCount} tone='coral' />
+								<StatCard label='Average Mark' value={formatPercent(averageVisibleScorePercent)} tone='teal' />
+							</div>
+
+							<div className='results-insight-strip'>
+								<div className='results-insight-card accent'>
+									<h3>{featuredLeaderboardStudent ? featuredLeaderboardStudent.studentName : 'No current leader'}</h3>
+									<p>
+										{featuredLeaderboardStudent
+											? `${featuredLeaderboardStudent.schoolCode || 'Unknown school'} leads the visible leaderboard with ${featuredLeaderboardStudent.countryTotalPoints ?? 0} total points and ${formatPercent(featuredLeaderboardStudent.bestScorePercent)} best score.`
+											: 'Leaderboard insights will appear once competitive result records are visible.'}
+									</p>
+								</div>
+								<div className='results-insight-card'>
+									<h3>{featuredExam ? featuredExam.title || featuredExam.examId : 'No visible exam yet'}</h3>
+									<p>
+										{featuredExam
+											? `${featuredExam.studentCount} student result${featuredExam.studentCount === 1 ? '' : 's'} are visible here with a top mark of ${formatPercent(featuredExam.topScorePercent)}.`
+											: 'Relax or change the filters to surface the strongest competitive exam view.'}
+									</p>
+								</div>
+							</div>
+						</div>
+					</section>
+
+			<section className='section-block podium-section' id='results-podium'>
 				<div className='section-header-row'>
 					<div className='section-heading'>
 						<span className='section-kicker'>Leaderboard Spotlight</span>
@@ -526,7 +601,11 @@ export default function StudentResultsPage() {
 				)}
 			</section>
 
-			<section className='section-block'>
+			{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
+			{rankingSubmitState.error ? <div className='status-banner warning'>{rankingSubmitState.error}</div> : null}
+			{rankingSubmitState.success ? <div className='status-banner success-banner'>{rankingSubmitState.success}</div> : null}
+
+			<section className='section-block' id='student-results'>
 				<div className='section-header-row'>
 					<div className='section-heading'>
 						<span className='section-kicker'>Student Results</span>

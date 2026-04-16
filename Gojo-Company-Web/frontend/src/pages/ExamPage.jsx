@@ -375,15 +375,11 @@ function getStageToggleText(isOpen, isUnlocked, isReady) {
 		return 'Locked'
 	}
 
-	if (isOpen && !isReady) {
-		return 'Complete stage'
-	}
-
 	return isOpen ? 'Collapse' : 'Expand'
 }
 
 function canToggleStage(isOpen, isUnlocked, isReady) {
-	return isUnlocked && (!isOpen || isReady)
+	return isUnlocked
 }
 
 function hasDraftableFormContent(form) {
@@ -880,6 +876,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const [submitState, setSubmitState] = useState({ loading: false, error: '', success: '' })
 	const [draftState, setDraftState] = useState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
 	const [draftLibrary, setDraftLibrary] = useState({ loading: true, error: '', drafts: [] })
+	const [assetUploadState, setAssetUploadState] = useState({ loadingKey: '', error: '', success: '' })
 	const [activeDraftId, setActiveDraftId] = useState('')
 	const [allowOverwrite, setAllowOverwrite] = useState(false)
 	const [manualIds, setManualIds] = useState(() => createManualIdState())
@@ -909,7 +906,6 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const packageStageTone = getStageTone(true, packageStageReady)
 	const examStageTone = getStageTone(examStageUnlocked, examStageReady)
 	const questionBankStageTone = getStageTone(questionBankStageUnlocked, questionBankStageReady)
-	const packageToggleEnabled = canToggleStage(stageVisibility.package, true, packageStageReady)
 	const examToggleEnabled = canToggleStage(stageVisibility.exam, examStageUnlocked, examStageReady)
 	const questionBankToggleEnabled = canToggleStage(stageVisibility.questionBank, questionBankStageUnlocked, questionBankStageReady)
 	const packageGradeLabel = formatReadableToken(form.package.grade) || 'Grade pending'
@@ -920,10 +916,10 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const questionBankGradeLabel = formatReadableToken(form.questionBank.metadata.grade) || packageGradeLabel
 	const questionBankSubjectLabel = formatReadableToken(form.questionBank.metadata.subject) || packageSubjectLabel
 	const chapterLabel = formatReadableToken(form.questionBank.metadata.chapter || form.package.round.chapter) || 'Chapter pending'
-	const subjectKeyToken = trimText(form.package.subjectKey) || 'subject_key'
-	const packageNodePreview = `packages/${trimText(form.packageId) || 'PACKAGE_ID'}/subjects/${subjectKeyToken}/rounds/${currentRoundId}`
-	const examNodePreview = `exams/${trimText(form.examId) || 'EXAM_ID'}`
-	const questionBankNodePreview = `questionBanks/${trimText(form.questionBankId) || 'QUESTION_BANK_ID'}`
+	const questionBankFocus = stageVisibility.questionBank && questionBankStageUnlocked
+	const currentModeExamCount = examMode === 'competitive' ? competitiveExams.length : examMode === 'entrance' ? entranceExams.length : practiceExams.length
+	const currentModeExamLabel = `${formatModeLabel(examMode)} Exams`
+	const activeWorkspaceLabel = activeDraft?.label || activeDraft?.packageId || 'New package draft'
 
 	useEffect(() => {
 		setStageVisibility({
@@ -938,6 +934,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		setAllowOverwrite(false)
 		setForm(createInitialForm(normalizedRouteMode))
 		setManualIds(createManualIdState())
+		setAssetUploadState({ loadingKey: '', error: '', success: '' })
 		setActiveDraftId('')
 		setDraftState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
 		setDraftLibrary({ loading: true, error: '', drafts: [] })
@@ -1032,19 +1029,16 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		setStageVisibility((current) => {
 			const next = {
 				...current,
+				package: true,
 			}
 
 			if (!packageStageReady) {
 				next.exam = false
 				next.questionBank = false
-			} else if (!current.exam) {
-				next.exam = true
 			}
 
 			if (!examStageReady) {
 				next.questionBank = false
-			} else if (!current.questionBank) {
-				next.questionBank = true
 			}
 
 			if (
@@ -1109,6 +1103,47 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		}))
 	}
 
+	async function handlePackageIconUpload(file) {
+		if (!file) {
+			return
+		}
+
+		setAssetUploadState({ loadingKey: 'package-icon', error: '', success: '' })
+
+		try {
+			const body = new FormData()
+			body.append('file', file)
+			body.append('assetType', 'package-icon')
+			body.append('examMode', examMode)
+			body.append('packageId', trimText(form.packageId) || generatedIds.packageId || '')
+			body.append('packageName', trimText(form.package.name) || 'package')
+
+			const response = await fetch(`${API_BASE_URL}/api/company-exams/upload-asset`, {
+				method: 'POST',
+				body,
+			})
+			const data = await response.json()
+
+			if (!response.ok) {
+				throw new Error(data.error || 'Upload failed')
+			}
+
+			const uploadedUrl = trimText(data.url || data.downloadUrl || data.packageIcon)
+			if (!uploadedUrl) {
+				throw new Error('Upload succeeded but no URL was returned')
+			}
+
+			updatePackageField('packageIcon', uploadedUrl)
+			setAssetUploadState({
+				loadingKey: '',
+				error: '',
+				success: `${file.name} uploaded and linked successfully.`,
+			})
+		} catch (error) {
+			setAssetUploadState({ loadingKey: '', error: error.message || 'Upload failed', success: '' })
+		}
+	}
+
 	function toggleManualId(field) {
 		setManualIds((current) => ({
 			...current,
@@ -1118,21 +1153,28 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 	function toggleStageVisibility(stageKey) {
 		const stageIsUnlocked = stageKey === 'exam' ? examStageUnlocked : stageKey === 'questionBank' ? questionBankStageUnlocked : true
-		const stageIsReady = stageKey === 'exam' ? examStageReady : stageKey === 'questionBank' ? questionBankStageReady : packageStageReady
 
 		if (!stageIsUnlocked) {
 			return
 		}
 
 		setStageVisibility((current) => {
-			if (current[stageKey] && !stageIsReady) {
-				return current
-			}
-
-			return {
+			const isOpening = !current[stageKey]
+			const next = {
 				...current,
+				package: true,
 				[stageKey]: !current[stageKey],
 			}
+
+			if (isOpening && stageKey === 'exam') {
+				next.questionBank = false
+			}
+
+			if (isOpening && stageKey === 'questionBank') {
+				next.exam = false
+			}
+
+			return next
 		})
 	}
 
@@ -1225,12 +1267,16 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		}))
 	}
 
-	async function reloadDraftLibrary() {
-		setDraftLibrary((current) => ({
-			...current,
-			loading: true,
-			error: '',
-		}))
+	async function reloadDraftLibrary(options = {}) {
+		const { silent = false } = options
+
+		if (!silent) {
+			setDraftLibrary((current) => ({
+				...current,
+				loading: true,
+				error: '',
+			}))
+		}
 
 		try {
 			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts?mode=${encodeURIComponent(normalizedRouteMode)}`)
@@ -1241,7 +1287,11 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 			setDraftLibrary({ loading: false, error: '', drafts: Array.isArray(data.drafts) ? data.drafts : [] })
 		} catch (error) {
-			setDraftLibrary({ loading: false, error: error.message || 'Unable to load draft workspace', drafts: [] })
+			setDraftLibrary((current) => ({
+				loading: false,
+				error: error.message || 'Unable to load draft workspace',
+				drafts: silent ? current.drafts : [],
+			}))
 		}
 	}
 
@@ -1265,6 +1315,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			error: '',
 			success: '',
 		}))
+		setAssetUploadState({ loadingKey: '', error: '', success: '' })
 
 		try {
 			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/${encodeURIComponent(draftId)}`)
@@ -1347,6 +1398,12 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			return
 		}
 
+		const targetDraft = draftLibrary.drafts.find((item) => item.draftId === targetDraftId) || null
+		const targetDraftLabel = targetDraft?.label || targetDraft?.packageId || targetDraftId
+		const activeDraftIdAtStart = activeDraftId
+		const lastSavedAtAtStart = draftState.lastSavedAt
+		const wasActiveDraft = targetDraftId === activeDraftIdAtStart
+
 		if (typeof window !== 'undefined') {
 			const shouldClear = window.confirm(`Delete this ${formatModeLabel(normalizedRouteMode).toLowerCase()} draft from Firebase?`)
 			if (!shouldClear) {
@@ -1361,16 +1418,21 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			success: '',
 		}))
 
-		const wasActiveDraft = targetDraftId === activeDraftId
-
 		try {
-			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/${encodeURIComponent(targetDraftId)}`, {
-				method: 'DELETE',
+			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/${encodeURIComponent(targetDraftId)}/delete`, {
+				method: 'POST',
 			})
 			const data = await response.json()
-			if (!response.ok) {
+			const draftWasMissing = response.status === 404
+			if (!response.ok && !draftWasMissing) {
 				throw new Error(data.error || 'Unable to delete draft')
 			}
+
+			setDraftLibrary((current) => ({
+				loading: false,
+				error: '',
+				drafts: current.drafts.filter((item) => item.draftId !== targetDraftId),
+			}))
 
 			if (wasActiveDraft) {
 				setActiveDraftId('')
@@ -1380,19 +1442,19 @@ export default function ExamPage({ routeMode = 'practice' }) {
 				loading: false,
 				error: '',
 				success: wasActiveDraft
-					? `${formatModeLabel(normalizedRouteMode)} draft removed from Firebase. Current form values stay on screen until you start a new draft or load another one.`
-					: 'Draft removed from Firebase.',
-				lastSavedAt: wasActiveDraft ? null : draftState.lastSavedAt,
-				hasDraft: wasActiveDraft ? false : Boolean(activeDraftId && activeDraftId !== targetDraftId),
+					? `${targetDraftLabel} was removed${draftWasMissing ? ' after Firebase reported it was already missing' : ''}. Current form values stay on screen until you start a new draft or load another one.`
+					: `${targetDraftLabel} was removed${draftWasMissing ? ' after Firebase reported it was already missing' : ''}.`,
+				lastSavedAt: wasActiveDraft ? null : lastSavedAtAtStart,
+				hasDraft: wasActiveDraft ? false : Boolean(activeDraftIdAtStart && activeDraftIdAtStart !== targetDraftId),
 			})
-			await reloadDraftLibrary()
+			await reloadDraftLibrary({ silent: true })
 		} catch (error) {
 			setDraftState({
 				loading: false,
 				error: error.message || 'Unable to delete draft',
 				success: '',
-				lastSavedAt: draftState.lastSavedAt,
-				hasDraft: Boolean(activeDraftId),
+				lastSavedAt: lastSavedAtAtStart,
+				hasDraft: Boolean(activeDraftIdAtStart),
 			})
 		}
 	}
@@ -1409,6 +1471,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		setForm(createInitialForm(normalizedRouteMode))
 		setManualIds(createManualIdState())
 		setAllowOverwrite(false)
+		setAssetUploadState({ loadingKey: '', error: '', success: '' })
 		setActiveDraftId('')
 		setStageVisibility({ package: true, exam: false, questionBank: false })
 		setDraftState({
@@ -1460,71 +1523,85 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		<div className='google-dashboard'>
 			<CompanySidebar />
 			<main className='google-main company-main'>
-				<div className='exam-shell builder-shell'>
-					<section className='hero-panel exam-hero-panel'>
+				<div className={`exam-shell builder-shell exam-premium-shell ${questionBankFocus ? 'question-bank-focus' : ''}`}>
+					<section className='hero-panel exam-hero-panel exam-premium-hero'>
 						<div className='hero-copy exam-hero-copy'>
-							<span className='eyebrow'>Platform1 Exam Builder</span>
-							<h1>Build the package first</h1>
+							<div className='exam-hero-kicker-row'>
+								<span className='eyebrow'>Platform1 Exam Builder</span>
+								<span className={`pill ${getModePillClass(examMode)}`}>{formatModeLabel(examMode)}</span>
+							</div>
+							<h1>Build everything from one premium package workspace</h1>
 							<p>
-								This editor now follows the way you want to think about the record: start with the package, place the exam
-								inside that package, then prepare the question bank under the exam. Drafts now live in Firebase, so you can
-								switch between multiple package workspaces and come back later without losing progress.
+								Start with the package shell, open the exam only when you need to configure it, then expand the question bank
+								into a full-width writing surface for fast question entry. The flow stays clean without exposing low-signal
+								technical clutter.
 							</p>
 							<div className='hero-actions'>
-								<a className='primary-action' href='#builder-form'>Create package first</a>
-								<a className='secondary-action' href='#live-hierarchy'>See live hierarchy</a>
+								<a className='primary-action' href='#builder-form'>Open builder</a>
+								<a className='secondary-action' href='#exam-drafts'>Manage drafts</a>
 							</div>
 							{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
 							{draftState.error ? <div className='status-banner warning'>{draftState.error}</div> : null}
 							{draftLibrary.error ? <div className='status-banner warning'>{draftLibrary.error}</div> : null}
+							{assetUploadState.error ? <div className='status-banner warning'>{assetUploadState.error}</div> : null}
 							{draftState.success ? <div className='status-banner success-banner'>{draftState.success}</div> : null}
+							{assetUploadState.success ? <div className='status-banner success-banner'>{assetUploadState.success}</div> : null}
 							{submitState.error ? <div className='status-banner warning'>{submitState.error}</div> : null}
 							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 						</div>
 
 						<div className='hero-card exam-hero-card'>
-							<span className='hero-card-label'>Creation Order</span>
-							<div className='exam-flow-strip'>
-								<article className='exam-flow-card'>
-									<span className='exam-flow-step'>01</span>
-									<h3>Package</h3>
-									<p>Choose the package identity, grade, subject, and round container first.</p>
+							<span className='hero-card-label'>Workspace Pulse</span>
+							<div className='exam-premium-pulse-grid'>
+								<article className='exam-pulse-card'>
+									<p className='config-key'>Workspace</p>
+									<h3>{activeWorkspaceLabel}</h3>
+									<p>
+										{draftLibrary.loading
+											? 'Syncing Firebase drafts...'
+											: `${draftLibrary.drafts.length} reusable draft workspace${draftLibrary.drafts.length === 1 ? '' : 's'} ready.`}
+									</p>
 								</article>
-								<article className='exam-flow-card'>
-									<span className='exam-flow-step'>02</span>
-									<h3>Exam</h3>
-									<p>Configure the exam behavior and connect it to the package round.</p>
+								<article className='exam-pulse-card'>
+									<p className='config-key'>Current mode</p>
+									<h3>{formatModeLabel(examMode)}</h3>
+									<p>
+										{currentRoundId} • {packageSubjectLabel}
+									</p>
 								</article>
-								<article className='exam-flow-card'>
-									<span className='exam-flow-step'>03</span>
-									<h3>Question Bank</h3>
-									<p>Finish by preparing metadata and questions for the linked exam.</p>
+								<article className='exam-pulse-card'>
+									<p className='config-key'>Question bank</p>
+									<h3>{questionBankFocus ? 'Focus mode on' : 'Nested in package'}</h3>
+									<p>
+										{savedQuestionCount} saveable question{savedQuestionCount === 1 ? '' : 's'} in the current build.
+									</p>
 								</article>
 							</div>
-							<div className='builder-stat-grid'>
-								<StatCard label='Packages' value={overview.stats.packageCount ?? 0} tone='gold' />
-								<StatCard label='Competitive Exams' value={overview.stats.competitiveExamCount ?? 0} tone='teal' />
-								<StatCard label='Practice Exams' value={overview.stats.practiceExamCount ?? 0} tone='coral' />
-								<StatCard label='Entrance Exams' value={overview.stats.entranceExamCount ?? 0} tone='teal' />
+							<div className='builder-stat-grid exam-stat-grid'>
 								<StatCard label='Draft Workspaces' value={draftLibrary.drafts.length} tone='gold' />
+								<StatCard label='Packages' value={overview.stats.packageCount ?? 0} tone='gold' />
+								<StatCard label={currentModeExamLabel} value={currentModeExamCount} tone='teal' />
+								<StatCard label='Question Banks' value={overview.questionBanks.length} tone='coral' />
 							</div>
 							<p className='inline-note'>
-								{loadState.loading || draftLibrary.loading
-									? 'Loading current exam content and draft workspace...'
-									: `${draftLibrary.drafts.length} Firebase draft${draftLibrary.drafts.length === 1 ? '' : 's'} ready for this ${formatModeLabel(normalizedRouteMode).toLowerCase()} flow. Published overview still merges legacy root data with Platform1 data.`}
+								{loadState.loading
+									? 'Reading current exam content...'
+									: questionBankFocus
+										? 'Question bank focus mode is active. The writing surface now uses the full builder width.'
+										: 'The page stays package-first, while exam setup and question authoring open only when you need them.'}
 							</p>
 						</div>
 					</section>
 
-					<section className='section-block exam-draft-section'>
+					<section className='section-block exam-draft-section' id='exam-drafts'>
 						<div className='section-header-row'>
 							<div className='section-heading'>
 								<span className='section-kicker'>Draft Workspace</span>
-								<h2>Switch between saved package drafts</h2>
+								<h2>Keep premium draft workspaces ready</h2>
 								<p className='inline-note'>
 									{activeDraft
-										? `Currently editing ${activeDraft.label}. Open another draft any time and continue from its last Firebase save.`
-										: `No draft is loaded yet. Save draft stores this package, exam, and question bank in Firebase so you can come back later.`}
+										? `Currently editing ${activeWorkspaceLabel}. Open another draft any time and continue from its latest Firebase save.`
+										: 'Save draft stores the package, exam, and question bank in Firebase so you can reopen the workspace later.'}
 								</p>
 							</div>
 
@@ -1576,9 +1653,6 @@ export default function ExamPage({ routeMode = 'practice' }) {
 												<strong>{item.roundId || '-'}</strong>
 											</div>
 										</div>
-										<p className='exam-draft-path'>
-											{item.packageId || 'PACKAGE_ID'} / {item.examId || 'EXAM_ID'} / {item.questionBankId || 'QUESTION_BANK_ID'}
-										</p>
 										<p className='inline-note'>Updated {formatDateTime(item.updatedAt)}</p>
 										<div className='exam-draft-actions'>
 											<button className='secondary-action' type='button' onClick={() => handleLoadDraft(item.draftId)} disabled={draftState.loading || submitState.loading}>
@@ -1601,60 +1675,48 @@ export default function ExamPage({ routeMode = 'practice' }) {
 					</section>
 
 					<section className='section-block exam-composer-section' id='builder-form'>
-						<div className='section-header-row'>
+						<div className='section-header-row exam-composer-header'>
 							<div className='section-heading'>
 								<span className='section-kicker'>Composer</span>
-								<h2>Build the record from package to bank</h2>
-								<p className='inline-note'>
-									{activeDraft
-										? `Draft workspace: ${activeDraft.label}. Update it as you add more questions, then publish when it is ready.`
-										: 'Build a new package, then save it as a Firebase draft or publish it directly when the record is complete.'}
-								</p>
+								<h2>Keep exam setup and question writing inside the package card</h2>
+								<p className='inline-note'>The package stays visible, the exam expands below it, and the question bank switches into a full-width focused workspace when opened.</p>
 							</div>
 
-							<label className='toggle-field'>
-								<input type='checkbox' checked={allowOverwrite} onChange={(event) => setAllowOverwrite(event.target.checked)} />
-								<span>Allow overwrite for existing Platform1 IDs</span>
-							</label>
+							<div className='exam-composer-toolbar'>
+								<span className='config-key'>{activeDraft ? `Editing ${activeWorkspaceLabel}` : 'Fresh package workspace'}</span>
+								<label className='toggle-field'>
+									<input type='checkbox' checked={allowOverwrite} onChange={(event) => setAllowOverwrite(event.target.checked)} />
+									<span>Allow overwrite for existing Platform1 IDs</span>
+								</label>
+							</div>
 						</div>
 
 						<div className='builder-grid exam-builder-grid'>
-							<form className='builder-form-panel exam-builder-panel' onSubmit={handleSubmit}>
-								<section className={`form-card package-card exam-stage-card exam-stage-package ${stageVisibility.package ? 'is-open' : 'is-collapsed'} ${packageStageTone}`}>
-									<div className='exam-stage-header'>
+							<form className={`builder-form-panel exam-builder-panel ${questionBankFocus ? 'question-bank-focus' : ''}`} onSubmit={handleSubmit}>
+								<section className={`form-card package-card exam-stage-card exam-stage-package is-open ${packageStageTone} ${questionBankFocus ? 'question-bank-focus' : ''}`}>
+									<div className='exam-stage-header exam-package-header'>
 										<div className='exam-stage-header-row'>
 											<div className='exam-stage-title'>
 												<span className='exam-stage-badge'>01</span>
 												<div className='compact-heading exam-stage-heading'>
-													<span className='section-kicker'>Package</span>
-													<h2>Start with the package shell</h2>
+													<span className='section-kicker'>Package Workspace</span>
+													<h2>Start here and expand the rest inside it</h2>
 												</div>
 											</div>
 
 											<div className='exam-stage-controls'>
-												<span className={`exam-stage-status ${packageStageTone}`}>{packageStageReady ? 'Ready' : 'Needs details'}</span>
-												<button
-													className='exam-stage-toggle'
-													type='button'
-													onClick={() => toggleStageVisibility('package')}
-													aria-expanded={stageVisibility.package}
-													aria-controls='package-stage-body'
-													disabled={!packageToggleEnabled}
-												>
-													{getStageToggleText(stageVisibility.package, true, packageStageReady)}
-												</button>
+												<span className={`exam-stage-status ${packageStageTone}`}>{packageStageReady ? 'Ready' : 'In progress'}</span>
+												<span className={`pill ${getModePillClass(examMode)}`}>{formatModeLabel(examMode)}</span>
 											</div>
 										</div>
-										<p className='exam-stage-note'>
-											Define the outer container first. Grade, subject, and round choices here shape the record before you attach the exam.
-										</p>
+										<p className='exam-stage-note'>The package remains the main workspace. Open exam setup and question writing below only when you need them.</p>
 									</div>
 
-									<div className='exam-summary-grid'>
+									<div className='exam-summary-grid exam-package-snapshot-grid'>
 										<div className='exam-summary-card'>
-											<p className='config-key'>Package path</p>
-											<p className='exam-summary-value'>{trimText(form.packageId) || 'PACKAGE_ID'}</p>
-											<p className='exam-summary-note'>{packageNodePreview}</p>
+											<p className='config-key'>Package ID</p>
+											<p className='exam-summary-value'>{trimText(form.packageId) || generatedIds.packageId || 'Auto ID pending'}</p>
+											<p className='exam-summary-note'>{packageNameLabel}</p>
 										</div>
 										<div className='exam-summary-card'>
 											<p className='config-key'>Grade and subject</p>
@@ -1666,506 +1728,538 @@ export default function ExamPage({ routeMode = 'practice' }) {
 											<p className='exam-summary-value'>{currentRoundId}</p>
 											<p className='exam-summary-note'>{roundNameLabel}</p>
 										</div>
-									</div>
-
-									{stageVisibility.package ? (
-										<div className='exam-stage-body' id='package-stage-body'>
-											<div className='form-grid two-column'>
-										<label className='field'>
-											<div className='field-heading'>
-												<span>Package ID</span>
-												<button className='field-toggle' type='button' onClick={() => toggleManualId('package')}>
-													{manualIds.package ? 'Use auto ID' : 'Manual edit'}
-												</button>
-											</div>
-											<input
-												className={!manualIds.package ? 'field-auto-input' : ''}
-												value={form.packageId}
-												onChange={(event) => setForm({ ...form, packageId: event.target.value })}
-												placeholder='PKG_COMP_G7_2026'
-												readOnly={!manualIds.package}
-												required
-											/>
-											<small className='field-hint'>
-												{manualIds.package
-													? 'Manual mode is on for this ID.'
-													: generatedIds.packageId || 'Auto format uses package type, grade, and year or entrance mode.'}
-											</small>
-										</label>
-
-										<label className='field'>
-											<span>Package name</span>
-											<input value={form.package.name} onChange={(event) => updatePackageField('name', event.target.value)} placeholder='National Competitive Exam' required />
-										</label>
-
-										<label className='field'>
-											<span>Grade</span>
-											<input value={form.package.grade} onChange={(event) => updatePackageField('grade', event.target.value)} placeholder='grade7' required />
-										</label>
-
-										<label className='field'>
-											<span>Package type</span>
-											<input className='field-auto-input' value={examMode} readOnly />
-											<small className='field-hint'>
-												{entranceFlow
-													? 'Entrance package IDs include the entrance year you enter here.'
-													: examMode === 'competitive'
-														? 'Competitive package IDs use COMP and yearly package codes.'
-														: 'Practice package IDs use PRACTICE and chapter-based IDs.'}
-											</small>
-										</label>
-
-										<label className='field'>
-											<span>Subject key</span>
-											<input value={form.package.subjectKey} onChange={(event) => updatePackageField('subjectKey', event.target.value)} placeholder='general_science' required />
-										</label>
-
-										<label className='field'>
-											<span>Subject name</span>
-											<input value={form.package.subjectName} onChange={(event) => updatePackageField('subjectName', event.target.value)} placeholder='General Science' required />
-										</label>
-
-										{entranceFlow ? (
-											<label className='field'>
-												<span>Entrance year</span>
-												<input
-													type='number'
-													min='1900'
-													max='9999'
-													value={form.package.entranceYear}
-													onChange={(event) => updatePackageField('entranceYear', event.target.value)}
-													placeholder='2026'
-													required
-												/>
-												<small className='field-hint'>Entrance packages include the entrance year in the package and exam ID flow.</small>
-											</label>
-										) : null}
-
-										<label className='field'>
-											<span>Round ID</span>
-											<input value={form.package.roundId} onChange={(event) => updatePackageField('roundId', event.target.value)} placeholder={suggestedRoundId} required />
-											<small className='field-hint'>
-												Suggested round ID: {suggestedRoundId}. Competitive usually uses R1, practice uses P1, entrance uses E1.
-											</small>
-										</label>
-
-										<label className='field'>
-											<span>Round name</span>
-											<input value={form.package.round.name} onChange={(event) => updateRoundField('name', event.target.value)} placeholder='Round 1 - Chapter 1' required />
-										</label>
-
-										<label className='field'>
-											<span>Round chapter</span>
-											<input value={form.package.round.chapter} onChange={(event) => updateRoundField('chapter', event.target.value)} placeholder='ch1' />
-										</label>
-
-										<label className='field'>
-											<span>Round status</span>
-											<input value={form.package.round.status} onChange={(event) => updateRoundField('status', event.target.value)} placeholder='active' required />
-										</label>
-
-										<label className='field field-span-2'>
-											<span>Description</span>
-											<textarea value={form.package.description} onChange={(event) => updatePackageField('description', event.target.value)} placeholder='Practice without ranking' rows='3' required />
-										</label>
-
-										<label className='field field-span-2'>
-											<span>Package icon URL</span>
-											<input value={form.package.packageIcon} onChange={(event) => updatePackageField('packageIcon', event.target.value)} placeholder='https://storage.googleapis.com/...png' />
-										</label>
-									</div>
-
-									<div className='toggle-grid'>
-										<label className='toggle-field'>
-											<input type='checkbox' checked={form.package.active} onChange={(event) => updatePackageField('active', event.target.checked)} />
-											<span>Package active</span>
-										</label>
-									</div>
-
-									<div className='field-group-note'>
-										Set scheduling only when the round needs automatic opening, closing, or delayed result release. Leaving these blank does not change the database shape.
-									</div>
-
-									<div className='form-grid two-column'>
-										{roundTimestampFields.map((field) => (
-											<label className='field' key={field.key}>
-												<span>{field.label}</span>
-												<input
-													type='datetime-local'
-													value={formatTimestampForInput(form.package.round[field.key])}
-													onChange={(event) => updateRoundField(field.key, event.target.value)}
-												/>
-												<small className='field-hint'>{field.hint}</small>
-											</label>
-										))}
+										<div className='exam-summary-card'>
+											<p className='config-key'>Question bank</p>
+											<p className='exam-summary-value'>{trimText(form.questionBankId) || generatedIds.questionBankId || 'Unlock after exam'}</p>
+											<p className='exam-summary-note'>
+												{questionBankFocus
+													? 'Focus mode active for question writing.'
+													: `${savedQuestionCount} question${savedQuestionCount === 1 ? '' : 's'} currently saveable.`}
+											</p>
 										</div>
 									</div>
-								) : null}
-								</section>
 
-							<section className={`form-card exam-stage-card exam-stage-exam ${stageVisibility.exam ? 'is-open' : 'is-collapsed'} ${examStageTone}`}>
-									<div className='exam-stage-header'>
-									<div className='exam-stage-header-row'>
-										<div className='exam-stage-title'>
-											<span className='exam-stage-badge'>02</span>
-											<div className='compact-heading exam-stage-heading'>
-												<span className='section-kicker'>Exam</span>
-												<h2>Configure the exam inside the package</h2>
-											</div>
-											</div>
+									<div className='exam-stage-body' id='package-stage-body'>
+										<div className='form-grid two-column exam-package-grid'>
+											<label className='field'>
+												<div className='field-heading'>
+													<span>Package ID</span>
+													<button className='field-toggle' type='button' onClick={() => toggleManualId('package')}>
+														{manualIds.package ? 'Use auto ID' : 'Manual edit'}
+													</button>
+												</div>
+												<input
+													className={!manualIds.package ? 'field-auto-input' : ''}
+													value={form.packageId}
+													onChange={(event) => setForm({ ...form, packageId: event.target.value })}
+													placeholder='PKG_COMP_G7_2026'
+													readOnly={!manualIds.package}
+													required
+												/>
+												<small className='field-hint'>
+													{manualIds.package
+														? 'Manual mode is on for this ID.'
+														: generatedIds.packageId || 'Auto format uses package type, grade, and year or entrance mode.'}
+												</small>
+											</label>
 
-										<div className='exam-stage-controls'>
-											<span className={`exam-stage-status ${examStageTone}`}>{!examStageUnlocked ? 'Locked' : examStageReady ? 'Ready' : 'Needs details'}</span>
+											<label className='field'>
+												<span>Package name</span>
+												<input value={form.package.name} onChange={(event) => updatePackageField('name', event.target.value)} placeholder='National Competitive Exam' required />
+											</label>
+
+											<label className='field'>
+												<span>Grade</span>
+												<input value={form.package.grade} onChange={(event) => updatePackageField('grade', event.target.value)} placeholder='grade7' required />
+											</label>
+
+											<label className='field'>
+												<span>Subject key</span>
+												<input value={form.package.subjectKey} onChange={(event) => updatePackageField('subjectKey', event.target.value)} placeholder='general_science' required />
+											</label>
+
+											<label className='field'>
+												<span>Subject name</span>
+												<input value={form.package.subjectName} onChange={(event) => updatePackageField('subjectName', event.target.value)} placeholder='General Science' required />
+											</label>
+
+											{entranceFlow ? (
+												<label className='field'>
+													<span>Entrance year</span>
+													<input
+														type='number'
+														min='1900'
+														max='9999'
+														value={form.package.entranceYear}
+														onChange={(event) => updatePackageField('entranceYear', event.target.value)}
+														placeholder='2026'
+														required
+													/>
+													<small className='field-hint'>Entrance packages include the entrance year in the package and exam ID flow.</small>
+												</label>
+											) : null}
+
+											<label className='field'>
+												<span>Round ID</span>
+												<input value={form.package.roundId} onChange={(event) => updatePackageField('roundId', event.target.value)} placeholder={suggestedRoundId} required />
+												<small className='field-hint'>Suggested round ID: {suggestedRoundId}. Competitive uses R1, practice uses P1, entrance uses E1.</small>
+											</label>
+
+											<label className='field'>
+												<span>Round name</span>
+												<input value={form.package.round.name} onChange={(event) => updateRoundField('name', event.target.value)} placeholder='Round 1 - Chapter 1' required />
+											</label>
+
+											<label className='field'>
+												<span>Round chapter</span>
+												<input value={form.package.round.chapter} onChange={(event) => updateRoundField('chapter', event.target.value)} placeholder='ch1' />
+											</label>
+
+											<label className='field'>
+												<span>Round status</span>
+												<input value={form.package.round.status} onChange={(event) => updateRoundField('status', event.target.value)} placeholder='active' required />
+											</label>
+
+											<label className='field field-span-2'>
+												<span>Description</span>
+												<textarea value={form.package.description} onChange={(event) => updatePackageField('description', event.target.value)} placeholder='Practice without ranking' rows='3' required />
+											</label>
+
+											<div className='field field-span-2 exam-package-icon-field'>
+												<span>Package icon</span>
+												<label className='secondary-action exam-package-icon-upload'>
+													<input
+														type='file'
+														accept='image/*'
+														hidden
+														onChange={(event) => {
+															const nextFile = event.target.files?.[0]
+															if (nextFile) {
+																handlePackageIconUpload(nextFile)
+															}
+															event.target.value = ''
+														}}
+													/>
+													<span>{assetUploadState.loadingKey === 'package-icon' ? 'Uploading icon...' : 'Upload package icon'}</span>
+												</label>
+												<span className='field-hint'>Accepted: JPG, PNG, WEBP, GIF. The icon URL is stored in the database without being shown in this form.</span>
+												{trimText(form.package.packageIcon) ? (
+													<div className='exam-package-icon-state'>
+														<strong>Package icon stored</strong>
+														<span>The uploaded package icon is linked and ready to save.</span>
+													</div>
+												) : null}
+											</div>
+										</div>
+
+										<div className='toggle-grid'>
+											<label className='toggle-field'>
+												<input type='checkbox' checked={form.package.active} onChange={(event) => updatePackageField('active', event.target.checked)} />
+												<span>Package active</span>
+											</label>
+										</div>
+
+										<div className='field-group-note'>Set scheduling only if the round needs opening, closing, or result-release automation. Leaving these blank keeps the record clean.</div>
+
+										<div className='form-grid two-column'>
+											{roundTimestampFields.map((field) => (
+												<label className='field' key={field.key}>
+													<span>{field.label}</span>
+													<input
+														type='datetime-local'
+														value={formatTimestampForInput(form.package.round[field.key])}
+														onChange={(event) => updateRoundField(field.key, event.target.value)}
+													/>
+													<small className='field-hint'>{field.hint}</small>
+												</label>
+											))}
+										</div>
+
+										<div className='exam-stage-launchers'>
 											<button
-												className='exam-stage-toggle'
+												className={`exam-stage-launcher tone-teal ${stageVisibility.exam ? 'is-open' : ''}`}
 												type='button'
 												onClick={() => toggleStageVisibility('exam')}
 												aria-expanded={stageVisibility.exam}
 												aria-controls='exam-stage-body'
 												disabled={!examToggleEnabled}
 											>
-												{getStageToggleText(stageVisibility.exam, examStageUnlocked, examStageReady)}
+												<span className='exam-stage-launcher-step'>02</span>
+												<div className='exam-stage-launcher-copy'>
+													<div className='exam-stage-launcher-top'>
+														<strong>Exam setup</strong>
+														<span className={`exam-stage-status ${examStageTone}`}>{!examStageUnlocked ? 'Locked' : examStageReady ? 'Ready' : 'Configure'}</span>
+													</div>
+													<p>{trimText(form.examId) || generatedIds.examId || 'Auto exam ID appears after package details are filled.'}</p>
+													<span className='exam-stage-launcher-note'>
+														{toOptionalNumber(form.exam.timeLimit) ?? 1800}s limit • {toOptionalNumber(form.exam.totalQuestions) ?? savedQuestionCount} questions • {getStageToggleText(stageVisibility.exam, examStageUnlocked, examStageReady)}
+													</span>
+												</div>
 											</button>
-										</div>
-										</div>
-										<p className='exam-stage-note'>
-											This section decides how the round behaves for students. It keeps the same exam node and ID logic you already use.
-										</p>
-									</div>
 
-									<div className='exam-summary-grid'>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Exam node</p>
-											<p className='exam-summary-value'>{trimText(form.examId) || 'EXAM_ID'}</p>
-											<p className='exam-summary-note'>{examNodePreview}</p>
-										</div>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Exam mode</p>
-											<p className='exam-summary-value'>{formatModeLabel(examMode)}</p>
-											<p className='exam-summary-note'>{examTitleLabel}</p>
-										</div>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Question plan</p>
-											<p className='exam-summary-value'>{toOptionalNumber(form.exam.totalQuestions) ?? savedQuestionCount}</p>
-											<p className='exam-summary-note'>Pool {toOptionalNumber(form.exam.questionPoolSize) ?? savedQuestionCount} • {toOptionalNumber(form.exam.timeLimit) ?? 1800}s limit</p>
-										</div>
-									</div>
-
-									{!examStageUnlocked ? (
-										<p className='exam-stage-lock-note'>Complete the package shell first to unlock the exam configuration.</p>
-									) : null}
-
-									{stageVisibility.exam && examStageUnlocked ? (
-										<div className='exam-stage-body' id='exam-stage-body'>
-											<div className='form-grid two-column'>
-										<label className='field'>
-											<div className='field-heading'>
-												<span>Exam ID</span>
-												<button className='field-toggle' type='button' onClick={() => toggleManualId('exam')}>
-													{manualIds.exam ? 'Use auto ID' : 'Manual edit'}
-												</button>
-											</div>
-											<input
-												className={!manualIds.exam ? 'field-auto-input' : ''}
-												value={form.examId}
-												onChange={(event) => setForm({ ...form, examId: event.target.value })}
-												placeholder='EX_G7_GS_CH1_R1'
-												readOnly={!manualIds.exam}
-												required
-											/>
-											<small className='field-hint'>
-												{manualIds.exam ? 'Manual mode is on for this ID.' : generatedIds.examId || 'Auto format follows subject, chapter, and round.'}
-											</small>
-										</label>
-
-										<label className='field'>
-											<span>Exam type</span>
-											<input className='field-auto-input' value={formatModeLabel(examMode)} readOnly />
-											<small className='field-hint'>Exam type comes from the Exams sidebar group you opened.</small>
-										</label>
-
-										<label className='field'>
-											<span>Optional title</span>
-											<input value={form.exam.title} onChange={(event) => updateExamField('title', event.target.value)} placeholder='Round 1 - Chapter 1' />
-										</label>
-
-										<label className='field'>
-											<span>Max attempts</span>
-											<input type='number' min='1' value={form.exam.maxAttempts} onChange={(event) => updateExamField('maxAttempts', event.target.value)} required />
-										</label>
-
-										<label className='field'>
-											<span>Pass percent</span>
-											<input type='number' min='0' value={form.exam.passPercent} onChange={(event) => updateExamField('passPercent', event.target.value)} placeholder='80' />
-										</label>
-
-										<label className='field'>
-											<span>Question pool size</span>
-											<input type='number' min='1' value={form.exam.questionPoolSize} onChange={(event) => updateExamField('questionPoolSize', event.target.value)} placeholder='120' />
-										</label>
-
-										<label className='field'>
-											<span>Total questions</span>
-											<input type='number' min='1' value={form.exam.totalQuestions} onChange={(event) => updateExamField('totalQuestions', event.target.value)} placeholder='40' />
-										</label>
-
-										<label className='field'>
-											<span>Time limit (seconds)</span>
-											<input type='number' min='1' value={form.exam.timeLimit} onChange={(event) => updateExamField('timeLimit', event.target.value)} required />
-										</label>
-
-										<label className='field'>
-											<span>Text field key</span>
-											<select value={form.exam.textKey} onChange={(event) => updateExamField('textKey', event.target.value)}>
-												<option value='instructions'>instructions</option>
-												<option value='instruction'>instruction</option>
-												<option value='rules'>rules</option>
-											</select>
-										</label>
-									</div>
-
-									<div className='toggle-grid'>
-										<label className='toggle-field'>
-											<input type='checkbox' checked={examMode === 'competitive'} disabled readOnly />
-											<span>Ranking enabled for competitive exams only</span>
-										</label>
-
-										<label className='toggle-field'>
-											<input type='checkbox' checked={form.exam.scoringEnabled} onChange={(event) => updateExamField('scoringEnabled', event.target.checked)} />
-											<span>Scoring enabled</span>
-										</label>
-
-										<label className='toggle-field'>
-											<input type='checkbox' checked={form.exam.attemptRefillEnabled} onChange={(event) => updateExamField('attemptRefillEnabled', event.target.checked)} />
-											<span>Attempt refill enabled</span>
-										</label>
-
-										<label className='toggle-field'>
-											<input type='checkbox' checked={form.exam.includeLeadingNull} onChange={(event) => updateExamField('includeLeadingNull', event.target.checked)} />
-											<span>Keep Firebase-style leading null in lists</span>
-										</label>
-									</div>
-
-									{form.exam.attemptRefillEnabled ? (
-										<div className='form-grid'>
-											<label className='field'>
-												<span>Attempt refill interval (ms)</span>
-												<input type='number' min='1' value={form.exam.attemptRefillIntervalMs} onChange={(event) => updateExamField('attemptRefillIntervalMs', event.target.value)} placeholder='1200000' />
-											</label>
-										</div>
-									) : null}
-
-									<div className='row-header'>
-										<h3>Instructions or rules</h3>
-										<button className='secondary-action inline-button' type='button' onClick={addInstruction}>
-											Add line
-										</button>
-									</div>
-
-									<div className='stack-list tight-stack'>
-										{form.exam.textItems.map((item, index) => (
-											<div className='inline-row' key={`instruction-${index}`}>
-												<input className='row-input' value={item} onChange={(event) => updateInstruction(index, event.target.value)} placeholder={index === 0 ? 'No switching apps' : 'Submit before timer ends'} />
-												{form.exam.textItems.length > 1 ? (
-													<button className='ghost-button' type='button' onClick={() => removeInstruction(index)}>
-														Remove
-													</button>
-												) : null}
-											</div>
-										))}
-									</div>
-
-									{form.exam.scoringEnabled ? (
-										<div className='form-grid two-column'>
-											{Object.entries(form.exam.scoring).map(([field, value]) => (
-												<label className='field' key={field}>
-													<span>{field}</span>
-													<input type='number' min='0' value={value} onChange={(event) => updateExamField('scoring', { ...form.exam.scoring, [field]: event.target.value })} />
-												</label>
-											))}
-										</div>
-								) : null}
-									</div>
-								) : null}
-								</section>
-
-							<section className={`form-card exam-stage-card exam-stage-bank ${stageVisibility.questionBank ? 'is-open' : 'is-collapsed'} ${questionBankStageTone}`}>
-									<div className='exam-stage-header'>
-									<div className='exam-stage-header-row'>
-										<div className='exam-stage-title'>
-											<span className='exam-stage-badge'>03</span>
-											<div className='compact-heading exam-stage-heading'>
-												<span className='section-kicker'>Question Bank</span>
-												<h2>Place the bank under the exam workflow</h2>
-											</div>
-											</div>
-
-										<div className='exam-stage-controls'>
-											<span className={`exam-stage-status ${questionBankStageTone}`}>{!questionBankStageUnlocked ? 'Locked' : questionBankStageReady ? 'Ready' : 'Add questions'}</span>
 											<button
-												className='exam-stage-toggle'
+												className={`exam-stage-launcher tone-accent ${stageVisibility.questionBank ? 'is-open' : ''} ${questionBankFocus ? 'is-focus' : ''}`}
 												type='button'
 												onClick={() => toggleStageVisibility('questionBank')}
 												aria-expanded={stageVisibility.questionBank}
 												aria-controls='question-bank-stage-body'
 												disabled={!questionBankToggleEnabled}
 											>
-												{getStageToggleText(stageVisibility.questionBank, questionBankStageUnlocked, questionBankStageReady)}
+												<span className='exam-stage-launcher-step'>03</span>
+												<div className='exam-stage-launcher-copy'>
+													<div className='exam-stage-launcher-top'>
+														<strong>Question bank</strong>
+														<span className={`exam-stage-status ${questionBankStageTone}`}>{!questionBankStageUnlocked ? 'Locked' : questionBankStageReady ? 'Ready' : 'Writing'}</span>
+													</div>
+													<p>{trimText(form.questionBankId) || generatedIds.questionBankId || 'Unlock after finishing exam setup.'}</p>
+													<span className='exam-stage-launcher-note'>
+														{startedQuestionCount} started • {savedQuestionCount} saveable • {questionBankFocus ? 'Full-width focus mode active' : getStageToggleText(stageVisibility.questionBank, questionBankStageUnlocked, questionBankStageReady)}
+													</span>
+												</div>
 											</button>
 										</div>
-										</div>
-										<p className='exam-stage-note'>
-											Keep the same question bank node and keys, but edit it last so the hierarchy reads package, then exam, then questions.
-										</p>
-									</div>
 
-									<div className='exam-summary-grid'>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Question bank node</p>
-											<p className='exam-summary-value'>{trimText(form.questionBankId) || 'QUESTION_BANK_ID'}</p>
-											<p className='exam-summary-note'>{questionBankNodePreview}</p>
-										</div>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Metadata focus</p>
-											<p className='exam-summary-value'>{questionBankGradeLabel}</p>
-											<p className='exam-summary-note'>{questionBankSubjectLabel} • {chapterLabel}</p>
-										</div>
-										<div className='exam-summary-card'>
-											<p className='config-key'>Draft question progress</p>
-											<p className='exam-summary-value'>{startedQuestionCount}</p>
-											<p className='exam-summary-note'>{savedQuestionCount} question{savedQuestionCount === 1 ? '' : 's'} currently saveable</p>
-										</div>
-									</div>
+										{!examStageUnlocked ? <p className='exam-stage-lock-note'>Complete the package essentials to unlock exam setup and question writing.</p> : null}
 
-									{!questionBankStageUnlocked ? (
-										<p className='exam-stage-lock-note'>Finish the exam setup first to unlock question bank editing.</p>
-									) : null}
+										{stageVisibility.exam && examStageUnlocked ? (
+											<section className={`exam-nested-panel exam-stage-card exam-stage-exam ${stageVisibility.exam ? 'is-open' : 'is-collapsed'} ${examStageTone}`}>
+												<div className='exam-stage-header'>
+													<div className='exam-stage-header-row'>
+														<div className='exam-stage-title'>
+															<span className='exam-stage-badge'>02</span>
+															<div className='compact-heading exam-stage-heading'>
+																<span className='section-kicker'>Exam</span>
+																<h2>Configure the exam inside the package</h2>
+															</div>
+														</div>
 
-									{stageVisibility.questionBank && questionBankStageUnlocked ? (
-										<div className='exam-stage-body' id='question-bank-stage-body'>
-											<div className='form-grid two-column'>
-										<label className='field'>
-											<div className='field-heading'>
-												<span>Question bank ID</span>
-												<button className='field-toggle' type='button' onClick={() => toggleManualId('questionBank')}>
-													{manualIds.questionBank ? 'Use auto ID' : 'Manual edit'}
-												</button>
-											</div>
-											<input
-												className={!manualIds.questionBank ? 'field-auto-input' : ''}
-												value={form.questionBankId}
-												onChange={(event) => setForm({ ...form, questionBankId: event.target.value })}
-												placeholder='QB_G7_GS_CH1_SET_A'
-												readOnly={!manualIds.questionBank}
-												required
-											/>
-											<small className='field-hint'>
-												{manualIds.questionBank
-													? 'Manual mode is on for this ID.'
-													: generatedIds.questionBankId || 'Auto format starts after you fill grade, subject, chapter, and mode.'}
-											</small>
-										</label>
+														<div className='exam-stage-controls'>
+															<span className={`exam-stage-status ${examStageTone}`}>{examStageReady ? 'Ready' : 'Needs details'}</span>
+															<button
+																className='exam-stage-toggle'
+																type='button'
+																onClick={() => toggleStageVisibility('exam')}
+																aria-expanded={stageVisibility.exam}
+																aria-controls='exam-stage-body'
+																disabled={!examToggleEnabled}
+															>
+																{getStageToggleText(stageVisibility.exam, examStageUnlocked, examStageReady)}
+															</button>
+														</div>
+													</div>
+													<p className='exam-stage-note'>Tune timer, attempts, scoring, and instructions here without leaving the package workspace.</p>
+												</div>
 
-										<label className='field'>
-											<span>Subject</span>
-											<input value={form.questionBank.metadata.subject} onChange={(event) => updateMetadata('subject', event.target.value)} placeholder='general_science' required />
-										</label>
+												<div className='exam-summary-grid'>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Exam ID</p>
+														<p className='exam-summary-value'>{trimText(form.examId) || generatedIds.examId || 'Auto ID pending'}</p>
+														<p className='exam-summary-note'>{examTitleLabel}</p>
+													</div>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Exam mode</p>
+														<p className='exam-summary-value'>{formatModeLabel(examMode)}</p>
+														<p className='exam-summary-note'>Linked to round {currentRoundId}</p>
+													</div>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Question plan</p>
+														<p className='exam-summary-value'>{toOptionalNumber(form.exam.totalQuestions) ?? savedQuestionCount}</p>
+														<p className='exam-summary-note'>Pool {toOptionalNumber(form.exam.questionPoolSize) ?? savedQuestionCount} • {toOptionalNumber(form.exam.timeLimit) ?? 1800}s limit</p>
+													</div>
+												</div>
 
-										<label className='field'>
-											<span>Grade</span>
-											<input value={form.questionBank.metadata.grade} onChange={(event) => updateMetadata('grade', event.target.value)} placeholder='grade7' required />
-										</label>
+												<div className='exam-stage-body' id='exam-stage-body'>
+													<div className='form-grid two-column'>
+														<label className='field'>
+															<div className='field-heading'>
+																<span>Exam ID</span>
+																<button className='field-toggle' type='button' onClick={() => toggleManualId('exam')}>
+																	{manualIds.exam ? 'Use auto ID' : 'Manual edit'}
+																</button>
+															</div>
+															<input
+																className={!manualIds.exam ? 'field-auto-input' : ''}
+																value={form.examId}
+																onChange={(event) => setForm({ ...form, examId: event.target.value })}
+																placeholder='EX_G7_GS_CH1_R1'
+																readOnly={!manualIds.exam}
+																required
+															/>
+															<small className='field-hint'>{manualIds.exam ? 'Manual mode is on for this ID.' : generatedIds.examId || 'Auto format follows subject, chapter, and round.'}</small>
+														</label>
 
-										<label className='field'>
-											<span>Chapter</span>
-											<input value={form.questionBank.metadata.chapter} onChange={(event) => updateMetadata('chapter', event.target.value)} placeholder='ch1' required />
-										</label>
+														<label className='field'>
+															<span>Exam type</span>
+															<input className='field-auto-input' value={formatModeLabel(examMode)} readOnly />
+															<small className='field-hint'>Exam type comes from the Exams sidebar group you opened.</small>
+														</label>
 
-										<label className='field'>
-											<span>Difficulty</span>
-											<select value={form.questionBank.metadata.difficulty} onChange={(event) => updateMetadata('difficulty', event.target.value)}>
-												<option value='easy'>easy</option>
-												<option value='medium'>medium</option>
-												<option value='hard'>hard</option>
-												<option value='mixed'>mixed</option>
-											</select>
-										</label>
+														<label className='field'>
+															<span>Optional title</span>
+															<input value={form.exam.title} onChange={(event) => updateExamField('title', event.target.value)} placeholder='Round 1 - Chapter 1' />
+														</label>
 
-										<label className='field'>
-											<span>Total questions</span>
-											<input type='number' min='1' value={form.questionBank.metadata.totalQuestions} onChange={(event) => updateMetadata('totalQuestions', event.target.value)} placeholder='120' />
-										</label>
-									</div>
+														<label className='field'>
+															<span>Max attempts</span>
+															<input type='number' min='1' value={form.exam.maxAttempts} onChange={(event) => updateExamField('maxAttempts', event.target.value)} required />
+														</label>
 
-									<div className='row-header'>
-										<h3>Questions</h3>
-										<button className='secondary-action inline-button' type='button' onClick={addQuestion}>
-											Add question
-										</button>
-									</div>
+														<label className='field'>
+															<span>Pass percent</span>
+															<input type='number' min='0' value={form.exam.passPercent} onChange={(event) => updateExamField('passPercent', event.target.value)} placeholder='80' />
+														</label>
 
-									<div className='stack-list exam-question-stack'>
-										{form.questionBank.questions.map((question, index) => (
-											<article className='editor-card' key={`${question.key}-${index}`}>
-												<div className='row-header'>
-													<h3>Question {index + 1}</h3>
-													{form.questionBank.questions.length > 1 ? (
-														<button className='ghost-button' type='button' onClick={() => removeQuestion(index)}>
-															Remove
-														</button>
+														<label className='field'>
+															<span>Question pool size</span>
+															<input type='number' min='1' value={form.exam.questionPoolSize} onChange={(event) => updateExamField('questionPoolSize', event.target.value)} placeholder='120' />
+														</label>
+
+														<label className='field'>
+															<span>Total questions</span>
+															<input type='number' min='1' value={form.exam.totalQuestions} onChange={(event) => updateExamField('totalQuestions', event.target.value)} placeholder='40' />
+														</label>
+
+														<label className='field'>
+															<span>Time limit (seconds)</span>
+															<input type='number' min='1' value={form.exam.timeLimit} onChange={(event) => updateExamField('timeLimit', event.target.value)} required />
+														</label>
+
+														<label className='field'>
+															<span>Text field key</span>
+															<select value={form.exam.textKey} onChange={(event) => updateExamField('textKey', event.target.value)}>
+																<option value='instructions'>instructions</option>
+																<option value='instruction'>instruction</option>
+																<option value='rules'>rules</option>
+															</select>
+														</label>
+													</div>
+
+													<div className='toggle-grid'>
+														<label className='toggle-field'>
+															<input type='checkbox' checked={examMode === 'competitive'} disabled readOnly />
+															<span>Ranking enabled for competitive exams only</span>
+														</label>
+
+														<label className='toggle-field'>
+															<input type='checkbox' checked={form.exam.scoringEnabled} onChange={(event) => updateExamField('scoringEnabled', event.target.checked)} />
+															<span>Scoring enabled</span>
+														</label>
+
+														<label className='toggle-field'>
+															<input type='checkbox' checked={form.exam.attemptRefillEnabled} onChange={(event) => updateExamField('attemptRefillEnabled', event.target.checked)} />
+															<span>Attempt refill enabled</span>
+														</label>
+
+														<label className='toggle-field'>
+															<input type='checkbox' checked={form.exam.includeLeadingNull} onChange={(event) => updateExamField('includeLeadingNull', event.target.checked)} />
+															<span>Keep Firebase-style leading null in lists</span>
+														</label>
+													</div>
+
+													{form.exam.attemptRefillEnabled ? (
+														<div className='form-grid'>
+															<label className='field'>
+																<span>Attempt refill interval (ms)</span>
+																<input type='number' min='1' value={form.exam.attemptRefillIntervalMs} onChange={(event) => updateExamField('attemptRefillIntervalMs', event.target.value)} placeholder='1200000' />
+															</label>
+														</div>
+													) : null}
+
+													<div className='row-header'>
+														<h3>Instructions or rules</h3>
+														<button className='secondary-action inline-button' type='button' onClick={addInstruction}>Add line</button>
+													</div>
+
+													<div className='stack-list tight-stack'>
+														{form.exam.textItems.map((item, index) => (
+															<div className='inline-row' key={`instruction-${index}`}>
+																<input className='row-input' value={item} onChange={(event) => updateInstruction(index, event.target.value)} placeholder={index === 0 ? 'No switching apps' : 'Submit before timer ends'} />
+																{form.exam.textItems.length > 1 ? <button className='ghost-button' type='button' onClick={() => removeInstruction(index)}>Remove</button> : null}
+															</div>
+														))}
+													</div>
+
+													{form.exam.scoringEnabled ? (
+														<div className='form-grid two-column'>
+															{Object.entries(form.exam.scoring).map(([field, value]) => (
+																<label className='field' key={field}>
+																	<span>{field}</span>
+																	<input type='number' min='0' value={value} onChange={(event) => updateExamField('scoring', { ...form.exam.scoring, [field]: event.target.value })} />
+																</label>
+															))}
+														</div>
 													) : null}
 												</div>
+											</section>
+										) : null}
 
-												<div className='form-grid two-column'>
-													<label className='field'>
-														<span>Question key</span>
-														<input value={question.key} onChange={(event) => updateQuestion(index, 'key', event.target.value)} placeholder='Q1' required />
-													</label>
+										{stageVisibility.questionBank && questionBankStageUnlocked ? (
+											<section className={`exam-nested-panel exam-stage-card exam-stage-bank ${stageVisibility.questionBank ? 'is-open' : 'is-collapsed'} ${questionBankStageTone} ${questionBankFocus ? 'is-focus' : ''}`}>
+												<div className='exam-stage-header'>
+													<div className='exam-stage-header-row'>
+														<div className='exam-stage-title'>
+															<span className='exam-stage-badge'>03</span>
+															<div className='compact-heading exam-stage-heading'>
+																<span className='section-kicker'>Question Bank</span>
+																<h2>Expand the question bank into full-width focus</h2>
+															</div>
+														</div>
 
-													<label className='field'>
-														<span>Type</span>
-														<select value={question.type} onChange={(event) => updateQuestion(index, 'type', event.target.value)}>
-															<option value='mcq'>mcq</option>
-															<option value='written'>written</option>
-															<option value='true_false'>true_false</option>
-															<option value='fill_blank'>fill_blank</option>
-														</select>
-													</label>
-
-													<label className='field'>
-														<span>Correct answer</span>
-														<input value={question.correctAnswer} onChange={(event) => updateQuestion(index, 'correctAnswer', event.target.value)} placeholder='B' required />
-													</label>
-
-													<label className='field'>
-														<span>Marks</span>
-														<input type='number' min='1' value={question.marks} onChange={(event) => updateQuestion(index, 'marks', event.target.value)} required />
-													</label>
+														<div className='exam-stage-controls'>
+															<span className={`exam-stage-status ${questionBankStageTone}`}>{questionBankStageReady ? 'Ready' : 'Writing'}</span>
+															<button
+																className='exam-stage-toggle'
+																type='button'
+																onClick={() => toggleStageVisibility('questionBank')}
+																aria-expanded={stageVisibility.questionBank}
+																aria-controls='question-bank-stage-body'
+																disabled={!questionBankToggleEnabled}
+															>
+																{getStageToggleText(stageVisibility.questionBank, questionBankStageUnlocked, questionBankStageReady)}
+															</button>
+														</div>
+													</div>
+													<p className='exam-stage-note'>This is the focused writing surface. Use it for metadata and questions once the package and exam are already shaped.</p>
 												</div>
 
-												<label className='field'>
-													<span>Question text</span>
-													<textarea value={question.question} onChange={(event) => updateQuestion(index, 'question', event.target.value)} placeholder='Which planet is known as the Red Planet?' rows='3' required />
-												</label>
+												<div className='exam-summary-grid'>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Question bank ID</p>
+														<p className='exam-summary-value'>{trimText(form.questionBankId) || generatedIds.questionBankId || 'Auto ID pending'}</p>
+														<p className='exam-summary-note'>{chapterLabel}</p>
+													</div>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Metadata focus</p>
+														<p className='exam-summary-value'>{questionBankGradeLabel}</p>
+														<p className='exam-summary-note'>{questionBankSubjectLabel} • {chapterLabel}</p>
+													</div>
+													<div className='exam-summary-card'>
+														<p className='config-key'>Draft question progress</p>
+														<p className='exam-summary-value'>{startedQuestionCount}</p>
+														<p className='exam-summary-note'>{savedQuestionCount} question{savedQuestionCount === 1 ? '' : 's'} currently saveable</p>
+													</div>
+												</div>
 
-												<label className='field'>
-													<span>Explanation</span>
-													<textarea value={question.explanation} onChange={(event) => updateQuestion(index, 'explanation', event.target.value)} placeholder='Explain why the answer is correct.' rows='2' />
-												</label>
-
-												<div className='option-grid'>
-													{Object.keys(question.options).map((optionKey) => (
-														<label className='field' key={optionKey}>
-															<span>Option {optionKey}</span>
-															<input value={question.options[optionKey]} onChange={(event) => updateQuestionOption(index, optionKey, event.target.value)} placeholder={`Choice ${optionKey}`} />
+												<div className='exam-stage-body' id='question-bank-stage-body'>
+													<div className='form-grid two-column'>
+														<label className='field'>
+															<div className='field-heading'>
+																<span>Question bank ID</span>
+																<button className='field-toggle' type='button' onClick={() => toggleManualId('questionBank')}>
+																	{manualIds.questionBank ? 'Use auto ID' : 'Manual edit'}
+																</button>
+															</div>
+															<input
+																className={!manualIds.questionBank ? 'field-auto-input' : ''}
+																value={form.questionBankId}
+																onChange={(event) => setForm({ ...form, questionBankId: event.target.value })}
+																placeholder='QB_G7_GS_CH1_SET_A'
+																readOnly={!manualIds.questionBank}
+																required
+															/>
+															<small className='field-hint'>
+																{manualIds.questionBank
+																	? 'Manual mode is on for this ID.'
+																	: generatedIds.questionBankId || 'Auto format starts after you fill grade, subject, chapter, and mode.'}
+															</small>
 														</label>
-													))}
+
+														<label className='field'>
+															<span>Subject</span>
+															<input value={form.questionBank.metadata.subject} onChange={(event) => updateMetadata('subject', event.target.value)} placeholder='general_science' required />
+														</label>
+
+														<label className='field'>
+															<span>Grade</span>
+															<input value={form.questionBank.metadata.grade} onChange={(event) => updateMetadata('grade', event.target.value)} placeholder='grade7' required />
+														</label>
+
+														<label className='field'>
+															<span>Chapter</span>
+															<input value={form.questionBank.metadata.chapter} onChange={(event) => updateMetadata('chapter', event.target.value)} placeholder='ch1' required />
+														</label>
+
+														<label className='field'>
+															<span>Difficulty</span>
+															<select value={form.questionBank.metadata.difficulty} onChange={(event) => updateMetadata('difficulty', event.target.value)}>
+																<option value='easy'>easy</option>
+																<option value='medium'>medium</option>
+																<option value='hard'>hard</option>
+																<option value='mixed'>mixed</option>
+															</select>
+														</label>
+
+														<label className='field'>
+															<span>Total questions</span>
+															<input type='number' min='1' value={form.questionBank.metadata.totalQuestions} onChange={(event) => updateMetadata('totalQuestions', event.target.value)} placeholder='120' />
+														</label>
+													</div>
+
+													<div className='row-header'>
+														<h3>Questions</h3>
+														<button className='secondary-action inline-button' type='button' onClick={addQuestion}>Add question</button>
+													</div>
+
+													<div className='stack-list exam-question-stack'>
+														{form.questionBank.questions.map((question, index) => (
+															<article className='editor-card' key={`${question.key}-${index}`}>
+																<div className='row-header'>
+																	<h3>Question {index + 1}</h3>
+																	{form.questionBank.questions.length > 1 ? <button className='ghost-button' type='button' onClick={() => removeQuestion(index)}>Remove</button> : null}
+																</div>
+
+																<div className='form-grid two-column'>
+																	<label className='field'>
+																		<span>Question key</span>
+																		<input value={question.key} onChange={(event) => updateQuestion(index, 'key', event.target.value)} placeholder='Q1' required />
+																	</label>
+
+																	<label className='field'>
+																		<span>Type</span>
+																		<select value={question.type} onChange={(event) => updateQuestion(index, 'type', event.target.value)}>
+																			<option value='mcq'>mcq</option>
+																			<option value='written'>written</option>
+																			<option value='true_false'>true_false</option>
+																			<option value='fill_blank'>fill_blank</option>
+																		</select>
+																	</label>
+
+																	<label className='field'>
+																		<span>Correct answer</span>
+																		<input value={question.correctAnswer} onChange={(event) => updateQuestion(index, 'correctAnswer', event.target.value)} placeholder='B' required />
+																	</label>
+
+																	<label className='field'>
+																		<span>Marks</span>
+																		<input type='number' min='1' value={question.marks} onChange={(event) => updateQuestion(index, 'marks', event.target.value)} required />
+																	</label>
+																</div>
+
+																<label className='field'>
+																	<span>Question text</span>
+																	<textarea value={question.question} onChange={(event) => updateQuestion(index, 'question', event.target.value)} placeholder='Which planet is known as the Red Planet?' rows='3' required />
+																</label>
+
+																<label className='field'>
+																	<span>Explanation</span>
+																	<textarea value={question.explanation} onChange={(event) => updateQuestion(index, 'explanation', event.target.value)} placeholder='Explain why the answer is correct.' rows='2' />
+																</label>
+
+																<div className='option-grid'>
+																	{Object.keys(question.options).map((optionKey) => (
+																		<label className='field' key={optionKey}>
+																			<span>Option {optionKey}</span>
+																			<input value={question.options[optionKey]} onChange={(event) => updateQuestionOption(index, optionKey, event.target.value)} placeholder={`Choice ${optionKey}`} />
+																		</label>
+																	))}
+																</div>
+															</article>
+														))}
+													</div>
 												</div>
-											</article>
-										))}
-										</div>
+											</section>
+										) : null}
 									</div>
-								) : null}
 								</section>
 
 								<div className='submit-row exam-submit-row'>
@@ -2173,146 +2267,19 @@ export default function ExamPage({ routeMode = 'practice' }) {
 										<button className='secondary-action' type='button' onClick={handleSaveDraft} disabled={submitState.loading || draftState.loading}>
 											{draftState.loading ? 'Working...' : activeDraftId ? 'Update draft' : 'Save draft'}
 										</button>
-										{activeDraftId ? (
-											<button className='ghost-button' type='button' onClick={() => handleDeleteDraft()} disabled={submitState.loading || draftState.loading}>
-												Delete draft
-											</button>
-										) : null}
-										<button className='ghost-button' type='button' onClick={handleStartNewDraft} disabled={submitState.loading || draftState.loading}>
-											New draft
-										</button>
-										<button className='primary-action' type='submit' disabled={submitState.loading}>
-											{submitState.loading ? 'Saving to Platform1...' : 'Save record'}
-										</button>
+										{activeDraftId ? <button className='ghost-button' type='button' onClick={() => handleDeleteDraft()} disabled={submitState.loading || draftState.loading}>Delete draft</button> : null}
+										<button className='ghost-button' type='button' onClick={handleStartNewDraft} disabled={submitState.loading || draftState.loading}>New draft</button>
+										<button className='primary-action' type='submit' disabled={submitState.loading}>{submitState.loading ? 'Saving to Platform1...' : 'Save record'}</button>
 									</div>
 									<p className='inline-note'>
 										{draftState.lastSavedAt
-											? `Last draft synced ${formatDateTime(draftState.lastSavedAt)} in Firebase.${activeDraft ? ` Active workspace: ${activeDraft.label}.` : ''} Save record publishes the final nodes.`
-											: 'Save draft stores this package, exam, and question bank in Firebase as a reusable workspace. Save record publishes the final nodes.'}
+											? `Last draft synced ${formatDateTime(draftState.lastSavedAt)}.${activeDraft ? ` Active workspace: ${activeWorkspaceLabel}.` : ''} Save record publishes the final package, exam, and bank nodes.`
+											: 'Save draft keeps this package workspace in Firebase. Save record publishes the final package, exam, and question bank nodes.'}
 									</p>
 								</div>
 							</form>
-
-							<aside className='preview-panel exam-outline-panel' id='live-hierarchy'>
-								<div className='exam-outline-section'>
-									<span className='section-kicker'>Live Hierarchy</span>
-									<h3>How the record reads right now</h3>
-									<div className='exam-outline-list'>
-										<article className='exam-outline-item'>
-											<span className='exam-outline-step'>1</span>
-											<div>
-												<p className='config-key'>Package</p>
-												<h4>{packageNameLabel}</h4>
-												<p>{packageGradeLabel} • {packageSubjectLabel}</p>
-												<span className='exam-outline-path'>{packageNodePreview}</span>
-											</div>
-										</article>
-										<article className='exam-outline-item'>
-											<span className='exam-outline-step'>2</span>
-											<div>
-												<p className='config-key'>Exam</p>
-												<h4>{examTitleLabel}</h4>
-												<p>{formatModeLabel(examMode)} • Round {currentRoundId}</p>
-												<span className='exam-outline-path'>{examNodePreview}</span>
-											</div>
-										</article>
-										<article className='exam-outline-item'>
-											<span className='exam-outline-step'>3</span>
-											<div>
-												<p className='config-key'>Question Bank</p>
-												<h4>{questionBankSubjectLabel}</h4>
-												<p>{questionBankGradeLabel} • {chapterLabel}</p>
-												<span className='exam-outline-path'>{questionBankNodePreview}</span>
-											</div>
-										</article>
-									</div>
-								</div>
-
-								<div className='exam-outline-section'>
-									<span className='section-kicker'>Publish Check</span>
-									<div className='exam-outline-checks'>
-										<div className='exam-check-card'>
-											<p className='config-key'>Mode</p>
-											<p className='exam-summary-value'>{formatModeLabel(examMode)}</p>
-										</div>
-										<div className='exam-check-card'>
-											<p className='config-key'>Round ID</p>
-											<p className='exam-summary-value'>{currentRoundId}</p>
-										</div>
-										<div className='exam-check-card'>
-											<p className='config-key'>Saveable questions</p>
-											<p className='exam-summary-value'>{savedQuestionCount}</p>
-										</div>
-										<div className='exam-check-card'>
-											<p className='config-key'>Overwrite</p>
-											<p className='exam-summary-value'>{allowOverwrite ? 'Allowed' : 'Protected'}</p>
-										</div>
-									</div>
-									<p className='inline-note'>Save record still writes one package node, one exam node, and one question bank node without changing the database structure.</p>
-								</div>
-							</aside>
 						</div>
 					</section>
-
-			<section className='section-block'>
-				<div className='section-header-row'>
-					<div className='section-heading'>
-						<span className='section-kicker'>Existing Content</span>
-						<h2>Current IDs by exam type</h2>
-					</div>
-				</div>
-
-				<div className='catalog-grid compact-grid'>
-					<div className='catalog-card'>
-						<div className='catalog-meta-row'>
-							<span className='pill pill-teal'>Question Banks</span>
-						</div>
-						<ul className='catalog-list'>
-							{overview.questionBanks.slice(0, 8).map((item) => (
-								<li key={item.questionBankId}>{item.questionBankId}</li>
-							))}
-						</ul>
-					</div>
-
-					<div className='catalog-card'>
-						<div className='catalog-meta-row'>
-							<span className='pill pill-gold'>Competitive Exams</span>
-						</div>
-						<ul className='catalog-list'>
-							{competitiveExams.slice(0, 8).map((item) => (
-								<li key={item.examId}>{item.examId}</li>
-							))}
-						</ul>
-					</div>
-
-					<div className='catalog-card'>
-						<div className='catalog-meta-row'>
-							<span className='pill pill-coral'>Practice Exams</span>
-						</div>
-						<ul className='catalog-list'>
-							{practiceExams.slice(0, 8).map((item) => (
-								<li key={item.examId}>{item.examId}</li>
-							))}
-						</ul>
-					</div>
-
-
-					<div className='catalog-card'>
-						<div className='catalog-meta-row'>
-							<span className='pill pill-coral'>Packages</span>
-						</div>
-						<ul className='catalog-list'>
-							{overview.packages.slice(0, 8).map((item) => (
-								<li key={item.packageId}>{item.packageId}</li>
-							))}
-						</ul>
-					</div>
-				</div>
-			</section>
-
-			
-
-		
 				</div>
 			</main>
 		</div>

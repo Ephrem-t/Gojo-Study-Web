@@ -1,15 +1,48 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FaArrowRight, FaBuilding, FaCheckCircle, FaClipboardList, FaIdBadge, FaLayerGroup, FaMapMarkerAlt, FaSchool, FaSearch, FaUserTie } from 'react-icons/fa'
+import { FaArrowRight, FaBuilding, FaCheckCircle, FaIdBadge, FaImage, FaLayerGroup, FaMapMarkerAlt, FaSearch, FaSyncAlt } from 'react-icons/fa'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 
+const COUNTRY_OPTIONS = [
+	{ value: 'Ethiopia', label: 'Ethiopia', code: 'ET' },
+]
+
+const REGION_OPTIONS = [
+	{ value: 'Addis Ababa', label: 'Addis Ababa', code: 'AAB' },
+	{ value: 'Afar', label: 'Afar', code: 'AFR' },
+	{ value: 'Amhara', label: 'Amhara', code: 'AMH' },
+	{ value: 'Benishangul-Gumuz', label: 'Benishangul-Gumuz', code: 'BSG' },
+	{ value: 'Central Ethiopia', label: 'Central Ethiopia', code: 'CET' },
+	{ value: 'Dire Dawa', label: 'Dire Dawa', code: 'DDA' },
+	{ value: 'Gambela', label: 'Gambela', code: 'GAM' },
+	{ value: 'Harari', label: 'Harari', code: 'HAR' },
+	{ value: 'Oromia', label: 'Oromia', code: 'ORO' },
+	{ value: 'Sidama', label: 'Sidama', code: 'SID' },
+	{ value: 'Somali', label: 'Somali', code: 'SOM' },
+	{ value: 'South Ethiopia', label: 'South Ethiopia', code: 'SET' },
+	{ value: "South West Ethiopia Peoples' Region", label: "South West Ethiopia Peoples' Region", code: 'SWE' },
+	{ value: "Southern Nations, Nationalities, and Peoples' Region", label: "Southern Nations, Nationalities, and Peoples' Region", code: 'SNN' },
+	{ value: 'Tigray', label: 'Tigray', code: 'TIG' },
+]
+
+const CITY_OPTIONS = [
+	{ value: 'Addis Ababa', label: 'Addis Ababa', code: 'AAB' },
+	{ value: 'Adama', label: 'Adama', code: 'ADA' },
+	{ value: 'Bishoftu', label: 'Bishoftu', code: 'BSH' },
+	{ value: 'Hawassa', label: 'Hawassa', code: 'HAW' },
+]
+
+const DEFAULT_COUNTRY = COUNTRY_OPTIONS[0]
+
 const LANGUAGE_OPTIONS = [
 	{ key: 'am', label: 'Amharic' },
 	{ key: 'en', label: 'English' },
+	{ key: 'om', label: 'Oromic' },
 ]
 
 const LEVEL_OPTIONS = [
+	{ key: 'preprimary', label: 'Pre-primary' },
 	{ key: 'elementary', label: 'Elementary' },
 	{ key: 'secondary', label: 'Secondary' },
 ]
@@ -23,12 +56,9 @@ function createDefaultForm() {
 		school: {
 			name: '',
 			shortName: '',
-			country: 'Ethiopia',
-			countryCode: 'ET',
+			country: DEFAULT_COUNTRY.value,
 			region: '',
-			regionCode: '',
 			city: '',
-			cityCode: '',
 			subCity: '',
 			kebele: '',
 			addressLine: '',
@@ -42,8 +72,10 @@ function createDefaultForm() {
 			languages: {
 				am: true,
 				en: true,
+				om: false,
 			},
 			levels: {
+				preprimary: false,
 				elementary: true,
 				secondary: false,
 			},
@@ -61,12 +93,16 @@ function createDefaultForm() {
 			position: 'HR Manager',
 		},
 		registerer: {
-			name: '',
+			firstName: '',
+			middleName: '',
+			lastName: '',
 			gender: 'Male',
 			profileImage: '',
 			email: '',
 			phone: '',
+			alternativePhone: '',
 			password: '',
+			position: 'Registerer',
 		},
 	}
 }
@@ -95,6 +131,27 @@ function normalizeCodeSegment(value, length, fallback = '') {
 
 function normalizeShortName(value) {
 	return normalizeToken(value)
+}
+
+function findOptionByValue(options, value) {
+	const normalizedValue = trimText(value).toLowerCase()
+	if (!normalizedValue) {
+		return null
+	}
+
+	return options.find((option) => option.value.toLowerCase() === normalizedValue) || null
+}
+
+function resolveCountryCode(value) {
+	return findOptionByValue(COUNTRY_OPTIONS, value)?.code || DEFAULT_COUNTRY.code
+}
+
+function resolveRegionCode(value) {
+	return findOptionByValue(REGION_OPTIONS, value)?.code || normalizeCodeSegment(value, 3, 'REG')
+}
+
+function resolveCityCode(value) {
+	return findOptionByValue(CITY_OPTIONS, value)?.code || normalizeCodeSegment(value, 3, 'CITY')
 }
 
 function buildAcademicYearKey(value) {
@@ -152,20 +209,21 @@ function joinNameParts(...parts) {
 	return parts.map(trimText).filter(Boolean).join(' ')
 }
 
+function formatListSummary(values, fallback) {
+	const labels = values.map((value) => trimText(value)).filter(Boolean)
+	return labels.length ? labels.join(' • ') : fallback
+}
+
 function buildSchoolCodePreview(school) {
-	const countryCode = normalizeCodeSegment(school.countryCode || school.country, 2, 'ET')
-	const regionCode = normalizeCodeSegment(school.regionCode || school.region, 3, 'REG')
-	const cityCode = normalizeCodeSegment(school.cityCode || school.city, 3, 'CITY')
+	const countryCode = resolveCountryCode(school.country)
+	const regionCode = resolveRegionCode(school.region)
+	const cityCode = resolveCityCode(school.city)
 	const shortName = normalizeShortName(school.shortName) || 'SCH'
 	return `${countryCode}-${regionCode}-${cityCode}-${shortName}`
 }
 
 function buildCurrentYearSuffix() {
 	return String(new Date().getFullYear() % 100).padStart(2, '0')
-}
-
-function buildEmployeeIdPreview() {
-	return `EMP_0001_${buildCurrentYearSuffix()}`
 }
 
 function buildHrIdPreview(shortName) {
@@ -182,6 +240,10 @@ function buildPayload(form) {
 	return {
 		school: {
 			...form.school,
+			country: trimText(form.school.country) || DEFAULT_COUNTRY.value,
+			countryCode: resolveCountryCode(form.school.country),
+			regionCode: resolveRegionCode(form.school.region),
+			cityCode: resolveCityCode(form.school.city),
 			currentAcademicYear: buildAcademicYearKey(form.school.currentAcademicYear),
 		},
 		hr: {
@@ -218,21 +280,6 @@ function SignalCard({ icon: Icon, label, value, tone = 'accent' }) {
 	)
 }
 
-function WorkflowCard({ icon: Icon, label, title, detail }) {
-	return (
-		<div className='school-workflow-card'>
-			<span className='school-workflow-icon' aria-hidden='true'>
-				<Icon />
-			</span>
-			<div className='school-workflow-copy'>
-				<span className='config-key'>{label}</span>
-				<strong>{title}</strong>
-				<p>{detail}</p>
-			</div>
-		</div>
-	)
-}
-
 function DetailChip({ label, value, tone = 'neutral' }) {
 	return (
 		<div className={`school-detail-chip tone-${tone}`}>
@@ -253,43 +300,27 @@ export default function School() {
 
 	const payload = useMemo(() => buildPayload(form), [form])
 	const schoolCodePreview = useMemo(() => buildSchoolCodePreview(form.school), [form.school])
-	const employeeIdPreview = useMemo(() => buildEmployeeIdPreview(), [])
 	const hrIdPreview = useMemo(() => buildHrIdPreview(form.school.shortName), [form.school.shortName])
 	const registererIdPreview = useMemo(() => buildRegistererIdPreview(form.school.shortName), [form.school.shortName])
 	const academicYearLabel = useMemo(() => formatAcademicYearLabel(form.school.currentAcademicYear), [form.school.currentAcademicYear])
 	const hrDisplayName = joinNameParts(form.hr.firstName, form.hr.middleName, form.hr.lastName) || 'HR lead pending'
-	const registererDisplayName = trimText(form.registerer.name) || 'Registration lead pending'
+	const registererDisplayName = joinNameParts(form.registerer.firstName, form.registerer.middleName, form.registerer.lastName) || 'Registration lead pending'
 	const enabledLanguages = LANGUAGE_OPTIONS.filter((item) => form.school.languages[item.key]).map((item) => item.label)
 	const enabledLevels = LEVEL_OPTIONS.filter((item) => form.school.levels[item.key]).map((item) => item.label)
+	const enabledLanguageSummary = formatListSummary(enabledLanguages, 'No school languages selected yet')
+	const enabledLevelSummary = formatListSummary(enabledLevels, 'No academic levels selected yet')
 	const locationPreview = [form.school.city, form.school.region, form.school.country].filter(hasContent).join(', ') || 'Location pending'
 	const schoolStatusLabel = form.school.active ? 'Active on creation' : 'Staged for review'
-	const statusSummary = form.school.active
-		? 'The school goes live with its first operators immediately after provisioning.'
-		: 'The structure is provisioned in staging so the team can review before launch.'
+	const assetCompletionCount = [form.school.logoUrl, form.school.coverImageUrl].filter(hasContent).length
+	const heroLiveChip = directory.count ? `${directory.count} schools in registry` : 'New launch workspace'
+	const launchTeamLabel = `${hrDisplayName} + ${registererDisplayName}`
+	const lastLaunchSummary = lastCreated
+		? `${lastCreated.schoolName || 'School'} launched as ${lastCreated.schoolCode || 'a new school'} with ${lastCreated.hrId || 'HR'} and ${lastCreated.registererId || 'registerer'} ready.`
+		: `HR ${hrIdPreview} and Registerer ${registererIdPreview} will be generated when you publish this launch.`
 	const heroSignals = [
 		{ icon: FaMapMarkerAlt, label: 'Launch geography', value: locationPreview, tone: 'accent' },
 		{ icon: FaLayerGroup, label: 'Academic cycle', value: academicYearLabel, tone: 'gold' },
 		{ icon: FaCheckCircle, label: 'Activation mode', value: schoolStatusLabel, tone: form.school.active ? 'teal' : 'neutral' },
-	]
-	const provisioningSteps = [
-		{
-			icon: FaBuilding,
-			label: 'Step 01',
-			title: 'Register the school foundation',
-			detail: 'Create schoolInfo, the opening AcademicYears entry, and the short-name index in one backend save.',
-		},
-		{
-			icon: FaUserTie,
-			label: 'Step 02',
-			title: 'Seed the HR workspace',
-			detail: `${hrIdPreview} is provisioned with ${employeeIdPreview} and the first HR user profile.`,
-		},
-		{
-			icon: FaClipboardList,
-			label: 'Step 03',
-			title: 'Open the registration desk',
-			detail: `${registererIdPreview} is created as the first registerer login for day-one onboarding.`,
-		},
 	]
 	const filteredSchools = useMemo(() => {
 		const query = trimText(searchTerm).toLowerCase()
@@ -420,7 +451,7 @@ export default function School() {
 			setAssetUploadState({
 				loadingKey: '',
 				error: '',
-				success: `${file.name} uploaded and linked successfully. URL: ${uploadedUrl}`,
+				success: `${file.name} uploaded and linked successfully.`,
 			})
 		} catch (error) {
 			setAssetUploadState({ loadingKey: '', error: error.message || 'Upload failed', success: '' })
@@ -465,11 +496,14 @@ export default function School() {
 				<div className='exam-shell builder-shell school-shell'>
 					<section className='hero-panel school-hero-panel'>
 						<div className='hero-copy school-hero-copy'>
-							<span className='eyebrow'>Platform1 School Registry</span>
-							<h1>Create the school and its launch accounts together</h1>
+							<div className='school-hero-kicker-row'>
+								<span className='eyebrow'>Platform1 School Registry</span>
+								<span className='school-hero-live-chip'>{heroLiveChip}</span>
+							</div>
+							<h1>Launch a school, its HR lead, and its registerer from one premium control room.</h1>
 							<p>
-								This flow provisions the school node, maps the short name into schoolCodeIndex, and creates the first HR and
-								registration desk accounts in one backend save. The database structure stays aligned with the rest of the Gojo apps.
+								Provision school identity, hidden location codes, brand assets, and first operator accounts in one save while keeping
+								the registry aligned with the rest of the Gojo company platform.
 							</p>
 							<div className='school-command-grid'>
 								{heroSignals.map((signal) => (
@@ -486,7 +520,6 @@ export default function School() {
 									<span>View school directory</span>
 								</a>
 							</div>
-							<p className='school-hero-caption'>{statusSummary}</p>
 							{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
 							{assetUploadState.error ? <div className='status-banner warning'>{assetUploadState.error}</div> : null}
 							{assetUploadState.success ? <div className='status-banner success-banner'>{assetUploadState.success}</div> : null}
@@ -494,15 +527,64 @@ export default function School() {
 							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 						</div>
 
-						
+						<div className='school-hero-card'>
+							<div className='school-hero-card-top'>
+								<div>
+									<span className='pill pill-gold'>Launch Snapshot</span>
+									<h3>{form.school.name || 'Your next school launch'}</h3>
+									<p>
+										{form.school.name
+											? `${locationPreview}. ${schoolStatusLabel}. ${academicYearLabel}.`
+											: 'Complete the school identity, operators, and media assets to provision the next campus in one publish.'}
+									</p>
+								</div>
+								<div className='school-hero-card-badge'>
+									<span>Preview school code</span>
+									<strong>{schoolCodePreview}</strong>
+									<small>{academicYearLabel}</small>
+								</div>
+							</div>
+
+							<div className='school-hero-highlight-grid'>
+								<article className='school-hero-highlight-card'>
+									<span>Languages</span>
+									<strong>{enabledLanguages.length ? `${enabledLanguages.length} enabled` : 'Pending'}</strong>
+									<small>{enabledLanguageSummary}</small>
+								</article>
+								<article className='school-hero-highlight-card'>
+									<span>Levels</span>
+									<strong>{enabledLevels.length ? `${enabledLevels.length} active` : 'Pending'}</strong>
+									<small>{enabledLevelSummary}</small>
+								</article>
+								<article className='school-hero-highlight-card'>
+									<span>Brand assets</span>
+									<strong>{`${assetCompletionCount}/2 uploaded`}</strong>
+									<small>{assetCompletionCount === 2 ? 'Logo and cover are both ready for launch.' : 'Upload the logo and cover to complete the school presentation.'}</small>
+								</article>
+							</div>
+
+							<div className='builder-stat-grid school-hero-stats'>
+								<StatCard label='Schools' value={directory.count} tone='gold' />
+								<StatCard label='Active Schools' value={directory.activeCount} tone='teal' />
+								<StatCard label='HR Accounts' value={directory.hrAccountCount} tone='teal' />
+								<StatCard label='Registerers' value={directory.registererAccountCount} tone='gold' />
+							</div>
+
+							<div className='school-hero-launch-note'>
+								<div className='school-hero-launch-copy'>
+									<span className='pill pill-gold'>Launch team</span>
+									<h4>{launchTeamLabel}</h4>
+									<p>{lastLaunchSummary}</p>
+								</div>
+							</div>
+						</div>
 					</section>
 
 					<section className='section-block' id='school-form'>
 						<div className='section-header-row'>
 							<div className='section-heading'>
 								<span className='section-kicker'>Onboarding</span>
-								<h2>Provision the school, HR, and registerer</h2>
-								<p className='inline-note'>Enter the school identity first, then define the first operational accounts that should go live with it.</p>
+								<h2>Provision the school and its first operators</h2>
 							</div>
 							<div className='school-code-pill'>
 								<span>Preview school code</span>
@@ -517,48 +599,60 @@ export default function School() {
 									<div className='compact-heading'>
 										<span className='section-kicker'>School blueprint</span>
 										<h2>Identity, location, and operating settings</h2>
+										<p className='inline-note'>Location codes are generated automatically behind the scenes while this form stays focused on the visible operating profile.</p>
+									</div>
+
+									<div className='school-preview-pill-row school-onboarding-strip'>
+										<DetailChip label='School code' value={schoolCodePreview} tone='accent' />
+										<DetailChip label='Launch IDs' value={`${hrIdPreview} · ${registererIdPreview}`} tone='teal' />
+										<DetailChip label='Brand assets' value={`${assetCompletionCount}/2 uploaded`} tone='gold' />
 									</div>
 
 									<div className='form-grid two-column'>
 										<label className='field'>
 											<span>School name</span>
-											<input value={form.school.name} onChange={(event) => updateSchoolField('name', event.target.value)} placeholder='Guda Miju Academy' required />
+											<input value={form.school.name} onChange={(event) => updateSchoolField('name', event.target.value)} placeholder='School Name' required />
 										</label>
 
 										<label className='field'>
 											<span>Short name</span>
-											<input value={form.school.shortName} onChange={(event) => updateSchoolField('shortName', event.target.value)} placeholder='GMI' required />
-											<span className='field-hint'>Uppercase short name used in the school code and HR username.</span>
+											<input value={form.school.shortName} onChange={(event) => updateSchoolField('shortName', event.target.value)} placeholder='Code' required />
+								
 										</label>
 
 										<label className='field'>
 											<span>Country</span>
-											<input value={form.school.country} onChange={(event) => updateSchoolField('country', event.target.value)} placeholder='Ethiopia' />
-										</label>
-
-										<label className='field'>
-											<span>Country code</span>
-											<input value={form.school.countryCode} onChange={(event) => updateSchoolField('countryCode', event.target.value)} placeholder='ET' />
+											<select value={form.school.country} onChange={(event) => updateSchoolField('country', event.target.value)}>
+												{COUNTRY_OPTIONS.map((option) => (
+													<option key={option.code} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
 										</label>
 
 										<label className='field'>
 											<span>Region</span>
-											<input value={form.school.region} onChange={(event) => updateSchoolField('region', event.target.value)} placeholder='Oromia' required />
-										</label>
-
-										<label className='field'>
-											<span>Region code</span>
-											<input value={form.school.regionCode} onChange={(event) => updateSchoolField('regionCode', event.target.value)} placeholder='ORO' />
+											<select value={form.school.region} onChange={(event) => updateSchoolField('region', event.target.value)} required>
+												<option value=''>Select region</option>
+												{REGION_OPTIONS.map((option) => (
+													<option key={option.code} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
 										</label>
 
 										<label className='field'>
 											<span>City</span>
-											<input value={form.school.city} onChange={(event) => updateSchoolField('city', event.target.value)} placeholder='Adama' required />
-										</label>
-
-										<label className='field'>
-											<span>City code</span>
-											<input value={form.school.cityCode} onChange={(event) => updateSchoolField('cityCode', event.target.value)} placeholder='ADA' />
+											<select value={form.school.city} onChange={(event) => updateSchoolField('city', event.target.value)} required>
+												<option value=''>Select city</option>
+												{CITY_OPTIONS.map((option) => (
+													<option key={option.code} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
 										</label>
 
 										<label className='field'>
@@ -567,7 +661,7 @@ export default function School() {
 										</label>
 
 										<label className='field'>
-											<span>Kebele</span>
+											<span>Kebele / Woreda</span>
 											<input value={form.school.kebele} onChange={(event) => updateSchoolField('kebele', event.target.value)} placeholder='01' />
 										</label>
 
@@ -594,19 +688,33 @@ export default function School() {
 										<label className='field'>
 											<span>Current academic year</span>
 											<input value={form.school.currentAcademicYear} onChange={(event) => updateSchoolField('currentAcademicYear', event.target.value)} placeholder='2026_2027' required />
-											<span className='field-hint'>Use 2026_2027 or 2026/2027. The backend normalizes it into the AcademicYears node.</span>
+											
 										</label>
 
 										<div className='school-media-grid field-span-2'>
 											<div className='school-media-card'>
-												<label className='field'>
-													<span>Logo URL</span>
-													<input value={form.school.logoUrl} onChange={(event) => updateSchoolField('logoUrl', event.target.value)} placeholder='https://...' />
-													<span className='field-hint'>Paste an existing image URL or upload a logo image. The saved school record stores this value in logoUrl.</span>
-												</label>
+												<div className='school-media-card-head'>
+													<div>
+														<span>Logo image</span>
+														<strong>{form.school.logoUrl ? 'Stored and ready' : 'Upload square logo'}</strong>
+													</div>
+													<div className='school-media-state'>{form.school.logoUrl ? 'Stored' : 'Pending'}</div>
+												</div>
 
-												<label className='field'>
-													<span>Upload logo image</span>
+												<div className={`school-media-preview${form.school.logoUrl ? ' has-image' : ''}`}>
+													{form.school.logoUrl ? (
+														<img className='school-media-preview-image school-branding-preview' src={form.school.logoUrl} alt='School logo preview' />
+													) : (
+														<>
+															<FaImage />
+															<span>Upload a square logo for the directory badge and launch hero.</span>
+														</>
+													)}
+												</div>
+
+												<label className='school-media-upload'>
+													<FaImage />
+													<span>{assetUploadState.loadingKey === 'logo' ? 'Uploading logo...' : 'Upload logo image'}</span>
 													<input
 														type='file'
 														accept='image/*'
@@ -617,29 +725,32 @@ export default function School() {
 														}}
 														disabled={assetUploadState.loadingKey === 'logo'}
 													/>
-													<span className='field-hint'>Accepted: JPG, PNG, WEBP, GIF. Uploaded file URL is stored in logoUrl.</span>
 												</label>
-
-												{form.school.logoUrl ? (
-													<div className='asset-url-display'>
-														<strong>Stored logo URL</strong>
-														<a href={form.school.logoUrl} target='_blank' rel='noreferrer'>
-															{form.school.logoUrl}
-														</a>
-														<img className='asset-preview-image school-branding-preview' src={form.school.logoUrl} alt='School logo preview' />
-													</div>
-												) : null}
 											</div>
 
 											<div className='school-media-card'>
-												<label className='field'>
-													<span>Cover image URL</span>
-													<input value={form.school.coverImageUrl} onChange={(event) => updateSchoolField('coverImageUrl', event.target.value)} placeholder='https://...' />
-													<span className='field-hint'>Paste an existing image URL or upload a cover image. The saved school record stores this value in coverImageUrl.</span>
-												</label>
+												<div className='school-media-card-head'>
+													<div>
+														<span>Cover image</span>
+														<strong>{form.school.coverImageUrl ? 'Stored and ready' : 'Upload wide cover'}</strong>
+													</div>
+													<div className='school-media-state'>{form.school.coverImageUrl ? 'Stored' : 'Pending'}</div>
+												</div>
 
-												<label className='field'>
-													<span>Upload cover image</span>
+												<div className={`school-media-preview${form.school.coverImageUrl ? ' has-image' : ''}`}>
+													{form.school.coverImageUrl ? (
+														<img className='school-media-preview-image school-branding-preview' src={form.school.coverImageUrl} alt='School cover preview' />
+													) : (
+														<>
+															<FaImage />
+															<span>Upload a wide cover image for a stronger launch presentation.</span>
+														</>
+													)}
+												</div>
+
+												<label className='school-media-upload'>
+													<FaImage />
+													<span>{assetUploadState.loadingKey === 'cover' ? 'Uploading cover...' : 'Upload cover image'}</span>
 													<input
 														type='file'
 														accept='image/*'
@@ -650,18 +761,7 @@ export default function School() {
 														}}
 														disabled={assetUploadState.loadingKey === 'cover'}
 													/>
-													<span className='field-hint'>Accepted: JPG, PNG, WEBP, GIF. Uploaded file URL is stored in coverImageUrl.</span>
 												</label>
-
-												{form.school.coverImageUrl ? (
-													<div className='asset-url-display'>
-														<strong>Stored cover URL</strong>
-														<a href={form.school.coverImageUrl} target='_blank' rel='noreferrer'>
-															{form.school.coverImageUrl}
-														</a>
-														<img className='asset-preview-image school-branding-preview' src={form.school.coverImageUrl} alt='School cover preview' />
-													</div>
-												) : null}
 											</div>
 										</div>
 									</div>
@@ -676,32 +776,22 @@ export default function School() {
 									<div className='school-selection-grid'>
 										<div className='school-selection-card'>
 											<p className='config-key'>Languages</p>
-											<div className='toggle-grid school-toggle-grid'>
+											<div className='school-pill-toggle-list'>
 												{LANGUAGE_OPTIONS.map((item) => (
-													<label className='toggle-field' key={item.key}>
-														<input
-															type='checkbox'
-															checked={form.school.languages[item.key]}
-															onChange={() => toggleSchoolSelection('languages', item.key)}
-														/>
-														<span>{item.label}</span>
-													</label>
+													<button className={`school-pill-toggle${form.school.languages[item.key] ? ' is-active' : ''}`} key={item.key} type='button' onClick={() => toggleSchoolSelection('languages', item.key)}>
+														{item.label}
+													</button>
 												))}
 											</div>
 										</div>
 
 										<div className='school-selection-card'>
 											<p className='config-key'>Levels</p>
-											<div className='toggle-grid school-toggle-grid'>
+											<div className='school-pill-toggle-list'>
 												{LEVEL_OPTIONS.map((item) => (
-													<label className='toggle-field' key={item.key}>
-														<input
-															type='checkbox'
-															checked={form.school.levels[item.key]}
-															onChange={() => toggleSchoolSelection('levels', item.key)}
-														/>
-														<span>{item.label}</span>
-													</label>
+													<button className={`school-pill-toggle${form.school.levels[item.key] ? ' is-active' : ''}`} key={item.key} type='button' onClick={() => toggleSchoolSelection('levels', item.key)}>
+														{item.label}
+													</button>
 												))}
 											</div>
 										</div>
@@ -765,23 +855,25 @@ export default function School() {
 													<div className='school-profile-avatar school-profile-avatar-placeholder'>HR</div>
 												)}
 											</div>
-											<label className='field'>
-												<span>Profile image URL</span>
-												<input value={form.hr.profileImage} onChange={(event) => updateHrField('profileImage', event.target.value)} placeholder='https://...' />
-											</label>
-											<label className='field'>
-												<span>Upload profile image</span>
-												<input
-													type='file'
-													accept='image/*'
-													onChange={(event) => {
-														const [file] = event.target.files || []
-														void handleSchoolAssetUpload(file, 'hr-profile')
-														event.target.value = ''
-													}}
-													disabled={assetUploadState.loadingKey === 'hr-profile'}
-												/>
-											</label>
+											<div className='school-profile-content'>
+												<span className='config-key'>Profile image</span>
+												<strong>HR profile photo</strong>
+												<p>Stored in the database and used across the operator directory.</p>
+												<label className='school-profile-upload'>
+													<FaImage />
+													<span>{assetUploadState.loadingKey === 'hr-profile' ? 'Uploading HR image...' : 'Upload HR profile image'}</span>
+													<input
+														type='file'
+														accept='image/*'
+														onChange={(event) => {
+															const [file] = event.target.files || []
+															void handleSchoolAssetUpload(file, 'hr-profile')
+															event.target.value = ''
+														}}
+														disabled={assetUploadState.loadingKey === 'hr-profile'}
+													/>
+												</label>
+											</div>
 										</div>
 									</div>
 								</section>
@@ -793,9 +885,17 @@ export default function School() {
 									</div>
 
 									<div className='form-grid two-column'>
-										<label className='field field-span-2'>
-											<span>Full name</span>
-											<input value={form.registerer.name} onChange={(event) => updateRegistererField('name', event.target.value)} placeholder='Bemnet Tilahun' required />
+										<label className='field'>
+											<span>First name</span>
+											<input value={form.registerer.firstName} onChange={(event) => updateRegistererField('firstName', event.target.value)} placeholder='Bemnet' required />
+										</label>
+										<label className='field'>
+											<span>Middle name</span>
+											<input value={form.registerer.middleName} onChange={(event) => updateRegistererField('middleName', event.target.value)} placeholder='Tilahun' />
+										</label>
+										<label className='field'>
+											<span>Last name</span>
+											<input value={form.registerer.lastName} onChange={(event) => updateRegistererField('lastName', event.target.value)} placeholder='Bekele' required />
 										</label>
 										<label className='field'>
 											<span>Gender</span>
@@ -816,6 +916,14 @@ export default function School() {
 											<input value={form.registerer.phone} onChange={(event) => updateRegistererField('phone', event.target.value)} placeholder='+2519...' required />
 										</label>
 										<label className='field'>
+											<span>Alternative phone</span>
+											<input value={form.registerer.alternativePhone} onChange={(event) => updateRegistererField('alternativePhone', event.target.value)} placeholder='+2519...' />
+										</label>
+										<label className='field'>
+											<span>Position</span>
+											<input value={form.registerer.position} onChange={(event) => updateRegistererField('position', event.target.value)} placeholder='Registerer' />
+										</label>
+										<label className='field field-span-2'>
 											<span>Temporary password</span>
 											<input value={form.registerer.password} onChange={(event) => updateRegistererField('password', event.target.value)} placeholder='Set the first registerer password' required />
 										</label>
@@ -827,34 +935,39 @@ export default function School() {
 													<div className='school-profile-avatar school-profile-avatar-placeholder'>RG</div>
 												)}
 											</div>
-											<label className='field'>
-												<span>Profile image URL</span>
-												<input value={form.registerer.profileImage} onChange={(event) => updateRegistererField('profileImage', event.target.value)} placeholder='https://...' />
-											</label>
-											<label className='field'>
-												<span>Upload profile image</span>
-												<input
-													type='file'
-													accept='image/*'
-													onChange={(event) => {
-														const [file] = event.target.files || []
-														void handleSchoolAssetUpload(file, 'registerer-profile')
-														event.target.value = ''
-													}}
-													disabled={assetUploadState.loadingKey === 'registerer-profile'}
-												/>
-											</label>
+											<div className='school-profile-content'>
+												<span className='config-key'>Profile image</span>
+												<strong>Registerer profile photo</strong>
+												<p>Stored in the database and used across the registration workspace.</p>
+												<label className='school-profile-upload'>
+													<FaImage />
+													<span>{assetUploadState.loadingKey === 'registerer-profile' ? 'Uploading registerer image...' : 'Upload registerer profile image'}</span>
+													<input
+														type='file'
+														accept='image/*'
+														onChange={(event) => {
+															const [file] = event.target.files || []
+															void handleSchoolAssetUpload(file, 'registerer-profile')
+															event.target.value = ''
+														}}
+														disabled={assetUploadState.loadingKey === 'registerer-profile'}
+													/>
+												</label>
+											</div>
 										</div>
 									</div>
 								</section>
 
 								<div className='submit-row school-submit-row'>
+									<div className='school-submit-copy'>
+										<strong>{submitState.loading ? 'Provisioning the school and launch operators...' : 'Ready to publish this school launch.'}</strong>
+										<span>{lastLaunchSummary}</span>
+									</div>
 									<div className='school-submit-actions'>
 										<button className='primary-action' type='submit' disabled={submitState.loading}>
 											{submitState.loading ? 'Provisioning school...' : 'Create school'}
 										</button>
 									</div>
-									<p className='inline-note'>One save writes the school node, AcademicYears entry, HR user and employee, registerer user, and the short-name index mapping.</p>
 								</div>
 							</form>
 
@@ -867,12 +980,17 @@ export default function School() {
 							<div className='section-heading'>
 								<span className='section-kicker'>Directory</span>
 								<h2>Existing school registry</h2>
-								<p className='inline-note'>Use the directory to verify naming conventions and see how many launch accounts are already active in the workspace.</p>
 							</div>
 							<div className='school-directory-tools'>
-								<div className='school-directory-count'>
-									<span className='config-key'>Registry view</span>
-									<strong>{directoryCountLabel}</strong>
+								<div className='school-directory-tools-top'>
+									<div className='school-directory-count'>
+										<span className='config-key'>Registry view</span>
+										<strong>{directoryCountLabel}</strong>
+									</div>
+									<button className='school-directory-refresh' type='button' onClick={() => reloadDirectory()}>
+										<FaSyncAlt aria-hidden='true' />
+										Refresh
+									</button>
 								</div>
 								<div className='filter-bar school-filter-bar'>
 									<label className='filter-field school-search-field'>
