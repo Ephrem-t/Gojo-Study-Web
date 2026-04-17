@@ -228,6 +228,7 @@ export default function SchoolOverview() {
 	const [selectedSchoolCode, setSelectedSchoolCode] = useState('')
 	const [searchTerm, setSearchTerm] = useState('')
 	const [statusFilter, setStatusFilter] = useState('all')
+	const [gradeFilter, setGradeFilter] = useState('all')
 	const [editor, setEditor] = useState(() => createEditorState())
 	const [editorBaseline, setEditorBaseline] = useState('')
 	const [saveState, setSaveState] = useState({ loading: false, error: '', success: '' })
@@ -254,11 +255,25 @@ export default function SchoolOverview() {
 	const hrDirectory = detailState.detail?.directories?.hr || []
 	const registererDirectory = detailState.detail?.directories?.registerers || []
 	const activity = detailState.detail?.activity || { academicYears: [], rollover: null }
+	const gradeOptions = useMemo(() => (charts.grades || []).map((grade) => ({
+		key: trimText(grade.key) || trimText(grade.label),
+		label: trimText(grade.label) || trimText(grade.key) || 'Unnamed grade',
+	})), [charts.grades])
+	const filteredGrades = useMemo(() => {
+		if (gradeFilter === 'all') {
+			return charts.grades || []
+		}
+
+		return (charts.grades || []).filter((grade) => {
+			const gradeKey = trimText(grade.key) || trimText(grade.label)
+			return gradeKey === gradeFilter
+		})
+	}, [charts.grades, gradeFilter])
 
 	const populationPeak = Math.max(...(charts.population || []).map((item) => Number(item.value) || 0), 0)
-	const gradePeak = Math.max(...(charts.grades || []).map((item) => Number(item.studentCount) || 0), 0)
+	const gradePeak = Math.max(...filteredGrades.map((item) => Number(item.studentCount) || 0), 0)
 	const leadingPopulation = [...(charts.population || [])].sort((left, right) => (right.value || 0) - (left.value || 0))[0] || null
-	const leadingGrade = [...(charts.grades || [])].sort((left, right) => {
+	const leadingGrade = [...filteredGrades].sort((left, right) => {
 		if ((right.studentCount || 0) !== (left.studentCount || 0)) {
 			return (right.studentCount || 0) - (left.studentCount || 0)
 		}
@@ -297,6 +312,10 @@ export default function SchoolOverview() {
 			return
 		}
 		loadSchoolDetail(selectedSchoolCode)
+	}, [selectedSchoolCode])
+
+	useEffect(() => {
+		setGradeFilter('all')
 	}, [selectedSchoolCode])
 
 	useEffect(() => {
@@ -728,8 +747,23 @@ export default function SchoolOverview() {
 															<p>Each grade card balances student totals with the grade structure that already exists in the school setup.</p>
 														</div>
 
+														<div className='school-overview-grade-filter-row'>
+															<label className='school-overview-filter school-overview-grade-filter'>
+																<span>Grade</span>
+																<select value={gradeFilter} onChange={(event) => setGradeFilter(event.target.value)}>
+																	<option value='all'>All grades</option>
+																	{gradeOptions.map((option) => (
+																		<option key={option.key} value={option.key}>{option.label}</option>
+																	))}
+																</select>
+															</label>
+															<span className='school-overview-grade-filter-count'>
+																Showing {formatNumber(filteredGrades.length)} of {formatNumber(charts.grades?.length || 0)} grades
+															</span>
+														</div>
+
 														<div className='progress-school-bars'>
-															{(charts.grades || []).map((grade, index) => {
+															{filteredGrades.map((grade, index) => {
 																const studentCount = Number(grade.studentCount) || 0
 																const height = gradePeak ? Math.max((studentCount / gradePeak) * 100, studentCount ? 16 : 10) : 12
 																return (
@@ -756,6 +790,7 @@ export default function SchoolOverview() {
 																	</article>
 																)
 															})}
+															{!filteredGrades.length ? <div className='school-overview-empty'>No grades match the current filter.</div> : null}
 														</div>
 													</article>
 												</section>

@@ -42,7 +42,7 @@ body {
   font-family: 'Source Sans 3', sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at top left, rgba(216, 139, 45, 0.22), transparent 28%),
+    radial-gradient(circle at top left, rgba(45, 139, 216, 0.22), transparent 28%),
     radial-gradient(circle at 85% 15%, rgba(15, 118, 110, 0.16), transparent 22%),
     linear-gradient(180deg, #fffaf2 0%, var(--bg) 100%);
   overflow-x: hidden;
@@ -324,7 +324,7 @@ a {
 
 .hero-copy h1 {
   font-size: clamp(2.4rem, 5vw, 4.6rem);
-  max-width: 11ch;
+  max-width: 21ch;
 }
 
 .hero-copy p,
@@ -1366,14 +1366,14 @@ a {
 }
 
 .exam-premium-shell {
-  width: min(100%, 1820px);
+  width: min(100%, 1920px);
   margin: 0 auto;
 }
 
 .exam-hero-panel {
   align-items: stretch;
-  grid-template-columns: minmax(0, 1.34fr) minmax(340px, 0.96fr);
-  gap: 24px;
+  grid-template-columns: minmax(50px, 1.84fr) minmax(30px, 0.06fr);
+  gap: 5px;
   padding: 32px;
 }
 
@@ -1386,8 +1386,8 @@ a {
   content: '';
   position: absolute;
   inset: auto -120px -140px auto;
-  width: 360px;
-  height: 360px;
+  width: 860px;
+  height: 660px;
   border-radius: 999px;
   background: radial-gradient(circle, rgba(15, 118, 110, 0.16), transparent 70%);
   pointer-events: none;
@@ -1402,11 +1402,11 @@ a {
 }
 
 .exam-hero-copy h1 {
-  max-width: 13ch;
+  max-width: 23ch;
 }
 
 .exam-hero-copy p {
-  max-width: 62ch;
+  max-width: 102ch;
 }
 
 .exam-hero-card {
@@ -3551,7 +3551,8 @@ a {
 .books-hero-panel {
   position: relative;
   overflow: hidden;
-  grid-template-columns: minmax(0, 1.18fr) minmax(420px, 0.82fr);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
   margin-bottom: 24px;
   gap: 34px;
   padding: 46px;
@@ -3596,8 +3597,9 @@ a {
 .books-hero-copy {
   display: grid;
   align-content: start;
-  gap: 18px;
-  max-width: 84ch;
+  gap: 20px;
+  width: 100%;
+  max-width: none;
 }
 
 .books-hero-kicker-row {
@@ -3623,19 +3625,47 @@ a {
 }
 
 .books-hero-copy h1 {
-  max-width: 15ch;
+  max-width: 22ch;
+  font-size: clamp(2.35rem, 4.2vw, 4rem);
+  line-height: 1.02;
   letter-spacing: -0.04em;
+  text-wrap: balance;
 }
 
 .books-hero-copy p {
-  font-size: 1.08rem;
-  max-width: 72ch;
+  font-size: clamp(1.02rem, 1.2vw, 1.14rem);
+  max-width: 82ch;
+  text-wrap: pretty;
 }
 
 .books-command-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 18px;
+}
+
+.books-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.books-hero-actions .primary-action,
+.books-hero-actions .secondary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.books-hero-feedback {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 920px);
+}
+
+.books-hero-feedback .status-banner {
+  margin-top: 0;
 }
 
 .books-command-card {
@@ -6937,6 +6967,77 @@ a {
   border: 1px solid rgba(255, 255, 255, 0.76);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.92));
   box-shadow: 0 24px 44px rgba(15, 23, 42, 0.08);
+}
+
+.school-overview-grade-filter-row {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: -6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.school-overview-grade-filter {
+  min-width: min(100%, 220px);
+}
+
+.school-overview-grade-filter-count {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.school-overview-grades-card .progress-school-bars {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+}
+
+.school-overview-grades-card .progress-school-bar-card {
+  grid-template-rows: auto minmax(136px, 1fr) auto auto auto;
+  gap: 10px;
+  min-height: 280px;
+  padding: 16px 14px;
+  border-radius: 22px;
+}
+
+.school-overview-grades-card .progress-school-bar-track {
+  min-height: 150px;
+  padding: 14px 12px 16px;
+  border-radius: 18px;
+}
+
+.school-overview-grades-card .progress-school-bar-fill {
+  width: min(100%, 52px);
+  padding-top: 8px;
+  border-radius: 18px 18px 10px 10px;
+}
+
+.school-overview-grades-card .progress-school-bar-value {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 0.78rem;
+}
+
+.school-overview-grades-card .progress-school-card-copy strong {
+  font-size: 0.96rem;
+}
+
+.school-overview-grades-card .progress-school-card-copy span {
+  font-size: 0.82rem;
+}
+
+.school-overview-grades-card .progress-school-rank,
+.school-overview-grades-card .progress-school-share,
+.school-overview-grades-card .progress-school-chip {
+  padding: 5px 8px;
+  font-size: 0.66rem;
+}
+
+.school-overview-grades-card .progress-school-bar-card small {
+  font-size: 0.68rem;
 }
 
 .school-overview-editor-status-grid {

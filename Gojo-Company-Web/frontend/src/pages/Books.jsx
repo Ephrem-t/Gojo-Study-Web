@@ -53,6 +53,26 @@ function normalizeSubjectKey(value) {
 		.replace(/^_+|_+$/g, '')
 }
 
+function normalizeUnitKey(value, fallback = 'unit1') {
+	const normalized = trimText(value)
+		.replace(/[^A-Za-z0-9_.-]+/g, '_')
+		.replace(/^_+|_+$/g, '')
+
+	return normalized || fallback
+}
+
+function deriveUnitTitleFromFileName(fileName, fallback = 'Untitled unit') {
+	const baseName = trimText(fileName).replace(/\.[^.]+$/, '')
+	if (!baseName) {
+		return fallback
+	}
+
+	return baseName
+		.replace(/[_-]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+}
+
 function formatGradeLabel(value) {
 	const match = String(value || '').match(/(\d+)/)
 	return match ? `Grade ${match[1]}` : value || 'Grade'
@@ -71,19 +91,29 @@ function formatSubjectLabel(value) {
 		.join(' ')
 }
 
+function buildTextbookTitle(form, gradeKey, subjectKey) {
+	const explicitTitle = trimText(form.textbook.title)
+	if (explicitTitle) {
+		return explicitTitle
+	}
+
+	const subjectLabel = trimText(form.subjectName) || formatSubjectLabel(subjectKey) || 'Textbook'
+	return `${subjectLabel} ${formatGradeLabel(gradeKey)}`
+}
+
 function isPdfUrl(value) {
 	return trimText(value).toLowerCase().split('?', 1)[0].endsWith('.pdf')
 }
 
 function buildTextbookNode(form) {
 	const units = form.textbook.units.reduce((result, unit, index) => {
-		const unitKey = trimText(unit.key) || `unit${index + 1}`
+		const unitKey = normalizeUnitKey(unit.key, `unit${index + 1}`)
 		if (!hasContent(unit.title) && !hasContent(unit.pdfUrl)) {
 			return result
 		}
 
 		result[unitKey] = {
-			title: trimText(unit.title),
+			title: trimText(unit.title) || unitKey,
 			pdfUrl: trimText(unit.pdfUrl),
 		}
 		return result
@@ -134,6 +164,7 @@ export default function Books({ view = 'save' }) {
 
 	const resolvedGradeKey = normalizeGradeKey(form.gradeKey) || 'grade7'
 	const resolvedSubjectKey = trimText(form.subjectKey) || normalizeSubjectKey(form.subjectName) || 'subject_key'
+	const resolvedTextbookTitle = buildTextbookTitle(form, resolvedGradeKey, resolvedSubjectKey)
 	const textbookNode = buildTextbookNode(form)
 	const normalizedView = view === 'library' ? 'library' : 'save'
 	const showSaveView = normalizedView === 'save'
@@ -191,6 +222,13 @@ export default function Books({ view = 'save' }) {
 			{ icon: FaBook, label: 'Library coverage', value: `${overview.stats.textbookCount || 0} total books`, detail: `${overview.stats.gradeCount || libraryGradeOptions.length || 0} grade bucket${(overview.stats.gradeCount || libraryGradeOptions.length || 0) === 1 ? '' : 's'} are represented in the library.`, tone: 'gold' },
 			{ icon: FaFilePdf, label: 'PDF availability', value: `${booksWithPdfCount} books linked`, detail: 'Books with linked PDF units can be opened directly from the unit actions.', tone: 'coral' },
 		]
+	const hasHeroFeedback = Boolean(
+		loadState.error
+		|| assetUploadState.error
+		|| assetUploadState.success
+		|| submitState.error
+		|| submitState.success,
+	)
 
 	useEffect(() => {
 		if (selectedLibraryGrade === 'all') {
@@ -301,6 +339,9 @@ export default function Books({ view = 'save' }) {
 		}
 
 		const loadingKey = assetType === 'cover' ? 'cover' : `unit-${unitIndex}`
+		const resolvedUnitKey = assetType === 'unit'
+			? normalizeUnitKey(unitKey, `unit${(unitIndex ?? 0) + 1}`)
+			: ''
 		setAssetUploadState({ loadingKey, error: '', success: '' })
 
 		try {
@@ -310,7 +351,7 @@ export default function Books({ view = 'save' }) {
 			body.append('gradeKey', resolvedGradeKey)
 			body.append('subjectKey', resolvedSubjectKey)
 			if (assetType === 'unit') {
-				body.append('unitKey', trimText(unitKey) || `unit${(unitIndex ?? 0) + 1}`)
+				body.append('unitKey', resolvedUnitKey)
 			}
 
 			const response = await fetch(`${API_BASE_URL}/api/textbooks/upload-asset`, {
@@ -331,6 +372,11 @@ export default function Books({ view = 'save' }) {
 			if (assetType === 'cover') {
 				updateTextbookField('coverUrl', uploadedUrl)
 			} else if (unitIndex !== null) {
+				const derivedTitle = deriveUnitTitleFromFileName(file.name, resolvedUnitKey)
+				updateUnit(unitIndex, 'key', resolvedUnitKey)
+				if (!hasContent(form.textbook.units[unitIndex]?.title)) {
+					updateUnit(unitIndex, 'title', derivedTitle)
+				}
 				updateUnit(unitIndex, 'pdfUrl', uploadedUrl)
 			}
 
@@ -359,15 +405,34 @@ export default function Books({ view = 'save' }) {
 
 	async function handleSubmit(event) {
 		event.preventDefault()
+
+		const hasUploadedUnit = Object.values(textbookNode.units).some((unit) => hasContent(unit.pdfUrl))
+		if (!hasUploadedUnit) {
+			setSubmitState({
+				loading: false,
+				error: 'Upload at least one unit document before saving the textbook.',
+				success: '',
+			})
+			return
+		}
+
 		setSubmitState({ loading: true, error: '', success: '' })
 
 		try {
+			const submitPayload = {
+				...payload,
+				textbook: {
+					...textbookNode,
+					title: resolvedTextbookTitle,
+				},
+			}
+
 			const response = await fetch(`${API_BASE_URL}/api/textbooks/save-record`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
 				},
-				body: JSON.stringify(payload),
+				body: JSON.stringify(submitPayload),
 			})
 			const data = await response.json()
 
@@ -383,6 +448,13 @@ export default function Books({ view = 'save' }) {
 				error: '',
 				success: `${actionLabel} textbook into ${data.location} with ${totalUnits} total unit${totalUnits === 1 ? '' : 's'}.`,
 			})
+			setForm((current) => ({
+				...current,
+				textbook: {
+					...current.textbook,
+					title: resolvedTextbookTitle,
+				},
+			}))
 			await reloadOverview()
 		} catch (error) {
 			setSubmitState({ loading: false, error: error.message || 'Save failed', success: '' })
@@ -415,7 +487,7 @@ export default function Books({ view = 'save' }) {
 								))}
 							</div>
 							
-							<div className='hero-actions'>
+							<div className='hero-actions books-hero-actions'>
 								{showSaveView ? (
 									<>
 										<a className='primary-action' href='#books-form'>Create textbook record <FaArrowRight aria-hidden='true' /></a>
@@ -429,52 +501,17 @@ export default function Books({ view = 'save' }) {
 								)}
 							</div>
 							
-							{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
-							{assetUploadState.error ? <div className='status-banner warning'>{assetUploadState.error}</div> : null}
-							{assetUploadState.success ? <div className='status-banner success-banner'>{assetUploadState.success}</div> : null}
-							{submitState.error ? <div className='status-banner warning'>{submitState.error}</div> : null}
-							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
-						</div>
-						<div className='hero-card books-hero-card'>
-							<div className='books-hero-card-top'>
-								<div>
-									<span className='pill pill-gold'>{showSaveView ? 'Draft Snapshot' : 'Library Snapshot'}</span>
-									<h3>{showSaveView ? trimText(form.textbook.title) || 'Current textbook draft' : activeLibraryGradeLabel}</h3>
-									<p>
-										{showSaveView
-											? `${draftSubjectLabel} is targeted to ${formatGradeLabel(resolvedGradeKey)} with ${draftUnitCount} editable unit slot${draftUnitCount === 1 ? '' : 's'}.`
-											: `${visibleTextbookCount} textbook record${visibleTextbookCount === 1 ? '' : 's'} are visible in the current filtered catalog.`}
-									</p>
+							{hasHeroFeedback ? (
+								<div className='books-hero-feedback'>
+									{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
+									{assetUploadState.error ? <div className='status-banner warning'>{assetUploadState.error}</div> : null}
+									{assetUploadState.success ? <div className='status-banner success-banner'>{assetUploadState.success}</div> : null}
+									{submitState.error ? <div className='status-banner warning'>{submitState.error}</div> : null}
+									{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 								</div>
-								<div className='books-hero-card-badge'>
-									<span>{showSaveView ? 'Target node' : 'Active grade filter'}</span>
-									<strong>{showSaveView ? `${formatGradeLabel(resolvedGradeKey)} / ${draftSubjectLabel}` : activeLibraryGradeLabel}</strong>
-									<small>{showSaveView ? (hasCoverAsset ? 'Cover linked and ready for save.' : 'Add a cover and unit files before publishing.') : `${booksWithPdfCount} book${booksWithPdfCount === 1 ? '' : 's'} with linked PDFs in the current filter.`}</small>
-								</div>
-							</div>
-							<div className='builder-stat-grid books-hero-stats'>
-								<StatCard label='Grades in library' value={overview.stats.gradeCount || 0} tone='teal' />
-								<StatCard label='Textbook records' value={overview.stats.textbookCount || 0} tone='gold' />
-								<StatCard label='Units indexed' value={overview.stats.unitCount || 0} tone='coral' />
-								{showSaveView ? (
-									<StatCard label='Units in draft' value={draftUnitCount} tone='teal' />
-								) : (
-									<StatCard label='Books with PDFs' value={booksWithPdfCount} tone='teal' />
-								)}
-							</div>
-							<div className='books-hero-summary-grid'>
-								<article className='books-hero-summary-card'>
-									<span>{showSaveView ? 'Subject key' : 'Visible books'}</span>
-									<strong>{showSaveView ? resolvedSubjectKey : visibleTextbookCount}</strong>
-									<small>{showSaveView ? 'Firebase subject bucket generated from the current form.' : 'Cards currently rendered in the filtered premium grid.'}</small>
-								</article>
-								<article className='books-hero-summary-card'>
-									<span>{showSaveView ? 'Cover asset' : 'Grade options'}</span>
-									<strong>{showSaveView ? (hasCoverAsset ? 'Linked' : 'Pending') : libraryGradeOptions.length}</strong>
-									<small>{showSaveView ? 'Cover uploads feed directly into the textbook node.' : 'Available grade filters with textbook records in the library.'}</small>
-								</article>
-							</div>
+							) : null}
 						</div>
+						
 					</section>
 
 				
@@ -589,7 +626,7 @@ export default function Books({ view = 'save' }) {
 											<div className='form-grid two-column'>
 												<label className='field'>
 													<span>Unit key</span>
-													<input value={unit.key} onChange={(event) => updateUnit(index, 'key', event.target.value)} placeholder={`unit${index + 1}`} />
+													<input value={unit.key} onChange={(event) => updateUnit(index, 'key', normalizeUnitKey(event.target.value, `unit${index + 1}`))} placeholder={`unit${index + 1}`} />
 												</label>
 												<label className='field'>
 													<span>Unit title</span>

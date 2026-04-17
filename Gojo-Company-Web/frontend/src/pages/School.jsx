@@ -48,7 +48,6 @@ const LEVEL_OPTIONS = [
 ]
 
 const HR_GENDER_OPTIONS = ['male', 'female']
-const REGISTRATION_GENDER_OPTIONS = ['Male', 'Female']
 
 function createDefaultForm() {
 	const currentYear = new Date().getFullYear()
@@ -89,20 +88,7 @@ function createDefaultForm() {
 			email: '',
 			phone: '',
 			alternativePhone: '',
-			password: '',
-			position: 'HR Manager',
-		},
-		registerer: {
-			firstName: '',
-			middleName: '',
-			lastName: '',
-			gender: 'Male',
-			profileImage: '',
-			email: '',
-			phone: '',
-			alternativePhone: '',
-			password: '',
-			position: 'Registerer',
+			position: 'Human Resource',
 		},
 	}
 }
@@ -231,12 +217,9 @@ function buildHrIdPreview(shortName) {
 	return `${normalizedShortName}H_0001_${buildCurrentYearSuffix()}`
 }
 
-function buildRegistererIdPreview(shortName) {
-	const normalizedShortName = normalizeShortName(shortName) || 'SCH'
-	return `${normalizedShortName}R_0001_${buildCurrentYearSuffix()}`
-}
-
 function buildPayload(form) {
+	const { password: _hrPassword, ...hrPayload } = form.hr
+
 	return {
 		school: {
 			...form.school,
@@ -247,12 +230,8 @@ function buildPayload(form) {
 			currentAcademicYear: buildAcademicYearKey(form.school.currentAcademicYear),
 		},
 		hr: {
-			...form.hr,
+			...hrPayload,
 			gender: trimText(form.hr.gender) || 'male',
-		},
-		registerer: {
-			...form.registerer,
-			gender: trimText(form.registerer.gender) || 'Male',
 		},
 	}
 }
@@ -301,10 +280,8 @@ export default function School() {
 	const payload = useMemo(() => buildPayload(form), [form])
 	const schoolCodePreview = useMemo(() => buildSchoolCodePreview(form.school), [form.school])
 	const hrIdPreview = useMemo(() => buildHrIdPreview(form.school.shortName), [form.school.shortName])
-	const registererIdPreview = useMemo(() => buildRegistererIdPreview(form.school.shortName), [form.school.shortName])
 	const academicYearLabel = useMemo(() => formatAcademicYearLabel(form.school.currentAcademicYear), [form.school.currentAcademicYear])
 	const hrDisplayName = joinNameParts(form.hr.firstName, form.hr.middleName, form.hr.lastName) || 'HR lead pending'
-	const registererDisplayName = joinNameParts(form.registerer.firstName, form.registerer.middleName, form.registerer.lastName) || 'Registration lead pending'
 	const enabledLanguages = LANGUAGE_OPTIONS.filter((item) => form.school.languages[item.key]).map((item) => item.label)
 	const enabledLevels = LEVEL_OPTIONS.filter((item) => form.school.levels[item.key]).map((item) => item.label)
 	const enabledLanguageSummary = formatListSummary(enabledLanguages, 'No school languages selected yet')
@@ -313,10 +290,9 @@ export default function School() {
 	const schoolStatusLabel = form.school.active ? 'Active on creation' : 'Staged for review'
 	const assetCompletionCount = [form.school.logoUrl, form.school.coverImageUrl].filter(hasContent).length
 	const heroLiveChip = directory.count ? `${directory.count} schools in registry` : 'New launch workspace'
-	const launchTeamLabel = `${hrDisplayName} + ${registererDisplayName}`
 	const lastLaunchSummary = lastCreated
-		? `${lastCreated.schoolName || 'School'} launched as ${lastCreated.schoolCode || 'a new school'} with ${lastCreated.hrId || 'HR'} and ${lastCreated.registererId || 'registerer'} ready.`
-		: `HR ${hrIdPreview} and Registerer ${registererIdPreview} will be generated when you publish this launch.`
+		? `${lastCreated.schoolName || 'School'} launched as ${lastCreated.schoolCode || 'a new school'} with HR ${lastCreated.hrId || 'pending'} ready.`
+		: `HR ${hrIdPreview} will be generated when you publish this launch.`
 	const heroSignals = [
 		{ icon: FaMapMarkerAlt, label: 'Launch geography', value: locationPreview, tone: 'accent' },
 		{ icon: FaLayerGroup, label: 'Academic cycle', value: academicYearLabel, tone: 'gold' },
@@ -386,16 +362,6 @@ export default function School() {
 		}))
 	}
 
-	function updateRegistererField(field, value) {
-		setForm((current) => ({
-			...current,
-			registerer: {
-				...current.registerer,
-				[field]: value,
-			},
-		}))
-	}
-
 	function toggleSchoolSelection(groupKey, itemKey) {
 		setForm((current) => ({
 			...current,
@@ -444,8 +410,6 @@ export default function School() {
 				updateSchoolField('coverImageUrl', uploadedUrl)
 			} else if (loadingKey === 'hr-profile') {
 				updateHrField('profileImage', uploadedUrl)
-			} else if (loadingKey === 'registerer-profile') {
-				updateRegistererField('profileImage', uploadedUrl)
 			}
 
 			setAssetUploadState({
@@ -480,7 +444,7 @@ export default function School() {
 			setSubmitState({
 				loading: false,
 				error: '',
-				success: `Created ${data.created?.schoolName || 'school'} as ${data.created?.schoolCode}. HR ${data.created?.hrId} and registerer ${data.created?.registererId} are ready for launch.`,
+				success: `Created ${data.created?.schoolName || 'school'} as ${data.created?.schoolCode}. HR ${data.created?.hrId} is ready for launch.`,
 			})
 			setForm(createDefaultForm())
 			await reloadDirectory()
@@ -500,9 +464,9 @@ export default function School() {
 								<span className='eyebrow'>Platform1 School Registry</span>
 								<span className='school-hero-live-chip'>{heroLiveChip}</span>
 							</div>
-							<h1>Launch a school, its HR lead, and its registerer from one premium control room.</h1>
+							<h1>Launch a school and its HR lead from one premium control room.</h1>
 							<p>
-								Provision school identity, hidden location codes, brand assets, and first operator accounts in one save while keeping
+								Provision school identity, hidden location codes, brand assets, and the first HR account in one save while keeping
 								the registry aligned with the rest of the Gojo company platform.
 							</p>
 							<div className='school-command-grid'>
@@ -527,64 +491,14 @@ export default function School() {
 							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 						</div>
 
-						<div className='school-hero-card'>
-							<div className='school-hero-card-top'>
-								<div>
-									<span className='pill pill-gold'>Launch Snapshot</span>
-									<h3>{form.school.name || 'Your next school launch'}</h3>
-									<p>
-										{form.school.name
-											? `${locationPreview}. ${schoolStatusLabel}. ${academicYearLabel}.`
-											: 'Complete the school identity, operators, and media assets to provision the next campus in one publish.'}
-									</p>
-								</div>
-								<div className='school-hero-card-badge'>
-									<span>Preview school code</span>
-									<strong>{schoolCodePreview}</strong>
-									<small>{academicYearLabel}</small>
-								</div>
-							</div>
-
-							<div className='school-hero-highlight-grid'>
-								<article className='school-hero-highlight-card'>
-									<span>Languages</span>
-									<strong>{enabledLanguages.length ? `${enabledLanguages.length} enabled` : 'Pending'}</strong>
-									<small>{enabledLanguageSummary}</small>
-								</article>
-								<article className='school-hero-highlight-card'>
-									<span>Levels</span>
-									<strong>{enabledLevels.length ? `${enabledLevels.length} active` : 'Pending'}</strong>
-									<small>{enabledLevelSummary}</small>
-								</article>
-								<article className='school-hero-highlight-card'>
-									<span>Brand assets</span>
-									<strong>{`${assetCompletionCount}/2 uploaded`}</strong>
-									<small>{assetCompletionCount === 2 ? 'Logo and cover are both ready for launch.' : 'Upload the logo and cover to complete the school presentation.'}</small>
-								</article>
-							</div>
-
-							<div className='builder-stat-grid school-hero-stats'>
-								<StatCard label='Schools' value={directory.count} tone='gold' />
-								<StatCard label='Active Schools' value={directory.activeCount} tone='teal' />
-								<StatCard label='HR Accounts' value={directory.hrAccountCount} tone='teal' />
-								<StatCard label='Registerers' value={directory.registererAccountCount} tone='gold' />
-							</div>
-
-							<div className='school-hero-launch-note'>
-								<div className='school-hero-launch-copy'>
-									<span className='pill pill-gold'>Launch team</span>
-									<h4>{launchTeamLabel}</h4>
-									<p>{lastLaunchSummary}</p>
-								</div>
-							</div>
-						</div>
+						
 					</section>
 
 					<section className='section-block' id='school-form'>
 						<div className='section-header-row'>
 							<div className='section-heading'>
 								<span className='section-kicker'>Onboarding</span>
-								<h2>Provision the school and its first operators</h2>
+								<h2>Provision the school and its first HR lead</h2>
 							</div>
 							<div className='school-code-pill'>
 								<span>Preview school code</span>
@@ -604,7 +518,7 @@ export default function School() {
 
 									<div className='school-preview-pill-row school-onboarding-strip'>
 										<DetailChip label='School code' value={schoolCodePreview} tone='accent' />
-										<DetailChip label='Launch IDs' value={`${hrIdPreview} · ${registererIdPreview}`} tone='teal' />
+										<DetailChip label='HR launch ID' value={hrIdPreview} tone='teal' />
 										<DetailChip label='Brand assets' value={`${assetCompletionCount}/2 uploaded`} tone='gold' />
 									</div>
 
@@ -843,10 +757,10 @@ export default function School() {
 											<span>Position</span>
 											<input value={form.hr.position} onChange={(event) => updateHrField('position', event.target.value)} placeholder='HR Manager' />
 										</label>
-										<label className='field field-span-2'>
-											<span>Temporary password</span>
-											<input value={form.hr.password} onChange={(event) => updateHrField('password', event.target.value)} placeholder='Set the first HR password' required />
-										</label>
+										<div className='field field-span-2'>
+											<span>HR password</span>
+											<p className='inline-note'>Generated automatically on creation with a strong password of at least 8 characters. It is not displayed in this UI.</p>
+										</div>
 										<div className='school-profile-field field-span-2'>
 											<div className='school-profile-avatar-wrap'>
 												{form.hr.profileImage ? (
@@ -878,89 +792,9 @@ export default function School() {
 									</div>
 								</section>
 
-								<section className='form-card school-account-card school-account-card-registerer'>
-									<div className='compact-heading'>
-										<span className='section-kicker'>Launch registration</span>
-										<h2>First registerer account</h2>
-									</div>
-
-									<div className='form-grid two-column'>
-										<label className='field'>
-											<span>First name</span>
-											<input value={form.registerer.firstName} onChange={(event) => updateRegistererField('firstName', event.target.value)} placeholder='Bemnet' required />
-										</label>
-										<label className='field'>
-											<span>Middle name</span>
-											<input value={form.registerer.middleName} onChange={(event) => updateRegistererField('middleName', event.target.value)} placeholder='Tilahun' />
-										</label>
-										<label className='field'>
-											<span>Last name</span>
-											<input value={form.registerer.lastName} onChange={(event) => updateRegistererField('lastName', event.target.value)} placeholder='Bekele' required />
-										</label>
-										<label className='field'>
-											<span>Gender</span>
-											<select value={form.registerer.gender} onChange={(event) => updateRegistererField('gender', event.target.value)}>
-												{REGISTRATION_GENDER_OPTIONS.map((option) => (
-													<option key={option} value={option}>
-														{option}
-													</option>
-												))}
-											</select>
-										</label>
-										<label className='field'>
-											<span>Email</span>
-											<input type='email' value={form.registerer.email} onChange={(event) => updateRegistererField('email', event.target.value)} placeholder='register@example.com' required />
-										</label>
-										<label className='field'>
-											<span>Phone</span>
-											<input value={form.registerer.phone} onChange={(event) => updateRegistererField('phone', event.target.value)} placeholder='+2519...' required />
-										</label>
-										<label className='field'>
-											<span>Alternative phone</span>
-											<input value={form.registerer.alternativePhone} onChange={(event) => updateRegistererField('alternativePhone', event.target.value)} placeholder='+2519...' />
-										</label>
-										<label className='field'>
-											<span>Position</span>
-											<input value={form.registerer.position} onChange={(event) => updateRegistererField('position', event.target.value)} placeholder='Registerer' />
-										</label>
-										<label className='field field-span-2'>
-											<span>Temporary password</span>
-											<input value={form.registerer.password} onChange={(event) => updateRegistererField('password', event.target.value)} placeholder='Set the first registerer password' required />
-										</label>
-										<div className='school-profile-field field-span-2'>
-											<div className='school-profile-avatar-wrap'>
-												{form.registerer.profileImage ? (
-													<img className='school-profile-avatar' src={form.registerer.profileImage} alt='Registerer profile preview' />
-												) : (
-													<div className='school-profile-avatar school-profile-avatar-placeholder'>RG</div>
-												)}
-											</div>
-											<div className='school-profile-content'>
-												<span className='config-key'>Profile image</span>
-												<strong>Registerer profile photo</strong>
-												<p>Stored in the database and used across the registration workspace.</p>
-												<label className='school-profile-upload'>
-													<FaImage />
-													<span>{assetUploadState.loadingKey === 'registerer-profile' ? 'Uploading registerer image...' : 'Upload registerer profile image'}</span>
-													<input
-														type='file'
-														accept='image/*'
-														onChange={(event) => {
-															const [file] = event.target.files || []
-															void handleSchoolAssetUpload(file, 'registerer-profile')
-															event.target.value = ''
-														}}
-														disabled={assetUploadState.loadingKey === 'registerer-profile'}
-													/>
-												</label>
-											</div>
-										</div>
-									</div>
-								</section>
-
 								<div className='submit-row school-submit-row'>
 									<div className='school-submit-copy'>
-										<strong>{submitState.loading ? 'Provisioning the school and launch operators...' : 'Ready to publish this school launch.'}</strong>
+										<strong>{submitState.loading ? 'Provisioning the school and HR lead...' : 'Ready to publish this school launch.'}</strong>
 										<span>{lastLaunchSummary}</span>
 									</div>
 									<div className='school-submit-actions'>
@@ -1030,7 +864,7 @@ export default function School() {
 											</div>
 											<div>
 												<span className='config-key'>Launch accounts</span>
-												<strong>{`${school.hrCount || 0} HR / ${school.registererCount || 0} Registerers`}</strong>
+												<strong>{`${school.hrCount || 0} HR`}</strong>
 											</div>
 										</div>
 										<p className='school-directory-date'>Created {formatDateLabel(school.createdAt)}</p>

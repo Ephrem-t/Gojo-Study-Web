@@ -2,6 +2,8 @@ import mimetypes
 import os
 from functools import lru_cache
 import re
+import secrets
+import string
 import time
 from urllib.parse import quote
 from uuid import uuid4
@@ -20,6 +22,48 @@ DEFAULT_STORAGE_BUCKET = "gojo-education.firebasestorage.app"
 DEFAULT_PLATFORM_ROOT = "Platform1"
 DEFAULT_SCHOOLS_ROOT = "Schools"
 LOCAL_UPLOAD_ROOT = os.path.join(BASE_DIR, "uploaded_assets")
+
+DEFAULT_SCHOOL_DEPARTMENTS = {
+    "DEP_ACADEMIC": {
+        "description": "Handles teaching and learning activities",
+        "name": "Academic",
+        "status": "active",
+    },
+    "DEP_FINANCE": {
+        "description": "Salary, payments, and budgeting",
+        "name": "Finance",
+        "status": "active",
+    },
+    "DEP_HR": {
+        "description": "Employee management and operations",
+        "name": "Human Resource",
+        "status": "active",
+    },
+    "DEP_MANAGEMENT": {
+        "description": "School leadership and decision making",
+        "name": "Management",
+        "status": "active",
+    },
+}
+
+DEFAULT_SCHOOL_POSITIONS = {
+    "POS_DIRECTOR": {
+        "departmentId": "DEP_MANAGEMENT",
+        "name": "Director",
+    },
+    "POS_HR": {
+        "departmentId": "DEP_HR",
+        "name": "Human Resource",
+    },
+    "POS_TEACHER": {
+        "departmentId": "DEP_ACADEMIC",
+        "name": "Teacher",
+    },
+    "POS_VICE_DIRECTOR": {
+        "departmentId": "DEP_MANAGEMENT",
+        "name": "Vice Director",
+    },
+}
 
 
 app = Flask(__name__)
@@ -164,8 +208,14 @@ def student_progress_ref():
     return _shared_node_ref("studentProgress")
 
 
+def rankings_update_path(*segments):
+    path_segments = [str(os.getenv("PLATFORM_ROOT", DEFAULT_PLATFORM_ROOT)).strip("/"), "rankings"]
+    path_segments.extend(str(segment).strip("/") for segment in segments if str(segment).strip("/"))
+    return "/".join(path_segments)
+
+
 def rankings_ref():
-    return _shared_node_ref("rankings")
+    return platform_ref().child("rankings")
 
 
 def legacy_schools_ref():
@@ -249,6 +299,27 @@ def _utc_iso_now():
 
 def _current_year_suffix():
     return time.gmtime().tm_year % 100
+
+
+def _generate_strong_password(length=12):
+    if length < 8:
+        raise ValueError("Generated password length must be at least 8 characters")
+
+    lowercase = string.ascii_lowercase
+    uppercase = string.ascii_uppercase
+    digits = string.digits
+    symbols = "!@#$%&*?"
+    alphabet = lowercase + uppercase + digits + symbols
+
+    password_chars = [
+        secrets.choice(lowercase),
+        secrets.choice(uppercase),
+        secrets.choice(digits),
+        secrets.choice(symbols),
+    ]
+    password_chars.extend(secrets.choice(alphabet) for _ in range(length - len(password_chars)))
+    secrets.SystemRandom().shuffle(password_chars)
+    return "".join(password_chars)
 
 
 def _normalize_school_fragment(value):
@@ -377,6 +448,47 @@ def _join_name_parts(*parts):
     return " ".join(part for part in (_non_empty_string(value) for value in parts) if part)
 
 
+def _default_school_departments():
+    return {
+        department_id: dict(department_payload)
+        for department_id, department_payload in DEFAULT_SCHOOL_DEPARTMENTS.items()
+    }
+
+
+def _default_school_positions():
+    return {
+        position_id: dict(position_payload)
+        for position_id, position_payload in DEFAULT_SCHOOL_POSITIONS.items()
+    }
+
+
+def _build_employee_summary_payload(
+    employee_id,
+    user_id,
+    full_name,
+    email,
+    phone,
+    gender,
+    hire_date,
+    profile_image,
+    department_id,
+    position_name,
+):
+    return {
+        "department": department_id,
+        "email": email,
+        "fullName": full_name,
+        "gender": gender,
+        "hireDate": hire_date,
+        "id": employee_id,
+        "phone": phone,
+        "position": position_name,
+        "profileImage": profile_image,
+        "status": "active",
+        "userId": user_id,
+    }
+
+
 def _build_school_info_payload(school_payload, school_code, short_name, current_academic_year, created_at_iso, *, strict=True):
     country_name = _non_empty_string(school_payload.get("country")) or "Ethiopia"
     region_name = _require_string(school_payload.get("region"), "school.region") if strict else _non_empty_string(school_payload.get("region"))
@@ -431,104 +543,86 @@ def _build_hr_payload(hr_payload, school_info, school_code, short_name, employee
     last_name = _require_string(hr_payload.get("lastName"), "hr.lastName")
     email = _require_string(hr_payload.get("email"), "hr.email")
     phone = _require_string(hr_payload.get("phone"), "hr.phone")
-    password = _require_string(hr_payload.get("password"), "hr.password")
+    password = _generate_strong_password()
     gender = _non_empty_string(hr_payload.get("gender")) or "male"
     full_name = _join_name_parts(first_name, middle_name, last_name)
     profile_image = _non_empty_string(hr_payload.get("profileImage")) or "/default-profile.png"
     hire_date = created_at_iso[:10]
-
-    contact = {
-        "address": _non_empty_string((school_info.get("address") or {}).get("addressLine")),
-        "altEmail": _non_empty_string(hr_payload.get("alternativeEmail")),
-        "city": school_info.get("city") or "",
-        "email": email,
-        "phone1": phone,
-        "phone2": _non_empty_string(hr_payload.get("alternativePhone")),
-        "subCity": _non_empty_string((school_info.get("address") or {}).get("subCity")),
-        "woreda": _non_empty_string(hr_payload.get("woreda")),
-    }
-    education = {
-        "additionalCertifications": "",
-        "degreeType": _non_empty_string(hr_payload.get("degreeType")),
-        "fieldOfStudy": _non_empty_string(hr_payload.get("fieldOfStudy")),
-        "gpa": "",
-        "graduationYear": "",
-        "highestQualification": _non_empty_string(hr_payload.get("highestQualification")),
-        "institution": _non_empty_string(hr_payload.get("institution")),
-        "professionalLicenseNumber": "",
-        "workExperience": "",
-    }
-    family = {
-        "childrenNames": "",
-        "fatherName": "",
-        "maritalStatus": "",
-        "motherName": "",
-        "numChildren": "",
-        "spouseName": "",
-        "spouseOccupation": "",
-    }
-    financial = {
-        "accountHolderName": "",
-        "accountNumber": "",
-        "allowances": "",
-        "bankBranch": "",
-        "bankName": "",
-        "basicSalary": "",
-        "bonusEligibility": False,
-        "overtimeRate": "",
-        "paymentMethod": "Bank Transfer",
-    }
-    job = {
-        "contractEndDate": "",
-        "contractStartDate": hire_date,
-        "department": _non_empty_string(hr_payload.get("department")) or "Management",
-        "employeeCategory": "HR",
-        "employmentType": _non_empty_string(hr_payload.get("employmentType")) or "Full-time",
-        "hireDate": hire_date,
-        "position": _non_empty_string(hr_payload.get("position")) or "HR Manager",
-        "reportingManager": "",
-        "status": "Active",
-        "workLocation": school_code,
-        "workShift": "",
-    }
-    personal = {
-        "bloodGroup": "",
-        "disabilityStatus": "",
-        "dob": _non_empty_string(hr_payload.get("dob")),
-        "employeeId": employee_id,
-        "firstName": first_name,
-        "gender": gender,
-        "lastName": last_name,
-        "middleName": middle_name,
-        "nationalId": _non_empty_string(hr_payload.get("nationalId")),
-        "nationality": _non_empty_string((school_info.get("address") or {}).get("country")) or "Ethiopia",
-        "password": password,
-        "placeOfBirth": school_info.get("city") or "",
-        "profileImageName": profile_image,
-        "religion": _non_empty_string(hr_payload.get("religion")),
-    }
+    position_name = _non_empty_string(hr_payload.get("position")) or "HR Manager"
+    department_id = "DEP_HR"
 
     employee_payload = {
-        "contact": contact,
-        "education": education,
-        "family": family,
-        "financeId": "",
-        "financial": financial,
-        "gender": gender,
-        "hrId": hr_id,
-        "job": job,
-        "managementId": "",
-        "personal": personal,
-        "profileData": {
-            "contact": contact,
-            "education": education,
-            "family": family,
-            "financial": financial,
-            "job": job,
-            "personal": personal,
+        "contact": {
+            "address": _non_empty_string((school_info.get("address") or {}).get("addressLine")),
+            "altEmail": _non_empty_string(hr_payload.get("alternativeEmail")),
+            "city": school_info.get("city") or "",
+            "email": email,
+            "phone1": phone,
+            "phone2": _non_empty_string(hr_payload.get("alternativePhone")),
+            "subCity": _non_empty_string((school_info.get("address") or {}).get("subCity")),
+            "woreda": _non_empty_string(hr_payload.get("woreda")),
         },
-        "schoolAdminId": "",
-        "teacherId": "",
+        "education": {
+            "additionalCertifications": "",
+            "degreeType": _non_empty_string(hr_payload.get("degreeType")),
+            "fieldOfStudy": _non_empty_string(hr_payload.get("fieldOfStudy")),
+            "gpa": "",
+            "graduationYear": "",
+            "highestQualification": _non_empty_string(hr_payload.get("highestQualification")),
+            "institution": _non_empty_string(hr_payload.get("institution")),
+            "professionalLicenseNumber": "",
+            "workExperience": "",
+        },
+        "employement": {
+            "contractEndDate": "",
+            "contractStartDate": hire_date,
+            "department": _non_empty_string(hr_payload.get("department")) or "Management",
+            "employeeCategory": "HR",
+            "employmentType": _non_empty_string(hr_payload.get("employmentType")) or "Full-time",
+            "hireDate": hire_date,
+            "position": position_name,
+            "reportingManager": "",
+            "status": "Active",
+            "workLocation": school_code,
+            "workShift": "",
+        },
+        "family": {
+            "childrenNames": "",
+            "fatherName": "",
+            "maritalStatus": _non_empty_string(hr_payload.get("maritalStatus")),
+            "motherName": "",
+            "numChildren": "",
+            "spouseName": "",
+            "spouseOccupation": "",
+        },
+        "financial": {
+            "accountHolderName": "",
+            "accountNumber": "",
+            "allowances": "",
+            "bankBranch": "",
+            "bankName": "",
+            "basicSalary": "",
+            "bonusEligibility": False,
+            "overtimeRate": "",
+            "paymentMethod": "Bank Transfer",
+        },
+        "hrId": hr_id,
+        "personal": {
+            "bloodGroup": "",
+            "disabilityStatus": "",
+            "dob": _non_empty_string(hr_payload.get("dob")),
+            "employeeId": employee_id,
+            "firstName": first_name,
+            "gender": gender,
+            "lastName": last_name,
+            "middleName": middle_name,
+            "nationalId": _non_empty_string(hr_payload.get("nationalId")),
+            "nationality": _non_empty_string((school_info.get("address") or {}).get("country")) or "Ethiopia",
+            "password": password,
+            "placeOfBirth": school_info.get("city") or "",
+            "profileImageName": profile_image,
+            "religion": _non_empty_string(hr_payload.get("religion")),
+        },
         "userId": user_id,
     }
 
@@ -543,19 +637,32 @@ def _build_hr_payload(hr_payload, school_info, school_code, short_name, employee
         "phone": phone,
         "profileImage": profile_image,
         "role": "hr",
-        "schoolCode": short_name,
+        "schoolCode": school_code,
         "userId": user_id,
         "username": hr_id,
     }
 
     role_payload = {
         "employeeId": employee_id,
+        "hrId": hr_id,
         "status": "active",
         "userId": user_id,
     }
 
     return {
         "employee": employee_payload,
+        "summary": _build_employee_summary_payload(
+            employee_id,
+            user_id,
+            full_name,
+            email,
+            phone,
+            gender,
+            hire_date,
+            profile_image,
+            department_id,
+            position_name,
+        ),
         "role": role_payload,
         "user": user_payload,
     }
@@ -655,14 +762,6 @@ def _build_registerer_payload(registerer_payload, school_info, school_code, empl
         "job": job,
         "managementId": "",
         "personal": personal,
-        "profileData": {
-            "contact": contact,
-            "education": education,
-            "family": family,
-            "financial": financial,
-            "job": job,
-            "personal": personal,
-        },
         "registererId": registerer_id,
         "schoolAdminId": "",
         "teacherId": "",
@@ -672,20 +771,8 @@ def _build_registerer_payload(registerer_payload, school_info, school_code, empl
     return {
         "employee": employee_payload,
         "node": {
-            "alternativePhone": contact["phone2"],
-            "createdAt": created_at_iso,
-            "email": email,
             "employeeId": employee_id,
-            "firstName": first_name,
-            "gender": gender,
-            "lastName": last_name,
-            "middleName": middle_name,
-            "name": full_name,
-            "phone": phone,
-            "position": job["position"],
-            "profileImage": profile_image,
             "registererId": registerer_id,
-            "schoolCode": school_code,
             "status": "active",
             "userId": user_id,
         },
@@ -1351,6 +1438,32 @@ def _upload_textbook_asset(file_storage, asset_type, grade_key, subject_key, uni
     return _store_uploaded_asset(file_storage, validated_file, storage_path, local_asset_path)
 
 
+def _persist_uploaded_textbook_asset(asset_type, grade_key, subject_key, uploaded_asset, unit_key=""):
+    platform_root_key = str(os.getenv("PLATFORM_ROOT", DEFAULT_PLATFORM_ROOT)).strip("/")
+    uploaded_url = _require_string(uploaded_asset.get("url") or uploaded_asset.get("downloadUrl"), "uploaded asset url")
+
+    if asset_type == "cover":
+        updates = {
+            f"{platform_root_key}/TextBooks/{grade_key}/{subject_key}/coverUrl": uploaded_url,
+        }
+        root_ref().update(updates)
+        return {
+            "location": f"Platform1/TextBooks/{grade_key}/{subject_key}/coverUrl",
+            "persistedField": "coverUrl",
+        }
+
+    normalized_unit_key = _require_key(unit_key or "unit", "unitKey")
+    updates = {
+        f"{platform_root_key}/TextBooks/{grade_key}/{subject_key}/units/{normalized_unit_key}/pdfUrl": uploaded_url,
+    }
+    root_ref().update(updates)
+    return {
+        "location": f"Platform1/TextBooks/{grade_key}/{subject_key}/units/{normalized_unit_key}/pdfUrl",
+        "persistedField": "pdfUrl",
+        "unitKey": normalized_unit_key,
+    }
+
+
 def _upload_school_asset(file_storage, asset_type, school_short_name=""):
     normalized_asset_type = _non_empty_string(asset_type).lower()
     asset_paths = {
@@ -1391,7 +1504,7 @@ def _upload_company_exam_asset(file_storage, asset_type, package_id="", package_
     return _store_uploaded_asset(file_storage, validated_file, storage_path, local_asset_path)
 
 
-def _validate_textbook_node(node):
+def _validate_textbook_node(node, default_title=""):
     if not isinstance(node, dict):
         raise ValueError("textbook must be an object")
 
@@ -1411,12 +1524,28 @@ def _validate_textbook_node(node):
         }
 
     return {
-        "coverUrl": _require_string(node.get("coverUrl"), "textbook.coverUrl"),
+        "coverUrl": _non_empty_string(node.get("coverUrl")),
         "language": _require_string(node.get("language"), "textbook.language"),
         "region": _require_string(node.get("region"), "textbook.region"),
-        "title": _require_string(node.get("title"), "textbook.title"),
+        "title": _non_empty_string(node.get("title")) or _non_empty_string(default_title) or "Untitled textbook",
         "units": validated_units,
     }
+
+
+def _textbook_unit_conflicts(existing_units, incoming_units):
+    conflicts = []
+
+    for unit_key in sorted(set(existing_units).intersection(incoming_units)):
+        existing_unit = existing_units.get(unit_key) if isinstance(existing_units.get(unit_key), dict) else {}
+        incoming_unit = incoming_units.get(unit_key) if isinstance(incoming_units.get(unit_key), dict) else {}
+
+        existing_pdf_url = _non_empty_string(existing_unit.get("pdfUrl"))
+        incoming_pdf_url = _non_empty_string(incoming_unit.get("pdfUrl"))
+
+        if existing_pdf_url and incoming_pdf_url and existing_pdf_url != incoming_pdf_url:
+            conflicts.append(unit_key)
+
+    return conflicts
 
 
 def _normalize_textbook_record(grade_key, subject_key, payload):
@@ -1778,24 +1907,103 @@ def _competitive_scored_results(results, *, grade_filters=None):
     return filtered_results
 
 
+def _resolve_company_attempt_record(attempts_snapshot, student_id, exam_id, last_attempt_id="", round_id=""):
+    student_attempts = attempts_snapshot.get(student_id) if isinstance(attempts_snapshot, dict) and isinstance(attempts_snapshot.get(student_id), dict) else {}
+    exam_attempts = student_attempts.get(exam_id) if isinstance(student_attempts.get(exam_id), dict) else {}
+    normalized_attempt_id = _non_empty_string(last_attempt_id)
+    normalized_round_id = _non_empty_string(round_id)
+
+    if normalized_attempt_id and isinstance(exam_attempts.get(normalized_attempt_id), dict):
+        return normalized_attempt_id, exam_attempts.get(normalized_attempt_id)
+
+    best_attempt_id = ""
+    best_attempt_payload = None
+    best_attempt_timestamp = None
+
+    for attempt_id, attempt_payload in exam_attempts.items():
+        if not isinstance(attempt_payload, dict):
+            continue
+        if normalized_round_id and _non_empty_string(attempt_payload.get("roundId")) != normalized_round_id:
+            continue
+
+        attempt_timestamp = _optional_timestamp(attempt_payload.get("endTime"))
+        if attempt_timestamp is None:
+            attempt_timestamp = _optional_timestamp(attempt_payload.get("startTime"))
+        if attempt_timestamp is None:
+            attempt_timestamp = -1
+
+        if best_attempt_payload is None or attempt_timestamp > best_attempt_timestamp:
+            best_attempt_id = str(attempt_id)
+            best_attempt_payload = attempt_payload
+            best_attempt_timestamp = attempt_timestamp
+
+    return best_attempt_id, best_attempt_payload
+
+
 
 
 
 def _submit_company_exam_points(exam_id=None):
     rankings_snapshot = rankings_ref().get() or {}
+    dashboard = _company_exam_dashboard()
     results_snapshot = _company_exam_results()
-    exams_by_id = {
+    attempts_snapshot = _shared_node_ref("attempts").child("company").get() or {}
+    results_exams_by_id = {
         exam.get("examId"): exam
         for exam in results_snapshot.get("byExam", [])
         if isinstance(exam, dict) and exam.get("examId")
     }
+    dashboard_exams_by_id = {
+        exam.get("examId"): exam
+        for exam in dashboard.get("exams", [])
+        if isinstance(exam, dict) and exam.get("examId")
+    }
     available_results = results_snapshot.get("results") if isinstance(results_snapshot.get("results"), list) else []
 
-    if exam_id and exam_id not in exams_by_id:
-        raise ValueError(f"No exam results found for {exam_id}")
+    if not isinstance(attempts_snapshot, dict):
+        attempts_snapshot = {}
 
-    if exam_id and exams_by_id.get(exam_id, {}).get("mode") != "competitive":
-        raise ValueError("Only competitive exam scores can be converted to points")
+    attempt_updates = {}
+    for student_id, student_attempts in attempts_snapshot.items():
+        if not isinstance(student_attempts, dict):
+            continue
+
+        for current_exam_id, exam_attempts in student_attempts.items():
+            if not isinstance(exam_attempts, dict):
+                continue
+
+            current_exam_id = _non_empty_string(current_exam_id)
+            if not current_exam_id:
+                continue
+            if exam_id and current_exam_id != exam_id:
+                continue
+
+            exam_meta = dashboard_exams_by_id.get(current_exam_id) or results_exams_by_id.get(current_exam_id) or {}
+
+            for attempt_id, attempt_payload in exam_attempts.items():
+                if not isinstance(attempt_payload, dict):
+                    continue
+
+                round_id = _non_empty_string(attempt_payload.get("roundId"))
+                if _derive_exam_mode(exam_meta, round_id, current_exam_id) != "competitive":
+                    continue
+
+                if str(attempt_payload.get("pointsAwarded")).strip().lower() != "pending":
+                    continue
+
+                score_percent = attempt_payload.get("scorePercent")
+                if not isinstance(score_percent, (int, float)):
+                    try:
+                        score_percent = float(str(score_percent).strip())
+                    except (TypeError, ValueError):
+                        continue
+
+                attempt_updates[
+                    _shared_node_update_path("attempts", "company", student_id, current_exam_id, attempt_id, "pointsAwarded")
+                ] = _score_to_points(score_percent)
+
+    if exam_id and exam_id not in dashboard_exams_by_id and exam_id not in results_exams_by_id and not attempt_updates:
+        raise ValueError(f"No exam results found for {exam_id}")
 
     competitive_results = _competitive_scored_results(available_results)
     filtered_results = [
@@ -1804,9 +2012,9 @@ def _submit_company_exam_points(exam_id=None):
         if not exam_id or result.get("examId") == exam_id
     ]
 
-    if exam_id and not filtered_results:
+    if exam_id and not filtered_results and not attempt_updates:
         raise ValueError(f"No completed competitive exam results with scores were found for {exam_id}")
-    if not filtered_results:
+    if not filtered_results and not attempt_updates:
         raise ValueError("No completed competitive exam results with scores were found")
 
     relevant_grades = {
@@ -1844,19 +2052,22 @@ def _submit_company_exam_points(exam_id=None):
     processed_results = 0
     for grade in relevant_grades:
         ranked_entries = _rank_leaderboard(country_cache[grade])
-        updates[_shared_node_update_path("rankings", "country", "Ethiopia", grade, "leaderboard")] = ranked_entries
+        updates[rankings_update_path("country", "Ethiopia", grade, "leaderboard")] = ranked_entries
         processed_results += len(ranked_entries)
 
     for school_code, grade in school_cache:
         ranked_entries = _rank_leaderboard(school_cache[(school_code, grade)])
         school_mode = school_modes[(school_code, grade)]
-        school_path = _shared_node_update_path("rankings", "schools", school_code, grade)
+        school_path = rankings_update_path("schools", school_code, grade)
         if school_mode == "leaderboard":
             updates[f"{school_path}/leaderboard"] = ranked_entries
         else:
             updates[school_path] = ranked_entries
 
-    updates[_shared_node_update_path("rankings", "companyExamAwards")] = None
+    updates.update(attempt_updates)
+    updated_attempt_count = len(attempt_updates)
+
+    updates[rankings_update_path("companyExamAwards")] = None
 
     root_ref().update(updates)
     return {
@@ -1864,6 +2075,7 @@ def _submit_company_exam_points(exam_id=None):
         "processedResultCount": len(filtered_results),
         "updatedGradeCount": len(relevant_grades),
         "updatedSchoolGradeCount": len(school_cache),
+        "updatedAttemptCount": updated_attempt_count,
         "writeCount": len(updates),
     }
 
@@ -1875,6 +2087,7 @@ def _company_exam_results():
 
     progress_snapshot = student_progress_ref().get() or {}
     rankings_snapshot = rankings_ref().get() or {}
+    attempts_snapshot = _shared_node_ref("attempts").child("company").get() or {}
 
     country_cache = {}
     school_cache = {}
@@ -1882,6 +2095,8 @@ def _company_exam_results():
 
     if not isinstance(progress_snapshot, dict):
         progress_snapshot = {}
+    if not isinstance(attempts_snapshot, dict):
+        attempts_snapshot = {}
 
     for student_id, student_payload in progress_snapshot.items():
         if not isinstance(student_payload, dict):
@@ -1910,7 +2125,16 @@ def _company_exam_results():
                 country_entry = country_cache.get(grade, {}).get(student_id, {}) if grade else {}
                 school_entry = school_cache.get(grade, {}).get(student_id, {}) if grade else {}
                 best_score = exam_progress.get("bestScorePercent")
-                exam_mode = exam_meta.get("mode") or "practice"
+                exam_mode = _derive_exam_mode(exam_meta, round_id, exam_id)
+                last_attempt_id, last_attempt = _resolve_company_attempt_record(
+                    attempts_snapshot,
+                    str(student_id),
+                    str(exam_id),
+                    exam_progress.get("lastAttemptId") or "",
+                    round_id,
+                )
+                last_attempt = last_attempt if isinstance(last_attempt, dict) else {}
+                stored_exam_points = last_attempt.get("pointsAwarded") if isinstance(last_attempt.get("pointsAwarded"), (int, float)) else None
 
                 results.append(
                     {
@@ -1925,11 +2149,11 @@ def _company_exam_results():
                         "schoolCode": school_entry.get("schoolCode") or student_meta.get("schoolCode"),
                         "bestScorePercent": best_score if isinstance(best_score, (int, float)) else None,
                         "examPoints": _score_to_points(best_score) if exam_mode == "competitive" else None,
-                        "storedExamPoints": None,
-                        "pointsSubmitted": False,
+                        "storedExamPoints": stored_exam_points,
+                        "pointsSubmitted": stored_exam_points is not None,
                         "attemptsUsed": exam_progress.get("attemptsUsed") if isinstance(exam_progress.get("attemptsUsed"), int) else 0,
                         "status": exam_progress.get("status") or "in_progress",
-                        "lastAttemptId": exam_progress.get("lastAttemptId") or "",
+                        "lastAttemptId": last_attempt_id,
                         "lastAttemptTimestamp": _optional_timestamp(exam_progress.get("lastAttemptTimestamp")),
                         "lastSubmittedAt": _optional_timestamp(exam_progress.get("lastSubmittedAt")),
                         "countryRank": country_entry.get("rank"),
@@ -2452,6 +2676,16 @@ def _normalize_company_exam_draft(draft_id, payload, *, include_editor_state=Fal
     return normalized
 
 
+def _compact_company_exam_draft_payload(form, manual_ids, route_mode, created_at, updated_at):
+    return {
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "routeMode": route_mode,
+        "form": form if isinstance(form, dict) else {},
+        "manualIds": _normalize_exam_draft_manual_ids(manual_ids),
+    }
+
+
 def _company_exam_dashboard():
     company_exams_snapshot = _deep_merge_dicts(
         legacy_company_exams_ref().get() or {},
@@ -2657,7 +2891,6 @@ def update_school(school_code):
                 {
                     "academicYear": current_academic_year,
                     "createdAt": _non_empty_string(year_payload.get("createdAt")) or updated_at_iso,
-                    "label": _academic_year_label(current_academic_year),
                     "status": _non_empty_string(year_payload.get("status")) or "active",
                 }
             )
@@ -2669,7 +2902,6 @@ def update_school(school_code):
             "academicYear": current_academic_year,
             "createdAt": updated_at_iso,
             "isCurrent": True,
-            "label": _academic_year_label(current_academic_year),
             "status": "active",
             "updatedAt": updated_at_iso,
         }
@@ -2716,14 +2948,11 @@ def create_school():
     try:
         school_payload = payload.get("school")
         hr_payload = payload.get("hr")
-        registerer_payload = payload.get("registerer")
 
         if not isinstance(school_payload, dict):
             raise ValueError("school must be an object")
         if not isinstance(hr_payload, dict):
             raise ValueError("hr must be an object")
-        if not isinstance(registerer_payload, dict):
-            raise ValueError("registerer must be an object")
 
         short_name = _normalize_school_short_name(school_payload.get("shortName"))
         school_code = "-".join(
@@ -2771,42 +3000,36 @@ def create_school():
     school_root_ref = schools_ref().child(school_code)
     users_ref_for_school = school_root_ref.child("Users")
     hr_user_id = users_ref_for_school.push().key
-    registerer_user_id = users_ref_for_school.push().key
-    if not hr_user_id or not registerer_user_id:
+    if not hr_user_id:
         return jsonify({"error": "Unable to allocate Firebase user IDs for the new school"}), 500
 
     year_suffix = _current_year_suffix()
     hr_employee_id = f"EMP_{1:04d}_{year_suffix:02d}"
-    registerer_employee_id = f"EMP_{2:04d}_{year_suffix:02d}"
     hr_id = f"{short_name}H_{1:04d}_{year_suffix:02d}"
-    registerer_id = f"{short_name}R_{1:04d}_{year_suffix:02d}"
     created_at_iso = _utc_iso_now()
 
     try:
         school_info = _build_school_info_payload(school_payload, school_code, short_name, current_academic_year, created_at_iso)
         hr_bundle = _build_hr_payload(hr_payload, school_info, school_code, short_name, hr_employee_id, hr_id, hr_user_id, created_at_iso)
-        registerer_bundle = _build_registerer_payload(registerer_payload, school_info, school_code, registerer_employee_id, registerer_id, registerer_user_id, created_at_iso)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
     platform_root_key = str(os.getenv("PLATFORM_ROOT", DEFAULT_PLATFORM_ROOT)).strip("/")
-    academic_year_label = _academic_year_label(current_academic_year)
     updates = {
         f"{platform_root_key}/Schools/{school_code}/schoolInfo": school_info,
         f"{platform_root_key}/Schools/{school_code}/AcademicYears/{current_academic_year}": {
             "academicYear": current_academic_year,
             "createdAt": created_at_iso,
             "isCurrent": True,
-            "label": academic_year_label,
             "status": "active",
             "updatedAt": created_at_iso,
         },
+        f"{platform_root_key}/Schools/{school_code}/Departments": _default_school_departments(),
+        f"{platform_root_key}/Schools/{school_code}/Positions": _default_school_positions(),
         f"{platform_root_key}/Schools/{school_code}/Users/{hr_user_id}": hr_bundle["user"],
-        f"{platform_root_key}/Schools/{school_code}/Users/{registerer_user_id}": registerer_bundle["user"],
         f"{platform_root_key}/Schools/{school_code}/Employees/{hr_employee_id}": hr_bundle["employee"],
-        f"{platform_root_key}/Schools/{school_code}/Employees/{registerer_employee_id}": registerer_bundle["employee"],
+        f"{platform_root_key}/Schools/{school_code}/EmployeeSummaries/{hr_employee_id}": hr_bundle["summary"],
         f"{platform_root_key}/Schools/{school_code}/HR/{hr_id}": hr_bundle["role"],
-        f"{platform_root_key}/Schools/{school_code}/Registerers/{registerer_id}": registerer_bundle["node"],
         f"{platform_root_key}/Schools/{school_code}/counters": {
             "school_admins_by_school": {
                 short_name: 0,
@@ -2835,9 +3058,6 @@ def create_school():
                 "employeeId": hr_employee_id,
                 "hrEmployeeId": hr_employee_id,
                 "hrUserId": hr_user_id,
-                "registererId": registerer_id,
-                "registererEmployeeId": registerer_employee_id,
-                "registererUserId": registerer_user_id,
             },
         }
     ), 201
@@ -2906,8 +3126,9 @@ def upload_textbook_asset():
         asset_type = _require_string(form_payload.get("assetType"), "assetType").lower()
         grade_key = _require_grade_key(form_payload.get("gradeKey") or form_payload.get("grade"), "gradeKey")
         subject_key = _normalize_textbook_subject_key(form_payload.get("subjectKey") or form_payload.get("subject"), "subjectKey")
-        unit_key = _non_empty_string(form_payload.get("unitKey")) or "unit"
+        unit_key = _require_key(_non_empty_string(form_payload.get("unitKey")) or "unit", "unitKey")
         uploaded_asset = _upload_textbook_asset(file_storage, asset_type, grade_key, subject_key, unit_key)
+        persisted_asset = _persist_uploaded_textbook_asset(asset_type, grade_key, subject_key, uploaded_asset, unit_key)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except Exception as error:
@@ -2921,6 +3142,8 @@ def upload_textbook_asset():
             "gradeKey": grade_key,
             "subjectKey": subject_key,
             "unitKey": unit_key if asset_type == "unit" else "",
+            "persisted": True,
+            **persisted_asset,
             "downloadUrl": uploaded_asset.get("url"),
             **uploaded_asset,
         }
@@ -3055,20 +3278,17 @@ def save_company_exam_draft():
     now_ms = int(time.time() * 1000)
     created_at = _optional_timestamp(existing_draft.get("createdAt")) if isinstance(existing_draft, dict) else None
 
-    normalized_draft = _normalize_company_exam_draft(
-        draft_id,
-        {
-            "createdAt": created_at or now_ms,
-            "updatedAt": now_ms,
-            "routeMode": route_mode,
-            "form": form,
-            "manualIds": manual_ids,
-        },
-        include_editor_state=True,
+    draft_payload = _compact_company_exam_draft_payload(
+        form,
+        manual_ids,
+        route_mode,
+        created_at or now_ms,
+        now_ms,
     )
+    normalized_draft = _normalize_company_exam_draft(draft_id, draft_payload, include_editor_state=True)
 
     platform_root_key = str(os.getenv("PLATFORM_ROOT", DEFAULT_PLATFORM_ROOT)).strip("/")
-    root_ref().update({f"{platform_root_key}/companyExamDrafts/{draft_id}": normalized_draft})
+    root_ref().update({f"{platform_root_key}/companyExamDrafts/{draft_id}": draft_payload})
 
     return jsonify(
         {
@@ -3123,7 +3343,7 @@ def save_textbook_record():
         grade_key = _require_grade_key(payload.get("gradeKey") or payload.get("grade"), "gradeKey")
         subject_key = _normalize_textbook_subject_key(payload.get("subjectKey") or payload.get("subject"), "subjectKey")
         overwrite = _coerce_bool(payload.get("overwrite", False), "overwrite")
-        validated_textbook = _validate_textbook_node(payload.get("textbook"))
+        validated_textbook = _validate_textbook_node(payload.get("textbook"), default_title=subject_key)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except Exception as error:
@@ -3135,7 +3355,7 @@ def save_textbook_record():
     )
     existing_units = existing_textbook.get("units") if isinstance(existing_textbook.get("units"), dict) else {}
     incoming_units = validated_textbook.get("units") if isinstance(validated_textbook.get("units"), dict) else {}
-    conflicting_unit_keys = sorted(set(existing_units).intersection(incoming_units))
+    conflicting_unit_keys = _textbook_unit_conflicts(existing_units, incoming_units)
 
     if conflicting_unit_keys and not overwrite:
         return jsonify({

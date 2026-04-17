@@ -308,7 +308,7 @@ export default function StudentResultsPage() {
 			setRankingSubmitState({
 				loading: false,
 				error: '',
-				success: `Stored points for ${data.summary.processedResultCount} result${data.summary.processedResultCount === 1 ? '' : 's'} in rankings.`,
+				success: `Stored points for ${data.summary.processedResultCount} result${data.summary.processedResultCount === 1 ? '' : 's'} in rankings and updated ${data.summary.updatedAttemptCount ?? 0} attempt${data.summary.updatedAttemptCount === 1 ? '' : 's'}.`,
 			})
 			await reloadResults()
 		} catch (error) {

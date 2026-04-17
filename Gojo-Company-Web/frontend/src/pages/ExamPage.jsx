@@ -878,6 +878,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const [draftLibrary, setDraftLibrary] = useState({ loading: true, error: '', drafts: [] })
 	const [assetUploadState, setAssetUploadState] = useState({ loadingKey: '', error: '', success: '' })
 	const [activeDraftId, setActiveDraftId] = useState('')
+	const [isDraftLibraryVisible, setIsDraftLibraryVisible] = useState(false)
 	const [allowOverwrite, setAllowOverwrite] = useState(false)
 	const [manualIds, setManualIds] = useState(() => createManualIdState())
 	const [stageVisibility, setStageVisibility] = useState(() => ({
@@ -920,6 +921,17 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const currentModeExamCount = examMode === 'competitive' ? competitiveExams.length : examMode === 'entrance' ? entranceExams.length : practiceExams.length
 	const currentModeExamLabel = `${formatModeLabel(examMode)} Exams`
 	const activeWorkspaceLabel = activeDraft?.label || activeDraft?.packageId || 'New package draft'
+	const workspaceTargetsExistingRecord = (candidateForm) => {
+		const nextQuestionBankId = trimText(candidateForm?.questionBankId)
+		const nextExamId = trimText(candidateForm?.examId)
+		const nextPackageId = trimText(candidateForm?.packageId)
+
+		return Boolean(
+			(nextQuestionBankId && overview.questionBanks.some((item) => item.questionBankId === nextQuestionBankId)) ||
+			(nextExamId && overview.exams.some((item) => item.examId === nextExamId)) ||
+			(nextPackageId && overview.packages.some((item) => item.packageId === nextPackageId))
+		)
+	}
 
 	useEffect(() => {
 		setStageVisibility({
@@ -936,6 +948,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		setManualIds(createManualIdState())
 		setAssetUploadState({ loadingKey: '', error: '', success: '' })
 		setActiveDraftId('')
+		setIsDraftLibraryVisible(false)
 		setDraftState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
 		setDraftLibrary({ loading: true, error: '', drafts: [] })
 	}, [normalizedRouteMode])
@@ -1324,10 +1337,12 @@ export default function ExamPage({ routeMode = 'practice' }) {
 				throw new Error(data.error || 'Unable to open draft')
 			}
 
-			setForm(normalizeDraftForm(data.form, normalizedRouteMode))
+			const nextForm = normalizeDraftForm(data.form, normalizedRouteMode)
+
+			setForm(nextForm)
 			setManualIds(normalizeManualIds(data.manualIds))
 			setActiveDraftId(data.draftId)
-			setAllowOverwrite(false)
+			setAllowOverwrite(workspaceTargetsExistingRecord(nextForm))
 			setDraftState({
 				loading: false,
 				error: '',
@@ -1346,6 +1361,29 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		}
 	}
 
+	async function saveDraftWorkspace() {
+		const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/save-record`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				draftId: activeDraftId || undefined,
+				routeMode: normalizedRouteMode,
+				form,
+				manualIds,
+			}),
+		})
+		const data = await response.json()
+
+		if (!response.ok) {
+			throw new Error(data.error || 'Unable to save draft workspace')
+		}
+
+		setActiveDraftId(data.saved.draftId)
+		return data.saved
+	}
+
 	async function handleSaveDraft() {
 		setDraftState((current) => ({
 			...current,
@@ -1355,30 +1393,12 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		}))
 
 		try {
-			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/save-record`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify({
-					draftId: activeDraftId || undefined,
-					routeMode: normalizedRouteMode,
-					form,
-					manualIds,
-				}),
-			})
-			const data = await response.json()
-
-			if (!response.ok) {
-				throw new Error(data.error || 'Unable to save draft workspace')
-			}
-
-			setActiveDraftId(data.saved.draftId)
+			const savedDraft = await saveDraftWorkspace()
 			setDraftState({
 				loading: false,
 				error: '',
-				success: `${data.saved.label || 'Draft'} saved to Firebase with ${data.saved.startedQuestionCount ?? startedQuestionCount} started question${(data.saved.startedQuestionCount ?? startedQuestionCount) === 1 ? '' : 's'}. You can switch to another package and reopen this one later.`,
-				lastSavedAt: data.saved.updatedAt || Date.now(),
+				success: `${savedDraft.label || 'Draft'} saved to Firebase with ${savedDraft.startedQuestionCount ?? startedQuestionCount} started question${(savedDraft.startedQuestionCount ?? startedQuestionCount) === 1 ? '' : 's'}. You can switch to another package and reopen this one later.`,
+				lastSavedAt: savedDraft.updatedAt || Date.now(),
 				hasDraft: true,
 			})
 			await reloadDraftLibrary()
@@ -1493,10 +1513,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 				headers: {
 					'Content-Type': 'application/json',
 				},
-				body: JSON.stringify({
-					...payload,
-					draftId: activeDraftId || undefined,
-				}),
+				body: JSON.stringify(payload),
 			})
 			const data = await response.json()
 
@@ -1504,16 +1521,31 @@ export default function ExamPage({ routeMode = 'practice' }) {
 				throw new Error(data.error || 'Save failed')
 			}
 
-			setActiveDraftId('')
-			setDraftState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
+			let savedDraft = null
+			let draftSyncError = ''
+
+			try {
+				savedDraft = await saveDraftWorkspace()
+				setDraftState({
+					loading: false,
+					error: '',
+					success: `${savedDraft.label || 'Draft'} stays in Firebase after publish. Keep editing this workspace and save record again whenever you need to update the same package, exam, and question bank IDs.`,
+					lastSavedAt: savedDraft.updatedAt || Date.now(),
+					hasDraft: true,
+				})
+			} catch (error) {
+				draftSyncError = error.message || 'Unable to keep the draft workspace in Firebase.'
+			}
+
+			setAllowOverwrite(true)
 
 			setSubmitState({
 				loading: false,
 				error: '',
-				success: `Saved ${data.saved.questionBankId}, ${data.saved.examId}, and ${data.saved.packageId} into ${data.location}.${data.clearedDraftId ? ' The linked draft workspace was cleared from Firebase.' : ''} Students only see the published record.`,
+				success: `Saved ${data.saved.questionBankId}, ${data.saved.examId}, and ${data.saved.packageId} into ${data.location}. ${savedDraft ? 'The draft workspace stayed in Firebase for more edits.' : `Published record saved, but the draft workspace could not be synced: ${draftSyncError}`} Overwrite is now enabled so you can update the same IDs from this page. Students only see the published record.`,
 			})
 			await reloadOverview()
-			await reloadDraftLibrary()
+			await reloadDraftLibrary({ silent: Boolean(savedDraft) })
 		} catch (error) {
 			setSubmitState({ loading: false, error: error.message || 'Save failed', success: '' })
 		}
@@ -1538,7 +1570,15 @@ export default function ExamPage({ routeMode = 'practice' }) {
 							</p>
 							<div className='hero-actions'>
 								<a className='primary-action' href='#builder-form'>Open builder</a>
-								<a className='secondary-action' href='#exam-drafts'>Manage drafts</a>
+								<button
+									className='secondary-action'
+									type='button'
+									onClick={() => setIsDraftLibraryVisible((current) => !current)}
+									aria-expanded={isDraftLibraryVisible}
+									aria-controls='exam-drafts'
+								>
+									{isDraftLibraryVisible ? 'Hide drafts' : 'Show drafts'}
+								</button>
 							</div>
 							{loadState.error ? <div className='status-banner warning'>{loadState.error}</div> : null}
 							{draftState.error ? <div className='status-banner warning'>{draftState.error}</div> : null}
@@ -1550,49 +1590,10 @@ export default function ExamPage({ routeMode = 'practice' }) {
 							{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 						</div>
 
-						<div className='hero-card exam-hero-card'>
-							<span className='hero-card-label'>Workspace Pulse</span>
-							<div className='exam-premium-pulse-grid'>
-								<article className='exam-pulse-card'>
-									<p className='config-key'>Workspace</p>
-									<h3>{activeWorkspaceLabel}</h3>
-									<p>
-										{draftLibrary.loading
-											? 'Syncing Firebase drafts...'
-											: `${draftLibrary.drafts.length} reusable draft workspace${draftLibrary.drafts.length === 1 ? '' : 's'} ready.`}
-									</p>
-								</article>
-								<article className='exam-pulse-card'>
-									<p className='config-key'>Current mode</p>
-									<h3>{formatModeLabel(examMode)}</h3>
-									<p>
-										{currentRoundId} • {packageSubjectLabel}
-									</p>
-								</article>
-								<article className='exam-pulse-card'>
-									<p className='config-key'>Question bank</p>
-									<h3>{questionBankFocus ? 'Focus mode on' : 'Nested in package'}</h3>
-									<p>
-										{savedQuestionCount} saveable question{savedQuestionCount === 1 ? '' : 's'} in the current build.
-									</p>
-								</article>
-							</div>
-							<div className='builder-stat-grid exam-stat-grid'>
-								<StatCard label='Draft Workspaces' value={draftLibrary.drafts.length} tone='gold' />
-								<StatCard label='Packages' value={overview.stats.packageCount ?? 0} tone='gold' />
-								<StatCard label={currentModeExamLabel} value={currentModeExamCount} tone='teal' />
-								<StatCard label='Question Banks' value={overview.questionBanks.length} tone='coral' />
-							</div>
-							<p className='inline-note'>
-								{loadState.loading
-									? 'Reading current exam content...'
-									: questionBankFocus
-										? 'Question bank focus mode is active. The writing surface now uses the full builder width.'
-										: 'The page stays package-first, while exam setup and question authoring open only when you need them.'}
-							</p>
-						</div>
+						
 					</section>
 
+					{isDraftLibraryVisible ? (
 					<section className='section-block exam-draft-section' id='exam-drafts'>
 						<div className='section-header-row'>
 							<div className='section-heading'>
@@ -1611,6 +1612,9 @@ export default function ExamPage({ routeMode = 'practice' }) {
 										? 'Syncing draft workspace...'
 										: `${draftLibrary.drafts.length} draft${draftLibrary.drafts.length === 1 ? '' : 's'} stored in Firebase`}
 								</span>
+								<button className='ghost-button' type='button' onClick={() => setIsDraftLibraryVisible(false)} disabled={draftState.loading || submitState.loading}>
+									Hide drafts
+								</button>
 								<button className='secondary-action' type='button' onClick={handleStartNewDraft} disabled={draftState.loading || submitState.loading}>
 									Start new draft
 								</button>
@@ -1673,6 +1677,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 							)}
 						</div>
 					</section>
+					) : null}
 
 					<section className='section-block exam-composer-section' id='builder-form'>
 						<div className='section-header-row exam-composer-header'>
@@ -2273,8 +2278,8 @@ export default function ExamPage({ routeMode = 'practice' }) {
 									</div>
 									<p className='inline-note'>
 										{draftState.lastSavedAt
-											? `Last draft synced ${formatDateTime(draftState.lastSavedAt)}.${activeDraft ? ` Active workspace: ${activeWorkspaceLabel}.` : ''} Save record publishes the final package, exam, and bank nodes.`
-											: 'Save draft keeps this package workspace in Firebase. Save record publishes the final package, exam, and question bank nodes.'}
+											? `Last draft synced ${formatDateTime(draftState.lastSavedAt)}.${activeDraft ? ` Active workspace: ${activeWorkspaceLabel}.` : ''} Save record publishes the final package, exam, and bank nodes and keeps this workspace available for later edits.`
+											: 'Save draft keeps this package workspace in Firebase. Save record publishes the final package, exam, and question bank nodes and keeps the draft available for later edits.'}
 									</p>
 								</div>
 							</form>
