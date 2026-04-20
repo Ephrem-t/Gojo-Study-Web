@@ -2,14 +2,20 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 import firebase_admin
 from firebase_admin import credentials, db
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_CREDENTIALS = os.path.join(BASE_DIR, "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
-DATABASE_URL = "https://bale-house-rental-default-rtdb.firebaseio.com/"
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
+
+
+DEFAULT_CREDENTIALS = FIREBASE_CREDENTIALS
 
 
 def normalize_course_fragment(value):
@@ -47,12 +53,13 @@ def resolve_course_id(courses, grade, section, subject):
 
 
 def init_firebase(credentials_path):
-    if not os.path.exists(credentials_path):
-        raise FileNotFoundError(f"Firebase credentials not found: {credentials_path}")
+    resolved_credentials = credentials_path or require_firebase_credentials()
+    if not os.path.exists(resolved_credentials):
+        raise FileNotFoundError(f"Firebase credentials not found: {resolved_credentials}")
 
     if not firebase_admin._apps:
-        cred = credentials.Certificate(credentials_path)
-        firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
+        cred = credentials.Certificate(resolved_credentials)
+        firebase_admin.initialize_app(cred, get_firebase_options())
 
 
 def collect_school_codes(root, selected_school_code=None):

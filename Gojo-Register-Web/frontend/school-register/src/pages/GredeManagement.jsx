@@ -13,6 +13,7 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
+import { loadGradeManagementNode, loadSchoolInfoNode, loadSchoolStudentsNode } from "../utils/registerData";
 
 const PAGE_BG = "linear-gradient(150deg, var(--page-bg-secondary) 0%, var(--page-bg) 45%, color-mix(in srgb, var(--page-bg-secondary) 78%, white) 100%)";
 
@@ -200,20 +201,19 @@ export default function GredeManagement() {
 
     setLoading(true);
     try {
-      const [gradeRes, studentsRes, activeYearRes] = await Promise.all([
-        axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo/currentAcademicYear.json`).catch(() => ({ data: "" })),
+      const [rawGrades, studentsData, schoolInfo] = await Promise.all([
+        loadGradeManagementNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
       ]);
 
-      const rawGrades = gradeRes.data || {};
       const nextGrades = Object.fromEntries(
         Object.entries(rawGrades).filter(([gradeKey]) => isValidGradeKey(gradeKey))
       );
 
       setGradesMap(nextGrades);
-      setStudentsMap(studentsRes.data || {});
-      setActiveAcademicYear(String(activeYearRes.data || ""));
+      setStudentsMap(studentsData || {});
+      setActiveAcademicYear(String(schoolInfo?.currentAcademicYear || ""));
 
       const sorted = Object.keys(nextGrades).sort((a, b) => Number(a) - Number(b));
       const firstGrade = sorted[0] || "";

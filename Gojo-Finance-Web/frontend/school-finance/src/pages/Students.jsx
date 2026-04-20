@@ -8,18 +8,18 @@ import axios from "axios";
 import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
 import { useMemo } from "react";
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
-import { getFirestore, collection, getDocs } from "firebase/firestore";
 
-import app, { db, firestore } from "../firebase"; // Adjust the path if needed
+import { db as dbRT } from "../firebase";
 import { BACKEND_BASE } from "../config.js";
+import { useFinanceShell } from "../context/FinanceShellContext";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getOrLoad } from "../utils/requestCache";
 
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
   // ------------------ STATES ------------------
   const [students, setStudents] = useState([]); // List of all students
-  const [teachers, setTeachers] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
   const [selectedPaidFilter, setSelectedPaidFilter] = useState("all"); // all | paid | unpaid
@@ -307,6 +307,8 @@ function StudentsPage() {
     dbRoot: DB_URL,
     currentUserId: admin.userId,
   });
+  const financeShell = useFinanceShell();
+  const conversationSummaries = financeShell?.conversationSummaries || [];
 
 
 const handleNotificationClick = async (notification) => {
@@ -349,16 +351,6 @@ useEffect(() => {
 
     document.addEventListener("click", closeDropdown);
     return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
-  useEffect(() => {
-    const fetchStudents = async () => {
-      const querySnapshot = await getDocs(collection(firestore, "students"));
-      const studentsData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStudents(studentsData);
-    };
-
-    fetchStudents();
   }, []);
 
   // load finance/admin on mount
@@ -540,8 +532,14 @@ useEffect(() => {
       const user = userRes.data || {};
 
       // 2️⃣ Fetch ClassMarks from Firebase
-      const marksRes = await axios.get(`${DB_URL}/ClassMarks.json`);
-      const classMarks = marksRes.data || {};
+      const classMarks = await getOrLoad(
+        `finance:students:classmarks:${DB_URL}`,
+        async () => {
+          const response = await axios.get(`${DB_URL}/ClassMarks.json`);
+          return response.data || {};
+        },
+        { ttlMs: 5 * 60 * 1000 }
+      );
 
       const studentMarksObj = {};
       const courseTeacherMap = {};
@@ -566,8 +564,14 @@ useEffect(() => {
       });
 
       // 3️⃣ Fetch Attendance (optional)
-      const attendanceRes = await axios.get(`${DB_URL}/Attendance.json`);
-      const attendanceRaw = attendanceRes.data || {};
+      const attendanceRaw = await getOrLoad(
+        `finance:students:attendance:${DB_URL}`,
+        async () => {
+          const response = await axios.get(`${DB_URL}/Attendance.json`);
+          return response.data || {};
+        },
+        { ttlMs: 5 * 60 * 1000 }
+      );
 
       const attendanceData = [];
       Object.entries(attendanceRaw).forEach(([courseId, datesObj]) => {
@@ -691,68 +695,29 @@ useEffect(() => {
 
 
 
-  useEffect(() => {
-    const fetchTeachersAndUnread = async () => {
-      try {
-        const [teachersRes, usersRes] = await Promise.all([
-          axios.get(`${DB_URL}/Teachers.json`),
-          axios.get(`${DB_URL}/Users.json`)
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
-          };
-        });
-
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        for (const t of teacherList) {
-          const chatKey = `${t.userId}_${adminUserId}`;
-          const res = await axios.get(`${DB_URL}/Chats/${chatKey}/messages.json`);
-          const msgs = Object.values(res.data || {}).map(m => ({
-            ...m,
-            sender: m.senderId === adminUserId ? "admin" : "teacher"
-          }));
-          allMessages.push(...msgs);
-
-          const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
-        }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchTeachersAndUnread();
-  }, [adminUserId]);
-
   // ------------------ FETCH STUDENTS ------------------
   useEffect(() => {
     const fetchStudents = async () => {
       try {
         setStudentsLoading(true);
-        const studentsRes = await axios.get(`${DB_URL}/Students.json`);
-        const usersRes = await axios.get(`${DB_URL}/Users.json`);
-
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
+        const [studentsData, usersData] = await Promise.all([
+          getOrLoad(
+            `finance:students:list:${DB_URL}`,
+            async () => {
+              const response = await axios.get(`${DB_URL}/Students.json`);
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+          getOrLoad(
+            `finance:students:users:${DB_URL}`,
+            async () => {
+              const response = await axios.get(`${DB_URL}/Users.json`);
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+        ]);
 
         const studentList = Object.keys(studentsData).map((id) => {
           const student = studentsData[id];
@@ -818,73 +783,24 @@ useEffect(() => {
   // ---------------- FETCH PERFORMANCE ----------------
   // This effect reads ClassMarks and stores only the entries for the selected student.
   useEffect(() => {
-    if (!selectedStudent?.studentId) {
-      setStudentMarks({});
-      return;
-    }
-
-    let cancelled = false;
-
-    async function fetchMarks() {
-      try {
-        const res = await axios.get(
-          `${DB_URL}/ClassMarks.json`
-        );
-
-        const marksObj = {};
-        Object.entries(res.data || {}).forEach(([courseId, students]) => {
-          // Try direct key
-          if (students?.[selectedStudent.studentId]) {
-            marksObj[courseId] = students[selectedStudent.studentId];
-            return;
-          }
-
-          // Fallback: try to find by userId inside student nodes
-          const found = Object.values(students || {}).find(s => s && (s.userId === selectedStudent.userId || s.studentId === selectedStudent.studentId));
-          if (found) marksObj[courseId] = found;
-        });
-
-        if (!cancelled) {
-          setStudentMarks(marksObj);
-        }
-      } catch (err) {
-        console.error("Marks fetch error:", err);
-        if (!cancelled) setStudentMarks({});
-      }
-    }
-
-    fetchMarks();
-
-    return () => {
-      cancelled = true;
-    };
+    setStudentMarks(selectedStudent?.marks || {});
   }, [selectedStudent]);
 
 
   //-------------------------Fetch unread status for each student--------------
   useEffect(() => {
-    const fetchUnread = async () => {
-      const map = {};
+    const nextMap = {};
 
-      for (const s of students) {
-        const key = `${s.studentId}_${admin.userId}`;
+    students.forEach((student) => {
+      const summary = conversationSummaries.find(
+        (item) => String(item?.userId) === String(student?.userId)
+      );
 
-        const res = await axios.get(
-          `${DB_URL}/Chats/${key}/messages.json`
-        );
+      nextMap[student.studentId] = Number(summary?.unreadCount || 0) > 0;
+    });
 
-        const msgs = res.data || {};
-        map[s.studentId] = Object.values(msgs).some(
-          m => m.senderId === s.studentId && m.seenByAdmin === false
-        );
-
-      }
-
-      setUnreadMap(map);
-    };
-
-    if (students.length > 0) fetchUnread();
-  }, [students]);
+    setUnreadMap(nextMap);
+  }, [conversationSummaries, students]);
 
   // ---------------- FETCH CHAT MESSAGES ----------------
   useEffect(() => {

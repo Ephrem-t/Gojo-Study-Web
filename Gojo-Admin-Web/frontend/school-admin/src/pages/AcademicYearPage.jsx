@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { FaChevronDown, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
 import { BACKEND_BASE } from "../config.js";
 
 const PAGE_BG = "var(--page-bg)";
@@ -96,6 +96,9 @@ export default function AcademicYearPage() {
     profileImage: getSafeImageUrl(stored.profileImage, "/default-profile.png"),
     username: stored.username || "",
   };
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
 
   const schoolCode = stored.schoolCode || "";
   const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
@@ -227,6 +230,19 @@ export default function AcademicYearPage() {
   const renderSkeletonLine = (width, height = 12, extraStyle = {}) => (
     <div style={{ ...skeletonBaseStyle, width, height, ...extraStyle }} />
   );
+  const pageCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const heroCardStyle = {
+    ...pageCardStyle,
+    padding: 18,
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
+  };
 
   const fetchAcademicYears = async () => {
     if (!schoolCode) {
@@ -381,7 +397,43 @@ export default function AcademicYearPage() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: PAGE_BG, minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
       <style>
         {`
           @keyframes academicYearSkeletonPulse {
@@ -414,12 +466,21 @@ export default function AcademicYearPage() {
         `}
       </style>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: PAGE_BG, width: "100%", boxSizing: "border-box" }}>
-        <Sidebar admin={admin} />
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
-        <div className="main-content google-main" style={{ flex: "1.08 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "stretch", height: "100%", overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 2px" }}>
-          <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className="section-header-card" style={{ padding: 18 }}>
+        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", top: "auto", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 12px 0 2px", display: "flex", justifyContent: "center" }}>
+          <div style={{ width: "100%", maxWidth: 1120, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="section-header-card" style={heroCardStyle}>
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
               <div className="section-header-card__row">
                 <div>
                   <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Academic Year Management</h1>
@@ -432,7 +493,7 @@ export default function AcademicYearPage() {
                     type="button"
                     onClick={fetchAcademicYears}
                     disabled={loading || working}
-                    style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--accent-strong)", background: "var(--surface-accent)", color: "var(--accent-strong)", borderRadius: 9, padding: "7px 10px", fontSize: 12, fontWeight: 800, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.6 : 1 }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--accent-strong)", background: "var(--surface-accent)", color: "var(--accent-strong)", borderRadius: 9, padding: "7px 10px", fontSize: 12, fontWeight: 800, cursor: loading || working ? "not-allowed" : "pointer", opacity: loading || working ? 0.6 : 1, boxShadow: "var(--shadow-glow)" }}
                   >
                     <FaSyncAlt /> Refresh
                   </button>
@@ -447,7 +508,7 @@ export default function AcademicYearPage() {
                 { title: "Archived", value: stats.archivedCount, hint: "Closed years", color: "#c2410c" },
                 { title: "History Students", value: stats.historyStudents, hint: selectedHistoryYear ? selectedHistoryYear.replace("_", "/") : "Current selection", color: "#7c3aed" },
               ].map((item) => (
-                <div key={item.title} style={{ ...cardStyle, padding: 12 }}>
+                <div key={item.title} style={{ ...pageCardStyle, padding: 12, background: "linear-gradient(180deg, var(--surface-panel) 0%, color-mix(in srgb, var(--surface-panel) 82%, var(--surface-accent)) 100%)" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{item.title}</span>
                     <FaUsers style={{ color: item.color }} />
@@ -474,7 +535,7 @@ export default function AcademicYearPage() {
               </div>
             ) : null}
 
-            <div style={{ ...cardStyle, overflow: "hidden" }}>
+            <div style={{ ...pageCardStyle, overflow: "hidden" }}>
               <div style={{ padding: "12px 14px", fontWeight: 800, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)" }}>Academic Years</div>
               <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.7fr", padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
                 <div>Year</div>
@@ -614,15 +675,7 @@ export default function AcademicYearPage() {
                                     <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderTop: "1px solid var(--border-soft)", alignItems: "center", gap: 8 }}>
                                       <div style={{ minWidth: 0 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                                          <img
-                                            src={getSafeImageUrl(student.profileImage, "/default-profile.png")}
-                                            alt={student.name || "Student"}
-                                            onError={(event) => {
-                                              event.currentTarget.onerror = null;
-                                              event.currentTarget.src = "/default-profile.png";
-                                            }}
-                                            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-strong)", flexShrink: 0 }}
-                                          />
+                                          <ProfileAvatar src={getSafeImageUrl(student.profileImage, "/default-profile.png")} name={student.name || "Student"} alt={student.name || "Student"} loading="lazy" style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-strong)", flexShrink: 0 }} />
                                           <div style={{ minWidth: 0 }}>
                                             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
                                             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
@@ -662,15 +715,7 @@ export default function AcademicYearPage() {
           <div style={{ maxWidth: 1180, margin: "0 auto", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 16, boxShadow: "var(--shadow-panel)", overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "14px 16px", color: "#fff", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img
-                  src={getSafeImageUrl(selectedHistoryStudent.profileImage, "/default-profile.png")}
-                  alt={selectedHistoryStudent.name || "Student"}
-                  onError={(event) => {
-                    event.currentTarget.onerror = null;
-                    event.currentTarget.src = "/default-profile.png";
-                  }}
-                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
-                />
+                <ProfileAvatar src={getSafeImageUrl(selectedHistoryStudent.profileImage, "/default-profile.png")} name={selectedHistoryStudent.name || "Student"} alt={selectedHistoryStudent.name || "Student"} style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }} />
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedHistoryStudent.name || "Student"}</div>
                   <div style={{ fontSize: 12, opacity: 0.95 }}>

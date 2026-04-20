@@ -15,6 +15,7 @@ import {
   FaUsers,
   FaChevronDown,
 } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 const SIDEBAR_SECTIONS = [
   {
@@ -162,7 +163,7 @@ function Sidebar({
     padding: "8px 10px",
     borderRadius: 10,
     border: "1px solid var(--border-strong)",
-    background: "linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
+    background: "var(--page-bg)",
     cursor: "pointer",
   };
   const sidebarSectionChildrenStyle = {
@@ -280,15 +281,15 @@ function Sidebar({
           padding: "12px 10px",
           marginBottom: 6,
           borderRadius: 14,
-          background: "linear-gradient(180deg, var(--surface-accent) 0%, var(--surface-panel) 100%)",
+          background: "var(--page-bg)",
           border: "1px solid var(--border-strong)",
           boxShadow: "inset 0 1px 0 color-mix(in srgb, white 8%, transparent)",
         }}
       >
         <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: "50%", overflow: "hidden", border: "2px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }}>
-          <img src={profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <ProfileAvatar src={profileImage} name={displayName} alt={displayName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         </div>
-        <div style={{ padding: "3px 8px", borderRadius: 999, background: "var(--surface-accent)", border: "1px solid var(--border-strong)", color: "var(--accent)", fontSize: 9, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>{badgeLabel}</div>
+        <div style={{ padding: "3px 8px", borderRadius: 999, background: "var(--page-bg)", border: "1px solid var(--border-strong)", color: "var(--accent)", fontSize: 9, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>{badgeLabel}</div>
         <h3 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: "var(--text-primary)", textAlign: "center" }}>{displayName}</h3>
         <p style={{ margin: 0, fontSize: 11, color: "var(--text-muted)" }}>{displayAdminId}</p>
       </div>

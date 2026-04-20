@@ -17,9 +17,16 @@ import Sidebar from "./Sidebar";
 import "../styles/global.css";
 
 import { API_BASE } from "../api/apiConfig";
-import { getRtdbRoot } from "../api/rtdbScope";
+import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
+import {
+  clearCachedChatSummary,
+  fetchTeacherConversationSummaries,
+  loadStudentsByGradeSections,
+  resolveTeacherSchoolCode,
+} from "../utils/teacherData";
 const RTDB_BASE = getRtdbRoot();
+const TEACHER_BEFORE_APP_NAVIGATION_HANDLER = "__teacherBeforeAppNavigation";
 
 // Format student name: capitalize first letter of each word, rest lowercase
 const formatStudentName = (rawName) => {
@@ -48,9 +55,162 @@ const getSubjectKeyVariants = (value) => {
   return Array.from(set).filter(Boolean);
 };
 
+const normalizeCourseSubject = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const toTitleCase = (value) =>
+  String(value || "")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const parseVirtualCourseFromId = (courseId) => {
+  const normalized = String(courseId || "").trim();
+  if (!normalized.startsWith("course_")) {
+    return {
+      id: normalized,
+      subject: normalized,
+      name: normalized,
+      grade: "",
+      section: "",
+      virtual: true,
+    };
+  }
+
+  const body = normalized.slice("course_".length);
+  const parts = body.split("_").filter(Boolean);
+  const gradeSection = parts.at(-1) || "";
+  const match = gradeSection.match(/^(\d+)([A-Za-z].*)$/);
+  const subjectRaw = normalizeCourseSubject(parts.slice(0, -1).join(" "));
+
+  return {
+    id: normalized,
+    subject: toTitleCase(subjectRaw),
+    name: toTitleCase(subjectRaw),
+    grade: match?.[1] || "",
+    section: String(match?.[2] || "").toUpperCase(),
+    virtual: true,
+  };
+};
+
+const getStudentGrade = (student = {}) =>
+  String(
+    student?.grade ||
+      student?.basicStudentInformation?.grade ||
+      student?.academicSetup?.grade ||
+      ""
+  ).trim();
+
+const getStudentSection = (student = {}) =>
+  String(
+    student?.section ||
+      student?.basicStudentInformation?.section ||
+      student?.academicSetup?.section ||
+      ""
+  )
+    .trim()
+    .toUpperCase();
+
+const clampScoreToMax = (rawValue, maxValue) => {
+  const digits = String(rawValue || "").replace(/[^0-9]/g, "");
+  if (!digits) return "";
+
+  const numeric = Number(digits);
+  if (!Number.isFinite(numeric)) return "";
+
+  const maxNumeric = Number(maxValue);
+  if (!Number.isFinite(maxNumeric) || maxNumeric < 0) return numeric;
+  return Math.min(numeric, maxNumeric);
+};
+
+const validateMarksAgainstMax = (marks = {}) => {
+  const violations = [];
+  Object.entries(marks || {}).forEach(([assessmentKey, assessment]) => {
+    const scoreRaw = assessment?.score;
+    if (scoreRaw === "" || scoreRaw === null || scoreRaw === undefined) return;
+
+    const score = Number(scoreRaw);
+    const max = Number(assessment?.max);
+    if (!Number.isFinite(score) || !Number.isFinite(max)) return;
+
+    if (score > max) {
+      violations.push({
+        assessmentKey,
+        name: assessment?.name || assessmentKey,
+        max,
+      });
+    }
+  });
+  return violations;
+};
+
+const getViewportWidth = () => (typeof window !== "undefined" ? window.innerWidth : 1024);
+
+const getStoredTeacher = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("teacher");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    localStorage.removeItem("teacher");
+    return null;
+  }
+};
+
+const findUserByUserId = (usersObj, userId) => {
+  if (!usersObj || !userId) return null;
+  const normalizedUserId = String(userId || "").trim();
+  if (usersObj[normalizedUserId]) return usersObj[normalizedUserId];
+
+  return (
+    Object.entries(usersObj).find(([userKey, userValue]) => {
+      return (
+        String(userKey || "").trim() === normalizedUserId ||
+        String(userValue?.userId || "").trim() === normalizedUserId
+      );
+    })?.[1] || null
+  );
+};
+
+const MARKS_AUTOSAVE_STORAGE_KEY = "teacher_marks_auto_save_enabled";
+const AUTO_SAVE_DELAY_MS = 900;
+
+const getStoredAutoSaveEnabled = () => {
+  if (typeof window === "undefined") return true;
+
+  try {
+    const raw = localStorage.getItem(MARKS_AUTOSAVE_STORAGE_KEY);
+    if (raw === null) return true;
+    return raw === "true";
+  } catch {
+    return true;
+  }
+};
+
+const formatAutoSaveTime = (timeStamp) => {
+  if (!timeStamp) return "";
+
+  try {
+    return new Date(timeStamp).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+};
+
 export default function MarksPage() {
   // Sidebar toggle state for mobile (like Dashboard)
-  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
+  const [sidebarOpen, setSidebarOpen] = useState(() => getViewportWidth() > 600);
   const [teacher, setTeacher] = useState(null);
   const [courses, setCourses] = useState([]);
   const [students, setStudents] = useState([]);
@@ -68,14 +228,29 @@ export default function MarksPage() {
   const [messageNotifications, setMessageNotifications] = useState([]);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [cellErrors, setCellErrors] = useState({});
+  const [rtdbBase, setRtdbBase] = useState("");
+  const [schoolBaseResolved, setSchoolBaseResolved] = useState(false);
+  const [studentsLoaded, setStudentsLoaded] = useState(false);
   const navigate = useNavigate();
   const [showMessenger, setShowMessenger] = useState(false);
   const [conversations, setConversations] = useState([]);
+  const [isMobile, setIsMobile] = useState(() => getViewportWidth() <= 600);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => getStoredAutoSaveEnabled());
+  const [dirtyStudentIds, setDirtyStudentIds] = useState({});
+  const [autoSaveStatus, setAutoSaveStatus] = useState("idle");
+  const [autoSaveError, setAutoSaveError] = useState("");
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState(null);
+  const autoSaveTimerRef = useRef(null);
+  const dirtyStudentIdsRef = useRef({});
+  const studentMarksRef = useRef({});
 
   // Responsive handling for sidebar
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth <= 600) setSidebarOpen(false);
+      const width = getViewportWidth();
+      setIsMobile(width <= 600);
+      if (width <= 600) setSidebarOpen(false);
       else setSidebarOpen(true);
     };
     window.addEventListener("resize", handleResize);
@@ -85,7 +260,7 @@ export default function MarksPage() {
 
   // ---------------- LOAD TEACHER ----------------
   useEffect(() => {
-    const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
+    const storedTeacher = getStoredTeacher();
     if (!storedTeacher) {
       navigate("/login");
       return;
@@ -94,6 +269,39 @@ export default function MarksPage() {
   }, [navigate]);
 
   const teacherUserId = teacher?.userId;
+
+  useEffect(() => {
+    dirtyStudentIdsRef.current = dirtyStudentIds;
+  }, [dirtyStudentIds]);
+
+  useEffect(() => {
+    studentMarksRef.current = studentMarks;
+  }, [studentMarks]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(MARKS_AUTOSAVE_STORAGE_KEY, String(autoSaveEnabled));
+  }, [autoSaveEnabled]);
+
+  useEffect(() => {
+    const resolveSchoolBase = async () => {
+      if (!teacher) return;
+
+      setSchoolBaseResolved(false);
+
+      if (!teacher?.schoolCode) {
+        setRtdbBase(RTDB_BASE);
+        setSchoolBaseResolved(true);
+        return;
+      }
+
+      const resolvedSchoolCode = await resolveTeacherSchoolCode(teacher.schoolCode);
+      setRtdbBase(`${RTDB_BASE_RAW}/Platform1/Schools/${resolvedSchoolCode}`);
+      setSchoolBaseResolved(true);
+    };
+
+    resolveSchoolBase();
+  }, [teacher]);
 
   // Messenger conversations fetch
   useEffect(() => {
@@ -105,33 +313,105 @@ export default function MarksPage() {
 
   // Fetch teacher's assigned courses (populates Select Course)
   useEffect(() => {
-    if (!teacher) return;
+    if (!teacher || !schoolBaseResolved || !rtdbBase) return;
     const fetchCourses = async () => {
       try {
-        const context = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
-        const teacherCourses = context.courses || [];
-        setCourses(teacherCourses);
-        if (!selectedCourseId && teacherCourses.length > 0) setSelectedCourseId(teacherCourses[0].id);
+        const context = await getTeacherCourseContext({ teacher, rtdbBase });
+        let teacherCourses = (context.courses || []).map((course) => {
+          const defaults = parseVirtualCourseFromId(course?.id);
+          return {
+            ...course,
+            id: course?.id || defaults.id,
+            subject: course?.subject || course?.name || defaults.subject,
+            name: course?.name || course?.subject || defaults.name,
+            grade: String(course?.grade || defaults.grade || "").trim(),
+            section: String(course?.section || course?.secation || defaults.section || "")
+              .trim()
+              .toUpperCase(),
+          };
+        });
+
+        if (!teacherCourses.length) {
+          const [coursesRes, classMarksRes, courseStatsRes] = await Promise.all([
+            axios.get(`${rtdbBase}/Courses.json`).catch(() => ({ data: {} })),
+            axios.get(`${rtdbBase}/ClassMarks.json`).catch(() => ({ data: {} })),
+            axios.get(`${rtdbBase}/SchoolExams/CourseStats.json`).catch(() => ({ data: {} })),
+          ]);
+
+          const coursesMap = coursesRes.data || {};
+          const classMarks = classMarksRes.data || {};
+          const courseStats = courseStatsRes.data || {};
+          const fallbackCourseIds = new Set([
+            ...Object.keys(coursesMap || {}),
+            ...Object.keys(classMarks || {}),
+            ...Object.keys(courseStats || {}),
+          ]);
+
+          teacherCourses = Array.from(fallbackCourseIds)
+            .filter(Boolean)
+            .map((courseId) => {
+              const stored = coursesMap?.[courseId] || {};
+              const virtual = parseVirtualCourseFromId(courseId);
+              const marksCount = Object.keys(classMarks?.[courseId] || {}).length;
+              return {
+                ...virtual,
+                id: courseId,
+                subject: stored.subject || stored.name || virtual.subject,
+                name: stored.name || stored.subject || virtual.name,
+                grade: String(stored.grade || virtual.grade || "").trim(),
+                section: String(stored.section || stored.secation || virtual.section || "").trim().toUpperCase(),
+                virtual: !stored || !Object.keys(stored).length,
+                _marksCount: marksCount,
+              };
+            })
+            .sort((a, b) => (b._marksCount || 0) - (a._marksCount || 0))
+            .map(({ _marksCount, ...rest }) => rest);
+        }
+
+        setCourses((prev) => {
+          if (teacherCourses.length > 0) return teacherCourses;
+          return prev;
+        });
+
+        if (teacherCourses.length > 0) {
+          setSelectedCourseId((prevSelected) => {
+            if (prevSelected && teacherCourses.some((c) => c.id === prevSelected)) {
+              return prevSelected;
+            }
+            return teacherCourses[0].id;
+          });
+        }
       } catch (err) {
         console.error("Error fetching courses:", err);
       }
     };
     fetchCourses();
-  }, [teacher]);
+  }, [teacher, schoolBaseResolved, rtdbBase]);
 
   // Load marks for course/semester is handled in the effect below
   useEffect(() => {
-    if (!selectedCourseId) return;
+    if (!selectedCourseId || !schoolBaseResolved || !studentsLoaded) return;
     const loadCourseData = async () => {
       try {
         const course = courses.find((c) => c.id === selectedCourseId);
         if (!course) return;
 
-        const subjectVariants = getSubjectKeyVariants(course.subject || course.name || "");
+        const courseDefaults = parseVirtualCourseFromId(selectedCourseId);
+        const resolvedCourse = {
+          ...course,
+          grade: String(course?.grade || courseDefaults.grade || "").trim(),
+          section: String(course?.section || course?.secation || courseDefaults.section || "")
+            .trim()
+            .toUpperCase(),
+          subject: course?.subject || course?.name || courseDefaults.subject,
+          name: course?.name || course?.subject || courseDefaults.name,
+        };
+
+        const subjectVariants = getSubjectKeyVariants(resolvedCourse.subject || resolvedCourse.name || "");
         const [marksRes, templateRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/ClassMarks/${selectedCourseId}.json`),
+          axios.get(`${rtdbBase}/ClassMarks/${selectedCourseId}.json`),
           axios.get(
-            `${RTDB_BASE}/AssesmentTemplates/${encodeURIComponent(course.grade)}.json`
+            `${rtdbBase}/AssesmentTemplates/${encodeURIComponent(resolvedCourse.grade)}.json`
           ).catch(() => ({ data: {} })),
         ]);
 
@@ -165,6 +445,26 @@ export default function MarksPage() {
         };
 
         const subjectTemplateNode = findSubjectTemplateNode() || {};
+        const availableSemestersFromTemplate = Object.keys(subjectTemplateNode || {}).filter((k) =>
+          /^semester\d+$/i.test(k)
+        );
+
+        const availableSemestersFromMarks = new Set();
+        Object.values(marksRes.data || {}).forEach((studentNode) => {
+          Object.keys(studentNode || {}).forEach((k) => {
+            if (/^semester\d+$/i.test(k)) availableSemestersFromMarks.add(k);
+          });
+        });
+
+        const availableSemesters = Array.from(
+          new Set([...availableSemestersFromTemplate, ...Array.from(availableSemestersFromMarks)])
+        ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+        if (availableSemesters.length && !availableSemesters.includes(activeSemester)) {
+          setActiveSemester(availableSemesters[0]);
+          return;
+        }
+
         const templateSemNode =
           subjectTemplateNode && typeof subjectTemplateNode === "object"
             ? (subjectTemplateNode[activeSemester] && typeof subjectTemplateNode[activeSemester] === "object"
@@ -182,14 +482,22 @@ export default function MarksPage() {
             : "semester";
         setAssessmentMode(templateMode);
 
-        const normalizedCourseGrade = String(course.grade ?? "").trim();
-        const normalizedCourseSection = String(course.section ?? "").trim().toLowerCase();
+        const normalizedCourseGrade = String(resolvedCourse.grade ?? "").trim();
+        const normalizedCourseSection = String(resolvedCourse.section ?? "").trim().toUpperCase();
         const filteredStudents = students.filter(
           (s) =>
-            String(s.grade ?? "").trim() === normalizedCourseGrade &&
-            String(s.section ?? "").trim().toLowerCase() === normalizedCourseSection
+            getStudentGrade(s) === normalizedCourseGrade &&
+            getStudentSection(s) === normalizedCourseSection
         );
         setNoStudentsInCourse(filteredStudents.length === 0);
+        if (autoSaveTimerRef.current) {
+          clearTimeout(autoSaveTimerRef.current);
+          autoSaveTimerRef.current = null;
+        }
+        setDirtyStudentIds({});
+        setAutoSaveStatus("idle");
+        setAutoSaveError("");
+        setLastAutoSavedAt(null);
 
         if (!filteredStudents.length) {
           setStudentMarks({});
@@ -344,66 +652,242 @@ export default function MarksPage() {
     };
     loadCourseData();
     // include selectedQuarter so loading reflects quarter change
-  }, [selectedCourseId, courses, students, activeSemester, selectedQuarter]);
+  }, [selectedCourseId, courses, students, activeSemester, selectedQuarter, rtdbBase, schoolBaseResolved, studentsLoaded]);
 
-  // Fetch all students (mapped with user profiles)
+  // Fetch only the selected course's students.
   useEffect(() => {
-    if (!teacherUserId) return;
+    if (!teacherUserId || !schoolBaseResolved || !rtdbBase) return;
     const fetchStudents = async () => {
+      setStudentsLoaded(false);
       try {
-        const [studentsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/Students.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-        ]);
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
-        const mappedStudents = Object.entries(studentsData).map(([id, s]) => ({
-          id,
-          ...s,
-          name: usersData?.[s.userId]?.name || "Unknown",
-          profileImage: usersData?.[s.userId]?.profileImage || "/default-profile.png",
-          gender: usersData?.[s.userId]?.gender || usersData?.[s.userId]?.sex || "",
-          dob: usersData?.[s.userId]?.dob || "",
-          age: usersData?.[s.userId]?.age || "",
-        }));
+        const selectedCourse = courses.find((course) => course.id === selectedCourseId) || null;
+        if (!selectedCourse) {
+          setStudents([]);
+          return;
+        }
+
+        const normalizedCourseGrade = String(selectedCourse?.grade || "").trim();
+        const normalizedCourseSection = String(selectedCourse?.section || selectedCourse?.secation || "")
+          .trim()
+          .toUpperCase();
+        const mappedStudents = await loadStudentsByGradeSections({
+          rtdbBase,
+          schoolCode: teacher?.schoolCode,
+          allowedGradeSections: new Set([`${normalizedCourseGrade}|${normalizedCourseSection}`]),
+        });
+
         setStudents(mappedStudents);
       } catch (err) {
         console.error("Error fetching students:", err);
+      } finally {
+        setStudentsLoaded(true);
       }
     };
     fetchStudents();
-  }, [teacherUserId]);
+  }, [courses, selectedCourseId, schoolBaseResolved, rtdbBase, teacher?.schoolCode, teacherUserId]);
 
-  const updateScore = (sid, key, value) => {
+  const setCellError = (sid, key, message = "") => {
+    setCellErrors((prev) => {
+      const nextStudentErrors = { ...(prev[sid] || {}) };
+      if (message) {
+        nextStudentErrors[key] = message;
+      } else {
+        delete nextStudentErrors[key];
+      }
+
+      const next = { ...prev };
+      if (Object.keys(nextStudentErrors).length > 0) {
+        next[sid] = nextStudentErrors;
+      } else {
+        delete next[sid];
+      }
+      return next;
+    });
+  };
+
+  const setViolationsForStudent = (sid, violations = []) => {
+    if (!sid) return;
+    violations.forEach((v) => {
+      setCellError(sid, v.assessmentKey, `Cannot exceed ${v.max}`);
+    });
+  };
+
+  const getDirtyStudentIdList = () =>
+    Object.entries(dirtyStudentIdsRef.current || {})
+      .filter(([, isDirty]) => Boolean(isDirty))
+      .map(([studentId]) => studentId);
+
+  const clearDirtyStudentIds = (studentIds = []) => {
+    const normalizedIds = [...new Set((studentIds || []).map((studentId) => String(studentId || "").trim()).filter(Boolean))];
+    if (!normalizedIds.length) return;
+
+    setDirtyStudentIds((previousDirtyIds) => {
+      const nextDirtyIds = { ...(previousDirtyIds || {}) };
+      normalizedIds.forEach((studentId) => {
+        delete nextDirtyIds[studentId];
+      });
+      return nextDirtyIds;
+    });
+  };
+
+  const buildMarksSaveUrl = (studentId, context = {}) => {
+    const base = context.rtdbBase || rtdbBase;
+    const courseId = context.selectedCourseId || selectedCourseId;
+    const semester = context.activeSemester || activeSemester;
+    const quarter = context.selectedQuarter || selectedQuarter;
+    const mode = context.assessmentMode || assessmentMode;
+
+    if (mode === "quarter") {
+      return `${base}/ClassMarks/${courseId}/${studentId}/${semester}/${quarter}.json`;
+    }
+
+    return `${base}/ClassMarks/${courseId}/${studentId}/${semester}.json`;
+  };
+
+  const persistStudentMarksEntries = async (studentIds = [], options = {}) => {
+    const normalizedStudentIds = [...new Set((studentIds || []).map((studentId) => String(studentId || "").trim()).filter(Boolean))];
+    if (!normalizedStudentIds.length) return true;
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    const context = {
+      rtdbBase,
+      selectedCourseId,
+      activeSemester,
+      selectedQuarter,
+      assessmentMode,
+      teacherName: teacher?.name || "",
+      ...(options.context || {}),
+    };
+
+    if (!context.rtdbBase || !context.selectedCourseId) return false;
+    if (!structureSubmitted || !assessmentList.length) {
+      if (!options.silent) alert(templateMissingMessage);
+      return false;
+    }
+    if (context.assessmentMode === "quarter" && context.selectedQuarter === "avg") {
+      if (!options.silent) alert("Please select a valid course and quarter");
+      return false;
+    }
+
+    const groupedViolations = normalizedStudentIds.reduce((accumulator, studentId) => {
+      const violations = validateMarksAgainstMax(studentMarksRef.current?.[studentId] || {});
+      if (violations.length) accumulator[studentId] = violations;
+      return accumulator;
+    }, {});
+
+    if (Object.keys(groupedViolations).length) {
+      Object.entries(groupedViolations).forEach(([studentId, violations]) => {
+        setViolationsForStudent(studentId, violations);
+      });
+
+      if (options.silent) {
+        setAutoSaveStatus("error");
+        setAutoSaveError("Auto-save paused. Some marks exceed the allowed maximum.");
+      }
+      return false;
+    }
+
+    if (options.silent) {
+      setAutoSaveStatus("saving");
+      setAutoSaveError("");
+    }
+
+    try {
+      await Promise.all(
+        normalizedStudentIds.map((studentId) =>
+          axios.put(buildMarksSaveUrl(studentId, context), {
+            teacherName: context.teacherName,
+            assessments: studentMarksRef.current?.[studentId] || {},
+          })
+        )
+      );
+
+      clearDirtyStudentIds(normalizedStudentIds);
+      setLastAutoSavedAt(Date.now());
+      setAutoSaveStatus("saved");
+      setAutoSaveError("");
+      return true;
+    } catch (err) {
+      console.error(options.silent ? "Auto-save failed:" : "Save failed:", err);
+
+      if (options.silent) {
+        setAutoSaveStatus("error");
+        setAutoSaveError("Auto-save failed. Your recent changes are still pending.");
+      } else {
+        alert(options.failureMessage || "Failed to save marks");
+      }
+      return false;
+    }
+  };
+
+  const flushPendingMarks = async (options = {}) => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    const dirtyIds = getDirtyStudentIdList();
+    if (!dirtyIds.length) return true;
+
+    return persistStudentMarksEntries(dirtyIds, {
+      silent: true,
+      context: options.context,
+    });
+  };
+
+  const dirtyStudentCount = Object.keys(dirtyStudentIds || {}).filter((studentId) => dirtyStudentIds[studentId]).length;
+  const hasUnsavedChanges = dirtyStudentCount > 0;
+  const manualModeSwitchLocked = !autoSaveEnabled && hasUnsavedChanges;
+  const manualModeSwitchMessage = "Save All before changing course, semester, or quarter while Auto Save is off.";
+
+  const prepareMarksContextSwitch = async () => {
+    if (manualModeSwitchLocked) {
+      alert(manualModeSwitchMessage);
+      return false;
+    }
+
+    return flushPendingMarks();
+  };
+
+  const updateScore = (sid, key, value, maxValue) => {
+    const digits = String(value || "").replace(/[^0-9]/g, "");
+    const maxNumeric = Number(maxValue);
+    if (digits && Number.isFinite(maxNumeric) && Number(digits) > maxNumeric) {
+      setCellError(sid, key, `Cannot exceed ${maxNumeric}`);
+    } else {
+      setCellError(sid, key, "");
+    }
+
+    const clamped = clampScoreToMax(digits, maxValue);
+
     // allow empty string while editing (treat as no input), otherwise store numeric
     setStudentMarks((p) => ({
       ...p,
-      [sid]: { ...p[sid], [key]: { ...p[sid][key], score: value === '' ? '' : Number(value) } },
+      [sid]: { ...p[sid], [key]: { ...p[sid][key], score: clamped === '' ? '' : Number(clamped) } },
     }));
+
+    setDirtyStudentIds((previousDirtyIds) => ({
+      ...(previousDirtyIds || {}),
+      [sid]: true,
+    }));
+    setAutoSaveStatus(autoSaveEnabled ? "pending" : "idle");
+    setAutoSaveError("");
   };
   const templateMissingMessage =
     "Assessment template is not available. Ask admin to create it first in AssessmentTemplates.";
 
   const saveMarks = async (sid) => {
-    if (!structureSubmitted || !assessmentList.length) {
-      alert(templateMissingMessage);
-      return;
-    }
-    try {
-      // Save into the currently selected quarter (per-quarter model)
-      await axios.put(
-        assessmentMode === "quarter"
-          ? `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`
-          : `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}.json`,
-        {
-          teacherName: teacher?.name || "",
-          assessments: studentMarks[sid],
-        }
-      );
+    const didSave = await persistStudentMarksEntries([sid], {
+      silent: false,
+      failureMessage: "Failed to save marks",
+    });
+
+    if (didSave) {
       alert("Marks saved successfully");
-    } catch (err) {
-      console.error("Save failed:", err);
-      alert("Failed to save marks");
     }
   };
 
@@ -421,120 +905,130 @@ export default function MarksPage() {
       alert('Please select a valid course and quarter');
       return;
     }
-    try {
-      const entries = Object.entries(studentMarks || {});
-      await Promise.all(
-        entries.map(([sid, marks]) =>
-          axios.put(
-            assessmentMode === "quarter"
-              ? `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}/${selectedQuarter}.json`
-              : `${RTDB_BASE}/ClassMarks/${selectedCourseId}/${sid}/${activeSemester}.json`,
-            { teacherName: teacher?.name || '', assessments: marks }
-          )
-        )
-      );
+
+    const didSave = await persistStudentMarksEntries(Object.keys(studentMarks || {}), {
+      silent: false,
+      failureMessage: "Failed to save all marks",
+    });
+
+    if (didSave) {
       alert('All marks saved successfully');
-    } catch (err) {
-      console.error('Save all failed:', err);
-      alert('Failed to save all marks');
     }
   };
-  const handleLogout = () => {
+
+  useEffect(() => {
+    if (!autoSaveEnabled && autoSaveStatus === "pending") {
+      setAutoSaveStatus(hasUnsavedChanges ? "idle" : "saved");
+    }
+  }, [autoSaveEnabled, hasUnsavedChanges, autoSaveStatus]);
+
+  useEffect(() => {
+    if (!selectedCourseId || !structureSubmitted || !assessmentList.length || noStudentsInCourse) return undefined;
+    if (assessmentMode === "quarter" && selectedQuarter === "avg") return undefined;
+    if (!autoSaveEnabled) return undefined;
+
+    const dirtyIds = Object.entries(dirtyStudentIds || {})
+      .filter(([, isDirty]) => Boolean(isDirty))
+      .map(([studentId]) => studentId);
+
+    if (!dirtyIds.length) return undefined;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void persistStudentMarksEntries(dirtyIds, { silent: true });
+    }, AUTO_SAVE_DELAY_MS);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [autoSaveEnabled, dirtyStudentIds, selectedCourseId, activeSemester, selectedQuarter, assessmentMode, structureSubmitted, assessmentList.length, noStudentsInCourse, rtdbBase, teacher?.name]);
+
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    const didFlush = await flushPendingMarks();
+    if (!didFlush) return;
     localStorage.removeItem("teacher");
     navigate("/login");
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const handleBeforeAppNavigation = async (intent = {}) => {
+      if (!hasUnsavedChanges) {
+        return true;
+      }
+
+      if (!autoSaveEnabled) {
+        alert(
+          intent.type === "logout"
+            ? "Save All before logging out while Auto Save is off."
+            : "Save All before leaving the Marks page while Auto Save is off."
+        );
+        return false;
+      }
+
+      return flushPendingMarks();
+    };
+
+    window[TEACHER_BEFORE_APP_NAVIGATION_HANDLER] = handleBeforeAppNavigation;
+
+    return () => {
+      if (window[TEACHER_BEFORE_APP_NAVIGATION_HANDLER] === handleBeforeAppNavigation) {
+        delete window[TEACHER_BEFORE_APP_NAVIGATION_HANDLER];
+      }
+    };
+  }, [autoSaveEnabled, flushPendingMarks, hasUnsavedChanges]);
 
   // ---------------- NOTIFICATIONS ----------------
   useEffect(() => {
     const fetchNotifications = async () => {
       try {
-        // Fetch posts
         const res = await axios.get(`${API_BASE}/get_posts`);
         let postsData = res.data || [];
         if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`)
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
-        const teacherLocal = JSON.parse(localStorage.getItem("teacher"));
+        const teacherLocal = getStoredTeacher();
         const seenPosts = getSeenPosts(teacherLocal?.userId);
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const sa = schoolAdmins[adminId];
-            const userKey = sa.userId;
-            const userRec = users[userKey] || null;
-            const name = (userRec && userRec.name) || sa.name || post.adminName || "Admin";
-            const profile = (userRec && userRec.profileImage) || sa.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
-          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-        };
         const latestPosts = postsData
           .slice()
           .sort((a, b) => ((b.time ? new Date(b.time).getTime() : 0) - (a.time ? new Date(a.time).getTime() : 0)))
           .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
-          .map((post) => {
-            const info = resolveAdminInfo(post);
-            return {
-              type: "post",
-              id: post.postId,
-              title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile
-            };
-          });
+          .map((post) => ({
+            type: "post",
+            id: post.postId,
+            title: post.message?.substring(0, 50) || "Untitled post",
+            adminName: post.adminName || "Admin",
+            adminProfile: post.adminProfile || "/default-profile.png",
+          }));
 
-        // Fetch unread messages (conversations)
-        let messageNotifs = [];
-        try {
-          const t = teacherLocal;
-          if (t && t.userId) {
-            const [chatsRes, usersRes] = await Promise.all([
-              axios.get(`${RTDB_BASE}/Chats.json`),
-              axios.get(`${RTDB_BASE}/Users.json`)
-            ]);
-            const chats = chatsRes.data || {};
-            const users = usersRes.data || {};
-            const usersByKey = users || {};
-            const userKeyByUserId = {};
-            Object.entries(usersByKey).forEach(([pushKey, u]) => { if (u && u.userId) userKeyByUserId[u.userId] = pushKey; });
-            messageNotifs = Object.entries(chats)
-              .map(([chatId, chat]) => {
-                const unreadMap = chat.unread || {};
-                const unreadForMe = unreadMap[t.userId] || 0;
-                if (!unreadForMe) return null;
-                const participants = chat.participants || {};
-                const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-                if (!otherKeyCandidate) return null;
-                let otherPushKey = otherKeyCandidate;
-                let otherRecord = usersByKey[otherPushKey];
-                if (!otherRecord) {
-                  const mapped = userKeyByUserId[otherKeyCandidate];
-                  if (mapped) { otherPushKey = mapped; otherRecord = usersByKey[mapped]; }
-                }
-                if (!otherRecord) otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-                const contact = { pushKey: otherPushKey, userId: otherRecord.userId || otherKeyCandidate, name: otherRecord.name || otherRecord.username || otherKeyCandidate, profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png" };
-                const lastMessage = chat.lastMessage || {};
-                return {
-                  type: "message",
-                  chatId,
-                  displayName: contact.name,
-                  profile: contact.profileImage,
-                  lastMessageText: lastMessage.text || "",
-                  lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-                  unreadForMe
-                };
-              })
-              .filter(Boolean)
-              .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-          }
-        } catch (err) {
-          console.error("Error fetching message notifications:", err);
-        }
+        const messageNotifs = teacherLocal?.userId
+          ? (await fetchTeacherConversationSummaries({
+              rtdbBase,
+              schoolCode: teacherLocal?.schoolCode,
+              teacherUserId: teacherLocal.userId,
+              unreadOnly: true,
+            })).map((conversation) => ({
+              type: "message",
+              chatId: conversation.chatId,
+              displayName: conversation.displayName,
+              profile: conversation.profile,
+              lastMessageText: conversation.lastMessageText,
+              lastMessageTime: conversation.lastMessageTime,
+              unreadForMe: conversation.unreadForMe,
+            }))
+          : [];
+
         setNotifications([...latestPosts, ...messageNotifs]);
         setMessageNotifications(messageNotifs);
       } catch (err) {
@@ -542,63 +1036,22 @@ export default function MarksPage() {
       }
     };
     fetchNotifications();
-  }, []);
+  }, [rtdbBase]);
 
   // Messenger fetching
   const fetchConversations = async (currentTeacher = teacher) => {
     try {
-      const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
+      const t = currentTeacher || getStoredTeacher();
       if (!t || !t.userId) {
         setConversations([]);
         return;
       }
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/Chats.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+      const convs = await fetchTeacherConversationSummaries({
+        rtdbBase,
+        schoolCode: t?.schoolCode,
+        teacherUserId: t.userId,
+        unreadOnly: true,
       });
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-          if (!otherRecord) {
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-          const lastMessage = chat.lastMessage || {};
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
       setConversations(convs);
     } catch (err) {
       console.error("Error fetching conversations:", err);
@@ -616,7 +1069,12 @@ export default function MarksPage() {
     navigate("/all-chat", { state: { contact, chatId, tab: "marks" } });
     // clear unread in RTDB for this teacher
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      clearCachedChatSummary({
+        rtdbBase,
+        chatId,
+        teacherUserId: teacher.userId,
+      });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
@@ -625,6 +1083,49 @@ export default function MarksPage() {
     setShowMessenger(false);
   };
   const totalUnreadMessages = messageNotifications.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
+  const saveStatusText =
+    autoSaveStatus === "saving"
+      ? `Saving ${dirtyStudentCount || getDirtyStudentIdList().length} mark rows...`
+      : autoSaveStatus === "pending"
+      ? "Auto-save queued..."
+      : autoSaveStatus === "error"
+      ? autoSaveError || "Save failed"
+      : hasUnsavedChanges
+      ? autoSaveEnabled
+        ? "Unsaved changes detected"
+        : "Unsaved changes"
+      : lastAutoSavedAt
+      ? `Saved at ${formatAutoSaveTime(lastAutoSavedAt)}`
+      : autoSaveEnabled
+      ? "Auto-save is on"
+      : "Auto-save is off";
+
+  const saveStatusStyle = {
+    background:
+      autoSaveStatus === "error"
+        ? "#fef2f2"
+        : autoSaveStatus === "saving" || autoSaveStatus === "pending"
+        ? "#eff6ff"
+        : hasUnsavedChanges
+        ? "#fff7ed"
+        : "#f8fafc",
+    border:
+      autoSaveStatus === "error"
+        ? "1px solid #fecaca"
+        : autoSaveStatus === "saving" || autoSaveStatus === "pending"
+        ? "1px solid #bfdbfe"
+        : hasUnsavedChanges
+        ? "1px solid #fdba74"
+        : "1px solid #e2e8f0",
+    color:
+      autoSaveStatus === "error"
+        ? "#b91c1c"
+        : autoSaveStatus === "saving" || autoSaveStatus === "pending"
+        ? "#1d4ed8"
+        : hasUnsavedChanges
+        ? "#9a3412"
+        : "#334155",
+  };
 
   // --- Mark notification as seen ---
   const handleNotificationClick = (postId) => {
@@ -634,7 +1135,11 @@ export default function MarksPage() {
     setShowNotifications(false);
   };
   function getSeenPosts(teacherId) {
-    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+    try {
+      return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+    } catch {
+      return [];
+    }
   }
   function saveSeenPost(teacherId, postId) {
     const seen = getSeenPosts(teacherId);
@@ -827,8 +1332,6 @@ export default function MarksPage() {
     setTimeout(() => { w.print(); }, 200);
   };
 
-  const isMobile = window.innerWidth <= 600;
-
   return (
     <div
       className="dashboard-page"
@@ -842,7 +1345,7 @@ export default function MarksPage() {
         "--surface-accent": "#eff6ff",
         "--surface-muted": "#f8fafc",
         "--surface-strong": "#e2e8f0",
-        "--page-bg": "#f5f8ff",
+        "--page-bg": "#FFFFFF",
         "--border-soft": "#e2e8f0",
         "--border-strong": "#cbd5e1",
         "--text-primary": "#0f172a",
@@ -850,7 +1353,7 @@ export default function MarksPage() {
         "--text-muted": "#64748b",
         "--accent": "#2563eb",
         "--accent-soft": "#dbeafe",
-        "--accent-strong": "#1d4ed8",
+        "--accent-strong": "#007AFB",
         "--sidebar-width": "clamp(230px, 16vw, 290px)",
         "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
         "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
@@ -888,13 +1391,23 @@ export default function MarksPage() {
             overflowY: "auto",
             overflowX: "hidden",
             textAlign: "left",
+            background: "#ffffff",
           }}
         >
           <div className="main-inner" style={{ padding: isMobile ? "10px 0 20px" : "20px 0", width: "100%", maxWidth: "100%", margin: 0 }}>
-            <div className="section-header-card" style={{ marginBottom: 16 }}>
+            <div className="section-header-card" style={{ marginBottom: 16, background: "#ffffff", border: "1px solid #dbeafe", boxShadow: "0 14px 30px rgba(37, 99, 235, 0.10)" }}>
               <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Marks Entry Dashboard</h2>
               <div className="section-header-card__meta">
                 <span>{activeSemester === "semester1" ? "Semester 1" : "Semester 2"}</span>
+                <span
+                  className="section-header-card__chip"
+                  style={{
+                    ...saveStatusStyle,
+                    fontWeight: 800,
+                  }}
+                >
+                  {saveStatusText}
+                </span>
                 <span className="section-header-card__chip">Teacher View</span>
               </div>
             </div>
@@ -925,7 +1438,13 @@ export default function MarksPage() {
               </label>
               <select
                 value={selectedCourseId}
-                onChange={(e) => setSelectedCourseId(e.target.value)}
+                disabled={manualModeSwitchLocked}
+                onChange={async (e) => {
+                  const nextCourseId = e.target.value;
+                  const didFlush = await prepareMarksContextSwitch();
+                  if (!didFlush) return;
+                  setSelectedCourseId(nextCourseId);
+                }}
                 style={{
                   padding: "10px 12px",
                   borderRadius: "12px",
@@ -935,6 +1454,8 @@ export default function MarksPage() {
                   fontSize: "14px",
                   fontWeight: "500",
                   color: "var(--text-primary)",
+                  opacity: manualModeSwitchLocked ? 0.75 : 1,
+                  cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
                 }}
               >
                 <option value="">-- Select Course --</option>
@@ -944,6 +1465,74 @@ export default function MarksPage() {
                   </option>
                 ))}
               </select>
+
+              <div
+                style={{
+                  marginLeft: isMobile ? 0 : "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 10,
+                  background: "#ffffff",
+                  border: "1px solid #dbeafe",
+                  borderRadius: 999,
+                  padding: "6px 8px 6px 12px",
+                }}
+              >
+                <span style={{ fontWeight: 800, color: "#334155", fontSize: 12, whiteSpace: "nowrap" }}>
+                  Auto Save {autoSaveEnabled ? "On" : "Off"}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoSaveEnabled}
+                  onClick={() => setAutoSaveEnabled((previousValue) => !previousValue)}
+                  style={{
+                    position: "relative",
+                    width: 52,
+                    height: 30,
+                    borderRadius: 999,
+                    border: autoSaveEnabled ? "1px solid #007AFB" : "1px solid #cbd5e1",
+                    background: autoSaveEnabled ? "#007AFB" : "#e2e8f0",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                    padding: 0,
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      top: 3,
+                      left: autoSaveEnabled ? 25 : 3,
+                      width: 22,
+                      height: 22,
+                      borderRadius: "50%",
+                      background: "#ffffff",
+                      boxShadow: "0 4px 10px rgba(15, 23, 42, 0.16)",
+                      transition: "left 0.2s ease",
+                    }}
+                  />
+                </button>
+              </div>
+
+              {manualModeSwitchLocked && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    background: "#fff7ed",
+                    border: "1px solid #fdba74",
+                    color: "#9a3412",
+                    fontWeight: 700,
+                    fontSize: 12,
+                  }}
+                >
+                  {manualModeSwitchMessage}
+                </span>
+              )}
             </div>
             {/* Semester Tabs */}
             {selectedCourseId && (
@@ -963,7 +1552,10 @@ export default function MarksPage() {
                   return (
                     <button
                       key={sem}
-                      onClick={() => {
+                      disabled={manualModeSwitchLocked}
+                      onClick={async () => {
+                        const didFlush = await prepareMarksContextSwitch();
+                        if (!didFlush) return;
                         setActiveSemester(sem);
                         setStructureSubmitted(false);
                         setAssessmentList([]);
@@ -972,13 +1564,14 @@ export default function MarksPage() {
                       style={{
                         background: isActive ? "var(--accent-soft)" : "var(--surface-panel)",
                         border: isActive ? "1px solid color-mix(in srgb, var(--accent-strong) 34%, white)" : "1px solid var(--border-soft)",
-                        cursor: "pointer",
                         fontSize: "13px",
                         fontWeight: "700",
                         color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
                         padding: "8px 12px",
                         borderRadius: 10,
                         whiteSpace: "nowrap",
+                        opacity: manualModeSwitchLocked ? 0.65 : 1,
+                        cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
                       }}
                     >
                       {sem === "semester1" ? "Semester 1" : "Semester 2"}
@@ -989,7 +1582,7 @@ export default function MarksPage() {
             )}
 
     {selectedCourseId && (
-      <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 14, boxShadow: "var(--shadow-soft)", padding: isMobile ? "12px" : "12px 16px" }}>
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap", background: "var(--surface-panel)", border: "1px solid #dbeafe", borderRadius: 16, boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)", padding: isMobile ? "12px" : "12px 16px" }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 13 }}>
             {assessmentMode === "quarter" ? "Quarter:" : "Mode:"}
@@ -997,15 +1590,21 @@ export default function MarksPage() {
           {(quartersBySem[activeSemester] || ['q1','q2']).map((q) => (
             <button
               key={q}
-              onClick={() => setSelectedQuarter(q)}
+              disabled={manualModeSwitchLocked}
+              onClick={async () => {
+                const didFlush = await prepareMarksContextSwitch();
+                if (!didFlush) return;
+                setSelectedQuarter(q);
+              }}
               style={{
                 padding: '8px 12px',
                 borderRadius: 10,
                 border: selectedQuarter === q ? '1px solid color-mix(in srgb, var(--accent-strong) 34%, white)' : '1px solid var(--border-soft)',
                 background: selectedQuarter === q ? 'var(--accent-soft)' : 'var(--surface-panel)',
-                cursor: 'pointer',
+                cursor: manualModeSwitchLocked ? 'not-allowed' : 'pointer',
                 fontWeight: 700,
                 color: selectedQuarter === q ? 'var(--accent-strong)' : 'var(--text-muted)',
+                opacity: manualModeSwitchLocked ? 0.65 : 1,
               }}
             >
               {assessmentMode === "semester" ? "SEM" : q.toUpperCase()}
@@ -1015,11 +1614,30 @@ export default function MarksPage() {
         </div>
         {structureSubmitted ? (
           <>
+            <div
+              style={{
+                fontSize: 12,
+                color: autoSaveStatus === "error" ? "#b91c1c" : "#475569",
+                fontWeight: autoSaveStatus === "error" ? 700 : 600,
+              }}
+            >
+              {autoSaveStatus === "error"
+                ? autoSaveError || "Auto-save failed. Use Save All to retry."
+                : manualModeSwitchLocked
+                ? manualModeSwitchMessage
+                : !autoSaveEnabled
+                ? "Auto-save is off. Use Save All to keep your updates."
+                : hasUnsavedChanges
+                ? `Changes save automatically after ${AUTO_SAVE_DELAY_MS / 1000} seconds.`
+                : lastAutoSavedAt
+                ? `Last saved at ${formatAutoSaveTime(lastAutoSavedAt)}.`
+                : "Changes save automatically as you type."}
+            </div>
             <button
               onClick={() => downloadExcel()}
               style={{
                 padding: "10px 16px",
-                background: "var(--accent)",
+                background: "var(--accent-strong)",
                 color: "#fff",
                 border: "none",
                 borderRadius: "10px",
@@ -1027,7 +1645,8 @@ export default function MarksPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: "pointer"
+                cursor: "pointer",
+                boxShadow: "0 12px 22px rgba(29, 78, 216, 0.26)"
               }}
               title="Download as Excel"
             >
@@ -1046,7 +1665,8 @@ export default function MarksPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "not-allowed" : "pointer"
+                cursor: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "not-allowed" : "pointer",
+                boxShadow: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "none" : "0 12px 22px rgba(29, 78, 216, 0.26)"
               }}
               title="Save all marks for current quarter"
             >
@@ -1113,9 +1733,9 @@ export default function MarksPage() {
                   paddingBottom: 32,
                   whiteSpace: "normal",
                   background: "var(--surface-panel)",
-                  borderRadius: 14,
-                  border: "1px solid var(--border-soft)",
-                  boxShadow: "var(--shadow-soft)",
+                  borderRadius: 16,
+                  border: "1px solid #dbeafe",
+                  boxShadow: "0 14px 28px rgba(15, 23, 42, 0.10)",
                   marginBottom: 20,
                   padding: isMobile ? 10 : 14
                 }}
@@ -1127,7 +1747,7 @@ export default function MarksPage() {
                   className="marks-table"
                   style={{
                     borderCollapse: "collapse",
-                    borderSpacing: "0 12px",
+                    borderSpacing: 0,
                     fontSize: "14px",
                     minWidth: 0,
                     width: "100%",
@@ -1157,6 +1777,7 @@ export default function MarksPage() {
                           maxWidth: 48,
                           whiteSpace: 'nowrap',
                           borderRadius: "16px 0 0 16px",
+                          verticalAlign: "middle",
                         }}
                       >
                         No
@@ -1166,6 +1787,9 @@ export default function MarksPage() {
                           padding: "16px 20px",
                           textAlign: "left",
                           background: "rgba(255,255,255,0.1)",
+                          width: 240,
+                          minWidth: 240,
+                          verticalAlign: "middle",
                         }}
                       >
                         <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -1180,6 +1804,7 @@ export default function MarksPage() {
                             background: "rgba(255,255,255,0.05)",
                             textAlign: "center",
                             transition: "0.3s all",
+                            verticalAlign: "middle",
                           }}
                         >
                           {a.name} ({a.max})
@@ -1190,6 +1815,8 @@ export default function MarksPage() {
                           padding: "16px 18px",
                           background: "rgba(255,255,255,0.05)",
                           textAlign: "center",
+                          verticalAlign: "middle",
+                          borderRadius: " 0 16px 16px 0",
                         }}
                       >
                         Total
@@ -1206,29 +1833,30 @@ export default function MarksPage() {
                         <tr
                           key={sid}
                           style={{
-                            background: "#f9fafb",
+                            background: idx % 2 === 0 ? "#ffffff" : "#f8fafc",
                             borderRadius: "12px",
                             marginBottom: "10px",
                             transition: "0.3s all",
                             cursor: "pointer",
                           }}
                           onMouseEnter={(e) => (e.currentTarget.style.background = "#e0e7ff")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = "#f9fafb")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "#ffffff" : "#f8fafc")}
                         >
-                          <td style={{ padding: "8px 6px", textAlign: 'center', fontWeight: 700, width: 48, minWidth: 48, maxWidth: 48, whiteSpace: 'nowrap' }}>{idx + 1}</td>
+                          <td style={{ padding: "8px 6px", textAlign: 'center', fontWeight: 700, width: 48, minWidth: 48, maxWidth: 48, whiteSpace: 'nowrap', verticalAlign: "middle" }}>{idx + 1}</td>
                           <td
                             style={{
                               padding: "12px",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "12px",
+                              textAlign: "left",
+                              width: 240,
+                              minWidth: 240,
                               fontWeight: "600",
+                              verticalAlign: "middle",
                             }}
                           >
                             <span style={{ fontWeight: 600 }}>{formatStudentName(student?.name)}</span>
                           </td>
                           {Object.entries(marks).map(([k, a]) => (
-                            <td key={k} style={{ padding: "12px", textAlign: 'center' }}>
+                            <td key={k} style={{ padding: "12px", textAlign: 'center', verticalAlign: "middle" }}>
                               {selectedQuarter === 'avg' ? (
                                 <div style={{ fontWeight: 700 }}>{a.score}</div>
                               ) : (
@@ -1247,7 +1875,7 @@ export default function MarksPage() {
                                   onChange={(e) => {
                                     let v = String(e.target.value || "").replace(/[^0-9]/g, "");
                                     if (v && v.length > 3) v = v.slice(0, 3);
-                                    updateScore(sid, k, v);
+                                    updateScore(sid, k, v, a?.max);
                                   }}
                                   onKeyDown={(e) => {
                                     const allowed = ['Backspace','ArrowLeft','ArrowRight','Delete','Tab','Enter'];
@@ -1259,16 +1887,21 @@ export default function MarksPage() {
                                     width: "66px",
                                     padding: "8px 10px",
                                     borderRadius: "8px",
-                                    border: "1px solid var(--border-strong)",
+                                    border: cellErrors?.[sid]?.[k] ? "1px solid #ef4444" : "1px solid var(--border-strong)",
                                     textAlign: "center",
                                     background: "var(--surface-panel)",
                                     fontWeight: "500",
                                   }}
                                 />
                               )}
+                              {selectedQuarter !== 'avg' ? (
+                                <div style={{ marginTop: 4, fontSize: 10, color: cellErrors?.[sid]?.[k] ? "#dc2626" : "#64748b" }}>
+                                  {cellErrors?.[sid]?.[k] || `max ${a?.max ?? 0}`}
+                                </div>
+                              ) : null}
                             </td>
                           ))}
-                          <td style={{ padding: "12px", fontWeight: "600" }}>{total}</td>
+                          <td style={{ padding: "12px", fontWeight: "600", textAlign: "center", verticalAlign: "middle" }}>{total}</td>
                           
                         </tr>
                       );

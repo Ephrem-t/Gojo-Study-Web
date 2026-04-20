@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 import sys
 import re
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
 
@@ -16,16 +17,13 @@ app = Flask(__name__)
 CORS(app)
 
 # ---------------- FIREBASE ---------------- #
-firebase_json = "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json"
+firebase_json = require_firebase_credentials()
 if not os.path.exists(firebase_json):
-    print("Firebase JSON missing")
-    sys.exit()
+    print(f"Firebase JSON missing at {firebase_json}")
+    sys.exit(1)
 
 cred = credentials.Certificate(firebase_json)
-firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/",
-    "storageBucket": "bale-house-rental.appspot.com"
-})
+firebase_admin.initialize_app(cred, get_firebase_options())
 bucket = storage.bucket()
 
 # ---------------- REFERENCES ---------------- #

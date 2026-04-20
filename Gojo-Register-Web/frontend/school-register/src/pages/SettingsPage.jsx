@@ -31,6 +31,15 @@ import {
   persistStoredSession,
   readStoredRegistrar,
 } from "../utils/registerSettings";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  loadGradeManagementNode,
+  loadSchoolInfoNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolTeachersNode,
+} from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -143,26 +152,23 @@ export default function SettingsPage() {
       try {
         setLoading(true);
 
-        const [schoolInfoRes, gradesRes, studentsRes, parentsRes, teachersRes, registerersRes, backupsRes] = await Promise.all([
-          axios.get(`${dbRoot}/schoolInfo.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Registerers.json`).catch(() => ({ data: {} })),
-          backupRoot ? axios.get(`${backupRoot}.json`).catch(() => ({ data: {} })) : Promise.resolve({ data: {} }),
+        const [nextSchoolInfo, gradesMap, studentsData, parentsData, teachersData, registerersData, backups] = await Promise.all([
+          loadSchoolInfoNode({ rtdbBase: dbRoot }),
+          loadGradeManagementNode({ rtdbBase: dbRoot }),
+          loadSchoolStudentsNode({ rtdbBase: dbRoot }),
+          loadSchoolParentsNode({ rtdbBase: dbRoot }),
+          loadSchoolTeachersNode({ rtdbBase: dbRoot }),
+          fetchCachedJson(`${dbRoot}/Registerers.json`, { ttlMs: 60000 }).catch(() => ({})),
+          backupRoot ? fetchCachedJson(`${backupRoot}.json`, { ttlMs: 60000 }).catch(() => ({})) : Promise.resolve({}),
         ]);
 
         if (cancelled) return;
 
-        const nextSchoolInfo = schoolInfoRes.data || {};
-        const gradesMap = gradesRes.data || {};
         const normalizedSettings = syncSettingsCache(nextSchoolInfo);
         const academicSettings = normalizedSettings.academic || {};
         const documentTemplates = normalizedSettings.documentTemplates || {};
         const preferences = normalizedSettings.preferences || {};
         const security = normalizedSettings.security || {};
-        const backups = backupsRes.data || {};
         const sortedBackups = Object.values(backups)
           .filter((entry) => entry && typeof entry === "object")
           .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
@@ -216,10 +222,10 @@ export default function SettingsPage() {
         });
         setProfileImage(storedAdmin.profileImage || "/default-profile.png");
         setCounts({
-          students: Object.keys(studentsRes.data || {}).length,
-          parents: Object.keys(parentsRes.data || {}).length,
-          teachers: Object.keys(teachersRes.data || {}).length,
-          registerers: Object.keys(registerersRes.data || {}).length,
+          students: Object.keys(studentsData || {}).length,
+          parents: Object.keys(parentsData || {}).length,
+          teachers: Object.keys(teachersData || {}).length,
+          registerers: Object.keys(registerersData || {}).length,
           grades: gradeKeys.length,
           sections: sectionCount,
         });
@@ -1000,7 +1006,7 @@ export default function SettingsPage() {
 
               <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 14 }}>
                 <div style={{ ...panelStyle, padding: 14, background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
-                  <img src={profileImage} alt="Registrar profile" style={{ width: 96, height: 96, borderRadius: "50%", objectFit: "cover", border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }} />
+                  <ProfileAvatar imageUrl={profileImage} name={securityForm.name || "Register Office"} size={96} style={{ border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }} />
                   <div style={{ marginTop: 12, fontSize: 16, fontWeight: 900 }}>{securityForm.name || "Register Office"}</div>
                   <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)" }}>@{securityForm.username || "registrar"}</div>
                   <div style={{ marginTop: 12 }}>

@@ -10,6 +10,8 @@ import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import { invalidateScopedPosts, loadScopedPosts } from "../utils/postData";
 
 function Dashboard() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -48,25 +50,15 @@ function Dashboard() {
   const [posts, setPosts] = useState([]);
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const fileInputRef = useRef(null);
-
-  const [unreadMessages, setUnreadMessages] = useState([]);
-  const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
-
-  const [teachers, setTeachers] = useState([]);
-  const [unreadTeachers, setUnreadTeachers] = useState({});
-  const [popupMessages, setPopupMessages] = useState([]);
-  const [showMessageDropdown, setShowMessageDropdown] = useState(false);
-  const [selectedTeacher, setSelectedTeacher] = useState(null);
-  const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   // All unread messages from any sender type
   // Correct order
   const location = useLocation();
   const scrollToPostId = location.state?.scrollToPostId;
   const postIdToScroll = location.state?.postId;
   const postId = location.state?.postId;
-
-  const [currentChat, setCurrentChat] = useState([]);
   const [loadingAdmin, setLoadingAdmin] = useState(true);
 
   const financeUserId = finance.userId;
@@ -223,129 +215,22 @@ function Dashboard() {
   };
 
   // ---------------- FETCH POSTS ----------------
-  const fetchPosts = async () => {
+  const fetchPosts = async ({ force = false } = {}) => {
     try {
-      const res = await axios.get(`${API_BASE}/get_posts`, {
-        params: { schoolCode },
-      });
-      console.log(res.data); // check here
-      const sortedPosts = res.data.sort(
-        (a, b) => new Date(b.time) - new Date(a.time)
+      const nextPosts = await loadScopedPosts({ schoolCode, force });
+      setPosts(
+        nextPosts.map((post) => ({
+          ...post,
+          adminProfile:
+            post.adminProfile ||
+            post.adminProfileImage ||
+            post.profileImage ||
+            "/default-profile.png",
+        }))
       );
-      const enriched = await Promise.all(sortedPosts.map(async (p) => {
-        let profile = p.adminProfile || p.adminProfileImage || p.profileImage || "";
-
-        try {
-          if (!profile && p.userId) {
-            const uRes = await axios.get(`${DB_ROOT}/Users/${p.userId}.json`);
-            const u = uRes.data || {};
-            profile = u.profileImage || u.profile || u.avatar || "";
-          }
-
-          if (!profile && (p.financeId || p.adminId)) {
-            const ownerFinanceId = p.financeId || p.adminId;
-            const fRes = await axios.get(`${DB_ROOT}/Finance/${ownerFinanceId}.json`);
-            const f = fRes.data || {};
-            profile = f.profileImage || f.profile || "";
-          }
-        } catch (err) {
-          // ignore profile enrichment failure
-        }
-
-        return {
-          ...p,
-          adminProfile: profile || "/default-profile.png",
-        };
-      }));
-
-      setPosts(enriched);
     } catch (err) {
       console.error("Error fetching posts:", err);
     }
-  };
-
-  // ---------------- CLOSE DROPDOWN ON OUTSIDE CLICK ----------------
-  useEffect(() => {
-    const closeDropdown = (e) => {
-      if (
-        !e.target.closest(".icon-circle") &&
-        !e.target.closest(".messenger-dropdown")
-      ) {
-        setShowMessageDropdown(false);
-      }
-    };
-
-    document.addEventListener("click", closeDropdown);
-    return () => document.removeEventListener("click", closeDropdown);
-  }, []);
-
-  useEffect(() => {
-    const fetchTeachersAndUnread = async () => {
-      try {
-        const [teachersRes, usersRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Teachers.json`),
-          axios.get(`${DB_ROOT}/Users.json`)
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
-          };
-        });
-
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        for (const t of teacherList) {
-          const chatKey = `${financeUserId}_${t.userId}`;
-          const res = await axios.get(`${DB_ROOT}/Chats/${chatKey}/messages.json`);
-          const msgs = Object.values(res.data || {}).map(m => ({
-            ...m,
-            sender: m.senderId === financeUserId ? "finance" : "teacher"
-          }));
-          allMessages.push(...msgs);
-
-          const unreadCount = msgs.filter(m => m.receiverId === financeUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
-        }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchTeachersAndUnread();
-  }, [financeUserId, schoolCode]);
-
-  const openChatWithUser = async (userId) => {
-    setShowMessengerDropdown(false);
-
-    // Fetch chat history
-    const res = await axios.get(`${API_BASE}/chat/${admin.userId}/${userId}`);
-    setCurrentChat(res.data); // You need a state `currentChat` to render the conversation
-
-    // Mark messages as read
-    await axios.post(`${API_BASE}/mark_messages_read`, {
-      financeId: finance.userId,
-      senderId: userId
-    });
-
-    // Refresh unread messages
-    setUnreadMessages(prev => prev.filter(m => m.senderId !== userId));
   };
 
   // ---------------- OPEN POST FROM NOTIFICATION ----------------
@@ -414,7 +299,7 @@ function Dashboard() {
   // ---------------- EFFECT ON MOUNT ----------------
   useEffect(() => {
     loadFinanceFromStorage();
-    fetchPosts();
+    fetchPosts({ force: false });
   }, []);
 
   // Add this effect to monitor admin state changes
@@ -427,8 +312,49 @@ function Dashboard() {
     }
   }, [loadingAdmin, admin.userId, admin.adminId]);
 
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+
+    setIsOptimizingMedia(true);
+
+    try {
+      const optimizedResult = await optimizePostMedia(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
+
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
+
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
+
   const handlePost = async () => {
-    if (!postText && !postMedia) return;
+    if (!canSubmitPost) return;
 
     if (!admin.adminId || !admin.userId) {
       alert("Session expired");
@@ -470,8 +396,10 @@ function Dashboard() {
 
     setPostText("");
     setPostMedia(null);
+    setPostMediaMeta(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    fetchPosts();
+    invalidateScopedPosts(schoolCode);
+    fetchPosts({ force: true });
   };
 
   // ---------------- HANDLE LIKE ----------------
@@ -513,7 +441,8 @@ function Dashboard() {
       await axios.delete(`${API_BASE}/delete_post/${postId}`, {
        data: { adminId: admin.adminId },
       });
-      fetchPosts();
+      invalidateScopedPosts(schoolCode);
+      fetchPosts({ force: true });
     } catch (err) {
       console.error("Error deleting post:", err);
     }
@@ -528,7 +457,8 @@ function Dashboard() {
        adminId: admin.adminId,
         postText: newText,
       });
-      fetchPosts();
+      invalidateScopedPosts(schoolCode);
+      fetchPosts({ force: true });
     } catch (err) {
       console.error("Error editing post:", err);
     }
@@ -867,24 +797,38 @@ function Dashboard() {
                     }}
                   />
                   <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 8, borderTop: "1px solid #edf0f2" }}>
-                    <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 6, background: "transparent", border: "1px solid #d9dde3", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3f4752" }}>
-                      <AiFillPicture className="fb-icon" />
-                      <span>Photo/Video</span>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        onChange={(e) => {
-                          const file = e.target.files && e.target.files[0];
-                          setPostMedia(file || null);
-                        }}
-                        accept="image/*,video/*"
-                      />
-                    </label>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handlePostMediaSelection}
+                      accept="image/*,video/*"
+                      style={{ display: "none" }}
+                    />
+                    <div style={{ flex: 1, minWidth: 220, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderRadius: 12, background: "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)", border: "1px dashed #bfd3f6", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 180px" }}>
+                        <div style={{ width: 38, height: 38, borderRadius: 12, background: "#e7f2ff", border: "1px solid #bfd3f6", color: "#1877f2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          {postMedia && String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera /> : <AiFillPicture />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>{postMedia ? "Media ready" : "Choose a photo or video"}</div>
+                          <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>{isOptimizingMedia ? "Optimizing image..." : "Images are compressed automatically when possible."}</div>
+                        </div>
+                      </div>
 
-                    {/* Filename box occupying 20% of the input area's width */}
+                      <button
+                        type="button"
+                        onClick={handleOpenPostMediaPicker}
+                        disabled={isOptimizingMedia}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 34, padding: "0 12px", borderRadius: 999, border: "none", background: isOptimizingMedia ? "#cfe0fb" : "#1877f2", color: "#fff", fontSize: 12, fontWeight: 700, cursor: isOptimizingMedia ? "progress" : "pointer" }}
+                      >
+                        <AiFillPicture />
+                        <span>{isOptimizingMedia ? "Optimizing..." : postMedia ? "Change file" : "Choose file"}</span>
+                      </button>
+                    </div>
+
                     {postMedia && (
                       <div style={{
-                        width: "20%",
+                        width: "100%",
                         minWidth: 120,
                         display: "flex",
                         alignItems: "center",
@@ -898,12 +842,26 @@ function Dashboard() {
                         textOverflow: "ellipsis",
                         boxSizing: "border-box"
                       }}>
-                        <span style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {postMedia.name}
-                        </span>
+                        {String(postMedia.type || "").startsWith("video/") ? (
+                          <AiFillVideoCamera style={{ color: "#dc2626", fontSize: 18, flexShrink: 0 }} />
+                        ) : (
+                          <AiFillPicture style={{ color: "#16a34a", fontSize: 18, flexShrink: 0 }} />
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {postMedia.name}
+                          </div>
+                          <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>
+                            {postMediaMeta?.wasCompressed
+                              ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? " as JPEG" : ""}`
+                              : `Ready to attach${postMediaMeta?.wasConvertedToJpeg ? " as JPEG" : ""}`}
+                          </div>
+                        </div>
                         <button
+                          type="button"
                           onClick={() => {
                             setPostMedia(null);
+                            setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
                           style={{
@@ -926,20 +884,21 @@ function Dashboard() {
                       <button
                         className="telegram-send-icon"
                         onClick={handlePost}
+                        disabled={!canSubmitPost}
                         style={{
                           border: "none",
-                          background: "#1877f2",
+                          background: canSubmitPost ? "#1877f2" : "#cbd5e1",
                           borderRadius: 6,
                           height: 30,
                           minWidth: 64,
                           padding: "0 12px",
-                          color: "#fff",
+                          color: canSubmitPost ? "#fff" : "#64748b",
                           fontSize: 12,
                           fontWeight: 700,
-                          cursor: "pointer",
+                          cursor: canSubmitPost ? "pointer" : "not-allowed",
                         }}
                       >
-                        Post
+                        {isOptimizingMedia ? "Optimizing..." : "Post"}
                       </button>
                     </div>
                   </div>

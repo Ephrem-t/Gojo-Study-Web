@@ -9,6 +9,7 @@ import {
   FaSignOutAlt,
   FaFolderOpen,
 } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 function RegisterSidebar({
   user,
@@ -129,7 +130,7 @@ function RegisterSidebar({
             boxShadow: "0 10px 20px rgba(15,23,42,0.16)",
           }}
         >
-          <img src={profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <ProfileAvatar src={profileImage} name={profileName} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         </div>
         <div
           style={{

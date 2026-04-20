@@ -10,15 +10,38 @@ import {
   FaCheck,
    FaUserCheck,
   FaCalendarAlt,
-  FaBookOpen
+  FaBookOpen,
+  FaPaperPlane,
 } from "react-icons/fa";
 import Sidebar from "./Sidebar";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
-import { ref, onValue, off } from "firebase/database";
+import {
+  ref as dbRef,
+  get,
+  onValue,
+  update,
+  push,
+  runTransaction,
+  query as dbQuery,
+  orderByChild,
+  limitToLast,
+  endAt,
+  equalTo,
+} from "firebase/database";
 import { db, schoolPath } from "../firebase"; // adjust path if needed
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { resolveProfileImage } from "../utils/profileImage";
+import {
+  clearCachedChatSummary,
+  extractAllowedGradeSectionsFromCourseContext,
+  fetchTeacherConversationSummaries,
+  loadParentRecordsByIds,
+  loadStudentsByGradeSections,
+  loadUserRecordsByIds,
+  normalizeIdentifier as normalizeScopedIdentifier,
+  resolveTeacherSchoolCode,
+} from "../utils/teacherData";
 import "../styles/global.css";
 
 /**
@@ -38,9 +61,9 @@ const getChatId = (teacherUserId, parentUserId) => {
   const p = String(parentUserId || "").trim();
   return `${t}_${p}`;
 };
+const QUICK_CHAT_HISTORY_LIMIT = 50;
 import { API_BASE } from "../api/apiConfig";
-import { getRtdbRoot } from "../api/rtdbScope";
-const RTDB_BASE = getRtdbRoot();
+import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 
 const formatTime = (ts) => {
   if (!ts) return "";
@@ -49,6 +72,47 @@ const formatTime = (ts) => {
   const mm = d.getMinutes().toString().padStart(2, "0");
   return `${hh}:${mm}`;
 };
+
+const formatDateLabel = (ts) => {
+  if (!ts) return "";
+  const msgDate = new Date(Number(ts));
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
+  const diffMs = startOfToday - startOfMsgDay;
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
+  return msgDate.toLocaleDateString();
+};
+
+const mergeChatMessages = (...groups) => {
+  const merged = new Map();
+
+  groups
+    .flat()
+    .filter(Boolean)
+    .forEach((message) => {
+      const key = String(message?.id || message?.messageId || "").trim();
+      if (!key) return;
+
+      const previous = merged.get(key) || {};
+      merged.set(key, {
+        ...previous,
+        ...message,
+        id: key,
+        messageId: key,
+      });
+    });
+
+  return [...merged.values()].sort(
+    (leftMessage, rightMessage) =>
+      Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+  );
+};
+
+const normalizeIdentifier = (value) => String(value || "").trim();
 
 const findUserByUserId = (usersObj, userId) => {
   if (!usersObj || !userId) return null;
@@ -66,6 +130,137 @@ const findUserByUserId = (usersObj, userId) => {
   );
 };
 
+const normalizeGrade = (value) => String(value ?? "").trim();
+const normalizeSection = (value) => String(value ?? "").trim().toUpperCase();
+const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
+const getStudentUserId = (student = {}) =>
+  String(
+    student?.userId ||
+      student?.systemAccountInformation?.userId ||
+      student?.account?.userId ||
+      ""
+  ).trim();
+
+const isActiveRecord = (record = {}) => {
+  const raw = record?.status ?? record?.isActive;
+  if (typeof raw === "boolean") return raw;
+  const normalized = String(raw || "active").toLowerCase();
+  return normalized === "active" || normalized === "true" || normalized === "1";
+};
+
+const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+
+const getInitials = (name) => {
+  const words = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return "U";
+  if (words.length === 1) return words[0].charAt(0).toUpperCase();
+  return `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase();
+};
+
+const createPlaceholderAvatar = (name) => {
+  const initials = getInitials(name);
+  const svg = `
+<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'>
+  <defs>
+    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='#2563eb'/>
+      <stop offset='100%' stop-color='#0ea5e9'/>
+    </linearGradient>
+  </defs>
+  <rect width='160' height='160' rx='80' fill='url(#g)'/>
+  <text x='50%' y='53%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='Segoe UI, Arial, sans-serif' font-size='56' font-weight='700'>${initials}</text>
+</svg>`;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const sanitizeProfileImage = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return DEFAULT_PROFILE_IMAGE;
+
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("file://") || lower.startsWith("content://")) {
+    return DEFAULT_PROFILE_IMAGE;
+  }
+
+  return raw;
+};
+
+const resolveAvatarSrc = (rawValue, name) => {
+  const sanitized = sanitizeProfileImage(rawValue);
+  if (!sanitized || sanitized === DEFAULT_PROFILE_IMAGE) {
+    return createPlaceholderAvatar(name);
+  }
+  return sanitized;
+};
+
+const collectStudentParentLinks = (student = {}) => {
+  const rawStudent = student?.raw || student || {};
+  const links = [];
+
+  const pushLink = (candidate = {}, fallbackParentId = "") => {
+    const parentId = normalizeIdentifier(candidate?.parentId || candidate?.id || fallbackParentId);
+    const userId = normalizeIdentifier(candidate?.userId || candidate?.parentUserId);
+    const name = String(candidate?.name || candidate?.parentName || "").trim();
+    const phone = String(candidate?.phone || candidate?.parentPhone || candidate?.phoneNumber || "").trim();
+    const relationship = String(candidate?.relationship || candidate?.relation || "").trim();
+    const profileImage = resolveProfileImage(
+      candidate?.profileImage,
+      candidate?.profile,
+      candidate?.parentProfileImage
+    );
+
+    if (!parentId && !userId && !name && !phone && !relationship && profileImage === DEFAULT_PROFILE_IMAGE) {
+      return;
+    }
+
+    links.push({
+      parentId,
+      userId,
+      name,
+      phone,
+      relationship,
+      profileImage,
+    });
+  };
+
+  pushLink({
+    parentId: rawStudent?.parentId,
+    userId: rawStudent?.parentUserId,
+    name: rawStudent?.parentName,
+    phone: rawStudent?.parentPhone,
+    parentProfileImage: rawStudent?.parentProfileImage,
+  });
+
+  Object.entries(rawStudent?.parents || {}).forEach(([parentKey, link]) => {
+    pushLink(link, parentKey);
+  });
+
+  const guardianParents = rawStudent?.parentGuardianInformation?.parents;
+  if (Array.isArray(guardianParents)) {
+    guardianParents.forEach((link) => pushLink(link));
+  } else if (guardianParents && typeof guardianParents === "object") {
+    Object.entries(guardianParents).forEach(([parentKey, link]) => {
+      pushLink(link, parentKey);
+    });
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  links.forEach((link) => {
+    const key = `${link.parentId}__${link.userId}__${link.name}__${link.relationship}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(link);
+  });
+
+  return deduped;
+};
+
 function TeacherParent() {
   // Responsive sidebar state for mobile (match Students.jsx)
   const [sidebarOpen, setSidebarOpen] = useState(typeof window !== 'undefined' ? window.innerWidth > 600 : true);
@@ -75,9 +270,13 @@ const [teacher, setTeacher] = useState(null);
   const [loading, setLoading] = useState(true);
 const [activeTab, setActiveTab] = useState("Details"); // default tab
  const [chatOpen, setChatOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  const [liveQuickChatMessages, setLiveQuickChatMessages] = useState([]);
+  const [olderQuickChatMessages, setOlderQuickChatMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState("");
   const messagesEndRef = useRef(null);
+  const quickChatMessagesRef = useRef(null);
+  const quickChatScrollRestoreRef = useRef(null);
+    const userRecordCacheRef = useRef(new Map());
 const [children, setChildren] = useState([]);
  const [notifications, setNotifications] = useState([]);
  const [showNotifications, setShowNotifications] = useState(false);
@@ -87,6 +286,14 @@ const [children, setChildren] = useState([]);
   const [showMessenger, setShowMessenger] = useState(false);
     const [conversations, setConversations] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
+  const [quickChatLoading, setQuickChatLoading] = useState(false);
+  const [quickChatLoadingOlder, setQuickChatLoadingOlder] = useState(false);
+  const [quickChatHasOlder, setQuickChatHasOlder] = useState(false);
+  const messages = useMemo(
+    () => mergeChatMessages(olderQuickChatMessages, liveQuickChatMessages),
+    [olderQuickChatMessages, liveQuickChatMessages]
+  );
   
   const navigate = useNavigate();
 
@@ -112,6 +319,48 @@ const [children, setChildren] = useState([]);
     setTeacher(storedTeacher);
   }, [navigate]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveSchoolCode = async () => {
+      if (!teacher?.schoolCode) {
+        setResolvedSchoolCode("");
+        return;
+      }
+
+      const resolved = await resolveTeacherSchoolCode(teacher.schoolCode);
+      if (!cancelled) {
+        setResolvedSchoolCode(resolved);
+      }
+    };
+
+    resolveSchoolCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacher?.schoolCode]);
+
+  useEffect(() => {
+    if (!resolvedSchoolCode) return;
+    const current = JSON.parse(localStorage.getItem("teacher") || "{}");
+    if (String(current?.schoolCode || "") === resolvedSchoolCode) return;
+
+    const nextTeacher = {
+      ...current,
+      schoolCode: resolvedSchoolCode,
+    };
+    localStorage.setItem("teacher", JSON.stringify(nextTeacher));
+    setTeacher(nextTeacher);
+  }, [resolvedSchoolCode]);
+
+  const RTDB_BASE = useMemo(() => {
+    if (resolvedSchoolCode) {
+      return `${RTDB_BASE_RAW}/Platform1/Schools/${resolvedSchoolCode}`;
+    }
+    return getRtdbRoot();
+  }, [resolvedSchoolCode]);
+
   const handleLogout = () => {
     localStorage.removeItem("teacher");
     navigate("/login");
@@ -119,152 +368,330 @@ const [children, setChildren] = useState([]);
 
   // safe teacher id for renders when `teacher` may be null briefly
   const teacherId = teacher?.userId || "";
+  const teacherSchoolCode = String(teacher?.schoolCode || "").trim();
+  const scopedParentPath = (path) => schoolPath(path, resolvedSchoolCode || teacherSchoolCode);
+
+  const cacheUserRecord = (recordKey, userRecord) => {
+    if (!userRecord || typeof userRecord !== "object") return;
+
+    [recordKey, userRecord?.userId, userRecord?.username]
+      .map(normalizeIdentifier)
+      .filter(Boolean)
+      .forEach((key) => {
+        userRecordCacheRef.current.set(key, userRecord);
+      });
+  };
+
+  const loadUsersByIds = async (userIds = []) => {
+    const normalizedUserIds = [...new Set(userIds.map(normalizeIdentifier).filter(Boolean))];
+    if (!normalizedUserIds.length) return {};
+
+    const cachedUsers = {};
+    const missingUserIds = [];
+
+    normalizedUserIds.forEach((userId) => {
+      const cachedRecord = userRecordCacheRef.current.get(userId) || null;
+      if (cachedRecord) {
+        cachedUsers[userId] = cachedRecord;
+        cacheUserRecord(userId, cachedRecord);
+        return;
+      }
+      missingUserIds.push(userId);
+    });
+
+    if (!missingUserIds.length) return cachedUsers;
+
+    const fetchedEntries = await Promise.all(
+      missingUserIds.map(async (userId) => {
+        try {
+          const directSnapshot = await get(dbRef(db, scopedParentPath(`Users/${userId}`)));
+          if (directSnapshot.exists()) {
+            return [userId, directSnapshot.val()];
+          }
+        } catch (error) {
+          // fall through to indexed lookup
+        }
+
+        try {
+          const lookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedParentPath("Users")), orderByChild("userId"), equalTo(userId))
+          );
+          if (lookupSnapshot.exists()) {
+            return [userId, Object.values(lookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // ignore missing indexed lookup support and return null below
+        }
+
+        return [userId, null];
+      })
+    );
+
+    const fetchedUsers = {};
+    fetchedEntries.forEach(([userId, userRecord]) => {
+      if (!userRecord) return;
+      fetchedUsers[userId] = userRecord;
+      cacheUserRecord(userId, userRecord);
+    });
+
+    return {
+      ...cachedUsers,
+      ...fetchedUsers,
+    };
+  };
+
+  const fetchTeacherChats = async (teacherUserId) => {
+    const normalizedTeacherUserId = normalizeIdentifier(teacherUserId);
+    if (!normalizedTeacherUserId) return {};
+
+    const chatsRootRef = dbRef(db, scopedParentPath("Chats"));
+
+    for (const expectedValue of [true, "true"]) {
+      try {
+        const snapshot = await get(
+          dbQuery(
+            chatsRootRef,
+            orderByChild(`participants/${normalizedTeacherUserId}`),
+            equalTo(expectedValue)
+          )
+        );
+
+        if (snapshot.exists()) {
+          return snapshot.val() || {};
+        }
+      } catch (error) {
+        // try the next supported participant marker shape
+      }
+    }
+
+    return {};
+  };
+
+  const loadUnreadConversationSummaries = async (currentTeacher = teacher) => {
+    const activeTeacher = currentTeacher || JSON.parse(localStorage.getItem("teacher") || "{}");
+    const activeTeacherUserId = normalizeIdentifier(activeTeacher?.userId);
+    if (!activeTeacherUserId) return [];
+
+    return fetchTeacherConversationSummaries({
+      rtdbBase: RTDB_BASE,
+      schoolCode: resolvedSchoolCode || activeTeacher?.schoolCode,
+      teacherUserId: activeTeacherUserId,
+      contactCandidates: parents.map((parent) => ({
+        userId: parent.userId,
+        name: parent.name,
+        profileImage: parent.profileImage,
+        type: "parent",
+      })),
+      unreadOnly: true,
+    });
+  };
+
+  const closeQuickChat = () => {
+    setChatOpen(false);
+    setNewMessageText("");
+    quickChatScrollRestoreRef.current = null;
+  };
+
+  const scrollToBottom = (behavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+  };
 
   // fetch parents & related data
   useEffect(() => {
-    if (!teacher) return;
+    if (!teacher || !RTDB_BASE) return;
     let cancelled = false;
 
     const fetchParents = async () => {
       try {
         setLoading(true);
 
-        const [courseContext, coursesRes, studentsRes, usersRes, parentsRes] = await Promise.all([
-          getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE }),
-          axios.get(`${RTDB_BASE}/Courses.json`),
-          axios.get(`${RTDB_BASE}/Students.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-          axios.get(`${RTDB_BASE}/Parents.json`),
-        ]);
+        const schoolCode = normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode);
+        const courseContext = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(courseContext);
 
-        const courses = coursesRes.data || {};
-        const students = studentsRes.data || {};
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const teacherCourseIds = courseContext.courseIds || [];
+        if (!allowedGradeSections.size) {
+          if (!cancelled) setParents([]);
+          return;
+        }
 
-        const allowedStudentIds = new Set(
-          Object.entries(students)
-            .filter(([, student]) =>
-              teacherCourseIds.some((courseId) => {
-                const course = courses[courseId];
-                return course && course.grade === student.grade && course.section === student.section;
-              })
-            )
-            .map(([studentId]) => studentId)
-        );
-
-        // Build student->parent map from both legacy Parents.children and current Students.parents.
-        const studentToParentMap = {};
-        Object.entries(parentsData).forEach(([parentId, parent]) => {
-          if (!parent.children) return;
-          Object.values(parent.children).forEach((child) => {
-            if (!child.studentId) return;
-            const rel = child.relationship || child.relation || child.relationToChild || child.type || child.role || null;
-            if (!studentToParentMap[child.studentId]) studentToParentMap[child.studentId] = [];
-            studentToParentMap[child.studentId].push({ parentId, relationship: rel });
-          });
+        const visibleStudents = await loadStudentsByGradeSections({
+          rtdbBase: RTDB_BASE,
+          schoolCode,
+          allowedGradeSections,
         });
 
-        Object.entries(students).forEach(([studentId, student]) => {
-          Object.entries(student.parents || {}).forEach(([parentId, link]) => {
-            if (!studentToParentMap[studentId]) studentToParentMap[studentId] = [];
-            studentToParentMap[studentId].push({
-              parentId,
-              relationship: link?.relationship || null,
-              userId: link?.userId || null,
-            });
-          });
+        if (!visibleStudents.length) {
+          if (!cancelled) setParents([]);
+          return;
+        }
+
+        const parentLinksByStudent = visibleStudents.map((studentRow) => ({
+          studentRow,
+          links: collectStudentParentLinks(studentRow),
+        }));
+
+        const parentIdentifiers = [...new Set(
+          parentLinksByStudent
+            .flatMap(({ links }) => links)
+            .flatMap((link) => [link?.parentId, link?.userId])
+            .map(normalizeScopedIdentifier)
+            .filter(Boolean)
+        )];
+
+        const parentRecordsByIdentifier = await loadParentRecordsByIds({
+          rtdbBase: RTDB_BASE,
+          schoolCode,
+          parentIds: parentIdentifiers,
+        });
+        const parentRecords = [...new Map(
+          Object.values(parentRecordsByIdentifier || {})
+            .filter(Boolean)
+            .map((parentRecord) => {
+              const key = `${normalizeScopedIdentifier(parentRecord?.parentId)}__${normalizeScopedIdentifier(parentRecord?.userId)}`;
+              return [key, parentRecord];
+            })
+        ).values()];
+
+        const parentUserIds = [...new Set(
+          [
+            ...parentLinksByStudent.flatMap(({ links }) => links.map((link) => link?.userId)),
+            ...parentRecords.map((parentRecord) => parentRecord?.userId),
+          ]
+            .map(normalizeScopedIdentifier)
+            .filter(Boolean)
+        )];
+        const parentUsersById = await loadUserRecordsByIds({
+          rtdbBase: RTDB_BASE,
+          schoolCode,
+          userIds: parentUserIds,
         });
 
-        // Build parent->children map with relationship data
-        const parentChildrenMap = {};
-        Object.entries(students).forEach(([studentId, student]) => {
-          if (allowedStudentIds.size && !allowedStudentIds.has(studentId)) return;
+        const findParentRecord = (link = {}) => {
+          const linkRefs = [link?.parentId, link?.userId].map(normalizeScopedIdentifier).filter(Boolean);
+          if (!linkRefs.length) {
+            return null;
+          }
 
-          const studentUser = findUserByUserId(users, student.userId);
-          const studentName = studentUser?.name || "No Name";
-          const studentProfileImage = resolveProfileImage(
-            studentUser?.profileImage,
-            studentUser?.profile,
-            studentUser?.avatar,
-            student?.profileImage,
-            student?.basicStudentInformation?.studentPhoto,
-            student?.studentPhoto,
-            "/default-profile.png"
-          );
+          return parentRecords.find((parentRecord) => {
+            const parentRefs = [parentRecord?.parentId, parentRecord?.userId]
+              .map(normalizeScopedIdentifier)
+              .filter(Boolean);
+            return linkRefs.some((linkRef) => parentRefs.includes(linkRef));
+          }) || null;
+        };
 
-          const parentEntries = studentToParentMap[studentId] || [];
-          const uniqueParentEntries = [...new Map(
-            parentEntries
-              .filter((entry) => entry?.parentId)
-              .map((entry) => [String(entry.parentId), entry])
+        const parentsByKey = new Map();
+
+        parentLinksByStudent.forEach(({ studentRow, links }) => {
+          const uniqueLinks = [...new Map(
+            (links || [])
+              .filter((link) => normalizeScopedIdentifier(link?.parentId || link?.userId))
+              .map((link) => [`${normalizeScopedIdentifier(link?.parentId || link?.userId)}__${String(link?.relationship || "")}`, link])
           ).values()];
 
-          uniqueParentEntries.forEach(({ parentId, relationship }) => {
-            if (!parentChildrenMap[parentId]) parentChildrenMap[parentId] = [];
-            const existingChildIndex = parentChildrenMap[parentId].findIndex(
-              (childItem) => String(childItem.studentId) === String(studentId)
+          uniqueLinks.forEach((link) => {
+            const parentRecord = findParentRecord(link);
+            const parentUser = parentUsersById[normalizeScopedIdentifier(parentRecord?.userId || link?.userId)] || null;
+            const parentUserId = normalizeScopedIdentifier(
+              parentUser?.userId || parentRecord?.userId || link?.userId
+            );
+            const parentKey = normalizeScopedIdentifier(
+              parentRecord?.parentId || link?.parentId || parentUserId
             );
 
-            const nextChild = {
-              studentId,
-              name: studentName,
-              grade: student.grade,
-              section: student.section,
-              profileImage: studentProfileImage,
-              userId: student.userId,
-                relationship: relationship || "—",
-                age: student.age || studentUser?.age || null,
-                city: student.city || studentUser?.city || (student.address && student.address.city) || null,
-                citizenship: student.citizenship || studentUser?.citizenship || student.nationality || null,
-                address: student.address || studentUser?.address || null,
-                status: student.status || "Active",
+            if (!parentKey || !parentUserId) {
+              return;
+            }
+
+            const parentName =
+              parentUser?.name ||
+              parentRecord?.name ||
+              String(link?.name || "").trim() ||
+              "Parent";
+            const existingParent = parentsByKey.get(parentKey) || {
+              id: parentKey,
+              userId: parentUserId,
+              name: parentName,
+              email: parentUser?.email || parentRecord?.email || "N/A",
+              phone: parentUser?.phone || parentRecord?.phone || String(link?.phone || "").trim(),
+              profileImage: resolveAvatarSrc(
+                resolveProfileImage(
+                  parentUser?.profileImage,
+                  parentUser?.profile,
+                  parentUser?.avatar,
+                  parentRecord?.profileImage,
+                  parentRecord?.profile,
+                  link?.profileImage,
+                  DEFAULT_PROFILE_IMAGE
+                ),
+                parentName
+              ),
+              children: [],
+              relationships: [],
+              age: parentRecord?.age || parentUser?.age || null,
+              city: parentRecord?.city || parentUser?.city || parentRecord?.address?.city || null,
+              citizenship: parentRecord?.citizenship || parentUser?.citizenship || parentRecord?.nationality || null,
+              status: parentRecord?.status || "Active",
+              isActive: typeof parentUser?.isActive === "boolean" ? parentUser.isActive : isActiveRecord(parentRecord || parentUser || {}),
+              createdAt: parentRecord?.createdAt || null,
+              parentId: parentRecord?.parentId || parentKey,
+              username: parentUser?.username || parentRecord?.username || parentRecord?.parentId || parentKey,
+              role: parentUser?.role || parentRecord?.role || "parent",
+              schoolCode:
+                parentRecord?.schoolCode ||
+                parentUser?.schoolCode ||
+                schoolCode ||
+                "",
+              occupation: parentRecord?.occupation || parentUser?.occupation || "",
+              nationalIdNumber: parentRecord?.nationalIdNumber || parentUser?.nationalIdNumber || "",
+              nationalIdImage: parentRecord?.nationalIdImage || parentUser?.nationalIdImage || "",
+              address: parentRecord?.address || parentUser?.address || null,
+              extra: parentRecord?.extra,
             };
 
+            const studentName = studentRow?.name || "No Name";
+            const nextChild = {
+              studentId: studentRow?.studentId,
+              name: studentName,
+              grade: studentRow?.grade || "",
+              section: studentRow?.section || "",
+              profileImage: resolveAvatarSrc(studentRow?.profileImage, studentName),
+              userId: studentRow?.userId,
+              relationship: String(link?.relationship || "").trim() || "—",
+              age: studentRow?.raw?.age || studentRow?.user?.age || null,
+              city: studentRow?.raw?.city || studentRow?.user?.city || studentRow?.raw?.address?.city || null,
+              citizenship: studentRow?.raw?.citizenship || studentRow?.user?.citizenship || studentRow?.raw?.nationality || null,
+              address: studentRow?.raw?.address || studentRow?.user?.address || null,
+              status: studentRow?.raw?.status || "Active",
+            };
+
+            const existingChildIndex = existingParent.children.findIndex(
+              (childItem) => String(childItem?.studentId || "") === String(nextChild.studentId || "")
+            );
+
             if (existingChildIndex === -1) {
-              parentChildrenMap[parentId].push(nextChild);
+              existingParent.children.push(nextChild);
             } else {
-              const existingChild = parentChildrenMap[parentId][existingChildIndex];
-              parentChildrenMap[parentId][existingChildIndex] = {
-                ...existingChild,
+              existingParent.children[existingChildIndex] = {
+                ...existingParent.children[existingChildIndex],
                 ...nextChild,
-                relationship: existingChild.relationship || nextChild.relationship || "—",
               };
             }
+
+            existingParent.relationships = Array.from(new Set([
+              ...(existingParent.relationships || []),
+              nextChild.relationship,
+            ].filter(Boolean)));
+
+            parentsByKey.set(parentKey, existingParent);
           });
         });
 
-        const finalParents = Object.keys(parentChildrenMap).map((pid) => {
-          const parent = parentsData[pid] || {};
-          const parentUser = findUserByUserId(users, parent.userId) || {};
-          const childrenList = parentChildrenMap[pid] || [];
-          const relationships = Array.from(new Set(childrenList.map((c) => c.relationship).filter(Boolean)));
-          return {
-            id: pid,
-            userId: parent.userId,
-            name: parentUser.name || parent.name || "No Name",
-            email: parentUser.email || parent.email || "N/A",
-            phone: parentUser.phone || parent.phone || "",
-            profileImage: resolveProfileImage(
-              parentUser.profileImage,
-              parentUser.profile,
-              parentUser.avatar,
-              parent.profileImage,
-              parent.profile,
-              "/default-profile.png"
-            ),
-            children: childrenList,
-            relationships,
-            age: parent.age || parentUser.age || null,
-            city: parent.city || parentUser.city || parent.address?.city || null,
-            citizenship: parent.citizenship || parentUser.citizenship || parent.nationality || null,
-            status: parent.status || "Active",
-            createdAt: parent.createdAt,
-            address: parent.address || parentUser.address || null,
-            extra: parent.extra,
-          };
-        }).filter((parent) => Array.isArray(parent.children) && parent.children.length > 0);
+        const finalParents = [...parentsByKey.values()]
+          .filter((parent) => parent?.userId)
+          .filter((parent) => parent?.isActive !== false)
+          .filter((parent) => Array.isArray(parent.children) && parent.children.length > 0)
+          .sort((leftParent, rightParent) => String(leftParent?.name || "").localeCompare(String(rightParent?.name || "")));
 
         if (!cancelled) setParents(finalParents);
       } catch (err) {
@@ -278,158 +705,288 @@ const [children, setChildren] = useState([]);
     return () => {
       cancelled = true;
     };
-  }, [teacher]);
+  }, [teacher, RTDB_BASE, resolvedSchoolCode]);
 
-  // Scroll to bottom when new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (selectedParent || !chatOpen) return;
+    closeQuickChat();
+  }, [selectedParent, chatOpen]);
 
-  // fetch messages when chat popup open for selectedParent
   useEffect(() => {
-    if (!selectedParent || !teacher || !chatOpen) return;
+    const restoreSnapshot = quickChatScrollRestoreRef.current;
+    const scrollContainer = quickChatMessagesRef.current;
+
+    if (restoreSnapshot && scrollContainer) {
+      scrollContainer.scrollTop =
+        restoreSnapshot.previousScrollTop +
+        (scrollContainer.scrollHeight - restoreSnapshot.previousScrollHeight);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
+
+    if (!chatOpen) return;
+    scrollToBottom(messages.length > QUICK_CHAT_HISTORY_LIMIT ? "auto" : "smooth");
+  }, [messages, chatOpen]);
+
+  // Fetch recent messages for the selected parent with a capped live listener.
+  useEffect(() => {
+    if (!chatOpen || !teacherId || !selectedParent?.userId) {
+      setLiveQuickChatMessages([]);
+      setOlderQuickChatMessages([]);
+      setQuickChatLoading(false);
+      setQuickChatLoadingOlder(false);
+      setQuickChatHasOlder(false);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
+
     const chatId = getChatId(teacherId, selectedParent.userId);
-    const messagesRef = ref(db, schoolPath(`Chats/${chatId}/messages`));
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val() || {};
-      const msgs = Object.entries(data).map(([id, msg]) => ({ messageId: id, ...msg }));
-      msgs.sort((a, b) => a.timeStamp - b.timeStamp);
-      setMessages(msgs);
-    });
-    markAsSeen(chatId);
-    return () => off(messagesRef);
-  }, [selectedParent, teacher, chatOpen]);
+    const messagesRef = dbQuery(
+      dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)),
+      orderByChild("timeStamp"),
+      limitToLast(QUICK_CHAT_HISTORY_LIMIT)
+    );
 
-  const sendMessage = async (text) => {
-    if (!text?.trim() || !selectedParent || !teacher) return;
+    setLiveQuickChatMessages([]);
+    setOlderQuickChatMessages([]);
+    setQuickChatHasOlder(false);
+    setQuickChatLoadingOlder(false);
+    quickChatScrollRestoreRef.current = null;
+    setQuickChatLoading(true);
+
+    const unsubscribe = onValue(
+      messagesRef,
+      (snapshot) => {
+        const data = snapshot.val() || {};
+        const msgs = Object.entries(data)
+          .map(([id, msg]) => ({
+            id,
+            messageId: id,
+            ...msg,
+          }))
+          .sort((a, b) => Number(a?.timeStamp || 0) - Number(b?.timeStamp || 0));
+
+        setLiveQuickChatMessages(msgs);
+        setQuickChatHasOlder((previousValue) => previousValue || msgs.length >= QUICK_CHAT_HISTORY_LIMIT);
+        setQuickChatLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load quick chat messages:", error);
+        setLiveQuickChatMessages([]);
+        setOlderQuickChatMessages([]);
+        setQuickChatHasOlder(false);
+        setQuickChatLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [chatOpen, teacherId, selectedParent?.userId, resolvedSchoolCode, teacherSchoolCode]);
+
+  const loadOlderMessages = async () => {
+    if (
+      quickChatLoading ||
+      quickChatLoadingOlder ||
+      !chatOpen ||
+      !teacherId ||
+      !selectedParent?.userId ||
+      messages.length === 0
+    ) {
+      return;
+    }
+
+    const oldestMessageTimeStamp = Number(messages[0]?.timeStamp || 0);
+    if (!oldestMessageTimeStamp) {
+      setQuickChatHasOlder(false);
+      return;
+    }
+
+    const scrollContainer = quickChatMessagesRef.current;
+    if (scrollContainer) {
+      quickChatScrollRestoreRef.current = {
+        previousScrollHeight: scrollContainer.scrollHeight,
+        previousScrollTop: scrollContainer.scrollTop,
+      };
+    }
+
+    setQuickChatLoadingOlder(true);
+
+    try {
+      const chatId = getChatId(teacherId, selectedParent.userId);
+      const olderMessagesRef = dbQuery(
+        dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)),
+        orderByChild("timeStamp"),
+        endAt(oldestMessageTimeStamp - 1),
+        limitToLast(QUICK_CHAT_HISTORY_LIMIT)
+      );
+
+      const snapshot = await get(olderMessagesRef);
+      const data = snapshot.val() || {};
+      const olderMessagesPage = Object.entries(data)
+        .map(([id, message]) => ({
+          id,
+          messageId: id,
+          ...message,
+        }))
+        .sort(
+          (leftMessage, rightMessage) =>
+            Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+        );
+
+      if (!olderMessagesPage.length) {
+        setQuickChatHasOlder(false);
+        quickChatScrollRestoreRef.current = null;
+        return;
+      }
+
+      setOlderQuickChatMessages((previousMessages) =>
+        mergeChatMessages(olderMessagesPage, previousMessages)
+      );
+      setQuickChatHasOlder(olderMessagesPage.length >= QUICK_CHAT_HISTORY_LIMIT);
+    } catch (error) {
+      console.error("Failed to load older quick chat messages:", error);
+      quickChatScrollRestoreRef.current = null;
+    } finally {
+      setQuickChatLoadingOlder(false);
+    }
+  };
+
+  // Mark parent messages as seen when the quick chat is open.
+  useEffect(() => {
+    if (!chatOpen || !selectedParent?.userId || !teacherId) return;
+    if (!messages.length) return;
+
+    const unseenMessages = messages.filter(
+      (message) => String(message?.receiverId || "") === String(teacherId) && !message?.seen
+    );
+    if (!unseenMessages.length) return;
+
+    const chatId = getChatId(teacherId, selectedParent.userId);
+    const seenAt = Date.now();
+    const payload = {
+      [`unread/${teacherId}`]: 0,
+      "lastMessage/seen": true,
+      "lastMessage/seenAt": seenAt,
+    };
+
+    unseenMessages.forEach((message) => {
+      const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+      if (!messageKey) return;
+      payload[`messages/${messageKey}/seen`] = true;
+      payload[`messages/${messageKey}/seenAt`] = seenAt;
+    });
+
+    update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), payload).catch((error) => {
+      console.error("Failed to mark messages seen:", error);
+    });
+  }, [chatOpen, messages, selectedParent?.userId, teacherId, resolvedSchoolCode, teacherSchoolCode]);
+
+  const sendMessage = async (textOverride = "") => {
+    const text = String(textOverride || newMessageText || "").trim();
+    const receiverId = normalizeIdentifier(selectedParent?.userId);
+    if (!text || !receiverId || !teacherId) return;
+
     const senderId = teacherId;
-    const receiverId = selectedParent.userId;
     const chatId = getChatId(senderId, receiverId);
     const timeStamp = Date.now();
-    const message = { senderId, receiverId, type: "text", text, seen: false, timeStamp };
+    const message = {
+      senderId,
+      receiverId,
+      type: "text",
+      text,
+      seen: false,
+      edited: false,
+      deleted: false,
+      timeStamp,
+    };
+
     try {
-      await axios.post(`${RTDB_BASE}/Chats/${chatId}/messages.json`, message);
-      await axios.patch(`${RTDB_BASE}/Chats/${chatId}.json`, {
-        participants: { [senderId]: true, [receiverId]: true },
-        lastMessage: { text, senderId, seen: false, timeStamp },
-        unread: { [senderId]: 0, [receiverId]: 1 },
+      await push(dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)), message);
+
+      await update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), {
+        [`participants/${senderId}`]: true,
+        [`participants/${receiverId}`]: true,
+        "lastMessage/text": text,
+        "lastMessage/senderId": senderId,
+        "lastMessage/seen": false,
+        "lastMessage/timeStamp": timeStamp,
+        [`unread/${senderId}`]: 0,
       });
+
       setNewMessageText("");
+
+      await runTransaction(
+        dbRef(db, scopedParentPath(`Chats/${chatId}/unread/${receiverId}`)),
+        (current) => (Number(current) || 0) + 1
+      );
     } catch (err) {
-      console.error("Send message error:", err);
+      console.error("Failed to send quick chat message:", err);
     }
   };
-
-  const markAsSeen = async (chatId) => {
-    try {
-      await axios.patch(`${RTDB_BASE}/Chats/${chatId}/unread.json`, { [teacherId]: 0 });
-      await axios.patch(`${RTDB_BASE}/Chats/${chatId}/lastMessage.json`, { seen: true });
-    } catch (err) {
-      console.error("Mark as seen error:", err);
-    }
-  };
-
-  // notifications & messenger (kept as in your original)
 
   useEffect(() => {
+    if (!teacher?.userId) return;
+
+    let cancelled = false;
+
     const fetchNotifications = async () => {
       try {
-        // Fetch posts
-        const res = await axios.get(`${API_BASE}/get_posts`);
+        const teacherLocal = teacher || JSON.parse(localStorage.getItem("teacher") || "{}");
+        const schoolCode = normalizeIdentifier(
+          resolvedSchoolCode || teacherSchoolCode || teacherLocal?.schoolCode
+        );
+        if (!teacherLocal?.userId || !schoolCode) return;
+
+        const res = await axios.get(`${API_BASE}/get_posts`, {
+          params: {
+            viewerRole: "teacher",
+            schoolCode,
+          },
+        });
         let postsData = res.data || [];
         if (!Array.isArray(postsData) && typeof postsData === "object") postsData = Object.values(postsData);
-        const [adminsRes, usersRes] = await Promise.all([
-          axios.get(`${RTDB_BASE}/School_Admins.json`),
-          axios.get(`${RTDB_BASE}/Users.json`)
-        ]);
-        const schoolAdmins = adminsRes.data || {};
-        const users = usersRes.data || {};
-        const teacherLocal = JSON.parse(localStorage.getItem("teacher"));
         const seenPosts = getSeenPosts(teacherLocal?.userId);
-        const resolveAdminInfo = (post) => {
-          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-          if (adminId && schoolAdmins[adminId]) {
-            const sa = schoolAdmins[adminId];
-            const userKey = sa.userId;
-            const userRec = users[userKey] || null;
-            const name = (userRec && userRec.name) || sa.name || post.adminName || "Admin";
-            const profile = (userRec && userRec.profileImage) || sa.profileImage || post.adminProfile || "/default-profile.png";
-            return { name, profile };
-          }
-          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-        };
+
         const latestPosts = postsData
           .slice()
           .sort((a, b) => ((b.time ? new Date(b.time).getTime() : 0) - (a.time ? new Date(a.time).getTime() : 0)))
           .filter((post) => post.postId && !seenPosts.includes(post.postId))
           .slice(0, 5)
           .map((post) => {
-            const info = resolveAdminInfo(post);
             return {
               type: "post",
               id: post.postId,
               title: post.message?.substring(0, 50) || "Untitled post",
-              adminName: info.name,
-              adminProfile: info.profile
+              adminName: post.adminName || "Admin",
+              adminProfile: post.adminProfile || DEFAULT_PROFILE_IMAGE,
             };
           });
 
-        // Fetch unread messages (conversations)
-        let messageNotifs = [];
-        try {
-          const t = teacherLocal;
-          if (t && t.userId) {
-            const [chatsRes, usersRes] = await Promise.all([
-              axios.get(`${RTDB_BASE}/Chats.json`),
-              axios.get(`${RTDB_BASE}/Users.json`)
-            ]);
-            const chats = chatsRes.data || {};
-            const users = usersRes.data || {};
-            const usersByKey = users || {};
-            const userKeyByUserId = {};
-            Object.entries(usersByKey).forEach(([pushKey, u]) => { if (u && u.userId) userKeyByUserId[u.userId] = pushKey; });
-            messageNotifs = Object.entries(chats)
-              .map(([chatId, chat]) => {
-                const unreadMap = chat.unread || {};
-                const unreadForMe = unreadMap[t.userId] || 0;
-                if (!unreadForMe) return null;
-                const participants = chat.participants || {};
-                const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-                if (!otherKeyCandidate) return null;
-                let otherPushKey = otherKeyCandidate;
-                let otherRecord = usersByKey[otherPushKey];
-                if (!otherRecord) {
-                  const mapped = userKeyByUserId[otherKeyCandidate];
-                  if (mapped) { otherPushKey = mapped; otherRecord = usersByKey[mapped]; }
-                }
-                if (!otherRecord) otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-                const contact = { pushKey: otherPushKey, userId: otherRecord.userId || otherKeyCandidate, name: otherRecord.name || otherRecord.username || otherKeyCandidate, profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png" };
-                const lastMessage = chat.lastMessage || {};
-                return {
-                  type: "message",
-                  chatId,
-                  displayName: contact.name,
-                  profile: contact.profileImage,
-                  lastMessageText: lastMessage.text || "",
-                  lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-                  unreadForMe
-                };
-              })
-              .filter(Boolean)
-              .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-          }
-        } catch (err) {
-          console.error("Error fetching message notifications:", err);
-        }
+        const unreadConversations = await loadUnreadConversationSummaries(teacherLocal);
+        const messageNotifs = unreadConversations.map((conversation) => ({
+          type: "message",
+          chatId: conversation.chatId,
+          contact: conversation.contact,
+          displayName: conversation.displayName,
+          profile: conversation.profile,
+          lastMessageText: conversation.lastMessageText,
+          lastMessageTime: conversation.lastMessageTime,
+          unreadForMe: conversation.unreadForMe,
+        }));
 
+        if (cancelled) return;
         setNotifications([...latestPosts, ...messageNotifs]);
         setMessageNotifications(messageNotifs);
       } catch (err) {
         console.error("Error fetching notifications:", err);
       }
     };
+
     fetchNotifications();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacher, resolvedSchoolCode, teacherSchoolCode]);
 
   function getSeenPosts(teacherId) {
     return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
@@ -447,33 +1004,7 @@ const [children, setChildren] = useState([]);
         setConversations([]);
         return;
       }
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/Chats.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => { if (u && u.userId) userKeyByUserId[u.userId] = pushKey; });
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) { otherPushKey = mapped; otherRecord = usersByKey[mapped]; }
-          }
-          if (!otherRecord) otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          const contact = { pushKey: otherPushKey, userId: otherRecord.userId || otherKeyCandidate, name: otherRecord.name || otherRecord.username || otherKeyCandidate, profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png" };
-          const lastMessage = chat.lastMessage || {};
-          return { chatId, contact, displayName: contact.name, profile: contact.profileImage, lastMessageText: lastMessage.text || "", lastMessageTime: lastMessage.timeStamp || lastMessage.time || null, unreadForMe };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+      const convs = await loadUnreadConversationSummaries(t);
       setConversations(convs);
     } catch (err) {
       console.error("Error fetching conversations:", err);
@@ -482,16 +1013,26 @@ const [children, setChildren] = useState([]);
   };
 
   const handleMessengerToggle = async () => {
-    setShowMessenger((s) => !s);
-    await fetchConversations();
+    const nextOpen = !showMessenger;
+    setShowMessenger(nextOpen);
+    if (nextOpen) {
+      await fetchConversations();
+    }
   };
 
   const handleOpenConversation = async (conv, index) => {
     if (!teacher || !conv) return;
     const { chatId, contact } = conv;
-    navigate("/all-chat", { state: { contact, chatId, tab: "parents" } });
+    navigate("/all-chat", { state: { contact, chatId, tab: "parent" } });
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacherId}.json`, null);
+      await update(dbRef(db, scopedParentPath(`Chats/${chatId}/unread`)), {
+        [teacherId]: null,
+      });
+      clearCachedChatSummary({
+        rtdbBase: RTDB_BASE,
+        chatId,
+        teacherUserId: teacherId,
+      });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
@@ -535,9 +1076,9 @@ const [children, setChildren] = useState([]);
         color: "var(--text-primary)",
         "--surface-panel": "#ffffff",
         "--surface-accent": "#eff6ff",
-        "--surface-muted": "#f8fafc",
+        "--surface-muted": "#ffffff",
         "--surface-strong": "#e2e8f0",
-        "--page-bg": "#f5f8ff",
+        "--page-bg": "#ffffff",
         "--border-soft": "#e2e8f0",
         "--border-strong": "#cbd5e1",
         "--text-primary": "#0f172a",
@@ -545,14 +1086,14 @@ const [children, setChildren] = useState([]);
         "--text-muted": "#64748b",
         "--accent": "#2563eb",
         "--accent-soft": "#dbeafe",
-        "--accent-strong": "#1d4ed8",
+        "--accent-strong": "#007AFB",
         "--sidebar-width": "clamp(230px, 16vw, 290px)",
         "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
         "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
         "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
       }}
     >
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden", background: "#ffffff" }}>
         <Sidebar
           active="parents"
           sidebarOpen={sidebarOpen}
@@ -572,7 +1113,7 @@ const [children, setChildren] = useState([]);
         />
 
         {/* MAIN CONTENT */}
-        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box", background: "#ffffff" }}>
           <div
             className="parent-list-card-responsive"
             style={{
@@ -580,15 +1121,21 @@ const [children, setChildren] = useState([]);
               position: "relative",
               marginLeft: 0,
               marginRight: isPortrait ? 0 : "24px",
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 18,
+              boxShadow: "0 10px 26px rgba(15, 23, 42, 0.08)",
+              padding: 14,
             }}
           >
             <style>{`
               @media (max-width: 600px) {
                 .parent-list-card-responsive {
-                  margin-left: -16px !important;
+                  margin-left: -10px !important;
                   margin-right: auto !important;
-                  width: 80vw !important;
-                  max-width: 80vw !important;
+                  width: calc(100vw - 18px) !important;
+                  max-width: calc(100vw - 18px) !important;
+                  border-radius: 14px !important;
                 }
               }
             `}</style>
@@ -638,45 +1185,49 @@ const [children, setChildren] = useState([]);
                       margin-top: 10px;
                       gap: 10px;
                       width: 100%;
-                      max-width: 100vw;
+                      max-width: 100%;
                       margin-left: 0;
                       margin-right: 0;
+                      max-height: min(68vh, 640px);
+                      overflow-y: auto;
+                      padding-right: 2px;
+                      padding-bottom: 10px;
                     }
                     @media (max-width: 600px) {
                       .parent-list-responsive {
-                        width: 100vw !important;
-                        max-width: 100vw !important;
+                        width: 100% !important;
+                        max-width: 100% !important;
                         margin-left: 0 !important;
                         margin-right: 0 !important;
                         padding: 0 !important;
                         align-items: flex-start !important;
                       }
                       .parent-list-responsive > div {
-                        margin-left: 10px !important;
-                        padding-left: 10px !important;
-                        width: 100vw !important;
-                        max-width: 100vw !important;
-                        min-width: 100vw !important;
+                        margin-left: 0 !important;
+                        padding-left: 0 !important;
+                        width: 100% !important;
+                        max-width: 100% !important;
+                        min-width: 100% !important;
                         box-sizing: border-box !important;
                       }
                     }
                     @media (min-width: 350px) {
                       .parent-list-responsive {
-                        width: 400px;
-                        max-width: 90vw;
+                        width: 100%;
+                        max-width: 100%;
                       }
                     }
                     @media (min-width: 1200px) {
                       .parent-list-responsive {
-                        width: 420px;
-                        max-width: 520px;
+                        width: 100%;
+                        max-width: 100%;
                         margin-left: 0;
                       }
                     }
                     @media (min-width: 1500px) {
                       .parent-list-responsive {
-                        width: 420px;
-                        max-width: 520px;
+                        width: 100%;
+                        max-width: 100%;
                         margin-left: 0;
                       }
                     }
@@ -689,24 +1240,26 @@ const [children, setChildren] = useState([]);
                         className="parent-list-item-responsive"
                         style={{
                           width: "100%",
-                          borderRadius: "12px",
-                          padding: "10px",
+                          borderRadius: "14px",
+                          padding: "11px",
                           display: "flex",
                           alignItems: "center",
                           gap: "12px",
                           cursor: "pointer",
-                          background: selectedParent?.id === p.id ? "#e0e7ff" : "#fff",
-                          border: selectedParent?.id === p.id ? "2px solid #4b6cb7" : "1px solid #ddd",
-                          boxShadow: selectedParent?.id === p.id ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
-                          transition: "all 0.3s ease",
+                          background: "#ffffff",
+                          border: selectedParent?.id === p.id ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+                          boxShadow: selectedParent?.id === p.id
+                            ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+                            : "0 4px 10px rgba(15, 23, 42, 0.06)",
+                          transition: "all 0.24s ease",
                         }}
                       >
                         <div style={{
                           width: 36,
                           height: 36,
                           borderRadius: '50%',
-                          background: selectedParent?.id === p.id ? '#4b6cb7' : '#f1f5f9',
-                          color: selectedParent?.id === p.id ? '#fff' : '#374151',
+                          background: selectedParent?.id === p.id ? '#007AFB' : '#eef2ff',
+                          color: selectedParent?.id === p.id ? '#fff' : '#334155',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -716,19 +1269,25 @@ const [children, setChildren] = useState([]);
                         }}>{index + 1}</div>
 
                         <img
-                          src={p.profileImage}
+                          src={resolveAvatarSrc(p.profileImage, p.name)}
                           alt={p.name}
                           onError={(event) => {
-                            event.currentTarget.src = "/default-profile.png";
+                            const fallback = createPlaceholderAvatar(p?.name || "Parent");
+                            if (event.currentTarget.src === fallback) return;
+                            event.currentTarget.src = fallback;
                           }}
-                          style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #4b6cb7' : '3px solid #ddd' }}
+                          style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #007AFB' : '3px solid #dbeafe' }}
                         />
-                        <div>
-                          <h3 style={{ margin: 0, fontSize: 14 }}>{p.name}</h3>
-                          <p style={{ margin: '4px 0', color: '#555', fontSize: 11 }}>{p.email}</p>
+                        <div style={{ minWidth: 0 }}>
+                          <h3 style={{ margin: 0, fontSize: 14, color: "#0f172a", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</h3>
+                          <p style={{ margin: '4px 0', color: '#64748b', fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.email}</p>
+                          <p style={{ margin: 0, color: '#475569', fontSize: 10, fontWeight: 600 }}>
+                            {(p.children || []).length} {(p.children || []).length === 1 ? "Child" : "Children"}
+                          </p>
                         </div>
                       </div>
                     ))}
+                    <div style={{ height: 8 }} />
                   </div>
                 </>
               )}
@@ -794,10 +1353,12 @@ const [children, setChildren] = useState([]);
                   <div style={{ textAlign: "center", margin: "-14px -14px 12px", padding: "16px 10px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
                     <div style={{ width: 70, height: 70, margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid rgba(255,255,255,0.8)" }}>
                       <img
-                        src={selectedParent.profileImage}
+                        src={resolveAvatarSrc(selectedParent.profileImage, selectedParent.name)}
                         alt={selectedParent.name}
                         onError={(event) => {
-                          event.currentTarget.src = "/default-profile.png";
+                          const fallback = createPlaceholderAvatar(selectedParent?.name || "Parent");
+                          if (event.currentTarget.src === fallback) return;
+                          event.currentTarget.src = fallback;
                         }}
                         style={{ width: "100%", height: "100%", objectFit: "cover" }}
                       />
@@ -922,69 +1483,251 @@ const [children, setChildren] = useState([]);
 
        {activeTab === "Children" && (
   <div
-    style={{
-      display: "flex",
-      flexDirection: "column",
-      gap: 20,
-      background: "var(--surface-panel)",
-      border: "1px solid var(--border-soft)",
-      boxShadow: "var(--shadow-soft)",
-      padding: 12,
-      borderRadius: 12,
-    }}
+   
   >
     {selectedParent.children.map((c) => (
       <div
         key={c.studentId}
         style={{
           display: "flex",
-          alignItems: "center",
+          flexDirection: "column",
           gap: 12,
-          background: "var(--surface-panel)",
-          borderRadius: 12,
-          padding: "12px",
-          boxShadow: "none",
-          border: "1px solid var(--border-soft)",
-          transition: "box-shadow 0.15s, transform 0.12s",
+          background: "linear-gradient(135deg, #ffffff 0%, #f8fbff 100%)",
+          borderRadius: 16,
+          padding: "14px",
+          boxShadow: "0 8px 22px rgba(15, 23, 42, 0.06)",
+          border: "1px solid #dbeafe",
+          transition: "box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease",
           cursor: "pointer",
+          position: "relative",
+          overflow: "hidden",
         }}
-        onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 8px 28px rgba(0,0,0,0.08)")}
-        onMouseLeave={e => (e.currentTarget.style.boxShadow = "0 6px 18px rgba(0,0,0,0.05)")}
+        onMouseEnter={e => {
+          e.currentTarget.style.boxShadow = "0 16px 34px rgba(37, 99, 235, 0.12)";
+          e.currentTarget.style.transform = "translateY(-1px)";
+          e.currentTarget.style.borderColor = "#93c5fd";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.boxShadow = "0 8px 22px rgba(15, 23, 42, 0.06)";
+          e.currentTarget.style.transform = "translateY(0)";
+          e.currentTarget.style.borderColor = "#dbeafe";
+        }}
       >
-        {/* Profile Image */}
-        <img
-          src={c.profileImage}
-          alt={c.name}
-          onError={(event) => {
-            event.currentTarget.src = "/default-profile.png";
-          }}
+        <div
           style={{
-            width: 48,
-            height: 48,
-            borderRadius: "50%",
-            border: "3px solid var(--accent-strong)",
-            objectFit: "cover",
-            background: "var(--surface-panel)",
-            flexShrink: 0,
+            position: "absolute",
+            inset: "0 auto auto 0",
+            width: 88,
+            height: 88,
+            background: "radial-gradient(circle, rgba(191,219,254,0.5) 0%, rgba(191,219,254,0) 72%)",
+            pointerEvents: "none",
           }}
         />
-        {/* User Info */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text-primary)" }}>{c.name}</span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 10px", borderRadius: 999, background: "var(--surface-muted)" }}>Grade: {c.grade}</div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 999, background: "var(--surface-muted)" }}>Section: {c.section}</div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, position: "relative", zIndex: 1 }}>
+          <img
+            src={resolveAvatarSrc(c.profileImage, c.name)}
+            alt={c.name}
+            onError={(event) => {
+              const fallback = createPlaceholderAvatar(c?.name || "Student");
+              if (event.currentTarget.src === fallback) return;
+              event.currentTarget.src = fallback;
+            }}
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: "50%",
+              border: "3px solid #bfdbfe",
+              objectFit: "cover",
+              background: "#ffffff",
+              flexShrink: 0,
+              boxShadow: "0 8px 16px rgba(37, 99, 235, 0.14)",
+            }}
+          />
+
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+                <div style={{ marginTop: 3, fontSize: 11, color: "#64748b" }}>
+                  Student ID: {c.studentId || "—"}
+                </div>
+              </div>
+              <span
+                style={{
+                  flexShrink: 0,
+                  fontSize: 10,
+                  fontWeight: 800,
+                  color: "#007AFB",
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
+                  borderRadius: 999,
+                  padding: "4px 8px",
+                }}
+              >
+                {c.relationship ? `Relation: ${c.relationship}` : "Child"}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontSize: 11, color: "#1e3a8a", padding: "5px 10px", borderRadius: 999, background: "#eff6ff", border: "1px solid #dbeafe", fontWeight: 700 }}>
+                Grade {c.grade || "—"}
+              </div>
+              <div style={{ fontSize: 11, color: "#334155", padding: "5px 10px", borderRadius: 999, background: "#f8fafc", border: "1px solid #e2e8f0", fontWeight: 700 }}>
+                Section {c.section || "—"}
+              </div>
+              <div style={{ fontSize: 11, color: c.status === "Active" ? "#166534" : "#92400e", padding: "5px 10px", borderRadius: 999, background: c.status === "Active" ? "#dcfce7" : "#fef3c7", border: c.status === "Active" ? "1px solid #86efac" : "1px solid #fcd34d", fontWeight: 700 }}>
+                {c.status || "Unknown"}
+              </div>
+            </div>
           </div>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{c.relationship && `Relation: ${c.relationship}`}</span>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+            gap: 8,
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          {[
+            ["Age", c.age || "—"],
+            ["City", c.city || "—"],
+            ["Citizenship", c.citizenship || "—"],
+          ].map(([label, value]) => (
+            <div
+              key={label}
+              style={{
+                borderRadius: 10,
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                padding: "8px 9px",
+                minWidth: 0,
+              }}
+            >
+              <div style={{ fontSize: 9, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
+              <div style={{ marginTop: 4, fontSize: 11, color: "#0f172a", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            paddingTop: 2,
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          {/* <div style={{ fontSize: 10, color: "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {c.userId ? `User ID: ${c.userId}` : "User account linked"}
+          </div> */}
+          <div style={{ width: 36, height: 4, borderRadius: 999, background: "linear-gradient(90deg, #93c5fd 0%, #2563eb 100%)", flexShrink: 0 }} />
         </div>
       </div>
     ))}
   </div>
 )}
                     {activeTab === "Status" && (
-                      <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
-                        <p><strong>Status:</strong> {selectedParent.status || "Active"}</p>
-                        <p><strong>Created:</strong> {selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—"}</p>
+                      <div
+                        style={{
+                          background: "var(--surface-panel)",
+                          border: "1px solid var(--border-soft)",
+                          borderRadius: 12,
+                          boxShadow: "var(--shadow-soft)",
+                          padding: 12,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                        }}
+                      >
+                        <div
+                          style={{
+                            borderRadius: 12,
+                            border: "1px solid #dbeafe",
+                            background: " #ffffff",
+                            padding: "10px 12px",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                            <div style={{ fontSize: 12, fontWeight: 800, color: "#1e3a8a" }}>Account Status</div>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 800,
+                                color: selectedParent?.isActive ? "#166534" : "#b91c1c",
+                                background: selectedParent?.isActive ? "#dcfce7" : "#fee2e2",
+                                border: selectedParent?.isActive ? "1px solid #86efac" : "1px solid #fecaca",
+                                borderRadius: 999,
+                                padding: "3px 8px",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.3px",
+                              }}
+                            >
+                              {selectedParent?.isActive ? "Active" : "Inactive"}
+                            </span>
+                          </div>
+                          <div style={{ marginTop: 6, fontSize: 10, color: "#334155" }}>
+                            Joined: {selectedParent?.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—"}
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 8,
+                          }}
+                        >
+                          {[
+                            ["Parent ID", selectedParent?.parentId || selectedParent?.id || "—"],
+                            ["Username", selectedParent?.username || "—"],
+                            ["Role", String(selectedParent?.role || "parent").toUpperCase()],
+                            ["School Code", selectedParent?.schoolCode || "—"],
+                            ["User ID", selectedParent?.userId || "—", true],
+                          ].map(([label, value, span]) => (
+                            <div
+                              key={label}
+                              style={{
+                                padding: 8,
+                                borderRadius: 10,
+                                border: "1px solid var(--border-soft)",
+                                background: "#ffffff",
+                                gridColumn: span ? "span 2" : "span 1",
+                              }}
+                            >
+                              <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.55px" }}>{label}</div>
+                              <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-primary)", fontWeight: 700, wordBreak: "break-all" }}>{value || "—"}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div
+                          style={{
+                            border: "1px solid var(--border-soft)",
+                            background: "#ffffff",
+                            borderRadius: 10,
+                            padding: "10px 12px",
+                            display: "grid",
+                            gap: 6,
+                          }}
+                        >
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "#0f172a" }}>Verification & Profile</div>
+                          <div style={{ fontSize: 10, color: "#475569" }}>
+                            National ID Number: {selectedParent?.nationalIdNumber ? "Provided" : "Not provided"}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#475569" }}>
+                            National ID Image: {selectedParent?.nationalIdImage ? "Uploaded" : "Not uploaded"}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#475569" }}>
+                            Occupation: {selectedParent?.occupation || "Not specified"}
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1000,7 +1743,7 @@ const [children, setChildren] = useState([]);
             right: "20px",
             width: "140px",
             height: "48px",
-            background: "linear-gradient(135deg, color-mix(in srgb, var(--accent-strong) 45%, #7c3aed), var(--accent))",
+            background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
             borderRadius: "28px",
             display: "flex",
             alignItems: "center",
@@ -1059,7 +1802,7 @@ const [children, setChildren] = useState([]);
             right: "20px",
             width: "360px",
             height: "480px",
-            background: "var(--surface-panel)",
+            background: "#ffffff",
             borderRadius: "16px",
             boxShadow: "var(--shadow-panel)",
             zIndex: 2000,
@@ -1086,11 +1829,12 @@ const [children, setChildren] = useState([]);
               
               <button
   onClick={() => {
-    setChatOpen(false); // properly close popup
+    closeQuickChat();
     const chatId = getChatId(teacherId, selectedParent.userId);
     navigate("/all-chat", {
       state: {
         user: selectedParent, // user to auto-select
+        contact: selectedParent,
         chatId,               // open the exact chat thread
         tab: "parent",        // tab type
       },
@@ -1109,7 +1853,7 @@ const [children, setChildren] = useState([]);
 
               {/* Close */}
               <button
-                onClick={() => setChatOpen(false)}
+                onClick={closeQuickChat}
                 style={{
                   background: "none",
                   border: "none",
@@ -1124,6 +1868,7 @@ const [children, setChildren] = useState([]);
 
           {/* Messages */}
           <div
+            ref={quickChatMessagesRef}
             style={{
               flex: 1,
               padding: "12px",
@@ -1131,44 +1876,104 @@ const [children, setChildren] = useState([]);
               display: "flex",
               flexDirection: "column",
               gap: "6px",
-              background: "var(--surface-muted)",
+              background: "#f8fbff",
             }}
           >
-            {messages.length === 0 ? (
+            {(quickChatHasOlder || quickChatLoadingOlder) && !quickChatLoading && (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                <button
+                  onClick={loadOlderMessages}
+                  disabled={quickChatLoadingOlder}
+                  style={{
+                    border: "1px solid #bfdbfe",
+                    background: quickChatLoadingOlder ? "#eff6ff" : "#ffffff",
+                    color: "#007AFB",
+                    borderRadius: 999,
+                    padding: "6px 12px",
+                    fontSize: 10,
+                    fontWeight: 800,
+                    cursor: quickChatLoadingOlder ? "default" : "pointer",
+                  }}
+                >
+                  {quickChatLoadingOlder ? "Loading older messages..." : "Load older messages"}
+                </button>
+              </div>
+            )}
+
+            {quickChatLoading ? (
+              <p style={{ textAlign: "center", color: "#64748b" }}>
+                Loading recent chat...
+              </p>
+            ) : messages.length === 0 ? (
               <p style={{ textAlign: "center", color: "#aaa" }}>
                 Start chatting with {selectedParent.name}
               </p>
             ) : (
-              messages.map((m) => (
-                <div
-                  key={m.messageId}
+              messages.map((m) => {
+                const isTeacher = String(m?.senderId || "") === String(teacherId);
+
+                return (
+                  <div
+                    key={m.messageId || m.id}
                     style={{
-                    display: "flex",
-                    flexDirection: m.senderId === teacherId ? "row-reverse" : "row",
-                    alignItems: "flex-end",
-                    marginBottom: 10,
-                  }}
-                >
-                  <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.senderId === teacherId ? "flex-end" : "flex-start" }}>
-                    <div style={{
-                      background: m.senderId === teacherId ? "#4b6cb7" : "#fff",
-                      color: m.senderId === teacherId ? "#fff" : "#0f172a",
-                      padding: "10px 14px",
-                      borderRadius: 18,
-                      boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
-                      wordBreak: "break-word",
-                      position: "relative",
-                      paddingBottom: "26px",
-                    }}>
-                      <div>{m.text}</div>
-                      <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.senderId === teacherId ? "rgba(255,255,255,0.9)" : "#64748b" }}>
-                        <span style={{ fontSize: 11 }}>{formatTime(m.timeStamp)}</span>
-                        {m.senderId === teacherId && <FaCheck size={12} color={m.seen ? (m.seenAt ? "#10b981" : "#10b981") : (m.seen ? "#10b981" : "#94a3b8")} />}
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: isTeacher ? "flex-end" : "flex-start",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        maxWidth: "70%",
+                        background: isTeacher ? "#007AFB" : "#ffffff",
+                        color: isTeacher ? "#ffffff" : "#0f172a",
+                        padding: "10px 14px",
+                        borderRadius: 18,
+                        borderTopRightRadius: isTeacher ? 0 : 18,
+                        borderTopLeftRadius: isTeacher ? 18 : 0,
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                        wordBreak: "break-word",
+                        position: "relative",
+                      }}
+                    >
+                      {m.text} {m.edited && <small style={{ fontSize: 10 }}>(edited)</small>}
+
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "flex-end",
+                          gap: 6,
+                          marginTop: 6,
+                          fontSize: 11,
+                          color: isTeacher ? "#ffffff" : "#888888",
+                        }}
+                      >
+                        <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>
+                          {formatDateLabel(m.timeStamp)}
+                        </span>
+                        <span>{formatTime(m.timeStamp)}</span>
+                        {isTeacher && !m.deleted && (
+                          <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
+                            <FaCheck
+                              size={12}
+                              color={isTeacher ? "#ffffff" : "#888888"}
+                              style={{ opacity: 0.85, marginLeft: 6 }}
+                            />
+                            {m.seen && (
+                              <FaCheck
+                                size={12}
+                                color={isTeacher ? "#f3f7f8" : "#cccccc"}
+                                style={{ marginLeft: 2, opacity: 0.95 }}
+                              />
+                            )}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -1196,13 +2001,13 @@ const [children, setChildren] = useState([]);
                 background: "var(--surface-panel)",
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") sendMessage(newMessageText);
+                if (e.key === "Enter") sendMessage();
               }}
             />
             <button
-              onClick={() => sendMessage(newMessageText)}
+              onClick={() => sendMessage()}
               style={{
-                background: "var(--accent-strong)",
+                background: "#007AFB",
                 border: "none",
                 borderRadius: "50%",
                 width: "42px",
@@ -1215,7 +2020,7 @@ const [children, setChildren] = useState([]);
                 fontSize: "18px",
               }}
             >
-              ➤
+              <FaPaperPlane />
             </button>
           </div>
         </div>

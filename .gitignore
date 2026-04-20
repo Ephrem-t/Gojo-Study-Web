@@ -1,0 +1,31 @@
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment and local editor files
+.env
+.env.*
+*.local
+**/.vscode/*
+!**/.vscode/extensions.json
+
+# Python cache files
+**/__pycache__/
+**/*.py[cod]
+
+# Frontend build and dependency output
+**/node_modules/
+**/.vite/
+**/dist/
+**/dist-ssr/
+**/vite.config.*.timestamp-*.js
+**/vite.config.*.timestamp-*.mjs
+
+# Firebase and local service-account credentials
+serviceAccountKey.py
+**/*-adminsdk-*.json
+**/*-financesdk-*.json

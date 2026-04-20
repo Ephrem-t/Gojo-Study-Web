@@ -4,6 +4,13 @@ import { FaSave, FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutA
 import { BACKEND_BASE } from "../config";
 import "../styles/global.css";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  loadGradeManagementNode,
+  loadSchoolInfoNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+} from "../utils/registerData";
 
 export default function StudentRegister() {
   const navigate = useNavigate();
@@ -142,8 +149,8 @@ export default function StudentRegister() {
       if (!schoolCode) return;
       setLoadingAcademicYear(true);
       try {
-        const res = await fetch(`${DB_URL}/schoolInfo/currentAcademicYear.json`);
-        const currentYear = res.ok ? await res.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: DB_URL });
+        const currentYear = schoolInfo?.currentAcademicYear || "";
         const normalizedYear = String(currentYear || "").trim();
         setActiveAcademicYear(normalizedYear);
         setForm((prev) => ({ ...prev, academicYear: normalizedYear }));
@@ -163,8 +170,7 @@ export default function StudentRegister() {
     const fetchGradeManagement = async () => {
       if (!schoolCode) return;
       try {
-        const res = await fetch(`${DB_URL}/GradeManagement/grades.json`);
-        const rawGrades = res.ok ? (await res.json()) || {} : {};
+        const rawGrades = await loadGradeManagementNode({ rtdbBase: DB_URL });
         const gradesObj = Object.fromEntries(
           Object.entries(rawGrades || {}).filter(([gradeKey]) => isValidGradeKey(gradeKey))
         );
@@ -215,8 +221,8 @@ export default function StudentRegister() {
       let shortName = (schoolShortName || stored.shortName || stored.schoolShortName || "").trim();
 
       if (!shortName) {
-        const shortNameRes = await fetch(`${DB_URL}/schoolInfo/shortName.json`);
-        const fetchedShortName = shortNameRes.ok ? await shortNameRes.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: DB_URL });
+        const fetchedShortName = schoolInfo?.shortName || "";
         shortName = String(fetchedShortName || "").trim();
       }
 
@@ -227,8 +233,7 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-      const studentsRes = await fetch(`${DB_URL}/Students.json`);
-      const studentsObj = studentsRes.ok ? (await studentsRes.json()) || {} : {};
+  const studentsObj = await loadSchoolStudentsNode({ rtdbBase: DB_URL });
       // Append 'S' to shortName to clearly mark student IDs (e.g. ShortNameS_0001_24)
       const safeShortName = escapeRegex(String(shortName) + "S");
       const pattern = new RegExp(`^${safeShortName}_(\\d{4})_${yearSuffix}$`);
@@ -270,8 +275,8 @@ export default function StudentRegister() {
       let shortName = (schoolShortName || stored.shortName || stored.schoolShortName || "").trim();
 
       if (!shortName) {
-        const shortNameRes = await fetch(`${DB_URL}/schoolInfo/shortName.json`);
-        const fetchedShortName = shortNameRes.ok ? await shortNameRes.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: DB_URL });
+        const fetchedShortName = schoolInfo?.shortName || "";
         shortName = String(fetchedShortName || "").trim();
       }
 
@@ -282,8 +287,7 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-      const parentsRes = await fetch(`${DB_URL}/Parents.json`);
-      const parentsObj = parentsRes.ok ? (await parentsRes.json()) || {} : {};
+  const parentsObj = await loadSchoolParentsNode({ rtdbBase: DB_URL });
       const safePrefix = escapeRegex(`${shortName}P`);
       // Use 4-digit sequence for parent IDs (e.g. GMIP_0001_26)
       const pattern = new RegExp(`^${safePrefix}_(\\d{4})_${yearSuffix}$`);
@@ -714,7 +718,7 @@ export default function StudentRegister() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 

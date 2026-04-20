@@ -4,6 +4,17 @@ import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
 import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
 import axios from "axios";
 import "../styles/global.css";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  buildConversationSummaryMap,
+  buildUserLookupFromNode,
+  fetchConversationSummaries,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolTeachersNode,
+  loadSchoolUsersNode,
+  loadUserRecordsByIds,
+} from "../utils/registerData";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -135,45 +146,40 @@ function AllChat() {
       if (!financeUserId) return;
 
       try {
-        const [studentsRes, parentsRes, teachersRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Chats.json`).catch(() => ({ data: {} })),
+        const [studentsData, parentsData, teachersData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
+          loadSchoolParentsNode({ rtdbBase: DB_ROOT }),
+          loadSchoolTeachersNode({ rtdbBase: DB_ROOT }),
         ]);
 
-        const studentsData = studentsRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-        const chatsData = chatsRes.data || {};
+        const userIds = Array.from(
+          new Set(
+            [...Object.values(studentsData || {}), ...Object.values(parentsData || {}), ...Object.values(teachersData || {})]
+              .map((record) => String(record?.userId || "").trim())
+              .filter(Boolean)
+          )
+        );
 
-        const findUserNode = (userId) => {
-          if (usersData[userId]) return usersData[userId];
-          return (
-            Object.values(usersData).find(
-              (u) => String(u?.userId || "") === String(userId || "")
-            ) || {}
-          );
-        };
+        let usersById = {};
+        if (userIds.length <= 80) {
+          usersById = await loadUserRecordsByIds({
+            rtdbBase: DB_ROOT,
+            schoolCode,
+            userIds,
+          });
+        } else {
+          const usersNode = await loadSchoolUsersNode({ rtdbBase: DB_ROOT });
+          usersById = buildUserLookupFromNode(usersNode);
+        }
 
-        const pickChatNode = (userId) => {
-          const candidates = getChatKeyCandidates(financeUserId, userId);
-          const found = candidates
-            .map((key) => ({ key, chat: chatsData[key] }))
-            .filter((x) => Boolean(x.chat));
+        const summaries = await fetchConversationSummaries({
+          rtdbBase: DB_ROOT,
+          currentUserId: financeUserId,
+          includeWithoutLastMessage: true,
+        });
+        const summariesByUserId = buildConversationSummaryMap(summaries);
 
-          if (found.length === 0) return { key: candidates[0], chat: {} };
-
-          found.sort(
-            (a, b) =>
-              Number(b?.chat?.lastMessage?.timeStamp || 0) -
-              Number(a?.chat?.lastMessage?.timeStamp || 0)
-          );
-
-          return found[0];
-        };
+        const findUserNode = (userId) => usersById[String(userId || "").trim()] || {};
 
         const buildList = (sourceMap, type) => {
           const rows = Object.entries(sourceMap || {})
@@ -185,8 +191,8 @@ function AllChat() {
               }
 
               const user = findUserNode(userId);
-              const { chat } = pickChatNode(userId);
-              const unread = Number(chat?.unread?.[financeUserId] || 0);
+              const summary = summariesByUserId[String(userId || "").trim()] || null;
+              const unread = Number(summary?.unreadForMe || 0);
 
               return {
                 id,
@@ -195,8 +201,8 @@ function AllChat() {
                 name: user.name || user.username || `${type} ${id}`,
                 profileImage: user.profileImage || "/default-profile.png",
                 lastSeen: user.lastSeen || null,
-                lastMsgTime: Number(chat?.lastMessage?.timeStamp || 0),
-                lastMsgText: chat?.lastMessage?.text || "",
+                lastMsgTime: Number(summary?.lastMessageTime || 0),
+                lastMsgText: summary?.lastMessageText || "",
                 unread,
               };
             })
@@ -583,7 +589,7 @@ function AllChat() {
             {u.unread > 99 ? "99+" : u.unread}
           </span>
         )}
-        <img src={u.profileImage} alt={u.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
+        <ProfileAvatar imageUrl={u.profileImage} name={u.name} size={40} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -633,7 +639,7 @@ function AllChat() {
         {selectedChatUser ? (
           <>
             <div style={threadHeaderStyle}>
-              <img src={selectedChatUser.profileImage} alt={selectedChatUser.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
+              <ProfileAvatar imageUrl={selectedChatUser.profileImage} name={selectedChatUser.name} size={40} />
               <div>
                 <strong style={{ color: "var(--text-primary)" }}>{selectedChatUser.name}</strong>
                 <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>

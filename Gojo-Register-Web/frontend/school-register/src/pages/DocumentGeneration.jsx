@@ -20,6 +20,9 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { buildUserLookupFromNode, loadSchoolInfoNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 const DOC_TYPES = {
   id_card: "Student ID Card",
@@ -51,6 +54,16 @@ const firstFilled = (...values) => {
     if (txt) return txt;
   }
   return "";
+};
+
+const getNameInitials = (value) => {
+  const parts = String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!parts.length) return "GS";
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
 };
 
 export default function DocumentGeneration() {
@@ -149,19 +162,18 @@ export default function DocumentGeneration() {
 
     setLoading(true);
     try {
-      const [schoolInfoRes, currentYearRes, studentsRes, usersRes, yearHistoryRes] = await Promise.all([
-        axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo/currentAcademicYear.json`).catch(() => ({ data: "" })),
-        axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/YearHistory.json`).catch(() => ({ data: {} })),
+      const [nextSchoolInfo, studentsData, usersNode, yearHistoryData] = await Promise.all([
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+        loadSchoolUsersNode({ rtdbBase: DB_URL }),
+        fetchCachedJson(`${DB_URL}/YearHistory.json`, { ttlMs: 60000 }).catch(() => ({})),
       ]);
 
-      setSchoolInfo(schoolInfoRes.data || {});
-      setCurrentAcademicYear(String(currentYearRes.data || "").trim());
-      setStudentsMap(studentsRes.data || {});
-      setUsersMap(usersRes.data || {});
-      setYearHistoryMap(yearHistoryRes.data || {});
+      setSchoolInfo(nextSchoolInfo || {});
+      setCurrentAcademicYear(String(nextSchoolInfo?.currentAcademicYear || "").trim());
+      setStudentsMap(studentsData || {});
+      setUsersMap(buildUserLookupFromNode(usersNode));
+      setYearHistoryMap(yearHistoryData || {});
       notify("", "");
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to load document generation data.");
@@ -388,230 +400,459 @@ export default function DocumentGeneration() {
     try {
       const doc = new jsPDF({ unit: "pt", format: "a4" });
       const issueDate = new Date().toLocaleDateString();
-      const title = DOC_TYPES[documentType];
+      const academicYearText = yearLabel(selectedStudent.academicYear || currentAcademicYear);
       const fileName = `${documentType}_${selectedStudent.studentId}_${Date.now()}.pdf`;
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const photoDataUrl = await loadImageAsDataUrl(selectedStudentPhotoUrl);
+      const studentDob = firstFilled(selectedStudent.row?.dob, selectedStudent.row?.basicStudentInformation?.dob, "N/A");
+      const schoolContact = schoolPhone || schoolEmail || "N/A";
+      const studentReference = `GOJO/${new Date().getFullYear()}/${String(selectedStudent.studentId || "0000").slice(-4).padStart(4, "0")}`;
+      const emergencyName = firstFilled(selectedStudent.row?.healthEmergency?.emergencyContactName, parentInfo?.[0]?.fullName, parentInfo?.[0]?.name, "N/A");
+      const emergencyPhone = firstFilled(selectedStudent.row?.healthEmergency?.emergencyPhone, parentInfo?.[0]?.phone, "N/A");
+      const bloodType = firstFilled(selectedStudent.row?.healthEmergency?.bloodType, "N/A");
+      const addressText = firstFilled(
+        selectedStudent.row?.addressInformation?.city,
+        selectedStudent.row?.addressInformation?.region,
+        schoolAddress,
+        "N/A"
+      );
+      const issue = new Date();
+      const validUntil = `${issue.getFullYear() + 1}-${String(issue.getMonth() + 1).padStart(2, "0")}-${String(issue.getDate()).padStart(2, "0")}`;
+      const parents = parentInfo.length ? parentInfo : [{}];
+      const records = academicRecords.length
+        ? academicRecords
+        : [{ year: selectedStudent.academicYear || currentAcademicYear, grade: selectedStudent.grade, section: selectedStudent.section, status: selectedStudent.status }];
+      const certNo = documentType === "enrollment_certificate"
+        ? (certificateNumber || await buildCertificateNumber())
+        : "";
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(16);
-      doc.text(schoolName, 40, 46);
-      doc.setFontSize(12);
-      doc.setFont("helvetica", "normal");
-      doc.text(`${title}`, 40, 68);
-      doc.text(`Issue Date: ${issueDate}`, 40, 86);
-      doc.text(`Registrar: ${admin.name}`, 40, 104);
+      if (documentType === "enrollment_certificate" && !certificateNumber) {
+        setCertificateNumber(certNo);
+      }
+
+      const colors = {
+        navy: [15, 23, 42],
+        blue: [0, 122, 251],
+        blueDeep: [0, 95, 204],
+        teal: [0, 182, 169],
+        slate: [51, 65, 85],
+        muted: [100, 116, 139],
+        line: [215, 231, 251],
+        soft: [241, 248, 255],
+        softAlt: [247, 251, 255],
+        white: [255, 255, 255],
+        greenSoft: [233, 251, 249],
+        amber: [146, 64, 14],
+        amberSoft: [255, 247, 237],
+      };
+
+      const setTextColor = (color) => doc.setTextColor(...color);
+      const setDrawColor = (color) => doc.setDrawColor(...color);
+      const setFillColor = (color) => doc.setFillColor(...color);
+      const drawFormalHeader = ({ title, reference, subject }) => {
+        setTextColor(colors.navy);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(22);
+        doc.text(schoolName, 40, 56);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10.5);
+        setTextColor(colors.slate);
+        const headerLines = [schoolAddress, schoolPhone, schoolEmail].filter(Boolean).join("   |   ");
+        if (headerLines) {
+          doc.text(doc.splitTextToSize(headerLines, pageWidth - 240), 40, 74);
+        }
+
+        setTextColor(colors.navy);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(15);
+        doc.text(title, pageWidth / 2, 108, { align: "center" });
+
+        setDrawColor(colors.navy);
+        doc.setLineWidth(1.2);
+        doc.line(40, 86, pageWidth - 40, 86);
+        doc.setDrawColor(colors.line);
+        doc.setLineWidth(1);
+        doc.line(40, 118, pageWidth - 40, 118);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10.5);
+        setTextColor(colors.slate);
+        doc.text(`Date: ${issueDate}`, pageWidth - 40, 56, { align: "right" });
+        doc.text(`Reference: ${reference}`, pageWidth - 40, 72, { align: "right" });
+        doc.text(`Prepared by: ${admin.name}`, pageWidth - 40, 88, { align: "right" });
+
+        if (subject) {
+          setTextColor(colors.navy);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(11.5);
+          doc.text(`Subject: ${subject}`, 40, 144);
+          return 164;
+        }
+
+        return 138;
+      };
+      const drawFieldRows = (startY, rows, options = {}) => {
+        const labelWidth = options.labelWidth || 130;
+        const rowHeight = options.rowHeight || 22;
+        const width = options.width || pageWidth - 80;
+        const x = options.x || 40;
+
+        rows.forEach(([label, value], index) => {
+          const rowY = startY + index * rowHeight;
+          if (index % 2 === 0) {
+            setFillColor(colors.softAlt);
+            doc.rect(x, rowY - 14, width, rowHeight, "F");
+          }
+          setTextColor(colors.muted);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(10);
+          doc.text(label, x + 12, rowY);
+          setTextColor(colors.slate);
+          doc.setFont("helvetica", "normal");
+          doc.text(String(value || "-"), x + labelWidth, rowY);
+        });
+
+        setDrawColor(colors.line);
+        doc.rect(x, startY - 20, width, rows.length * rowHeight + 6);
+        return startY + rows.length * rowHeight;
+      };
+      const drawSignatureLine = (x, y, width, label) => {
+        setDrawColor(colors.muted);
+        doc.line(x, y, x + width, y);
+        setTextColor(colors.muted);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.text(label, x, y + 14);
+      };
 
       if (documentType === "id_card") {
         const mmToPt = 2.834645669;
-        const standardIdWidthPt = 85.6 * mmToPt;
-        const standardIdHeightPt = 53.98 * mmToPt;
-        const idCardX = 40;
-        const idCardY = 130;
-        const idCardW = standardIdWidthPt;
-        const idCardH = standardIdHeightPt;
-        const cardGap = 16;
-        const backCardX = idCardX + idCardW + cardGap;
-        const backCardY = idCardY;
-        const headerH = 28;
-        const photoDataUrl = await loadImageAsDataUrl(selectedStudentPhotoUrl);
-        const issue = new Date();
-        const validUntil = `${issue.getFullYear() + 1}-${String(issue.getMonth() + 1).padStart(2, "0")}-${String(issue.getDate()).padStart(2, "0")}`;
-        const emergencyName = firstFilled(selectedStudent.row?.healthEmergency?.emergencyContactName, parentInfo?.[0]?.fullName, parentInfo?.[0]?.name, "N/A");
-        const emergencyPhone = firstFilled(selectedStudent.row?.healthEmergency?.emergencyPhone, parentInfo?.[0]?.phone, "N/A");
-        const bloodType = firstFilled(selectedStudent.row?.healthEmergency?.bloodType, "N/A");
-        const addressText = firstFilled(
-          selectedStudent.row?.addressInformation?.city,
-          selectedStudent.row?.addressInformation?.region,
-          schoolAddress,
-          "N/A"
-        );
+        const cardWidth = 85.6 * mmToPt;
+        const cardHeight = 53.98 * mmToPt;
+        const frontX = 36;
+        const frontY = 140;
+        const backX = frontX + cardWidth + 18;
+        const topBandHeight = 30;
+        const photoX = frontX + 14;
+        const photoY = frontY + 42;
+        const photoW = 44;
+        const photoH = 54;
+        const labelX = frontX + 66;
+        const valueX = frontX + 125;
 
-        doc.setDrawColor(15, 23, 42);
-        doc.setLineWidth(1);
-        doc.roundedRect(idCardX, idCardY, idCardW, idCardH, 8, 8);
+        [frontX, backX].forEach((cardX) => {
+          setFillColor(colors.white);
+          doc.roundedRect(cardX, frontY, cardWidth, cardHeight, 10, 10, "F");
+          setDrawColor(colors.navy);
+          doc.setLineWidth(1);
+          doc.roundedRect(cardX, frontY, cardWidth, cardHeight, 10, 10);
+        });
 
-        doc.setFillColor(30, 58, 138);
-        doc.roundedRect(idCardX, idCardY, idCardW, headerH, 8, 8, "F");
+        setFillColor(colors.navy);
+        doc.roundedRect(frontX, frontY, cardWidth, topBandHeight, 10, 10, "F");
+        setTextColor(colors.white);
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        doc.setTextColor(255, 255, 255);
-        doc.text(schoolName, idCardX + 10, idCardY + 14);
-        doc.setFontSize(7.5);
-        doc.text("OFFICIAL STUDENT IDENTIFICATION CARD", idCardX + 10, idCardY + 24);
+        doc.setFontSize(7.2);
+        doc.text(String(schoolName).toUpperCase(), frontX + 12, frontY + 13);
+        doc.setFontSize(8.3);
+        doc.text("STUDENT IDENTITY CARD", frontX + 12, frontY + 24);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.text(studentReference, frontX + cardWidth - 12, frontY + 18, { align: "right" });
 
-        doc.setTextColor(15, 23, 42);
-        doc.setDrawColor(203, 213, 225);
-        doc.rect(idCardX + 10, idCardY + 36, 50, 62);
+        setFillColor(colors.softAlt);
+        doc.roundedRect(photoX, photoY, photoW, photoH, 7, 7, "F");
+        setDrawColor(colors.line);
+        doc.roundedRect(photoX, photoY, photoW, photoH, 7, 7);
         if (photoDataUrl) {
           const format = photoDataUrl.includes("image/png") ? "PNG" : "JPEG";
-          doc.addImage(photoDataUrl, format, idCardX + 11.5, idCardY + 37.5, 47, 59);
+          doc.addImage(photoDataUrl, format, photoX + 1.5, photoY + 1.5, photoW - 3, photoH - 3);
         } else {
-          doc.setFontSize(7);
-          doc.text("PHOTO", idCardX + 23, idCardY + 70);
+          setTextColor(colors.muted);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(12);
+          doc.text(getNameInitials(selectedStudent.name), photoX + photoW / 2, photoY + 24, { align: "center" });
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(6.2);
+          doc.text("PHOTO", photoX + photoW / 2, photoY + 37, { align: "center" });
         }
 
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(8);
-        doc.text(`Name: ${selectedStudent.name}`, idCardX + 66, idCardY + 46);
-        doc.setFont("helvetica", "normal");
-        doc.text(`Student ID: ${selectedStudent.studentId}`, idCardX + 66, idCardY + 58);
-        doc.text(`Grade/Section: ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`, idCardX + 66, idCardY + 70);
-        doc.text(`Academic Year: ${yearLabel(selectedStudent.academicYear || currentAcademicYear)}`, idCardX + 66, idCardY + 82);
-        doc.text(`Status: ${selectedStudent.status}`, idCardX + 66, idCardY + 94);
-
-        doc.setDrawColor(226, 232, 240);
-        doc.line(idCardX + 10, idCardY + 108, idCardX + idCardW - 10, idCardY + 108);
-        doc.setFontSize(7);
-        doc.text(`Issue: ${issueDate}`, idCardX + 10, idCardY + 118);
-        doc.text(`Valid: ${validUntil}`, idCardX + 120, idCardY + 118);
-        doc.text(`Contact: ${schoolPhone || schoolEmail || "N/A"}`, idCardX + 10, idCardY + 128);
-
-        doc.setDrawColor(203, 213, 225);
-        doc.line(idCardX + 10, idCardY + 141, idCardX + 96, idCardY + 141);
-        doc.line(idCardX + 136, idCardY + 141, idCardX + 232, idCardY + 141);
-        doc.setFontSize(6.5);
-        doc.text("Registrar Sign", idCardX + 10, idCardY + 149);
-        doc.text("School Stamp", idCardX + 136, idCardY + 149);
-
-        doc.setDrawColor(15, 23, 42);
-        doc.setLineWidth(1);
-        doc.roundedRect(backCardX, backCardY, idCardW, idCardH, 8, 8);
-        doc.setFillColor(30, 58, 138);
-        doc.roundedRect(backCardX, backCardY, idCardW, headerH, 8, 8, "F");
-        doc.setTextColor(255, 255, 255);
+        setTextColor(colors.navy);
         doc.setFont("helvetica", "bold");
         doc.setFontSize(10);
-        doc.text(schoolName, backCardX + 10, backCardY + 14);
-        doc.setFontSize(7.5);
-        doc.text("OFFICIAL STUDENT IDENTIFICATION CARD - BACK", backCardX + 10, backCardY + 24);
+        doc.text(selectedStudent.name, labelX, frontY + 46);
 
-        doc.setTextColor(15, 23, 42);
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(8);
-        doc.text(`Emergency Contact: ${emergencyName}`, backCardX + 10, backCardY + 44);
-        doc.text(`Emergency Phone: ${emergencyPhone}`, backCardX + 10, backCardY + 56);
-        doc.text(`Blood Type: ${bloodType}`, backCardX + 10, backCardY + 68);
-        doc.text(`Address: ${addressText}`, backCardX + 10, backCardY + 80);
+        doc.setFontSize(6.7);
+        doc.text("ID NO.", labelX, frontY + 61);
+        doc.text("GRADE", labelX, frontY + 74);
+        doc.text("SECTION", labelX, frontY + 87);
+        doc.text("ACADEMIC YEAR", labelX, frontY + 100);
 
-        doc.setDrawColor(226, 232, 240);
-        doc.line(backCardX + 10, backCardY + 92, backCardX + idCardW - 10, backCardY + 92);
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(7);
-        doc.text("NOTICE", backCardX + 10, backCardY + 104);
+        doc.text(String(selectedStudent.studentId), valueX, frontY + 61);
+        doc.text(String(selectedStudent.grade || "-"), valueX, frontY + 74);
+        doc.text(String(selectedStudent.section || "-"), valueX, frontY + 87);
+        doc.text(academicYearText, valueX, frontY + 100);
+
+        setDrawColor(colors.line);
+        doc.line(frontX + 12, frontY + 108, frontX + cardWidth - 12, frontY + 108);
+        setTextColor(colors.slate);
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(6.8);
-        const noticeLines = doc.splitTextToSize("If found, please return this card to the school administration.", idCardW - 20);
-        doc.text(noticeLines, backCardX + 10, backCardY + 114);
-        doc.text(`School: ${schoolName}`, backCardX + 10, backCardY + 136);
-        doc.text(`Contact: ${schoolPhone || schoolEmail || "N/A"}`, backCardX + 10, backCardY + 146);
+        doc.setFontSize(6.2);
+        doc.text(`Issued: ${issueDate}`, frontX + 12, frontY + 119);
+        doc.text(`Valid until: ${validUntil}`, frontX + 12, frontY + 128);
+        doc.text(`Contact: ${schoolContact}`, frontX + 12, frontY + 137);
+
+        setFillColor(colors.navy);
+        doc.roundedRect(backX, frontY, cardWidth, topBandHeight, 10, 10, "F");
+        setTextColor(colors.white);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.2);
+        doc.text(String(schoolName).toUpperCase(), backX + 12, frontY + 13);
+        doc.setFontSize(8.3);
+        doc.text("HOLDER INFORMATION", backX + 12, frontY + 24);
+
+        setTextColor(colors.navy);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.7);
+        doc.text("EMERGENCY CONTACT", backX + 12, frontY + 48);
+        doc.text("PHONE", backX + 12, frontY + 62);
+        doc.text("BLOOD TYPE", backX + 12, frontY + 76);
+        doc.text("ADDRESS", backX + 12, frontY + 90);
+
+        doc.setFont("helvetica", "bold");
+        doc.text(String(emergencyName), backX + 88, frontY + 48);
+        doc.text(String(emergencyPhone), backX + 88, frontY + 62);
+        doc.text(String(bloodType), backX + 88, frontY + 76);
+        doc.text(doc.splitTextToSize(addressText, cardWidth - 100), backX + 88, frontY + 90);
+
+        setDrawColor(colors.line);
+        doc.line(backX + 12, frontY + 108, backX + cardWidth - 12, frontY + 108);
+        setTextColor(colors.slate);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(6.2);
+        doc.text("If found, return to the school administration office.", backX + 12, frontY + 119);
+        doc.setFont("helvetica", "normal");
+        doc.text(schoolContact, backX + 12, frontY + 128);
+        doc.text(studentReference, backX + cardWidth - 12, frontY + 128, { align: "right" });
       }
 
       if (documentType === "enrollment_letter") {
-        doc.setFontSize(12);
-        const lines = [
-          "This is to certify that",
-          `${selectedStudent.name}`,
-          `Student ID: ${selectedStudent.studentId}`,
-          `is officially enrolled in Grade ${selectedStudent.grade}${selectedStudent.section || ""}`,
-          `for Academic Year ${yearLabel(selectedStudent.academicYear || currentAcademicYear)}`,
-          `at ${schoolName}.`,
-        ];
-        let y = 150;
-        lines.forEach((line) => {
-          doc.text(line, 40, y);
-          y += 24;
+        const startY = drawFormalHeader({
+          title: "ENROLLMENT LETTER",
+          reference: studentReference,
+          subject: `Confirmation of enrollment for ${selectedStudent.name}`,
         });
-        doc.text(`Registrar Signature: ${admin.name}`, 40, y + 30);
+
+        doc.setTextColor(...colors.slate);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(12);
+        doc.text("To whom it may concern,", 40, startY + 18);
+
+        const paragraph = doc.splitTextToSize(
+          `This is to formally certify that ${selectedStudent.name}, identified by student ID ${selectedStudent.studentId}, is a currently enrolled student of ${schoolName}. According to the official register office record, the student is assigned to Grade ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""} for the ${academicYearText} academic year.`,
+          pageWidth - 80
+        );
+        doc.text(paragraph, 40, startY + 46);
+
+        const detailsY = startY + 46 + paragraph.length * 16 + 24;
+        drawFieldRows(detailsY + 20, [
+          ["Student Name", selectedStudent.name],
+          ["Student ID", selectedStudent.studentId],
+          ["Grade and Section", `${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`],
+          ["Academic Year", academicYearText],
+          ["Status", selectedStudent.status],
+        ]);
+
+        const closingY = detailsY + 148;
+        const closing = doc.splitTextToSize(
+          "This letter is issued upon request for official educational and administrative use. All information herein is based on the current school register and is valid as of the date of issue.",
+          pageWidth - 80
+        );
+        doc.text(closing, 40, closingY);
+
+        const signY = closingY + closing.length * 16 + 56;
+        drawSignatureLine(44, signY, 200, `Registrar: ${admin.name}`);
+        drawSignatureLine(pageWidth - 244, signY, 200, "School stamp");
       }
 
       if (documentType === "transfer_letter") {
+        const startY = drawFormalHeader({
+          title: "TRANSFER LETTER",
+          reference: studentReference,
+          subject: `Transfer clearance for ${selectedStudent.name}`,
+        });
+
+        doc.setTextColor(...colors.slate);
+        doc.setFont("helvetica", "normal");
         doc.setFontSize(12);
-        doc.text(`Student Name: ${selectedStudent.name}`, 40, 150);
-        doc.text(`Student ID: ${selectedStudent.studentId}`, 40, 172);
-        doc.text(`Date of Birth: ${firstFilled(selectedStudent.row?.dob, selectedStudent.row?.basicStudentInformation?.dob, "N/A")}`, 40, 194);
-        doc.text(`Grade: ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`, 40, 216);
-        doc.text(`Years Studied: ${academicRecords.length || 1}`, 40, 238);
-        doc.text(`Reason for Transfer: ${transferReason}`, 40, 260);
-        doc.text("Academic Performance Summary:", 40, 290);
+        doc.text("To whom it may concern,", 40, startY + 18);
+
+        const intro = doc.splitTextToSize(
+          `This letter confirms that ${selectedStudent.name}, student ID ${selectedStudent.studentId}, has been processed for transfer from ${schoolName}. The details below summarize the student's registered academic status and the stated reason for transfer.`,
+          pageWidth - 80
+        );
+        doc.text(intro, 40, startY + 46);
 
         autoTable(doc, {
-          startY: 305,
-          head: [["Academic Year", "Grade", "Section", "Status"]],
-          body: academicRecords.length
-            ? academicRecords.map((r) => [yearLabel(r.year), r.grade || "-", r.section || "-", r.status || "-"])
-            : [[yearLabel(selectedStudent.academicYear || currentAcademicYear), selectedStudent.grade || "-", selectedStudent.section || "-", selectedStudent.status || "-"]],
-          styles: { fontSize: 10 },
+          startY: startY + 74,
+          theme: "grid",
+          head: [["Student", "ID", "Date of Birth", "Grade", "Academic Year"]],
+          body: [[
+            selectedStudent.name,
+            selectedStudent.studentId,
+            studentDob,
+            `${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`,
+            academicYearText,
+          ]],
+          headStyles: { fillColor: colors.navy, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10 },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: 40, right: 40 },
         });
+
+        const reasonY = (doc.lastAutoTable?.finalY || startY) + 18;
+        setTextColor(colors.navy);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text("Transfer Reason", 40, reasonY + 4);
+        setDrawColor(colors.line);
+        doc.rect(40, reasonY + 12, pageWidth - 80, 64);
+        setTextColor(colors.slate);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11.5);
+        doc.text(doc.splitTextToSize(transferReason || "No transfer reason recorded.", pageWidth - 104), 52, reasonY + 34);
+
+        autoTable(doc, {
+          startY: reasonY + 94,
+          theme: "grid",
+          head: [["Academic Year", "Grade", "Section", "Status"]],
+          body: records.map((r) => [yearLabel(r.year), r.grade || "-", r.section || "-", r.status || "-"]),
+          headStyles: { fillColor: colors.blue, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10 },
+          alternateRowStyles: { fillColor: colors.softAlt },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: 40, right: 40 },
+        });
+
+        const noteY = (doc.lastAutoTable?.finalY || reasonY + 94) + 28;
+        setTextColor(colors.slate);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        doc.text(doc.splitTextToSize(`This transfer letter is prepared from the official academic and administrative records maintained by ${schoolName} and is issued for formal reference purposes.`, pageWidth - 88), 40, noteY);
+        drawSignatureLine(40, noteY + 54, 200, "Registrar authorization");
       }
 
       if (documentType === "profile_report") {
-        doc.text(`Student: ${selectedStudent.name}`, 40, 146);
-        doc.text(`Student ID: ${selectedStudent.studentId}`, 40, 164);
-        doc.text(`Grade/Section: ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`, 40, 182);
-        doc.text(`Status: ${selectedStudent.status}`, 40, 200);
-
-        autoTable(doc, {
-          startY: 220,
-          head: [["Parent", "Relationship", "Phone", "Email"]],
-          body: parentInfo.length
-            ? parentInfo.map((p) => [
-              firstFilled(p?.fullName, p?.name, "Parent"),
-              firstFilled(p?.relationship, "Guardian"),
-              firstFilled(p?.phone, "-"),
-              firstFilled(p?.email, "-"),
-            ])
-            : [["-", "-", "-", "-"]],
-          styles: { fontSize: 10 },
-          headStyles: { fillColor: [30, 58, 138] },
+        const startY = drawFormalHeader({
+          title: "STUDENT PROFILE REPORT",
+          reference: studentReference,
+          subject: `Student record summary for ${selectedStudent.name}`,
         });
 
-        const afterParents = (doc.lastAutoTable?.finalY || 240) + 24;
-        doc.text(`Attendance Summary - Present: ${attendanceSummary.present} | Absent: ${attendanceSummary.absent} | Late: ${attendanceSummary.late}`, 40, afterParents);
+        const infoRows = [
+          ["Student Name", selectedStudent.name],
+          ["Student ID", selectedStudent.studentId],
+          ["Grade and Section", `${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`],
+          ["Academic Year", academicYearText],
+          ["Date of Birth", studentDob],
+          ["Status", selectedStudent.status],
+          ["Address", addressText],
+          ["Emergency Contact", `${emergencyName} (${emergencyPhone})`],
+        ];
+        drawFieldRows(startY + 20, infoRows, { rowHeight: 20 });
 
         autoTable(doc, {
-          startY: afterParents + 14,
+          startY: startY + 208,
+          theme: "grid",
+          head: [["Attendance", "Count"]],
+          body: [["Present", attendanceSummary.present], ["Absent", attendanceSummary.absent], ["Late", attendanceSummary.late], ["Total", attendanceSummary.total]],
+          headStyles: { fillColor: colors.navy, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10 },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: 40, right: pageWidth / 2 + 10 },
+        });
+
+        autoTable(doc, {
+          startY: startY + 208,
+          theme: "grid",
+          head: [["Parent", "Relationship", "Phone", "Email"]],
+          body: parents.map((p) => [
+            firstFilled(p?.fullName, p?.name, "-"),
+            firstFilled(p?.relationship, "-"),
+            firstFilled(p?.phone, "-"),
+            firstFilled(p?.email, "-"),
+          ]),
+          headStyles: { fillColor: colors.blue, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10 },
+          alternateRowStyles: { fillColor: colors.softAlt },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: pageWidth / 2 + 20, right: 40 },
+        });
+
+        autoTable(doc, {
+          startY: Math.max(doc.lastAutoTable?.finalY || 0, startY + 318) + 20,
+          theme: "grid",
           head: [["Academic Year", "Grade", "Section", "Status"]],
-          body: academicRecords.length
-            ? academicRecords.map((r) => [yearLabel(r.year), r.grade || "-", r.section || "-", r.status || "-"])
-            : [["-", "-", "-", "-"]],
-          styles: { fontSize: 10 },
-          headStyles: { fillColor: [22, 101, 52] },
+          body: records.map((r) => [yearLabel(r.year), r.grade || "-", r.section || "-", r.status || "-"]),
+          headStyles: { fillColor: colors.teal, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10 },
+          alternateRowStyles: { fillColor: colors.softAlt },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: 40, right: 40 },
         });
       }
 
       if (documentType === "enrollment_certificate") {
-        const certNo = certificateNumber || await buildCertificateNumber();
-        if (!certificateNumber) setCertificateNumber(certNo);
-
-        doc.setDrawColor(15, 23, 42);
+        setDrawColor(colors.navy);
         doc.setLineWidth(1.5);
-        doc.rect(30, 120, 535, 650);
+        doc.rect(34, 34, pageWidth - 68, pageHeight - 68);
+        setDrawColor(colors.line);
+        doc.rect(46, 46, pageWidth - 92, pageHeight - 92);
+
+        setTextColor(colors.navy);
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(18);
-        doc.text("CERTIFICATE OF ENROLLMENT", 170, 175);
+        doc.setFontSize(11);
+        doc.text("OFFICIAL SCHOOL CERTIFICATE", pageWidth / 2, 82, { align: "center" });
+        doc.setFontSize(28);
+        doc.text(schoolName, pageWidth / 2, 122, { align: "center" });
+        doc.setFontSize(22);
+        doc.text("CERTIFICATE OF ENROLLMENT", pageWidth / 2, 156, { align: "center" });
 
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(12);
-        doc.text(`Certificate No: ${certNo}`, 40, 210);
-        doc.text(`Issue Date: ${issueDate}`, 420, 210);
+        doc.setFontSize(11.5);
+        doc.text(`Certificate No. ${certNo}`, pageWidth / 2, 188, { align: "center" });
+        doc.text(`Issued on ${issueDate}`, pageWidth / 2, 206, { align: "center" });
 
-        const textLines = [
-          "This is to certify that",
-          selectedStudent.name,
-          `Student ID: ${selectedStudent.studentId}`,
-          `is officially enrolled in Grade ${selectedStudent.grade}${selectedStudent.section || ""}`,
-          `for Academic Year ${yearLabel(selectedStudent.academicYear || currentAcademicYear)}`,
-          `at ${schoolName}.`,
-        ];
+        setTextColor(colors.slate);
+        doc.setFontSize(14);
+        const certificateLines = doc.splitTextToSize(
+          `This is to certify that ${selectedStudent.name}, bearing student identification number ${selectedStudent.studentId}, is officially enrolled at ${schoolName} in Grade ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""} for the ${academicYearText} academic year. This certificate is issued by the school register office for official use and verification.`,
+          430
+        );
+        doc.text(certificateLines, pageWidth / 2, 286, { align: "center" });
 
-        let y = 290;
-        textLines.forEach((line) => {
-          doc.text(line, 60, y);
-          y += 30;
+        autoTable(doc, {
+          startY: 390,
+          theme: "grid",
+          head: [["Student", "Student ID", "Academic Year", "Reference"]],
+          body: [[selectedStudent.name, selectedStudent.studentId, academicYearText, studentReference]],
+          headStyles: { fillColor: colors.navy, textColor: colors.white, fontStyle: "bold", fontSize: 10 },
+          bodyStyles: { textColor: colors.slate, fontSize: 10, halign: "center" },
+          styles: { lineColor: colors.line, lineWidth: 1 },
+          margin: { left: 92, right: 92 },
         });
 
-        doc.text("Registrar Signature: _____________________", 60, 560);
-        doc.text(`Name: ${admin.name}`, 60, 585);
-        doc.text("School Stamp Area", 420, 585);
+        drawSignatureLine(88, 620, 180, `Registrar: ${admin.name}`);
+        setDrawColor(colors.line);
+        doc.rect(pageWidth - 250, 572, 150, 70);
+        setTextColor(colors.muted);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        doc.text("School stamp area", pageWidth - 175, 612, { align: "center" });
       }
 
       doc.save(fileName);
@@ -657,77 +898,206 @@ export default function DocumentGeneration() {
     if (!selectedStudent) return null;
 
     const academicYearText = yearLabel(selectedStudent.academicYear || currentAcademicYear);
+    const issueDateText = new Date().toLocaleDateString();
+    const issue = new Date();
+    const validUntil = `${issue.getFullYear() + 1}-${String(issue.getMonth() + 1).padStart(2, "0")}-${String(issue.getDate()).padStart(2, "0")}`;
+    const studentDob = firstFilled(selectedStudent.row?.dob, selectedStudent.row?.basicStudentInformation?.dob, "N/A");
+    const emergencyName = firstFilled(selectedStudent.row?.healthEmergency?.emergencyContactName, parentInfo?.[0]?.fullName, parentInfo?.[0]?.name, "N/A");
+    const emergencyPhone = firstFilled(selectedStudent.row?.healthEmergency?.emergencyPhone, parentInfo?.[0]?.phone, "N/A");
+    const bloodType = firstFilled(selectedStudent.row?.healthEmergency?.bloodType, "N/A");
+    const addressText = firstFilled(
+      selectedStudent.row?.addressInformation?.city,
+      selectedStudent.row?.addressInformation?.region,
+      schoolAddress,
+      "N/A"
+    );
+    const studentReference = `GOJO/${new Date().getFullYear()}/${String(selectedStudent.studentId || "0000").slice(-4).padStart(4, "0")}`;
+    const previewPaperStyle = {
+      background: "#ffffff",
+      border: "1px solid #cbd5e1",
+      borderRadius: 10,
+      padding: 32,
+      boxShadow: "0 12px 28px rgba(15, 23, 42, 0.08)",
+      color: "#0f172a",
+    };
+    const previewHeadingStyle = {
+      fontSize: 11,
+      fontWeight: 800,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      color: "#0f172a",
+      marginBottom: 10,
+    };
+    const tableHeaderCellStyle = {
+      border: "1px solid #d7e7fb",
+      padding: "8px 10px",
+      textAlign: "left",
+      fontSize: 11,
+      fontWeight: 800,
+      color: "#0f172a",
+      background: "#F1F8FF",
+    };
+    const tableCellStyle = {
+      border: "1px solid #d7e7fb",
+      padding: "8px 10px",
+      textAlign: "left",
+      fontSize: 11,
+      color: "#334155",
+      verticalAlign: "top",
+    };
+    const summaryCardStyle = {
+      border: "1px solid #cbd5e1",
+      borderRadius: 6,
+      padding: "12px 14px",
+      background: "#ffffff",
+    };
+    const letterHeaderStyle = {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 18,
+      flexWrap: "wrap",
+      paddingBottom: 14,
+      borderBottom: "2px solid #0f172a",
+      marginBottom: 18,
+    };
+    const letterMetaStyle = {
+      minWidth: 240,
+      fontSize: 12,
+      color: "#475569",
+      lineHeight: 1.7,
+      textAlign: "right",
+    };
+    const letterInfoRowStyle = {
+      display: "grid",
+      gridTemplateColumns: "180px 1fr",
+      borderBottom: "1px solid #e2e8f0",
+    };
+    const letterLabelStyle = {
+      padding: "10px 12px",
+      fontSize: 12,
+      fontWeight: 800,
+      color: "#475569",
+      background: "#f8fafc",
+    };
+    const letterValueStyle = {
+      padding: "10px 12px",
+      fontSize: 12,
+      color: "#0f172a",
+    };
 
     if (documentType === "id_card") {
-      const previewCardWidth = 390;
+      const previewCardWidth = 400;
       const previewCardHeight = Math.round((previewCardWidth * 53.98) / 85.6);
-      const issue = new Date();
-      const validUntil = `${issue.getFullYear() + 1}-${String(issue.getMonth() + 1).padStart(2, "0")}-${String(issue.getDate()).padStart(2, "0")}`;
-      const emergencyName = firstFilled(selectedStudent.row?.healthEmergency?.emergencyContactName, parentInfo?.[0]?.fullName, parentInfo?.[0]?.name, "N/A");
-      const emergencyPhone = firstFilled(selectedStudent.row?.healthEmergency?.emergencyPhone, parentInfo?.[0]?.phone, "N/A");
-      const bloodType = firstFilled(selectedStudent.row?.healthEmergency?.bloodType, "N/A");
-      const addressText = firstFilled(
-        selectedStudent.row?.addressInformation?.city,
-        selectedStudent.row?.addressInformation?.region,
-        schoolAddress,
-        "N/A"
-      );
+
       return (
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "stretch" }}>
-          <div className="box" style={{ border: "1px solid #0f172a", borderRadius: 12, overflow: "hidden", background: "#fff", flex: "0 0 390px", width: previewCardWidth, height: previewCardHeight, display: "flex", flexDirection: "column" }}>
-            <div style={{ background: "linear-gradient(135deg, #1e3a8a, #2563eb)", color: "#fff", padding: "10px 12px" }}>
-              <div style={{ fontSize: 14, fontWeight: 800 }}>{schoolName}</div>
-              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.95 }}>OFFICIAL STUDENT IDENTIFICATION CARD</div>
-            </div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "stretch" }}>
+          <div style={{ width: previewCardWidth, height: previewCardHeight, borderRadius: 16, overflow: "hidden", background: "#ffffff", border: "1px solid #0f172a", boxShadow: "0 10px 16px rgba(15, 23, 42, 0.08)", position: "relative" }}>
+            <div style={{ position: "absolute", inset: "0 0 auto 0", height: 34, background: "#0f172a" }} />
 
-            <div style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 10, padding: 12 }}>
-              <div style={{ border: "1px solid #cbd5e1", borderRadius: 8, height: 96, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 11 }}>
+            <div style={{ position: "relative", height: "100%", padding: 14, display: "grid", gridTemplateColumns: "68px 1fr", gap: 12 }}>
+              <div style={{ marginTop: 30, width: 68, height: 84, borderRadius: 8, overflow: "hidden", border: "1px solid #cbd5e1", background: "#f8fafc", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b", fontSize: 16, fontWeight: 800 }}>
                 {selectedStudentPhotoUrl ? (
-                  <img
-                    src={selectedStudentPhotoUrl}
-                    alt={`${selectedStudent.name} profile`}
-                    style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 8 }}
-                  />
-                ) : (
-                  "PHOTO"
-                )}
+                  <img src={selectedStudentPhotoUrl} alt={`${selectedStudent.name} profile`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : getNameInitials(selectedStudent.name)}
               </div>
-              <div style={{ fontSize: 12, color: "#0f172a", display: "grid", gap: 4 }}>
-                <div><strong>Name:</strong> {selectedStudent.name}</div>
-                <div><strong>Student ID:</strong> {selectedStudent.studentId}</div>
-                <div><strong>Grade/Section:</strong> {selectedStudent.grade}{selectedStudent.section ? ` ${selectedStudent.section}` : ""}</div>
-                <div><strong>Academic Year:</strong> {academicYearText}</div>
-                <div><strong>Status:</strong> {selectedStudent.status}</div>
-              </div>
-            </div>
 
-            <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", fontSize: 11, color: "#475569", display: "grid", gap: 4 }}>
-              <div><strong>Issue Date:</strong> {new Date().toLocaleDateString()} | <strong>Valid Until:</strong> {validUntil}</div>
-              <div><strong>School Contact:</strong> {schoolPhone || schoolEmail || "N/A"}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 8 }}>
-                <div style={{ borderTop: "1px solid #94a3b8", paddingTop: 4 }}>Registrar Sign</div>
-                <div style={{ borderTop: "1px solid #94a3b8", paddingTop: 4 }}>School Stamp</div>
+              <div style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 7.8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#ffffff" }}>Gojo Education Authority</div>
+                    <div style={{ marginTop: 2, fontSize: 8.4, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#ffffff" }}>Student Identity Card</div>
+                    <div style={{ marginTop: 12, fontSize: 18, fontWeight: 900, color: "#0f172a", letterSpacing: "-0.03em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{schoolName}</div>
+                  </div>
+                  <div style={{ padding: "4px 8px", borderRadius: 8, background: "#f8fafc", border: "1px solid #cbd5e1", color: "#334155", fontSize: 8.2, fontWeight: 800 }}>
+                    {studentReference}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "grid", gap: 7 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Name</div>
+                    <div style={{ fontSize: 13.5, color: "#0f172a", fontWeight: 800, lineHeight: 1.2 }}>{selectedStudent.name}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>ID No.</div>
+                    <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{selectedStudent.studentId}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Grade</div>
+                    <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{selectedStudent.grade}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Section</div>
+                    <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{selectedStudent.section || "-"}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Year</div>
+                    <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{academicYearText}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr", gap: 8, alignItems: "baseline" }}>
+                    <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Valid</div>
+                    <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>{validUntil}</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: "auto", borderTop: "1px solid #e2e8f0", paddingTop: 7, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ fontSize: 8.3, color: "#64748b", lineHeight: 1.55 }}>
+                    Issued: {issueDateText}
+                    <br />
+                    Contact: {schoolPhone || schoolEmail || "N/A"}
+                  </div>
+                  <div style={{ fontSize: 8.3, color: "#334155", fontWeight: 800, textTransform: "uppercase" }}>
+                    Active
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="box" style={{ border: "1px solid #0f172a", borderRadius: 12, overflow: "hidden", background: "#fff", flex: "0 0 390px", width: previewCardWidth, height: previewCardHeight, display: "flex", flexDirection: "column" }}>
-            <div style={{ background: "linear-gradient(135deg, #1e3a8a, #2563eb)", color: "#fff", padding: "10px 12px" }}>
-              <div style={{ fontSize: 14, fontWeight: 800 }}>{schoolName}</div>
-              <div style={{ fontSize: 11, marginTop: 2, opacity: 0.95 }}>OFFICIAL STUDENT IDENTIFICATION CARD - BACK</div>
-            </div>
+          <div style={{ width: previewCardWidth, height: previewCardHeight, borderRadius: 16, overflow: "hidden", background: "#ffffff", border: "1px solid #0f172a", boxShadow: "0 10px 16px rgba(15, 23, 42, 0.08)", position: "relative" }}>
+            <div style={{ position: "absolute", inset: "0 0 auto 0", height: 34, background: "#0f172a" }} />
 
-            <div style={{ padding: 12, color: "#0f172a", fontSize: 12, display: "grid", gap: 7 }}>
-              <div><strong>Emergency Contact:</strong> {emergencyName}</div>
-              <div><strong>Emergency Phone:</strong> {emergencyPhone}</div>
-              <div><strong>Blood Type:</strong> {bloodType}</div>
-              <div><strong>Address:</strong> {addressText}</div>
-            </div>
+            <div style={{ position: "relative", height: "100%", padding: 16, display: "flex", flexDirection: "column" }}>
+              <div style={{ marginTop: 8, fontSize: 7.8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#ffffff" }}>Gojo Education Authority</div>
+              <div style={{ marginTop: 2, fontSize: 8.4, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#ffffff" }}>Holder Information</div>
+              <div style={{ marginTop: 12, fontSize: 18, fontWeight: 900, color: "#0f172a", letterSpacing: "-0.03em" }}>{schoolName}</div>
 
-            <div style={{ borderTop: "1px solid #e2e8f0", padding: "10px 12px", fontSize: 11, color: "#475569", display: "grid", gap: 4 }}>
-              <div><strong>NOTICE:</strong> If found, please return this card to the school administration.</div>
-              <div><strong>School:</strong> {schoolName}</div>
-              <div><strong>Contact:</strong> {schoolPhone || schoolEmail || "N/A"}</div>
+              <div style={{ marginTop: 12, display: "grid", gap: 7 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "76px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Emergency</div>
+                  <div style={{ fontSize: 12.8, fontWeight: 800, color: "#0f172a", lineHeight: 1.3 }}>{emergencyName}</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "76px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Phone</div>
+                  <div style={{ fontSize: 12.8, fontWeight: 800, color: "#0f172a" }}>{emergencyPhone}</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "76px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Blood Type</div>
+                  <div style={{ fontSize: 12.8, fontWeight: 800, color: "#0f172a" }}>{bloodType}</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "76px 1fr", gap: 8, alignItems: "baseline", paddingBottom: 5, borderBottom: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 8, color: "#64748b", fontWeight: 800, textTransform: "uppercase" }}>Address</div>
+                  <div style={{ fontSize: 11.8, fontWeight: 700, color: "#0f172a", lineHeight: 1.35 }}>{addressText}</div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10, borderTop: "1px solid #e2e8f0", paddingTop: 8 }}>
+                <div style={{ fontSize: 8, fontWeight: 800, color: "#334155", textTransform: "uppercase", letterSpacing: "0.05em" }}>Return Notice</div>
+                <div style={{ marginTop: 5, fontSize: 10.2, color: "#475569", lineHeight: 1.55 }}>
+                  If found, please return this card to the school administration office. This card remains the property of {schoolName}.
+                </div>
+              </div>
+
+              <div style={{ marginTop: "auto", display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-end", borderTop: "1px solid #e2e8f0", paddingTop: 8 }}>
+                <div style={{ fontSize: 8.3, color: "#64748b", lineHeight: 1.55 }}>
+                  {schoolPhone || schoolEmail || "Contact not provided"}
+                  <br />
+                  Ref {studentReference}
+                </div>
+                <div style={{ width: 88, borderTop: "1px solid #94a3b8", paddingTop: 4, fontSize: 8.5, color: "#64748b" }}>
+                  School stamp
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -736,97 +1106,315 @@ export default function DocumentGeneration() {
 
     if (documentType === "enrollment_letter") {
       return (
-        <div className="box" style={{ border: "1px solid #cbd5e1", borderRadius: 12, padding: 14 }}>
-          <h3 style={{ margin: "0 0 8px" }}>{schoolName}</h3>
-          <h4 style={{ margin: "0 0 12px" }}>Enrollment Letter</h4>
-          <p>This is to certify that <strong>{selectedStudent.name}</strong> (Student ID: <strong>{selectedStudent.studentId}</strong>) is officially enrolled in Grade <strong>{selectedStudent.grade}{selectedStudent.section || ""}</strong> for Academic Year <strong>{academicYearText}</strong> at <strong>{schoolName}</strong>.</p>
-          <p style={{ marginTop: 16 }}>Registrar: {admin.name}</p>
+        <div style={{ ...previewPaperStyle, maxWidth: 840, margin: "0 auto" }}>
+          <div style={letterHeaderStyle}>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: "-0.04em", color: "#0f172a" }}>{schoolName}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, maxWidth: 460, lineHeight: 1.6 }}>
+                {[schoolAddress, schoolPhone, schoolEmail].filter(Boolean).join(" | ") || "School contact information"}
+              </div>
+              <div style={{ marginTop: 18, fontSize: 18, fontWeight: 800, letterSpacing: "0.06em", color: "#0f172a" }}>ENROLLMENT LETTER</div>
+            </div>
+            <div style={letterMetaStyle}>
+              <div>Date: {issueDateText}</div>
+              <div>Reference: {studentReference}</div>
+              <div>Prepared by: {admin.name}</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.8 }}>
+            <div style={{ fontWeight: 700, color: "#0f172a", marginBottom: 12 }}>Subject: Confirmation of enrollment for {selectedStudent.name}</div>
+            <div>To whom it may concern,</div>
+            <div style={{ marginTop: 14 }}>
+              This is to formally certify that <strong style={{ color: "#0f172a" }}>{selectedStudent.name}</strong>, identified by student ID <strong style={{ color: "#0f172a" }}>{selectedStudent.studentId}</strong>, is a currently enrolled student of <strong style={{ color: "#0f172a" }}>{schoolName}</strong>. According to the official register office record, the student is assigned to <strong style={{ color: "#0f172a" }}>Grade {selectedStudent.grade}{selectedStudent.section ? ` ${selectedStudent.section}` : ""}</strong> for the <strong style={{ color: "#0f172a" }}>{academicYearText}</strong> academic year.
+            </div>
+          </div>
+
+          <div style={{ marginTop: 22, border: "1px solid #cbd5e1" }}>
+            {[
+              ["Student Name", selectedStudent.name],
+              ["Student ID", selectedStudent.studentId],
+              ["Grade and Section", `Grade ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`],
+              ["Academic Year", academicYearText],
+              ["Status", selectedStudent.status],
+            ].map(([label, value]) => (
+              <div key={label} style={letterInfoRowStyle}>
+                <div style={letterLabelStyle}>{label}</div>
+                <div style={letterValueStyle}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 18, fontSize: 13, color: "#334155", lineHeight: 1.8 }}>
+            This letter is issued upon request for official educational and administrative use. All information herein is based on the current school register and is valid as of the date of issue.
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginTop: 42, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.7 }}>
+              Issued by the school register office.
+            </div>
+            <div style={{ width: 220, borderTop: "1px solid #94a3b8", paddingTop: 8, fontSize: 12, color: "#334155" }}>
+              Registrar: {admin.name}
+            </div>
+          </div>
         </div>
       );
     }
 
     if (documentType === "transfer_letter") {
+      const transferRecords = academicRecords.length
+        ? academicRecords
+        : [{ year: selectedStudent.academicYear || currentAcademicYear, grade: selectedStudent.grade, section: selectedStudent.section, status: selectedStudent.status }];
+
       return (
-        <div className="box" style={{ border: "1px solid #cbd5e1", borderRadius: 12, padding: 14 }}>
-          <h3 style={{ margin: "0 0 8px" }}>{schoolName}</h3>
-          <h4 style={{ margin: "0 0 12px" }}>Transfer Letter</h4>
-          <p>Student Name: <strong>{selectedStudent.name}</strong></p>
-          <p>Student ID: <strong>{selectedStudent.studentId}</strong></p>
-          <p>Date of Birth: <strong>{firstFilled(selectedStudent.row?.dob, selectedStudent.row?.basicStudentInformation?.dob, "N/A")}</strong></p>
-          <p>Grade: <strong>{selectedStudent.grade}{selectedStudent.section ? ` ${selectedStudent.section}` : ""}</strong></p>
-          <p>Years Studied: <strong>{academicRecords.length || 1}</strong></p>
-          <p>Reason for Transfer: <strong>{transferReason}</strong></p>
-          <h5 style={{ margin: "12px 0 6px" }}>Academic Performance Summary</h5>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Academic Year</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Grade</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Section</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(academicRecords.length ? academicRecords : [{ year: selectedStudent.academicYear || currentAcademicYear, grade: selectedStudent.grade, section: selectedStudent.section, status: selectedStudent.status }]).map((r) => (
-                <tr key={`${r.year}_${r.grade}_${r.section}`}>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{yearLabel(r.year)}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{r.grade || "-"}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{r.section || "-"}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{r.status || "-"}</td>
+        <div style={{ ...previewPaperStyle, maxWidth: 860, margin: "0 auto" }}>
+          <div style={letterHeaderStyle}>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: "-0.04em", color: "#0f172a" }}>{schoolName}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, maxWidth: 460, lineHeight: 1.6 }}>
+                {[schoolAddress, schoolPhone, schoolEmail].filter(Boolean).join(" | ") || "School contact information"}
+              </div>
+              <div style={{ marginTop: 18, fontSize: 18, fontWeight: 800, letterSpacing: "0.06em", color: "#0f172a" }}>TRANSFER LETTER</div>
+            </div>
+            <div style={letterMetaStyle}>
+              <div>Date: {issueDateText}</div>
+              <div>Reference: {studentReference}</div>
+              <div>Prepared by: {admin.name}</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.8 }}>
+            <div style={{ fontWeight: 700, color: "#0f172a", marginBottom: 12 }}>Subject: Transfer clearance for {selectedStudent.name}</div>
+            <div>To whom it may concern,</div>
+            <div style={{ marginTop: 14 }}>
+              This letter confirms that <strong style={{ color: "#0f172a" }}>{selectedStudent.name}</strong>, student ID <strong style={{ color: "#0f172a" }}>{selectedStudent.studentId}</strong>, has been processed for transfer from <strong style={{ color: "#0f172a" }}>{schoolName}</strong>. The following information summarizes the student's registered academic status and the stated reason for transfer.
+            </div>
+          </div>
+
+          <div style={{ marginTop: 22, border: "1px solid #cbd5e1" }}>
+            {[
+              ["Student Name", selectedStudent.name],
+              ["Student ID", selectedStudent.studentId],
+              ["Date of Birth", studentDob],
+              ["Grade and Section", `Grade ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`],
+              ["Academic Year", academicYearText],
+            ].map(([label, value]) => (
+              <div key={label} style={letterInfoRowStyle}>
+                <div style={letterLabelStyle}>{label}</div>
+                <div style={letterValueStyle}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 22 }}>
+            <div style={previewHeadingStyle}>Transfer Reason</div>
+            <div style={{ border: "1px solid #cbd5e1", padding: "14px 16px", fontSize: 13, color: "#334155", lineHeight: 1.8 }}>
+              {transferReason || "No transfer reason recorded."}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <div style={previewHeadingStyle}>Academic History</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", overflow: "hidden", borderRadius: 16 }}>
+              <thead>
+                <tr>
+                  <th style={tableHeaderCellStyle}>Academic Year</th>
+                  <th style={tableHeaderCellStyle}>Grade</th>
+                  <th style={tableHeaderCellStyle}>Section</th>
+                  <th style={tableHeaderCellStyle}>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {transferRecords.map((r) => (
+                  <tr key={`${r.year}_${r.grade}_${r.section}`}>
+                    <td style={tableCellStyle}>{yearLabel(r.year)}</td>
+                    <td style={tableCellStyle}>{r.grade || "-"}</td>
+                    <td style={tableCellStyle}>{r.section || "-"}</td>
+                    <td style={tableCellStyle}>{r.status || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 22, display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.7, maxWidth: 460 }}>
+              This transfer letter is prepared from the official academic and administrative records maintained by {schoolName} and is issued for formal reference purposes.
+            </div>
+            <div style={{ width: 220, borderTop: "1px solid #94a3b8", paddingTop: 8, fontSize: 12, color: "#334155" }}>
+              Registrar authorization
+            </div>
+          </div>
         </div>
       );
     }
 
     if (documentType === "profile_report") {
+      const parents = parentInfo.length ? parentInfo : [{}];
+      const records = academicRecords.length ? academicRecords : [{ year: selectedStudent.academicYear || currentAcademicYear, grade: selectedStudent.grade, section: selectedStudent.section, status: selectedStudent.status }];
+
       return (
-        <div className="box" style={{ border: "1px solid #cbd5e1", borderRadius: 12, padding: 14 }}>
-          <h3 style={{ margin: "0 0 8px" }}>{schoolName}</h3>
-          <h4 style={{ margin: "0 0 12px" }}>Student Profile Report</h4>
-          <p><strong>Student:</strong> {selectedStudent.name}</p>
-          <p><strong>Student ID:</strong> {selectedStudent.studentId}</p>
-          <p><strong>Grade/Section:</strong> {selectedStudent.grade}{selectedStudent.section ? ` ${selectedStudent.section}` : ""}</p>
-          <p><strong>Status:</strong> {selectedStudent.status}</p>
+        <div style={{ ...previewPaperStyle, maxWidth: 920, margin: "0 auto" }}>
+          <div style={letterHeaderStyle}>
+            <div>
+              <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: "-0.04em", color: "#0f172a" }}>{schoolName}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, maxWidth: 460, lineHeight: 1.6 }}>
+                {[schoolAddress, schoolPhone, schoolEmail].filter(Boolean).join(" | ") || "School contact information"}
+              </div>
+              <div style={{ marginTop: 18, fontSize: 18, fontWeight: 800, letterSpacing: "0.06em", color: "#0f172a" }}>STUDENT PROFILE REPORT</div>
+            </div>
+            <div style={letterMetaStyle}>
+              <div>Date: {issueDateText}</div>
+              <div>Reference: {studentReference}</div>
+              <div>Prepared by: {admin.name}</div>
+            </div>
+          </div>
 
-          <h5 style={{ margin: "12px 0 6px" }}>Parent Information</h5>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Name</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Relationship</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Phone</th>
-                <th style={{ border: "1px solid #cbd5e1", padding: 6 }}>Email</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(parentInfo.length ? parentInfo : [{}]).map((p, idx) => (
-                <tr key={`${p?.parentId || "parent"}_${idx}`}>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{firstFilled(p?.fullName, p?.name, "-")}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{firstFilled(p?.relationship, "-")}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{firstFilled(p?.phone, "-")}</td>
-                  <td style={{ border: "1px solid #cbd5e1", padding: 6 }}>{firstFilled(p?.email, "-")}</td>
+          <div style={{ border: "1px solid #cbd5e1" }}>
+            {[
+              ["Student Name", selectedStudent.name],
+              ["Student ID", selectedStudent.studentId],
+              ["Grade and Section", `Grade ${selectedStudent.grade}${selectedStudent.section ? ` ${selectedStudent.section}` : ""}`],
+              ["Academic Year", academicYearText],
+              ["Date of Birth", studentDob],
+              ["Status", selectedStudent.status],
+              ["Address", addressText],
+              ["Emergency Contact", `${emergencyName} (${emergencyPhone})`],
+            ].map(([label, value]) => (
+              <div key={label} style={letterInfoRowStyle}>
+                <div style={letterLabelStyle}>{label}</div>
+                <div style={letterValueStyle}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "0.62fr 1.38fr", gap: 16 }}>
+            <div>
+              <div style={previewHeadingStyle}>Attendance Summary</div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={tableHeaderCellStyle}>Attendance</th>
+                    <th style={tableHeaderCellStyle}>Count</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["Present", attendanceSummary.present],
+                    ["Absent", attendanceSummary.absent],
+                    ["Late", attendanceSummary.late],
+                    ["Total", attendanceSummary.total],
+                  ].map(([label, value]) => (
+                    <tr key={label}>
+                      <td style={tableCellStyle}>{label}</td>
+                      <td style={tableCellStyle}>{value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <div style={previewHeadingStyle}>Parent And Guardian Information</div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={tableHeaderCellStyle}>Name</th>
+                    <th style={tableHeaderCellStyle}>Relationship</th>
+                    <th style={tableHeaderCellStyle}>Phone</th>
+                    <th style={tableHeaderCellStyle}>Email</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parents.map((p, idx) => (
+                    <tr key={`${p?.parentId || "parent"}_${idx}`}>
+                      <td style={tableCellStyle}>{firstFilled(p?.fullName, p?.name, "-")}</td>
+                      <td style={tableCellStyle}>{firstFilled(p?.relationship, "-")}</td>
+                      <td style={tableCellStyle}>{firstFilled(p?.phone, "-")}</td>
+                      <td style={tableCellStyle}>{firstFilled(p?.email, "-")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <div style={previewHeadingStyle}>Academic history</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={tableHeaderCellStyle}>Academic Year</th>
+                  <th style={tableHeaderCellStyle}>Grade</th>
+                  <th style={tableHeaderCellStyle}>Section</th>
+                  <th style={tableHeaderCellStyle}>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <p style={{ marginTop: 10 }}><strong>Attendance:</strong> Present {attendanceSummary.present}, Absent {attendanceSummary.absent}, Late {attendanceSummary.late}</p>
+              </thead>
+              <tbody>
+                {records.map((r) => (
+                  <tr key={`${r.year}_${r.grade}_${r.section}`}>
+                    <td style={tableCellStyle}>{yearLabel(r.year)}</td>
+                    <td style={tableCellStyle}>{r.grade || "-"}</td>
+                    <td style={tableCellStyle}>{r.section || "-"}</td>
+                    <td style={tableCellStyle}>{r.status || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       );
     }
 
     const certNo = certificateNumber || "CERT-YYYY-00001";
     return (
-      <div className="box" style={{ border: "2px solid #0f172a", borderRadius: 12, padding: 16 }}>
-        <h3 style={{ margin: "0 0 6px", textAlign: "center" }}>{schoolName}</h3>
-        <h4 style={{ margin: "0 0 12px", textAlign: "center" }}>CERTIFICATE OF ENROLLMENT</h4>
-        <p>Certificate No: <strong>{certNo}</strong></p>
-        <p>This is to certify that <strong>{selectedStudent.name}</strong> (ID: <strong>{selectedStudent.studentId}</strong>) is enrolled in Grade <strong>{selectedStudent.grade}{selectedStudent.section || ""}</strong> for Academic Year <strong>{academicYearText}</strong>.</p>
-        <p style={{ marginTop: 16 }}>Registrar Signature: {admin.name}</p>
-        <p>School Stamp Area</p>
+      <div style={{ ...previewPaperStyle, maxWidth: 900, margin: "0 auto", border: "2px solid #0f172a", position: "relative" }}>
+        <div style={{ border: "1px solid #cbd5e1", padding: 22 }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: "#0f172a", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.1em" }}>Official School Certificate</div>
+            <div style={{ marginTop: 10, fontSize: 34, fontWeight: 900, color: "#0f172a", letterSpacing: "-0.05em" }}>{schoolName}</div>
+            <div style={{ marginTop: 8, fontSize: 26, fontWeight: 800, color: "#0f172a", letterSpacing: "0.04em" }}>CERTIFICATE OF ENROLLMENT</div>
+            <div style={{ marginTop: 14, fontSize: 13, color: "#475569", lineHeight: 1.7 }}>
+              Certificate No. {certNo}
+              <br />
+              Issued on {issueDateText}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 34, textAlign: "center", fontSize: 16, lineHeight: 1.9, color: "#334155", maxWidth: 720, marginLeft: "auto", marginRight: "auto" }}>
+            This is to certify that <strong style={{ color: "#0f172a" }}>{selectedStudent.name}</strong>, bearing student identification number <strong style={{ color: "#0f172a" }}>{selectedStudent.studentId}</strong>, is officially enrolled at <strong style={{ color: "#0f172a" }}>{schoolName}</strong> in <strong style={{ color: "#0f172a" }}>Grade {selectedStudent.grade}{selectedStudent.section ? ` ${selectedStudent.section}` : ""}</strong> for the <strong style={{ color: "#0f172a" }}>{academicYearText}</strong> academic year. This certificate is issued by the school register office for official use and verification.
+          </div>
+
+          <div style={{ marginTop: 28 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={tableHeaderCellStyle}>Student</th>
+                  <th style={tableHeaderCellStyle}>Student ID</th>
+                  <th style={tableHeaderCellStyle}>Academic Year</th>
+                  <th style={tableHeaderCellStyle}>Reference</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={tableCellStyle}>{selectedStudent.name}</td>
+                  <td style={tableCellStyle}>{selectedStudent.studentId}</td>
+                  <td style={tableCellStyle}>{academicYearText}</td>
+                  <td style={tableCellStyle}>{studentReference}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 42, display: "flex", justifyContent: "space-between", gap: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ width: 220, borderTop: "1px solid #94a3b8", paddingTop: 8, fontSize: 12, color: "#334155" }}>
+              Registrar: {admin.name}
+            </div>
+            <div style={{ width: 220, height: 76, border: "1px solid #cbd5e1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#64748b" }}>
+              School stamp area
+            </div>
+        </div>
+        </div>
       </div>
     );
   };
@@ -838,7 +1426,7 @@ export default function DocumentGeneration() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 

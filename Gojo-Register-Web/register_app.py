@@ -5,26 +5,25 @@ from firebase_admin import credentials, db, storage
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
 app = Flask(__name__)
 CORS(app)
 
-# Path to your Firebase service account JSON (located next to this script)
-firebase_json = os.path.join(os.path.dirname(__file__), "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
+# Path to your Firebase service account JSON (managed centrally via serviceAccountKey.py)
+firebase_json = require_firebase_credentials()
 if not os.path.exists(firebase_json):
     print(f"Firebase JSON missing at {firebase_json}")
     sys.exit(1)
 
 cred = credentials.Certificate(firebase_json)
-firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/",
-    "storageBucket": "bale-house-rental.appspot.com"
-})
+firebase_admin.initialize_app(cred, get_firebase_options())
 bucket = storage.bucket()
 
 PLATFORM_SCHOOLS_REF = "Platform1/Schools"
+ROLLOVER_ALLOWED_DELAYS = {3600, 21600, 43200, 86400}
 
 
 def schools_data():
@@ -153,6 +152,143 @@ def get_school_code_from_request():
         or json_body.get("schoolCode")
         or ""
     ).strip()
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def generate_request_id(prefix="rollover"):
+    return f"{prefix}_{int(datetime.utcnow().timestamp())}_{os.urandom(3).hex()}"
+
+
+def rollover_control_ref(school_code):
+    return school_ref(school_code).child("RolloverControl")
+
+
+def pending_rollover_ref(school_code):
+    return rollover_control_ref(school_code).child("Pending")
+
+
+def rollover_history_ref(school_code):
+    return rollover_control_ref(school_code).child("History")
+
+
+def clone_payload(value):
+    return json.loads(json.dumps(value))
+
+
+def get_registerer_user(school_code, actor_user_id):
+    if not school_code or not actor_user_id:
+        return None
+
+    user = school_ref(school_code).child("Users").child(actor_user_id).get() or {}
+    role = str(user.get("role") or "").strip().lower().replace("_", " ").replace("-", " ")
+    username = str(user.get("username") or "").strip().upper()
+
+    if role != "registerer" or not username.startswith("GSR_"):
+        return None
+
+    return {"userId": actor_user_id, **user}
+
+
+def verify_registerer_password(school_code, actor_user_id, password):
+    user = get_registerer_user(school_code, actor_user_id)
+    if not user:
+        return None
+
+    if str(user.get("password") or "") != str(password or ""):
+        return None
+
+    return user
+
+
+def get_current_academic_year(school_node):
+    school_info = (school_node or {}).get("schoolInfo") or {}
+    current_year = normalize_year_key(school_info.get("currentAcademicYear"))
+    if current_year:
+        return current_year
+
+    years = (school_node or {}).get("AcademicYears") or {}
+    for year_key, row in years.items():
+        if (row or {}).get("isCurrent"):
+            return normalize_year_key(year_key)
+
+    return ""
+
+
+def build_rollover_guard_preview(school_node, current_year, target_year):
+    students = (school_node or {}).get("Students") or {}
+    parents = (school_node or {}).get("Parents") or {}
+    class_marks = (school_node or {}).get("ClassMarks") or {}
+    lesson_plans = (school_node or {}).get("LessonPlans") or {}
+
+    current_year_student_count = 0
+    for student_node in students.values():
+        student = student_node or {}
+        basic = student.get("basicStudentInformation") or {}
+        student_year = normalize_year_key(student.get("academicYear") or basic.get("academicYear"))
+        if student_year == current_year:
+            current_year_student_count += 1
+
+    lesson_plan_archive = clone_payload(lesson_plans)
+    if isinstance(lesson_plan_archive, dict):
+        lesson_plan_archive.pop("StudentWhatLearn", None)
+
+    return {
+        "fromAcademicYear": current_year,
+        "toAcademicYear": target_year,
+        "archiveCounts": {
+            "students": current_year_student_count,
+            "parents": len(parents or {}),
+            "classMarks": len(class_marks or {}),
+            "lessonPlans": len(lesson_plan_archive or {}),
+        },
+        "deleteRoots": [
+            "Students",
+            "Parents",
+            "ClassMarks",
+            "LessonPlans",
+            "AssesmentTemplates",
+            "AssessmentTemplates",
+        ],
+        "resetNodes": [
+            "Chats",
+            "Attendance",
+            "SchoolExams.AssessmentSubmissions",
+            "SchoolExams.Assessments",
+            "SchoolExams.CourseFeed",
+            "SchoolExams.CourseStats",
+            "SchoolExams.SubmissionIndex",
+            "SchoolExams.QuestionUsage",
+            "Employees_Attendance",
+            "CalendarEvents",
+            "StudentBookNotes",
+            "Schedules",
+            "GradeManagement.grades.*.sectionSubjectTeachers",
+        ],
+        "untouchedNodes": [
+            "Users",
+            "schoolInfo",
+            "GradeManagement",
+            "SchoolExams.QuestionBank",
+            "SchoolExams.QuestionHashes",
+        ],
+    }
 
 
 @app.route("/register/parent", methods=["POST"])
@@ -794,7 +930,10 @@ def login_registrar():
         username = data.get("username")
         password = data.get("password")
 
-        if not username or not password:
+        username_input = str(username or "").strip()
+        password_input = "" if password is None else str(password)
+
+        if not username_input or password is None or not str(password_input).strip():
             return jsonify({"success": False, "message": "Missing credentials"}), 400
 
         all_schools = schools_data()
@@ -804,7 +943,10 @@ def login_registrar():
         for school_code, school_node in all_schools.items():
             users = (school_node or {}).get("Users") or {}
             for uid, u in users.items():
-                if u.get("username") == username and u.get("password") == password:
+                stored_username = str((u or {}).get("username") or "").strip()
+                stored_password = "" if (u or {}).get("password") is None else str((u or {}).get("password"))
+
+                if stored_username.lower() == username_input.lower() and stored_password == password_input:
                     matched_user = {"userId": uid, **(u or {})}
                     matched_school_code = school_code
                     break
@@ -820,17 +962,17 @@ def login_registrar():
         role = normalize_text(matched_user.get("role"))
         username_value = str(matched_user.get("username") or "").strip().upper()
 
-        if role != "registerer" or not username_value.startswith("GSR_"):
+        if role != "registerer":
             return jsonify({
                 "success": False,
-                "message": "Only registerer accounts (GSR_...) can login to this portal"
+                "message": "Only registerer accounts can login to this portal"
             }), 403
 
         registerers = ((all_schools.get(matched_school_code) or {}).get("Registerers") or {})
         matched_registerer = None
         for rid, reg in registerers.items():
             row = reg or {}
-            if rid == username_value or row.get("userId") == matched_user.get("userId"):
+            if str(rid or "").strip().upper() == username_value or row.get("userId") == matched_user.get("userId"):
                 matched_registerer = {"registererId": rid, **row}
                 break
 
@@ -1279,6 +1421,146 @@ def archive_academic_year():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/academic-years/rollover/pending", methods=["GET"])
+@app.route("/api/academic-years/rollover/pending", methods=["GET"])
+def get_pending_rollover():
+    try:
+        school_code = get_school_code_from_request()
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+        pending_request = pending_rollover_ref(school_code).get() or {}
+        if not pending_request or str(pending_request.get("status") or "") != "armed":
+            return jsonify({"success": True, "pendingRequest": None}), 200
+
+        return jsonify({"success": True, "pendingRequest": pending_request}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/academic-years/rollover/arm", methods=["POST"])
+@app.route("/api/academic-years/rollover/arm", methods=["POST"])
+def arm_rollover_guard():
+    try:
+        school_code = get_school_code_from_request()
+        body = request.get_json(silent=True) or {}
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+        actor_user_id = str(body.get("actorUserId") or body.get("userId") or "").strip()
+        password = body.get("password") or ""
+        requested_target = normalize_year_key(body.get("targetYearKey") or body.get("startYear") or "")
+        confirmation_phrase = str(body.get("confirmationPhrase") or "").strip()
+
+        try:
+            delay_seconds = int(body.get("delaySeconds") or 3600)
+        except Exception:
+            delay_seconds = 3600
+
+        if delay_seconds not in ROLLOVER_ALLOWED_DELAYS:
+            return jsonify({"success": False, "message": "Invalid countdown duration selected."}), 400
+
+        actor = verify_registerer_password(school_code, actor_user_id, password)
+        if not actor:
+            return jsonify({"success": False, "message": "Registerer password verification failed."}), 403
+
+        school_node = school_ref(school_code).get() or {}
+        current_year = get_current_academic_year(school_node)
+        if not current_year:
+            return jsonify({"success": False, "message": "No current academic year is set."}), 400
+
+        if not requested_target:
+            return jsonify({"success": False, "message": "targetYearKey is required."}), 400
+
+        if requested_target == current_year:
+            return jsonify({"success": False, "message": "Target year must be different from current year."}), 400
+
+        years = (school_node or {}).get("AcademicYears") or {}
+        if requested_target not in years:
+            return jsonify({"success": False, "message": "Target academic year does not exist."}), 404
+
+        expected_phrase = f"ROLL OVER {current_year} TO {requested_target}"
+        if confirmation_phrase != expected_phrase:
+            return jsonify({"success": False, "message": f'Typed phrase must exactly match "{expected_phrase}".'}), 400
+
+        existing_pending = pending_rollover_ref(school_code).get() or {}
+        if existing_pending and str(existing_pending.get("status") or "") == "armed":
+            return jsonify({
+                "success": False,
+                "message": "A guarded rollover is already armed. Cancel it first or execute it when the countdown completes.",
+                "pendingRequest": existing_pending,
+            }), 409
+
+        created_at = datetime.now(timezone.utc)
+        execute_after = datetime.fromtimestamp(created_at.timestamp() + delay_seconds, tz=timezone.utc)
+        request_id = generate_request_id()
+        preview = build_rollover_guard_preview(school_node, current_year, requested_target)
+
+        pending_request = {
+            "requestId": request_id,
+            "status": "armed",
+            "createdAt": created_at.isoformat().replace("+00:00", "Z"),
+            "executeAfter": execute_after.isoformat().replace("+00:00", "Z"),
+            "delaySeconds": delay_seconds,
+            "currentYear": current_year,
+            "targetYear": requested_target,
+            "expectedPhrase": expected_phrase,
+            "initiatedBy": {
+                "userId": actor.get("userId"),
+                "username": actor.get("username"),
+                "name": actor.get("name"),
+                "registrarId": body.get("actorRegistrarId") or actor.get("employeeId") or actor.get("username"),
+            },
+            "preview": preview,
+        }
+
+        pending_rollover_ref(school_code).set(pending_request)
+        rollover_history_ref(school_code).child(request_id).set(pending_request)
+
+        return jsonify({
+            "success": True,
+            "message": "Rollover guard armed. The waiting countdown has started and rollover execution is locked until the timer ends.",
+            "pendingRequest": pending_request,
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/academic-years/rollover/cancel", methods=["POST"])
+@app.route("/api/academic-years/rollover/cancel", methods=["POST"])
+def cancel_rollover_guard():
+    try:
+        school_code = get_school_code_from_request()
+        body = request.get_json(silent=True) or {}
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+        request_id = str(body.get("requestId") or "").strip()
+        actor_user_id = str(body.get("actorUserId") or body.get("userId") or "").strip()
+        if not request_id:
+            return jsonify({"success": False, "message": "requestId is required."}), 400
+
+        pending_request = pending_rollover_ref(school_code).get() or {}
+        if not pending_request or str(pending_request.get("requestId") or "") != request_id:
+            return jsonify({"success": False, "message": "Pending rollover request not found."}), 404
+
+        initiated_by = (pending_request.get("initiatedBy") or {}).get("userId")
+        if initiated_by and actor_user_id and initiated_by != actor_user_id:
+            return jsonify({"success": False, "message": "Only the registerer who armed this rollover can cancel it."}), 403
+
+        cancelled_at = utc_now_iso()
+        rollover_history_ref(school_code).child(request_id).update({
+            "status": "cancelled",
+            "cancelledAt": cancelled_at,
+            "cancelledBy": actor_user_id or initiated_by or "",
+        })
+        pending_rollover_ref(school_code).delete()
+
+        return jsonify({"success": True, "message": "Pending rollover cancelled."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/academic-years/rollover", methods=["POST"])
 @app.route("/api/academic-years/rollover", methods=["POST"])
 def rollover_academic_year():
@@ -1287,6 +1569,33 @@ def rollover_academic_year():
         body = request.get_json(silent=True) or {}
         if not school_code:
             return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+        request_id = str(body.get("requestId") or "").strip()
+        actor_user_id = str(body.get("actorUserId") or body.get("userId") or "").strip()
+        if not request_id:
+            return jsonify({"success": False, "message": "Arm the rollover first. A guarded rollover requestId is required."}), 400
+
+        pending_request = pending_rollover_ref(school_code).get() or {}
+        if not pending_request or str(pending_request.get("requestId") or "") != request_id:
+            return jsonify({"success": False, "message": "Pending guarded rollover not found. Arm the rollover again."}), 404
+
+        if str(pending_request.get("status") or "") != "armed":
+            return jsonify({"success": False, "message": "This rollover request is no longer active."}), 409
+
+        initiated_by_user_id = str(((pending_request.get("initiatedBy") or {}).get("userId") or "")).strip()
+        if initiated_by_user_id and actor_user_id and actor_user_id != initiated_by_user_id:
+            return jsonify({"success": False, "message": "Only the registerer who armed this rollover can execute it."}), 403
+
+        execute_after = parse_iso_datetime(pending_request.get("executeAfter"))
+        if execute_after is None:
+            return jsonify({"success": False, "message": "Pending rollover executeAfter is invalid."}), 500
+
+        if datetime.utcnow() < execute_after:
+            return jsonify({
+                "success": False,
+                "message": "Countdown still active. Rollover is force-locked until the selected waiting time fully ends. You may only cancel it during this waiting period.",
+                "executeAfter": pending_request.get("executeAfter"),
+            }), 409
 
         max_grade_raw = request.form.get("maxGrade") or body.get("maxGrade") or 12
         try:
@@ -1309,6 +1618,139 @@ def rollover_academic_year():
         school_info = (school_node or {}).get("schoolInfo") or {}
         years_ref = school_ref(school_code).child("AcademicYears")
         years = (school_node or {}).get("AcademicYears") or {}
+        year_history = (school_node or {}).get("YearHistory") or {}
+
+        def safe_number(value):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            text = str(value or "").strip().replace("%", "")
+            if not text:
+                return None
+            try:
+                return float(text)
+            except Exception:
+                return None
+
+        def normalize_score(score):
+            numeric = safe_number(score)
+            if numeric is None:
+                return None
+            rounded = round(numeric, 2)
+            if float(rounded).is_integer():
+                return int(rounded)
+            return rounded
+
+        def first_non_empty(*values):
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        def extract_final_score(node):
+            direct = safe_number(node)
+            if direct is not None:
+                return direct
+
+            if not isinstance(node, dict):
+                return None
+
+            direct_keys = (
+                "finalScore",
+                "final_score",
+                "finalMark",
+                "final_mark",
+                "final",
+                "average",
+                "avg",
+                "totalAverage",
+                "overallAverage",
+                "yearAverage",
+                "semesterAverage",
+                "subjectAverage",
+                "result",
+                "score",
+                "total",
+            )
+            for key in direct_keys:
+                numeric = safe_number(node.get(key))
+                if numeric is not None:
+                    return numeric
+
+            period_scores = []
+            for key, value in node.items():
+                lower = str(key or "").strip().lower()
+                if lower in {"semester1", "semester2", "quarter1", "quarter2", "quarter3", "quarter4"}:
+                    numeric = extract_final_score(value)
+                    if numeric is not None:
+                        period_scores.append(numeric)
+            if period_scores:
+                return sum(period_scores) / len(period_scores)
+
+            nested_scores = []
+            for key, value in node.items():
+                lower = str(key or "").strip().lower()
+                if lower in {"teacher", "teachername", "teacherid", "userid", "studentid", "grade", "section"}:
+                    continue
+                if isinstance(value, dict):
+                    numeric = extract_final_score(value)
+                    if numeric is not None:
+                        nested_scores.append(numeric)
+                        continue
+                if any(token in lower for token in ("score", "mark", "total", "average", "avg", "result", "final")):
+                    numeric = safe_number(value)
+                    if numeric is not None:
+                        nested_scores.append(numeric)
+            if nested_scores:
+                return sum(nested_scores) / len(nested_scores)
+
+            return None
+
+        def extract_student_year(student_node):
+            student = student_node or {}
+            basic = student.get("basicStudentInformation") or {}
+            return normalize_year_key(student.get("academicYear") or basic.get("academicYear"))
+
+        def summarize_status(raw_status):
+            status_text = str(raw_status or "active").strip().lower()
+            if "withdraw" in status_text:
+                return "withdrawn"
+            if "transfer" in status_text:
+                return "withdrawn"
+            if "graduate" in status_text:
+                return "graduated"
+            return status_text or "active"
+
+        def clone_json(value):
+            return json.loads(json.dumps(value))
+
+        school_exam_reset_keys = {
+            "AssessmentSubmissions",
+            "Assessments",
+            "CourseFeed",
+            "CourseStats",
+            "SubmissionIndex",
+            "QuestionUsage",
+        }
+        cleared_nodes_template = [
+            "Chats",
+            "Attendance",
+            "SchoolExams.AssessmentSubmissions",
+            "SchoolExams.Assessments",
+            "SchoolExams.CourseFeed",
+            "SchoolExams.CourseStats",
+            "SchoolExams.SubmissionIndex",
+            "SchoolExams.QuestionUsage",
+            "Employees_Attendance",
+            "CalendarEvents",
+            "StudentBookNotes",
+            "Schedules",
+            "GradeManagement.grades.*.sectionSubjectTeachers",
+            "AssesmentTemplates",
+            "AssessmentTemplates",
+        ]
 
         current_year = school_info.get("currentAcademicYear")
         if not current_year:
@@ -1346,208 +1788,389 @@ def rollover_academic_year():
         if not normalized_current_year:
             return jsonify({"success": False, "message": "Current academic year format is invalid."}), 400
 
+        if normalize_year_key(pending_request.get("currentYear")) != normalized_current_year:
+            return jsonify({"success": False, "message": "Current academic year changed after the rollover was armed. Cancel and re-arm the rollover."}), 409
+
+        if normalize_year_key(pending_request.get("targetYear")) != target_year:
+            return jsonify({"success": False, "message": "Target year does not match the armed rollover request."}), 409
+
+        current_year_node = (years or {}).get(normalized_current_year) or {}
+        existing_archive = (year_history or {}).get(normalized_current_year) or {}
+        existing_archive_meta = (existing_archive or {}).get("rolloverMeta") or {}
+
+        if (
+            existing_archive_meta.get("rolledToYear") == target_year
+            or existing_archive_meta.get("toAcademicYear") == target_year
+        ) and (
+            str((current_year_node or {}).get("status") or "").strip().lower() == "completed"
+            and normalize_year_key(school_info.get("currentAcademicYear")) == target_year
+        ):
+            executed_at = utc_now_iso()
+            rollover_history_ref(school_code).child(request_id).update({
+                "status": "executed",
+                "executedAt": executed_at,
+                "result": {
+                    "fromAcademicYear": normalized_current_year,
+                    "toAcademicYear": target_year,
+                    "promoted": int(existing_archive_meta.get("promoted") or 0),
+                    "repeated": int(existing_archive_meta.get("repeated") or 0),
+                    "graduated": int(existing_archive_meta.get("graduated") or 0),
+                    "withdrawn": int(existing_archive_meta.get("withdrawn") or 0),
+                },
+            })
+            pending_rollover_ref(school_code).delete()
+            return jsonify({
+                "success": True,
+                "message": f"Rollover already completed to {year_label_from_key(target_year)}.",
+                "fromYear": normalized_current_year,
+                "toYear": target_year,
+                "promoted": int(existing_archive_meta.get("promoted") or 0),
+                "repeated": int(existing_archive_meta.get("repeated") or 0),
+                "graduated": int(existing_archive_meta.get("graduated") or 0),
+                "withdrawn": int(existing_archive_meta.get("withdrawn") or 0),
+                "studentsArchived": int(existing_archive_meta.get("studentsArchived") or 0),
+                "resetSummary": {
+                    "clearedNodes": cleared_nodes_template,
+                    "archivePath": f"YearHistory/{normalized_current_year}",
+                },
+            }), 200
+
         now_iso = datetime.utcnow().isoformat()
 
-        students_ref = school_ref(school_code).child("Students")
-        parents_ref = school_ref(school_code).child("Parents")
-        students = students_ref.get() or {}
-        parents = parents_ref.get() or {}
-        history_root_ref = school_ref(school_code).child(f"YearHistory/{normalized_current_year}")
-        history_students_ref = history_root_ref.child("Students")
-        history_parents_ref = history_root_ref.child("Parents")
+        students = (school_node or {}).get("Students") or {}
+        parents = (school_node or {}).get("Parents") or {}
+        users = (school_node or {}).get("Users") or {}
+        courses = (school_node or {}).get("Courses") or {}
+        class_marks = (school_node or {}).get("ClassMarks") or {}
+        attendance = (school_node or {}).get("Attendance") or {}
+        lesson_plans = (school_node or {}).get("LessonPlans") or {}
+        promotion_pass_mark = safe_number(((school_info.get("settings") or {}).get("academic") or {}).get("promotionPassMark"))
+        if promotion_pass_mark is None:
+            promotion_pass_mark = 50.0
 
-        snapshot_excluded_nodes = {"YearHistory", "Students", "Parents"}
-        school_snapshot = {}
-        school_snapshot_counts = {}
-
-        for node_name, node_value in (school_node or {}).items():
-            if node_name in snapshot_excluded_nodes:
+        student_results_map = {}
+        for course_id, roster in (class_marks or {}).items():
+            if not isinstance(roster, dict):
                 continue
 
-            school_snapshot[node_name] = node_value
-            school_snapshot_counts[node_name] = len(node_value) if isinstance(node_value, dict) else (1 if node_value else 0)
+            course_row = (courses or {}).get(course_id) or {}
+            subject_name = first_non_empty(course_row.get("subject"), course_row.get("name"), course_row.get("courseId"), course_id)
+            if not subject_name:
+                continue
 
-        if school_snapshot:
-            history_root_ref.child("SchoolSnapshot").set({
-                "archivedAt": now_iso,
-                "fromAcademicYear": normalized_current_year,
-                "toAcademicYear": target_year,
-                "excludedNodes": sorted(snapshot_excluded_nodes),
-                "data": school_snapshot,
-            })
+            for student_id, mark_node in roster.items():
+                final_score = extract_final_score(mark_node)
+                if final_score is None:
+                    continue
+
+                student_bucket = student_results_map.setdefault(str(student_id), {})
+                student_bucket.setdefault(subject_name, []).append(final_score)
+
+        student_attendance_map = {}
+        for _, dates_node in (attendance or {}).items():
+            if not isinstance(dates_node, dict):
+                continue
+
+            for _, attendance_by_student in dates_node.items():
+                if not isinstance(attendance_by_student, dict):
+                    continue
+
+                for student_id, raw_status in attendance_by_student.items():
+                    status_text = str(raw_status or "").strip().lower()
+                    if not status_text:
+                        continue
+
+                    bucket = student_attendance_map.setdefault(str(student_id), {
+                        "present": 0,
+                        "absent": 0,
+                        "late": 0,
+                    })
+                    if status_text.startswith("present"):
+                        bucket["present"] += 1
+                    elif status_text.startswith("late"):
+                        bucket["late"] += 1
+                    elif status_text.startswith("absent"):
+                        bucket["absent"] += 1
 
         promoted = 0
+        repeated = 0
         graduated = 0
-        skipped = 0
-        moved_students = 0
-        moved_parents = 0
+        withdrawn = 0
+        students_archived = 0
+        deactivated_user_ids = set()
 
-        def collect_parent_ids(student_node):
-            out = set()
-            node = student_node or {}
+        root_updates = {}
+        current_year_label = first_non_empty(current_year_node.get("label"), year_label_from_key(normalized_current_year))
+        history_root = f"YearHistory/{normalized_current_year}"
 
-            by_map = node.get("parents") or {}
-            if isinstance(by_map, dict):
-                for pid in by_map.keys():
-                    pid_text = str(pid or "").strip()
-                    if pid_text:
-                        out.add(pid_text)
-
-            parent_section = ((node.get("parentGuardianInformation") or {}).get("parents") or [])
-            if isinstance(parent_section, list):
-                for parent_row in parent_section:
-                    pid_text = str((parent_row or {}).get("parentId") or "").strip()
-                    if pid_text:
-                        out.add(pid_text)
-
-            return out
-
-        def has_parent_in_non_rolled_students(parent_id, rolled_student_ids):
-            parent_text = str(parent_id or "").strip()
-            if not parent_text:
-                return False
-
-            for sid, s_node in (students or {}).items():
-                if sid in rolled_student_ids:
+        parents_history = clone_json(parents)
+        if isinstance(parents_history, dict):
+            for parent_id, parent_node in parents_history.items():
+                if not isinstance(parent_node, dict):
                     continue
-                if parent_text in collect_parent_ids(s_node):
-                    return True
-            return False
+                parent_user_id = first_non_empty(parent_node.get("userId"))
+                if parent_user_id:
+                    deactivated_user_ids.add(parent_user_id)
+                parent_node["isActive"] = False
 
-        rolled_student_ids = set()
-        linked_parent_ids = set()
+                for user_id, user_node in (users or {}).items():
+                    if str((user_node or {}).get("parentId") or "").strip() == str(parent_id or "").strip():
+                        deactivated_user_ids.add(str(user_id))
+
+        root_updates[f"{history_root}/Parents"] = parents_history
+        root_updates[f"{history_root}/ClassMarks"] = clone_json(class_marks)
+
+        lesson_plans_history = clone_json(lesson_plans)
+        if isinstance(lesson_plans_history, dict):
+            lesson_plans_history.pop("StudentWhatLearn", None)
+        root_updates[f"{history_root}/LessonPlans"] = lesson_plans_history
 
         for student_id, node in (students or {}).items():
             student = node or {}
-            student_year = normalize_year_key(student.get("academicYear"))
-
+            student_year = extract_student_year(student)
             if student_year != normalized_current_year:
                 continue
 
-            status = str(student.get("status") or "active").strip().lower()
-            grade_raw = student.get("grade")
-            promoted_grade = None
-            outcome = "archived_only"
-
-            if status in ("active", "enrolled"):
-                try:
-                    current_grade = int(str(grade_raw).strip())
-                    if current_grade >= max_grade:
-                        graduated += 1
-                        outcome = "graduated"
-                    else:
-                        promoted_grade = str(current_grade + 1)
-                        promoted += 1
-                        outcome = "promoted"
-                except Exception:
-                    skipped += 1
-                    outcome = "skipped"
+            student_user_id = first_non_empty(
+                student.get("userId"),
+                ((student.get("systemAccountInformation") or {}).get("userId")),
+            )
+            if student_user_id:
+                deactivated_user_ids.add(student_user_id)
             else:
-                skipped += 1
+                for user_id, user_node in (users or {}).items():
+                    if str((user_node or {}).get("studentId") or "").strip() == str(student_id).strip():
+                        deactivated_user_ids.add(str(user_id))
 
-            student_history_payload = {
-                **student,
-                "rollover": {
+            linked_parents = student.get("parents") or {}
+            if isinstance(linked_parents, dict):
+                for parent_link in linked_parents.values():
+                    parent_user_id = first_non_empty((parent_link or {}).get("userId"))
+                    if parent_user_id:
+                        deactivated_user_ids.add(parent_user_id)
+
+            basic = student.get("basicStudentInformation") or {}
+            current_grade_text = first_non_empty(student.get("grade"), basic.get("grade"))
+            current_section = first_non_empty(student.get("section"), basic.get("section")).upper()
+            current_status = summarize_status(student.get("status") or basic.get("status") or "active")
+            current_grade_num = None
+            try:
+                current_grade_num = int(str(current_grade_text).strip())
+            except Exception:
+                current_grade_num = None
+
+            raw_results = student_results_map.get(str(student_id), {})
+            final_results = {}
+            for subject_name, scores in raw_results.items():
+                usable_scores = [safe_number(score) for score in (scores or [])]
+                usable_scores = [score for score in usable_scores if score is not None]
+                if not usable_scores:
+                    continue
+                final_results[subject_name] = normalize_score(sum(usable_scores) / len(usable_scores))
+
+            attendance_summary = {
+                "present": int((student_attendance_map.get(str(student_id)) or {}).get("present") or 0),
+                "absent": int((student_attendance_map.get(str(student_id)) or {}).get("absent") or 0),
+                "late": int((student_attendance_map.get(str(student_id)) or {}).get("late") or 0),
+            }
+
+            score_values = [safe_number(score) for score in final_results.values()]
+            score_values = [score for score in score_values if score is not None]
+            average_score = (sum(score_values) / len(score_values)) if score_values else None
+            passed = average_score is None or average_score >= promotion_pass_mark
+
+            archive_status = current_status
+            promoted_to = current_grade_text
+            next_grade = current_grade_text
+
+            if current_status == "withdrawn":
+                archive_status = "withdrawn"
+                withdrawn += 1
+            elif current_status == "graduated":
+                archive_status = "graduated"
+                graduated += 1
+            elif current_grade_num is None:
+                archive_status = "repeated"
+                repeated += 1
+            elif passed and current_grade_num >= max_grade:
+                archive_status = "graduated"
+                graduated += 1
+            elif passed:
+                archive_status = "promoted"
+                promoted += 1
+                promoted_to = str(current_grade_num + 1)
+                next_grade = promoted_to
+            else:
+                archive_status = "repeated"
+                repeated += 1
+
+            history_basic = {
+                **basic,
+                "academicYear": normalized_current_year,
+                "grade": current_grade_text,
+                "section": current_section,
+                "status": archive_status,
+                "studentId": student.get("studentId") or basic.get("studentId") or student_id,
+                "name": student.get("name") or basic.get("name") or "Student",
+            }
+
+            history_records = {
+                **(student.get("records") if isinstance(student.get("records"), dict) else {}),
+                normalized_current_year: {
+                    **((student.get("records") or {}).get(normalized_current_year) or {}),
+                    "academicYear": normalized_current_year,
+                    "grade": current_grade_text,
+                    "section": current_section,
+                    "status": archive_status,
                     "rolledOverAt": now_iso,
-                    "fromAcademicYear": normalized_current_year,
-                    "toAcademicYear": target_year,
-                    "outcome": outcome,
-                    "promotedToGrade": promoted_grade,
                 },
             }
-            history_students_ref.child(student_id).set(student_history_payload)
-            moved_students += 1
-            rolled_student_ids.add(student_id)
-            linked_parent_ids.update(collect_parent_ids(student))
 
-        for parent_id in linked_parent_ids:
-            parent_node = (parents or {}).get(parent_id) or {}
-            if parent_node:
-                history_parents_ref.child(parent_id).set({
-                    **parent_node,
-                    "rollover": {
-                        "rolledOverAt": now_iso,
-                        "fromAcademicYear": normalized_current_year,
-                        "toAcademicYear": target_year,
-                    },
-                })
+            history_student_payload = clone_json(student)
+            history_system_account = history_student_payload.get("systemAccountInformation") or {}
+            if isinstance(history_system_account, dict):
+                history_system_account["isActive"] = False
+                history_student_payload["systemAccountInformation"] = history_system_account
 
-            if not has_parent_in_non_rolled_students(parent_id, rolled_student_ids):
-                parents_ref.child(parent_id).delete()
-                moved_parents += 1
+            history_parent_guardian = history_student_payload.get("parentGuardianInformation") or {}
+            history_parent_rows = history_parent_guardian.get("parents")
+            if isinstance(history_parent_rows, list):
+                for parent_row in history_parent_rows:
+                    if not isinstance(parent_row, dict):
+                        continue
+                    account_info = parent_row.get("systemAccountInformation") or {}
+                    if isinstance(account_info, dict):
+                        account_info["isActive"] = "false"
+                        parent_row["systemAccountInformation"] = account_info
+            history_student_payload["parentGuardianInformation"] = history_parent_guardian
 
-        for student_id in rolled_student_ids:
-            students_ref.child(student_id).delete()
+            history_student_root = f"{history_root}/Students/{student_id}"
+            root_updates[history_student_root] = {
+                **history_student_payload,
+                "academicYear": normalized_current_year,
+                "grade": current_grade_text,
+                "section": current_section,
+                "status": archive_status,
+                "updatedAt": now_iso,
+                "basicStudentInformation": history_basic,
+                "records": history_records,
+                "rolloverSummary": {
+                    "fromAcademicYear": normalized_current_year,
+                    "toAcademicYear": target_year,
+                    "grade": current_grade_num if current_grade_num is not None else current_grade_text,
+                    "outcome": archive_status,
+                    "promotedToGrade": normalize_score(promoted_to) if safe_number(promoted_to) is not None else promoted_to,
+                    "results": final_results,
+                    "attendance": attendance_summary,
+                    "rolledOverAt": now_iso,
+                },
+                "rollover": {
+                    "fromAcademicYear": normalized_current_year,
+                    "toAcademicYear": target_year,
+                    "rolledOverAt": now_iso,
+                    "outcome": archive_status,
+                    "promotedToGrade": normalize_score(promoted_to) if safe_number(promoted_to) is not None else promoted_to,
+                },
+            }
+            students_archived += 1
 
-        reset_summary = {
-            "resetYearlyData": bool(reset_yearly_data),
-            "archivedNodes": {},
-            "clearedNodes": [],
-            "schoolSnapshotNodes": sorted(school_snapshot.keys()),
-            "schoolSnapshotCounts": school_snapshot_counts,
+        root_updates[f"AcademicYears/{normalized_current_year}"] = {
+            **current_year_node,
+            "yearKey": normalized_current_year,
+            "label": current_year_label,
+            "status": "completed",
+            "isCurrent": False,
+            "updatedAt": now_iso,
         }
 
+        target_year_existing = (years or {}).get(target_year) or {}
+        root_updates[f"AcademicYears/{target_year}"] = {
+            **target_year_existing,
+            "yearKey": target_year,
+            "label": first_non_empty(target_year_existing.get("label"), year_label_from_key(target_year)),
+            "status": "active",
+            "isCurrent": True,
+            "createdAt": target_year_existing.get("createdAt") or now_iso,
+            "updatedAt": now_iso,
+        }
+
+        for year_key, year_row in (years or {}).items():
+            if year_key in {normalized_current_year, target_year}:
+                continue
+            if (year_row or {}).get("isCurrent"):
+                root_updates[f"AcademicYears/{year_key}/isCurrent"] = False
+
+        root_updates["schoolInfo/currentAcademicYear"] = target_year
+        root_updates[f"{history_root}/rolloverMeta"] = {
+            "fromAcademicYear": normalized_current_year,
+            "toAcademicYear": target_year,
+            "promotionPassMark": normalize_score(promotion_pass_mark),
+            "studentsArchived": students_archived,
+            "movedStudents": students_archived,
+            "movedParents": len(parents or {}),
+            "promoted": promoted,
+            "repeated": repeated,
+            "graduated": graduated,
+            "withdrawn": withdrawn,
+            "resetYearlyData": reset_yearly_data,
+            "rolledOverAt": now_iso,
+        }
+
+        root_updates["Students"] = {}
+        root_updates["Parents"] = {}
+        root_updates["ClassMarks"] = {}
+        root_updates["LessonPlans"] = {}
+        root_updates["AssesmentTemplates"] = {}
+        root_updates["AssessmentTemplates"] = {}
+
+        for user_id in deactivated_user_ids:
+            if not user_id:
+                continue
+            root_updates[f"Users/{user_id}/isActive"] = False
+
+        school_ref(school_code).update(root_updates)
+
+        cleared_nodes = []
         if reset_yearly_data:
-            yearly_nodes = ["ClassMarks", "Attendance", "monthlyPaid"]
-            operational_history_ref = history_root_ref.child("OperationalData")
+            grade_management_current = clone_json((school_node or {}).get("GradeManagement") or {})
+            grades_map = (grade_management_current or {}).get("grades")
+            if isinstance(grades_map, dict):
+                for grade_row in grades_map.values():
+                    if isinstance(grade_row, dict):
+                        grade_row["sectionSubjectTeachers"] = {}
 
-            for node_name in yearly_nodes:
-                node_ref = school_ref(school_code).child(node_name)
-                node_data = node_ref.get() or {}
-                archive_count = len(node_data) if isinstance(node_data, dict) else (1 if node_data else 0)
-                reset_summary["archivedNodes"][node_name] = archive_count
+            school_exams_current = clone_json((school_node or {}).get("SchoolExams") or {})
+            if isinstance(school_exams_current, dict):
+                for child_key in school_exam_reset_keys:
+                    school_exams_current[child_key] = {}
 
-                if node_data:
-                    operational_history_ref.child(node_name).set({
-                        "archivedAt": now_iso,
-                        "fromAcademicYear": normalized_current_year,
-                        "data": node_data,
-                    })
+            school_ref(school_code).update({
+                "Chats": {},
+                "Attendance": {},
+                "SchoolExams": school_exams_current,
+                "Employees_Attendance": {},
+                "CalendarEvents": {},
+                "StudentBookNotes": {},
+                "Schedules": {},
+                "GradeManagement": grade_management_current,
+            })
+            cleared_nodes = cleared_nodes_template
 
-                node_ref.set({})
-                reset_summary["clearedNodes"].append(node_name)
-
-            history_root_ref.child("rolloverMeta").update({
-                "rolledOverAt": now_iso,
+        rollover_history_ref(school_code).child(request_id).update({
+            "status": "executed",
+            "executedAt": now_iso,
+            "result": {
                 "fromAcademicYear": normalized_current_year,
                 "toAcademicYear": target_year,
                 "promoted": promoted,
+                "repeated": repeated,
                 "graduated": graduated,
-                "skipped": skipped,
-                "movedStudents": moved_students,
-                "movedParents": moved_parents,
-                "schoolSnapshotStored": bool(school_snapshot),
-                "schoolSnapshotNodes": sorted(school_snapshot.keys()),
-                "resetYearlyData": True,
-            })
-        else:
-            history_root_ref.child("rolloverMeta").update({
-                "rolledOverAt": now_iso,
-                "fromAcademicYear": normalized_current_year,
-                "toAcademicYear": target_year,
-                "promoted": promoted,
-                "graduated": graduated,
-                "skipped": skipped,
-                "movedStudents": moved_students,
-                "movedParents": moved_parents,
-                "schoolSnapshotStored": bool(school_snapshot),
-                "schoolSnapshotNodes": sorted(school_snapshot.keys()),
-                "resetYearlyData": False,
-            })
-
-        years_snapshot = years_ref.get() or {}
-        for key, value in years_snapshot.items():
-            row = value or {}
-            current_status = str(row.get("status") or "inactive").strip().lower()
-            if key == target_year:
-                years_ref.child(key).update({"isCurrent": True, "status": "active", "activatedAt": now_iso})
-            elif key == normalized_current_year:
-                years_ref.child(key).update({"isCurrent": False, "status": "archived", "archivedAt": now_iso})
-            else:
-                keep_status = "archived" if current_status == "archived" else "inactive"
-                years_ref.child(key).update({"isCurrent": False, "status": keep_status})
-
-        school_ref(school_code).child("schoolInfo").update({"currentAcademicYear": target_year})
+                "withdrawn": withdrawn,
+                "studentsArchived": students_archived,
+                "deactivatedUsers": len(deactivated_user_ids),
+            },
+        })
+        pending_rollover_ref(school_code).delete()
 
         return jsonify({
             "success": True,
@@ -1555,11 +2178,15 @@ def rollover_academic_year():
             "fromYear": normalized_current_year,
             "toYear": target_year,
             "promoted": promoted,
+            "repeated": repeated,
             "graduated": graduated,
-            "skipped": skipped,
-            "movedStudents": moved_students,
-            "movedParents": moved_parents,
-            "resetSummary": reset_summary,
+            "withdrawn": withdrawn,
+            "studentsArchived": students_archived,
+            "deactivatedUsers": len(deactivated_user_ids),
+            "resetSummary": {
+                "clearedNodes": cleared_nodes,
+                "archivePath": f"YearHistory/{normalized_current_year}",
+            },
         }), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500

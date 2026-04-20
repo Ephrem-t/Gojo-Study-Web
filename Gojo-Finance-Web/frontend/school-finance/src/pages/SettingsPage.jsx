@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaHome,
   FaFileAlt,
@@ -14,11 +14,18 @@ import {
 import axios from "axios";
 import { BACKEND_BASE } from "../config";
 import useDarkMode from "../hooks/useDarkMode";
+import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getFinanceDbRoot, normalizeFinanceSession } from "../utils/financeSession";
 
 function SettingsPage() {
-  const [admin, setAdmin] = useState(
-    JSON.parse(localStorage.getItem("admin")) || {}
-  );
+  const [admin, setAdmin] = useState(() => {
+    try {
+      const stored = localStorage.getItem("finance") || localStorage.getItem("admin") || "{}";
+      return normalizeFinanceSession(JSON.parse(stored));
+    } catch {
+      return normalizeFinanceSession({});
+    }
+  });
   const [selectedFile, setSelectedFile] = useState(null);
   const [profileImage, setProfileImage] = useState(
     admin.profileImage || "/default-profile.png"
@@ -30,98 +37,29 @@ function SettingsPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const navigate = useNavigate();
-  const [unreadSenders, setUnreadSenders] = useState([]);
+  const location = useLocation();
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
-
-  // POST NOTIFICATIONS
-  const [postNotifications, setPostNotifications] = useState([]);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
 
   const adminId = admin.userId;
-
-  // Fetch post notifications and enrich each with poster's name & profile image
-  const fetchPostNotifications = async () => {
-  if (!adminId) return;
-
-  try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(
-      `${BACKEND_BASE}/api/get_post_notifications/${adminId}`
-    );
-
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
-
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
-
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRes, adminsRes] = await Promise.all([
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      ),
-      axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/School_Admins.json"
-      ),
-    ]);
-
-    const users = usersRes.data || {};
-    const admins = adminsRes.data || {};
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
-        notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
-
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
-      };
-    });
-
-    setPostNotifications(enriched);
-  } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
-  }
-};
-
-
-  useEffect(() => {
-    if (!adminId) return;
-
-    fetchPostNotifications();
-    const interval = setInterval(fetchPostNotifications, 5000);
-
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminId]);
+  const DB_ROOT = getFinanceDbRoot(admin.schoolCode || "");
+  const {
+    unreadSenders,
+    setUnreadSenders,
+    unreadPosts: postNotifications,
+    setUnreadPosts: setPostNotifications,
+    messageCount,
+    totalNotifications,
+    markMessagesAsSeen,
+    markPostAsSeen,
+  } = useTopbarNotifications({
+    dbRoot: DB_ROOT,
+    currentUserId: admin.userId,
+  });
 
  const handleNotificationClick = async (notification) => {
   try {
-    await axios.post(`${BACKEND_BASE}/api/mark_post_notification_read`, {
-      notificationId: notification.notificationId,
-      adminId: admin.userId,
-    });
+    await markPostAsSeen(notification.postId);
   } catch (err) {
     console.warn("Failed to delete notification:", err);
   }
@@ -171,7 +109,7 @@ useEffect(() => {
       reader.onloadend = async () => {
         const base64Image = reader.result;
         await axios.patch(
-          `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+          `${DB_ROOT}/Users/${admin.userId}.json`,
           { profileImage: base64Image }
         );
         const updatedAdmin = { ...admin, profileImage: base64Image };
@@ -189,7 +127,7 @@ useEffect(() => {
     if (!name || !username) return alert("Name and Username required!");
     try {
       await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+        `${DB_ROOT}/Users/${admin.userId}.json`,
         { name, username }
       );
       const updatedAdmin = { ...admin, name, username };
@@ -206,7 +144,7 @@ useEffect(() => {
     if (password !== confirmPassword) return alert("Passwords do not match!");
     try {
       await axios.patch(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users/${admin.userId}.json`,
+        `${DB_ROOT}/Users/${admin.userId}.json`,
         { password }
       );
       setPassword("");
@@ -230,125 +168,8 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    const fetchUnreadSenders = async () => {
-      try {
-        const response = await fetch("/api/unreadSenders");
-        const data = await response.json();
-        setUnreadSenders(data);
-      } catch (err) {
-        // ignore
-      }
-    };
-    fetchUnreadSenders();
-  }, []);
-
   const handleClick = () => {
     navigate("/all-chat");
-  };
-
-  // ---------------- FETCH UNREAD MESSAGES ----------------
-  const fetchUnreadMessages = async () => {
-    if (!admin.userId) return;
-
-    const senders = {};
-
-    try {
-      // 1) USERS (names & images)
-      const usersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json"
-      );
-      const usersData = usersRes.data || {};
-
-      const findUserByUserId = (userId) => {
-        return Object.values(usersData).find((u) => u.userId === userId);
-      };
-
-      const getUnreadCount = async (userId) => {
-        const key1 = `${admin.userId}_${userId}`;
-        const key2 = `${userId}_${admin.userId}`;
-
-        const [r1, r2] = await Promise.all([
-          axios.get(
-            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
-          ),
-          axios.get(
-            `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
-          ),
-        ]);
-
-        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
-
-        return msgs.filter((m) => m.receiverId === admin.userId && !m.seen).length;
-      };
-
-      // TEACHERS
-      const teachersRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Teachers.json"
-      );
-
-      for (const k in teachersRes.data || {}) {
-        const t = teachersRes.data[k];
-        const unread = await getUnreadCount(t.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(t.userId);
-
-          senders[t.userId] = {
-            type: "teacher",
-            name: user?.name || "Teacher",
-            profileImage: user?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      // STUDENTS
-      const studentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json"
-      );
-
-      for (const k in studentsRes.data || {}) {
-        const s = studentsRes.data[k];
-        const unread = await getUnreadCount(s.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(s.userId);
-
-          senders[s.userId] = {
-            type: "student",
-            name: user?.name || s.name || "Student",
-            profileImage: user?.profileImage || s.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      // PARENTS
-      const parentsRes = await axios.get(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/Parents.json"
-      );
-
-      for (const k in parentsRes.data || {}) {
-        const p = parentsRes.data[k];
-        const unread = await getUnreadCount(p.userId);
-
-        if (unread > 0) {
-          const user = findUserByUserId(p.userId);
-
-          senders[p.userId] = {
-            type: "parent",
-            name: user?.name || p.name || "Parent",
-            profileImage: user?.profileImage || p.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      setUnreadSenders(senders);
-    } catch (err) {
-      console.error("Unread fetch failed:", err);
-    }
   };
 
   // ---------------- CLOSE DROPDOWN WHEN CLICKING OUTSIDE ----------------
@@ -363,52 +184,6 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    if (!admin.userId) return;
-
-    fetchUnreadMessages();
-    const interval = setInterval(fetchUnreadMessages, 5000);
-
-    return () => clearInterval(interval);
-  }, [admin.userId]);
-
-  const markMessagesAsSeen = async (userId) => {
-    const key1 = `${admin.userId}_${userId}`;
-    const key2 = `${userId}_${admin.userId}`;
-
-    const [r1, r2] = await Promise.all([
-      axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`
-      ),
-      axios.get(
-        `https://ethiostore-17d9f-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`
-      ),
-    ]);
-
-    const updates = {};
-
-    const collectUpdates = (data, basePath) => {
-      Object.entries(data || {}).forEach(([msgId, msg]) => {
-        if (msg.receiverId === admin.userId && !msg.seen) {
-          updates[`${basePath}/${msgId}/seen`] = true;
-        }
-      });
-    };
-
-    collectUpdates(r1.data, `Chats/${key1}/messages`);
-    collectUpdates(r2.data, `Chats/${key2}/messages`);
-
-    if (Object.keys(updates).length > 0) {
-      await axios.patch(
-        "https://ethiostore-17d9f-default-rtdb.firebaseio.com/.json",
-        updates
-      );
-    }
-  };
-
-  // badge counts (match MyPosts UI)
-  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
-  const totalNotifications = (postNotifications?.length || 0) + messageCount;
 
   return (
     <div className="dashboard-page">

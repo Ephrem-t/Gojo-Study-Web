@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
-import "../styles/login.css";
+import { useNavigate, Link } from "react-router-dom";
+import "../styles/Login.css";
 import { BACKEND_BASE } from "../config.js";
 
 const isAdminRole = (value) => {
@@ -13,7 +13,14 @@ function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const registerLink = "/register";
+
+  const canSubmit = useMemo(() => {
+    return !loading;
+  }, [loading]);
 
   useEffect(() => {
     try {
@@ -26,14 +33,37 @@ function Login() {
 
         localStorage.removeItem("admin");
       }
-    } catch (error) {
+    } catch (err) {
       localStorage.removeItem("admin");
     }
   }, [navigate]);
 
+  const validate = () => {
+    const nextErrors = {};
+    const usernameValue = username.trim();
+    const passwordValue = String(password || "");
+
+    if (!usernameValue) {
+      nextErrors.username = "Username is required.";
+    }
+
+    if (!passwordValue.trim()) {
+      nextErrors.password = "Password is required.";
+    } else if (passwordValue.length < 4) {
+      nextErrors.password = "Password must be at least 4 characters.";
+    }
+
+    setFieldErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
+
+    if (!validate()) return;
+
+    setLoading(true);
 
     try {
       const res = await axios.post(`${BACKEND_BASE}/api/login`, {
@@ -59,7 +89,7 @@ function Login() {
         }
 
         localStorage.setItem("admin", JSON.stringify(adminData));
-        navigate("/dashboard");
+        navigate("/dashboard", { replace: true });
       } else {
         setError(res.data.message || "Login failed");
       }
@@ -67,37 +97,82 @@ function Login() {
       localStorage.removeItem("admin");
       const backendMsg = err?.response?.data?.message;
       setError(backendMsg || "Login failed. Check server and credentials.");
+    } finally {
+      setLoading(false);
     }
   };
 
-
   return (
-    <div className="auth-container">
-      <div className="auth-box">
-        <h2>Admin Login</h2>
-        {error && <div className="auth-message">{error}</div>}
+    <div className="admin-login-page">
+      <div className="admin-login-glow admin-login-glow-left" aria-hidden="true" />
+      <div className="admin-login-glow admin-login-glow-right" aria-hidden="true" />
 
-        <form onSubmit={handleLogin}>
-          <input
-            type="text"
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+      <div className="admin-login-shell">
+        <section className="admin-login-hero">
+          <span className="admin-login-badge">Gojo Admin Portal</span>
+          <h1>Welcome, Admin</h1>
+          <p>
+            Sign in to manage your school, monitor records, and control administrative operations from one place.
+          </p>
+          <ul className="admin-login-list">
+            <li>Use your school admin username and password</li>
+            <li>Only authorized school administrators can access this portal</li>
+            <li>Need help? Contact the system supervisor or school support team</li>
+          </ul>
+        </section>
 
-          <button type="submit">Login</button>
-        </form>
+        <section className="admin-login-card-wrap">
+          <div className="admin-login-card">
+            <h2>Admin Login</h2>
+            <p className="admin-login-sub">Use your admin credentials to continue.</p>
 
+            {error ? <p className="admin-login-alert">{error}</p> : null}
 
-        <p>
-          I don’t have an account? <a href="/register">Register</a>
-        </p>
+            <form onSubmit={handleLogin} className="admin-login-form" noValidate>
+              <label htmlFor="username">Username</label>
+              <input
+                id="username"
+                type="text"
+                placeholder="Enter your admin username"
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  setFieldErrors((prev) => ({ ...prev, username: "" }));
+                }}
+                autoComplete="username"
+                disabled={loading}
+              />
+              {fieldErrors.username ? (
+                <p className="admin-login-field-error">{fieldErrors.username}</p>
+              ) : null}
+
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                placeholder="Enter your password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setFieldErrors((prev) => ({ ...prev, password: "" }));
+                }}
+                autoComplete="current-password"
+                disabled={loading}
+              />
+              {fieldErrors.password ? (
+                <p className="admin-login-field-error">{fieldErrors.password}</p>
+              ) : null}
+
+              <button type="submit" className="admin-login-button" disabled={!canSubmit}>
+                {loading ? "Signing In..." : "Sign In"}
+              </button>
+            </form>
+
+            <p className="admin-login-footer">
+              Don&apos;t have an account? <Link to={registerLink}>Register</Link>
+            </p>
+          </div>
+        </section>
       </div>
     </div>
   );

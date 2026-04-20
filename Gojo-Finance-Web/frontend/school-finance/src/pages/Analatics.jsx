@@ -31,6 +31,7 @@ import {
   Line,
 } from "recharts";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getOrLoad } from "../utils/requestCache";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -111,16 +112,34 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsRes, usersRes, monthlyPaidRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} })),
+        const [studentsData, usersData, monthlyPaidData] = await Promise.all([
+          getOrLoad(
+            `finance:analytics:students:${DB_ROOT}`,
+            async () => {
+              const response = await axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+          getOrLoad(
+            `finance:analytics:users:${DB_ROOT}`,
+            async () => {
+              const response = await axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+          getOrLoad(
+            `finance:analytics:monthlyPaid:${DB_ROOT}`,
+            async () => {
+              const response = await axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
         ]);
 
         if (cancelled) return;
-
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
 
         const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
           const userNode = usersData?.[studentNode.userId] || {};
@@ -137,7 +156,7 @@ function Analatics() {
         });
 
         setStudents(list);
-        setMonthlyPaidRaw(monthlyPaidRes.data || {});
+        setMonthlyPaidRaw(monthlyPaidData || {});
       } finally {
         if (!cancelled) setLoading(false);
       }

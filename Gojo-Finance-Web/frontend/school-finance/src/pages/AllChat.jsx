@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
 import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
-import axios from "axios";
-import { db } from "../firebase";
 import "../styles/global.css";
+import { useFinanceShell } from "../context/FinanceShellContext";
+import { loadUsersByRole } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -28,6 +28,9 @@ function AllChat() {
   const passedUser = location.state?.user || null;
 
   const getChatKey = (a, b) => [String(a || ""), String(b || "")].sort().join("_");
+  const financeShell = useFinanceShell();
+  const conversationSummaries = financeShell?.conversationSummaries || [];
+  const markMessagesAsSeen = financeShell?.markMessagesAsSeen;
 
   const [students, setStudents] = useState([]);
   const [parents, setParents] = useState([]);
@@ -52,79 +55,67 @@ function AllChat() {
     return getChatKey(financeUserId, selectedChatUser.userId);
   }, [selectedChatUser, financeUserId]);
 
-  const updateUnreadForSelected = async (userId) => {
-    if (!financeUserId || !userId) return;
-    const key = getChatKey(financeUserId, userId);
-    try {
-      await axios.patch(`${DB_ROOT}/Chats/${key}/unread.json`, {
-        [financeUserId]: 0,
-      });
-    } catch {
-      // ignore
-    }
-  };
+  const summaryMap = useMemo(() => {
+    const nextMap = new Map();
+    (conversationSummaries || []).forEach((summary) => {
+      nextMap.set(String(summary?.userId), summary);
+    });
+    return nextMap;
+  }, [conversationSummaries]);
 
   useEffect(() => {
-    const fetchPeople = async () => {
+    let cancelled = false;
+
+    const loadContacts = async () => {
       if (!financeUserId) return;
 
       try {
-        const [studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Chats.json`).catch(() => ({ data: {} })),
-        ]);
+        const role = selectedTab === "parent" ? "parent" : "student";
+        const users = await loadUsersByRole(DB_ROOT, role);
+        if (cancelled) return;
 
-        const studentsData = studentsRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const usersData = usersRes.data || {};
-        const chatsData = chatsRes.data || {};
+        const nextContacts = (users || [])
+          .filter((user) => String(user?.userId || "") !== String(financeUserId))
+          .map((user) => {
+            const summary = summaryMap.get(String(user?.userId || ""));
 
-        const buildList = (sourceMap, type) => {
-          return Object.entries(sourceMap || {})
-            .map(([id, node]) => {
-              const userId = node?.userId;
-              if (!userId) return null;
+            return {
+              id: user?.userId || "",
+              type: selectedTab,
+              userId: user?.userId || "",
+              name: user?.name || user?.username || `${selectedTab} ${user?.userId || ""}`,
+              profileImage: user?.profileImage || "/default-profile.png",
+              lastSeen: user?.lastSeen || null,
+              lastMsgTime: Number(summary?.lastTimestamp || 0),
+              lastMsgText: summary?.lastMessage?.text || "",
+              unread: Number(summary?.unreadCount || 0),
+            };
+          })
+          .sort((left, right) => right.lastMsgTime - left.lastMsgTime);
 
-              const user = usersData[userId] || {};
-              const key = getChatKey(financeUserId, userId);
-              const chat = chatsData[key] || {};
-              const unread = Number(chat?.unread?.[financeUserId] || 0);
-
-              return {
-                id,
-                type,
-                userId,
-                name: user.name || user.username || `${type} ${id}`,
-                profileImage: user.profileImage || "/default-profile.png",
-                lastSeen: user.lastSeen || null,
-                lastMsgTime: Number(chat?.lastMessage?.timeStamp || 0),
-                lastMsgText: chat?.lastMessage?.text || "",
-                unread,
-              };
-            })
-            .filter(Boolean)
-            .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
-        };
-
-        const studentList = buildList(studentsData, "student");
-        const parentList = buildList(parentsData, "parent");
-
-        setStudents(studentList);
-        setParents(parentList);
+        if (selectedTab === "student") {
+          setStudents(nextContacts);
+        } else {
+          setParents(nextContacts);
+        }
 
         if (!selectedChatUser) {
-          const first = studentList[0] || parentList[0] || null;
-          setSelectedChatUser(first);
+          const preferredUser = passedUser?.userId
+            ? nextContacts.find((item) => String(item.userId) === String(passedUser.userId))
+            : null;
+          setSelectedChatUser(preferredUser || nextContacts[0] || null);
         }
       } catch (err) {
         console.error("Failed to fetch chat users:", err);
       }
     };
 
-    fetchPeople();
-  }, [DB_ROOT, financeUserId]);
+    loadContacts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [DB_ROOT, financeUserId, passedUser?.userId, selectedChatUser, selectedTab, summaryMap]);
 
   useEffect(() => {
     if (!chatKey || !selectedChatUser?.userId || !financeUserId) return;
@@ -158,14 +149,16 @@ function AllChat() {
       setLastSeen(snapshot.val());
     });
 
-    updateUnreadForSelected(selectedChatUser.userId);
+    if (markMessagesAsSeen) {
+      markMessagesAsSeen(selectedChatUser.userId);
+    }
 
     return () => {
       unsubMessages();
       unsubTyping();
       unsubLastSeen();
     };
-  }, [chatKey, selectedChatUser, financeUserId, DB_PATH]);
+  }, [chatKey, selectedChatUser, financeUserId, DB_PATH, markMessagesAsSeen]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -282,7 +275,9 @@ function AllChat() {
         key={u.userId}
         onClick={async () => {
           setSelectedChatUser(u);
-          await updateUnreadForSelected(u.userId);
+          if (markMessagesAsSeen) {
+            await markMessagesAsSeen(u.userId);
+          }
         }}
         style={{
           display: "flex",

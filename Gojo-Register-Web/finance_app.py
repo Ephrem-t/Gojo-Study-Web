@@ -5,21 +5,20 @@ from firebase_admin import credentials, db
 import os
 import sys
 from datetime import datetime
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
 app = Flask(__name__)
 CORS(app)
 
-# Path to your Firebase service account JSON (located next to this script)
-firebase_json = os.path.join(os.path.dirname(__file__), "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
+# Path to your Firebase service account JSON (managed centrally via serviceAccountKey.py)
+firebase_json = require_firebase_credentials()
 if not os.path.exists(firebase_json):
     print(f"Firebase JSON missing at {firebase_json}")
     sys.exit(1)
 
 cred = credentials.Certificate(firebase_json)
-firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/"
-})
+firebase_admin.initialize_app(cred, get_firebase_options())
 
 PLATFORM_SCHOOLS_REF = "Platform1/Schools"
 

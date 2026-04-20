@@ -1,11 +1,93 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import {
+  buildChatKeyCandidates,
+  DEFAULT_PROFILE_IMAGE,
+  fetchJson,
+  getSafeProfileImage,
+  inferContactTypeFromUser,
+  mapInBatches,
+  parseChatParticipantIds,
+  uniqueNonEmptyValues,
+} from "../utils/chatRtdb";
 
-export const NOTIFICATION_POLL_MS = 9000;
+export const NOTIFICATION_POLL_MS = 60000;
 
-export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs = NOTIFICATION_POLL_MS }) {
+const RECENT_POST_LIMIT = 25;
+
+const getUserLookupQueryUrl = (dbRoot, userId) => {
+  const encodedUserId = encodeURIComponent(String(userId || "").trim());
+  return `${dbRoot}/Users.json?orderBy=%22userId%22&equalTo=%22${encodedUserId}%22&limitToFirst=1`;
+};
+
+const pickResolvedUserRecord = (directRecord, queriedUsers) => {
+  if (directRecord && typeof directRecord === "object") {
+    const hasMeaningfulData = Object.keys(directRecord).length > 0;
+    if (hasMeaningfulData) {
+      return directRecord;
+    }
+  }
+
+  const matchedEntry = Object.values(queriedUsers || {}).find(
+    (userRecord) => userRecord && typeof userRecord === "object"
+  );
+
+  return matchedEntry || null;
+};
+
+export default function useTopbarNotifications({
+  dbRoot,
+  currentUserId,
+  pollMs = NOTIFICATION_POLL_MS,
+  enabled = true,
+}) {
   const [unreadSenders, setUnreadSenders] = useState({});
   const [unreadPosts, setUnreadPosts] = useState([]);
+  const userCacheRef = useRef(new Map());
+  const pendingUserLookupsRef = useRef(new Map());
+
+  const resolveUserRecord = useCallback(
+    async (userId) => {
+      const normalizedUserId = String(userId || "").trim();
+      if (!dbRoot || !normalizedUserId) {
+        return null;
+      }
+
+      const cachedUser = userCacheRef.current.get(normalizedUserId);
+      if (cachedUser) {
+        return cachedUser;
+      }
+
+      const pendingLookup = pendingUserLookupsRef.current.get(normalizedUserId);
+      if (pendingLookup) {
+        return pendingLookup;
+      }
+
+      const lookupPromise = (async () => {
+        const encodedUserId = encodeURIComponent(normalizedUserId);
+        const [directRecord, queriedUsers] = await Promise.all([
+          fetchJson(`${dbRoot}/Users/${encodedUserId}.json`, null),
+          fetchJson(getUserLookupQueryUrl(dbRoot, normalizedUserId), {}),
+        ]);
+
+        const resolvedRecord = pickResolvedUserRecord(directRecord, queriedUsers);
+        if (resolvedRecord) {
+          userCacheRef.current.set(normalizedUserId, resolvedRecord);
+        }
+
+        return resolvedRecord;
+      })();
+
+      pendingUserLookupsRef.current.set(normalizedUserId, lookupPromise);
+
+      try {
+        return await lookupPromise;
+      } finally {
+        pendingUserLookupsRef.current.delete(normalizedUserId);
+      }
+    },
+    [dbRoot]
+  );
 
   const fetchUnreadMessages = useCallback(async () => {
     if (!dbRoot || !currentUserId) {
@@ -13,83 +95,83 @@ export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs =
       return;
     }
 
-    const senders = {};
+    if (!enabled) {
+      return;
+    }
 
     try {
-      const usersRes = await axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} }));
-      const usersData = usersRes.data || {};
-      const findUserByUserId = (userId) =>
-        Object.values(usersData).find((u) => String(u?.userId) === String(userId));
+      const chatIndex = await fetchJson(`${dbRoot}/Chats.json?shallow=true`, {});
+      const candidateChatKeys = Object.keys(chatIndex || {}).filter((chatKey) =>
+        String(chatKey || "").split("_").includes(String(currentUserId || "").trim())
+      );
 
-      const getUnreadCount = async (userId) => {
-        if (!userId) return 0;
+      if (candidateChatKeys.length === 0) {
+        setUnreadSenders({});
+        return;
+      }
 
-        const key1 = `${currentUserId}_${userId}`;
-        const key2 = `${userId}_${currentUserId}`;
+      const senderEntries = await mapInBatches(candidateChatKeys, 16, async (chatKey) => {
+        const encodedChatKey = encodeURIComponent(chatKey);
+        const unreadCount = Number(
+          await fetchJson(
+            `${dbRoot}/Chats/${encodedChatKey}/unread/${encodeURIComponent(currentUserId)}.json`,
+            0
+          )
+        );
 
-        const [r1, r2] = await Promise.all([
-          axios.get(`${dbRoot}/Chats/${key1}/messages.json`).catch(() => ({ data: null })),
-          axios.get(`${dbRoot}/Chats/${key2}/messages.json`).catch(() => ({ data: null })),
+        if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
+          return null;
+        }
+
+        let participantIds = parseChatParticipantIds(chatKey);
+        if (participantIds.length < 2) {
+          const participantsNode = await fetchJson(`${dbRoot}/Chats/${encodedChatKey}/participants.json`, {});
+          participantIds = parseChatParticipantIds(chatKey, participantsNode);
+        }
+
+        const otherUserId = participantIds.find(
+          (participantId) => String(participantId || "") !== String(currentUserId || "")
+        );
+        if (!otherUserId) {
+          return null;
+        }
+
+        const [lastMessage, userRecord] = await Promise.all([
+          fetchJson(`${dbRoot}/Chats/${encodedChatKey}/lastMessage.json`, null),
+          resolveUserRecord(otherUserId),
         ]);
 
-        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
-        return msgs.filter((m) => String(m?.receiverId) === String(currentUserId) && !m?.seen).length;
-      };
+        return {
+          otherUserId,
+          unreadCount,
+          userRecord,
+          lastMessageTime: Number(lastMessage?.timeStamp || 0),
+        };
+      });
 
-      const [teachersRes, studentsRes, parentsRes] = await Promise.all([
-        axios.get(`${dbRoot}/Teachers.json`).catch(() => ({ data: {} })),
-        axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${dbRoot}/Parents.json`).catch(() => ({ data: {} })),
-      ]);
-
-      for (const key in teachersRes.data || {}) {
-        const teacher = teachersRes.data[key];
-        const unread = await getUnreadCount(teacher?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(teacher?.userId);
-          senders[teacher.userId] = {
-            type: "teacher",
-            name: user?.name || "Teacher",
-            profileImage: user?.profileImage || "/default-profile.png",
-            count: unread,
+      const nextSenders = senderEntries
+        .filter(Boolean)
+        .sort((leftEntry, rightEntry) => Number(rightEntry.lastMessageTime || 0) - Number(leftEntry.lastMessageTime || 0))
+        .reduce((accumulator, entry) => {
+          const userRecord = entry.userRecord || {};
+          accumulator[entry.otherUserId] = {
+            type: inferContactTypeFromUser(userRecord),
+            name:
+              userRecord?.name ||
+              userRecord?.username ||
+              entry.otherUserId,
+            profileImage: getSafeProfileImage(userRecord?.profileImage, DEFAULT_PROFILE_IMAGE),
+            count: entry.unreadCount,
           };
-        }
-      }
+          return accumulator;
+        }, {});
 
-      for (const key in studentsRes.data || {}) {
-        const student = studentsRes.data[key];
-        const unread = await getUnreadCount(student?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(student?.userId);
-          senders[student.userId] = {
-            type: "student",
-            name: user?.name || student?.name || "Student",
-            profileImage: user?.profileImage || student?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      for (const key in parentsRes.data || {}) {
-        const parent = parentsRes.data[key];
-        const unread = await getUnreadCount(parent?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(parent?.userId);
-          senders[parent.userId] = {
-            type: "parent",
-            name: user?.name || parent?.name || "Parent",
-            profileImage: user?.profileImage || parent?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
-
-      setUnreadSenders(senders);
+      setUnreadSenders(nextSenders);
     } catch (err) {
       console.error("Unread fetch failed:", err);
       setUnreadSenders({});
     }
-  }, [dbRoot, currentUserId]);
+  }, [currentUserId, dbRoot, enabled, resolveUserRecord]);
 
   const fetchUnreadPosts = useCallback(async () => {
     if (!dbRoot || !currentUserId) {
@@ -97,98 +179,101 @@ export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs =
       return;
     }
 
+    if (!enabled) {
+      return;
+    }
+
     try {
-      const postsRes = await axios.get(`${dbRoot}/Posts.json`).catch(() => ({ data: {} }));
-      const postsNode = postsRes.data || {};
-      const allPosts = Object.entries(postsNode).map(([postId, post]) => ({ postId, ...post }));
-      const unread = allPosts.filter((p) => !p?.seenBy || !p.seenBy[currentUserId]);
-
-      if (unread.length === 0) {
-        setUnreadPosts([]);
-        return;
-      }
-
-      const usersRes = await axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} }));
-      const usersData = usersRes.data || {};
-
-      const enriched = await Promise.all(
-        unread.map(async (post) => {
-          let profile = "/default-profile.png";
-
-          try {
-            const financeNode = post?.adminId
-              ? (await axios.get(`${dbRoot}/Finance/${post.adminId}.json`).catch(() => ({ data: null }))).data
-              : null;
-            const schoolAdminNode = !financeNode && post?.adminId
-              ? (await axios.get(`${dbRoot}/School_Admins/${post.adminId}.json`).catch(() => ({ data: null }))).data
-              : null;
-
-            const posterUserId = financeNode?.userId || schoolAdminNode?.userId || post?.userId;
-            if (posterUserId) {
-              const posterUser =
-                Object.values(usersData).find((u) => String(u?.userId) === String(posterUserId)) ||
-                usersData[posterUserId];
-              profile = posterUser?.profileImage || profile;
-            }
-          } catch {
-            // keep fallback image
-          }
-
-          return {
-            ...post,
-            notificationId: post?.notificationId || post?.postId,
-            adminName: post?.adminName || "Admin",
-            adminProfile: profile,
-          };
-        })
+      const postsNode = await fetchJson(
+        `${dbRoot}/Posts.json?orderBy=%22%24key%22&limitToLast=${RECENT_POST_LIMIT}`,
+        {}
       );
 
-      setUnreadPosts(enriched);
+      const recentUnreadPosts = Object.entries(postsNode || {})
+        .map(([postId, postValue]) => ({ postId, ...postValue }))
+        .filter((postValue) => postValue && typeof postValue === "object")
+        .filter((postValue) => !postValue?.seenBy || !postValue.seenBy[currentUserId])
+        .sort(
+          (leftPost, rightPost) =>
+            new Date(rightPost.time || rightPost.createdAt || 0).getTime() -
+            new Date(leftPost.time || leftPost.createdAt || 0).getTime()
+        )
+        .slice(0, RECENT_POST_LIMIT)
+        .map((postValue) => ({
+          ...postValue,
+          notificationId: postValue?.notificationId || postValue?.postId,
+          adminName: postValue?.adminName || "Admin",
+          adminProfile: getSafeProfileImage(
+            postValue?.adminProfile || postValue?.adminProfileImage || postValue?.profileImage,
+            DEFAULT_PROFILE_IMAGE
+          ),
+        }));
+
+      setUnreadPosts(recentUnreadPosts);
     } catch (err) {
       console.error("Post notification fetch failed:", err);
       setUnreadPosts([]);
     }
-  }, [dbRoot, currentUserId]);
+  }, [currentUserId, dbRoot, enabled]);
+
+  const refreshNotifications = useCallback(async () => {
+    if (!dbRoot || !currentUserId) {
+      return;
+    }
+
+    await Promise.all([fetchUnreadMessages(), fetchUnreadPosts()]);
+  }, [currentUserId, dbRoot, fetchUnreadMessages, fetchUnreadPosts]);
 
   useEffect(() => {
-    if (!dbRoot || !currentUserId) return;
+    if (!enabled || !dbRoot || !currentUserId) return undefined;
 
-    fetchUnreadMessages();
-    const messageInterval = setInterval(fetchUnreadMessages, pollMs);
-    return () => clearInterval(messageInterval);
-  }, [dbRoot, currentUserId, pollMs, fetchUnreadMessages]);
+    const runRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
 
-  useEffect(() => {
-    if (!dbRoot || !currentUserId) return;
+      refreshNotifications();
+    };
 
-    fetchUnreadPosts();
-    const postInterval = setInterval(fetchUnreadPosts, pollMs);
-    return () => clearInterval(postInterval);
-  }, [dbRoot, currentUserId, pollMs, fetchUnreadPosts]);
+    runRefresh();
+
+    const intervalId = pollMs > 0 ? window.setInterval(runRefresh, pollMs) : null;
+    window.addEventListener("focus", runRefresh);
+    document.addEventListener("visibilitychange", runRefresh);
+
+    return () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+      window.removeEventListener("focus", runRefresh);
+      document.removeEventListener("visibilitychange", runRefresh);
+    };
+  }, [currentUserId, dbRoot, enabled, pollMs, refreshNotifications]);
 
   const markMessagesAsSeen = useCallback(
     async (userId) => {
       if (!dbRoot || !currentUserId || !userId) return;
 
-      const key1 = `${currentUserId}_${userId}`;
-      const key2 = `${userId}_${currentUserId}`;
-
-      const [r1, r2] = await Promise.all([
-        axios.get(`${dbRoot}/Chats/${key1}/messages.json`).catch(() => ({ data: null })),
-        axios.get(`${dbRoot}/Chats/${key2}/messages.json`).catch(() => ({ data: null })),
-      ]);
-
       const updates = {};
-      const collectUpdates = (data, basePath) => {
+      const collectUpdates = (chatKey, data) => {
         Object.entries(data || {}).forEach(([msgId, msg]) => {
           if (String(msg?.receiverId) === String(currentUserId) && !msg?.seen) {
-            updates[`${basePath}/${msgId}/seen`] = true;
+            updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
           }
         });
       };
 
-      collectUpdates(r1.data, `Chats/${key1}/messages`);
-      collectUpdates(r2.data, `Chats/${key2}/messages`);
+      const candidateChatKeys = uniqueNonEmptyValues(buildChatKeyCandidates(currentUserId, userId));
+      const messageSnapshots = await Promise.all(
+        candidateChatKeys.map(async (chatKey) => ({
+          chatKey,
+          messages: await fetchJson(`${dbRoot}/Chats/${encodeURIComponent(chatKey)}/messages.json`, null),
+        }))
+      );
+
+      messageSnapshots.forEach(({ chatKey, messages }) => {
+        collectUpdates(chatKey, messages);
+      });
 
       if (Object.keys(updates).length > 0) {
         await axios.patch(`${dbRoot}/.json`, updates);
@@ -222,6 +307,7 @@ export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs =
     totalNotifications,
     fetchUnreadMessages,
     fetchUnreadPosts,
+    refreshNotifications,
     markMessagesAsSeen,
     markPostAsSeen,
   };

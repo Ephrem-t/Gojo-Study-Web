@@ -19,6 +19,7 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getOrLoad } from "../utils/requestCache";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -129,15 +130,32 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersRes, parentsRes, studentsRes] = await Promise.all([
-          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
+        const [users, parentsData, studentsData] = await Promise.all([
+          getOrLoad(
+            `finance:parents:users:${DB}`,
+            async () => {
+              const response = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+          getOrLoad(
+            `finance:parents:list:${DB}`,
+            async () => {
+              const response = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
+          getOrLoad(
+            `finance:parents:students:${DB}`,
+            async () => {
+              const response = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
         ]);
-
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const studentsData = studentsRes.data || {};
 
         const getUserByKeyOrUserId = (maybeUserId) => {
           if (!maybeUserId) return null;
@@ -260,8 +278,14 @@ function Parent() {
     if (!selectedParent) return;
     const fetchParentInfoAndChildren = async () => {
       try {
-        const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-        const parentsData = parentsRes.data || {};
+        const parentsData = await getOrLoad(
+          `finance:parents:list:${DB}`,
+          async () => {
+            const response = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
+            return response.data || {};
+          },
+          { ttlMs: 5 * 60 * 1000 }
+        );
         const parentRecord = (
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -270,8 +294,14 @@ function Parent() {
           ) ||
           []
         )[1];
-        const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
+        const usersData = await getOrLoad(
+          `finance:parents:users:${DB}`,
+          async () => {
+            const response = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
+            return response.data || {};
+          },
+          { ttlMs: 5 * 60 * 1000 }
+        );
         const getUserByKeyOrUserId = (maybeUserId) => {
           if (!maybeUserId) return null;
           return (
@@ -324,8 +354,14 @@ function Parent() {
         };
         setParentInfo(info);
         setSelectedParent((prev) => ({ ...(prev || {}), ...info }));
-        const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-        const studentsData = studentsRes.data || {};
+        const studentsData = await getOrLoad(
+          `finance:parents:students:${DB}`,
+          async () => {
+            const response = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
+            return response.data || {};
+          },
+          { ttlMs: 5 * 60 * 1000 }
+        );
         const childrenList = Object.values(parentRecord?.children || {})
           .map((childLink) => {
             const studentRecord =

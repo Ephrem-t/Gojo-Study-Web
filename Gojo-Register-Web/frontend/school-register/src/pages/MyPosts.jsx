@@ -17,12 +17,15 @@ import {
   FaVideo,
   FaPhotoVideo,
   FaPlayCircle,
+  FaThumbsUp,
 } from "react-icons/fa";
 import "../styles/global.css";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import EthiopicCalendar from "ethiopic-calendar";
 import RegisterSidebar from "../components/RegisterSidebar";
+import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import { buildRegisterTargetRoleOptions, fetchConversationSummaries } from "../utils/registerData";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -153,6 +156,22 @@ const formatCalendarDeadlineDate = (isoDate) => {
   });
 };
 
+const hasUsableProfileImage = (value) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  return normalized !== "/default-profile.png" && normalized.toLowerCase() !== "null" && normalized.toLowerCase() !== "undefined";
+};
+
+const getAvatarInitials = (value) => {
+  const parts = String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!parts.length) return "RO";
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
+};
+
 const readStoredRegisterUser = () => {
   try {
     return JSON.parse(
@@ -225,6 +244,8 @@ function MyPosts() {
   const [editedContent, setEditedContent] = useState("");
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const [targetRole, setTargetRole] = useState("all");
   const [targetOptions, setTargetOptions] = useState(["all"]);
   const fileInputRef = useRef(null);
@@ -255,6 +276,7 @@ function MyPosts() {
   const [hoveredCalendarIsoDate, setHoveredCalendarIsoDate] = useState("");
   const [calendarModalContext, setCalendarModalContext] = useState("calendar");
   const [showAllUpcomingDeadlines, setShowAllUpcomingDeadlines] = useState(false);
+  const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
 
   // loading states for edit/delete
   const [savingId, setSavingId] = useState(null);
@@ -272,6 +294,7 @@ function MyPosts() {
   }).length;
   const mediaPostCount = posts.filter((post) => Boolean(post.postUrl)).length;
   const totalPostLikes = posts.reduce((sum, post) => sum + Number(post.likeCount || 0), 0);
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
 
   // Read admin from localStorage
   // Read finance/admin from localStorage (compat)
@@ -299,6 +322,7 @@ function MyPosts() {
 
   // include username (from Users node) for sidebar display
   admin.username = finance.username || "";
+  const currentLikeActorId = admin.userId || admin.adminId || "";
   const currentCalendarRole = String(finance.role || _storedFinance.role || _storedFinance.userType || "registrar").trim().toLowerCase();
   const canManageCalendar = CALENDAR_MANAGER_ROLES.has(currentCalendarRole);
   const shellCardStyle = {
@@ -353,6 +377,69 @@ function MyPosts() {
   // Prefer the finance/adminId (financeId) when available; fallback to userId
   const adminId = admin?.adminId || admin?.userId || null;
   const token = admin?.token || null;
+
+  const shouldShowPostSeeMore = (message = "") => {
+    const normalizedMessage = String(message || "").trim();
+    if (!normalizedMessage) {
+      return false;
+    }
+
+    const sentenceCount = normalizedMessage
+      .split(/[.!?]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .length;
+    const lineCount = normalizedMessage.split(/\r?\n/).filter(Boolean).length;
+
+    return normalizedMessage.length > 180 || sentenceCount > 2 || lineCount > 2;
+  };
+
+  const togglePostDescription = (postId) => {
+    setExpandedPostDescriptions((prev) => ({
+      ...prev,
+      [postId]: !prev[postId],
+    }));
+  };
+  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%") => {
+    const hasImage = hasUsableProfileImage(imageUrl);
+    const initials = getAvatarInitials(name);
+    const resolvedBorderRadius = typeof borderRadius === "number" ? `${borderRadius}px` : borderRadius;
+
+    return (
+      <div
+        className="img-circle"
+        style={{
+          width: size,
+          height: size,
+          borderRadius: resolvedBorderRadius,
+          overflow: "hidden",
+          flexShrink: 0,
+          border: hasImage ? "1px solid var(--border-soft)" : "1px solid var(--accent-strong)",
+          background: hasImage ? "var(--surface-panel)" : "var(--accent-strong)",
+          color: hasImage ? "var(--text-primary)" : "#fff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: Math.max(12, Math.round(size * 0.34)),
+          fontWeight: 900,
+          letterSpacing: "0.03em",
+          position: "relative",
+        }}
+      >
+        <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials}</span>
+        {hasImage ? (
+          <img
+            src={imageUrl}
+            alt={name || "profile"}
+            style={{ width: "100%", height: "100%", objectFit: "cover", position: "relative", zIndex: 1 }}
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+            }}
+          />
+        ) : null}
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (token) {
@@ -832,7 +919,7 @@ function MyPosts() {
             likes: p.likes || {},
             adminId: p.adminId || adminId,
             adminName: p.adminName || p.financeName || finance.name || admin.name,
-            adminProfile: p.adminProfile || p.financeProfile || finance.profileImage || admin.profileImage,
+            adminProfile: p.adminProfile || p.financeProfile || "",
             targetRole: p.targetRole || p.audience || "all",
             isVideo: isVideoMediaUrl(postUrl, mediaType),
           };
@@ -849,10 +936,23 @@ function MyPosts() {
     if (loadingFinance) return;
     if (!adminId) return;
 
-    fetchMyPosts();
-    const interval = setInterval(fetchMyPosts, 10000);
-    return () => clearInterval(interval);
-  }, [adminId, loadingFinance]);
+    const runRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+
+      fetchMyPosts();
+    };
+
+    runRefresh();
+    window.addEventListener("focus", runRefresh);
+    document.addEventListener("visibilitychange", runRefresh);
+
+    return () => {
+      window.removeEventListener("focus", runRefresh);
+      document.removeEventListener("visibilitychange", runRefresh);
+    };
+  }, [adminId, loadingFinance, schoolCode]);
 
   // load finance info on mount (so adminId is populated from RTDB when needed)
   useEffect(() => {
@@ -860,7 +960,7 @@ function MyPosts() {
   }, []);
 
   const handlePost = async () => {
-    if (!postText && !postMedia) return false;
+    if (!(postText.trim() || postMedia) || isOptimizingMedia) return false;
     try {
       const formData = new FormData();
       // Use backend-compatible field names: `message`, `postUrl` (if uploading client-side), and include finance fields
@@ -886,6 +986,7 @@ function MyPosts() {
 
       setPostText("");
       setPostMedia(null);
+      setPostMediaMeta(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       fetchMyPosts();
       return true;
@@ -897,7 +998,7 @@ function MyPosts() {
   };
 
   const handleSubmitCreatePost = async () => {
-    if (!postText && !postMedia) return;
+    if (!(postText.trim() || postMedia) || isOptimizingMedia) return;
     const success = await handlePost();
     if (success) setShowCreatePostModal(false);
   };
@@ -1054,201 +1155,39 @@ function MyPosts() {
       const financeUserId = finance.userId;
       if (!financeUserId) {
         setRecentContacts([]);
+        setTargetOptions(buildRegisterTargetRoleOptions());
         return;
       }
 
       try {
-        const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${DB_URL}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Chats.json`).catch(() => ({ data: {} })),
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const studentsData = studentsRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const usersData = usersRes.data || {};
-        const chatsData = chatsRes.data || {};
-        const userRecords = Object.values(usersData || {});
-
-        const findUserNode = (identifier) => {
-          const id = String(identifier || "");
-          if (!id) return null;
-          if (usersData[id]) return usersData[id];
-          return (
-            userRecords.find(
-              (u) =>
-                String(u?.userId || "") === id ||
-                String(u?.username || "") === id ||
-                String(u?.employeeId || "") === id ||
-                String(u?.teacherId || "") === id ||
-                String(u?.studentId || "") === id ||
-                String(u?.parentId || "") === id
-            ) || null
-          );
-        };
-
-        const resolveContactMeta = (identifier) => {
-          const id = String(identifier || "");
-          if (!id) return { name: "Unknown", profileImage: "/default-profile.png", type: "user", userId: "" };
-
-          const userNode = findUserNode(id);
-          if (userNode) {
-            return {
-              name: userNode.name || userNode.username || "Unknown",
-              profileImage: userNode.profileImage || "/default-profile.png",
-              type: userNode.role || userNode.userType || "user",
-              userId: userNode.userId || id,
-            };
-          }
-
-          const teacherNode =
-            teachersData[id] ||
-            Object.values(teachersData || {}).find(
-              (t) => String(t?.userId || "") === id || String(t?.teacherId || "") === id
-            );
-          if (teacherNode) {
-            const teacherUser = findUserNode(teacherNode?.userId) || {};
-            return {
-              name: teacherUser.name || teacherNode.name || teacherNode.teacherId || "Teacher",
-              profileImage: teacherUser.profileImage || teacherNode.profileImage || "/default-profile.png",
-              type: "teacher",
-              userId: teacherNode.userId || id,
-            };
-          }
-
-          const studentNode =
-            studentsData[id] ||
-            Object.values(studentsData || {}).find(
-              (s) => String(s?.userId || "") === id || String(s?.studentId || "") === id
-            );
-          if (studentNode) {
-            const studentUser = findUserNode(studentNode?.userId) || {};
-            return {
-              name: studentUser.name || studentNode.name || studentNode.studentId || "Student",
-              profileImage: studentUser.profileImage || studentNode.profileImage || "/default-profile.png",
-              type: "student",
-              userId: studentNode.userId || id,
-            };
-          }
-
-          const parentNode =
-            parentsData[id] ||
-            Object.values(parentsData || {}).find(
-              (p) => String(p?.userId || "") === id || String(p?.parentId || "") === id
-            );
-          if (parentNode) {
-            const parentUser = findUserNode(parentNode?.userId) || {};
-            return {
-              name: parentUser.name || parentNode.name || parentNode.parentId || "Parent",
-              profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
-              type: "parent",
-              userId: parentNode.userId || id,
-            };
-          }
-
-          return {
-            name: "Unknown",
-            profileImage: "/default-profile.png",
-            type: "user",
-            userId: id,
-          };
-        };
-
-        const roleSet = new Set(
-          Object.values(usersData || {})
-            .map((u) => String(u?.role || u?.userType || "").trim().toLowerCase())
-            .filter(Boolean)
-        );
-        const orderedRoles = ["student", "parent", "teacher", "registerer", "finance", "admin"].filter((r) => roleSet.has(r));
-        const extraRoles = Array.from(roleSet).filter((r) => !orderedRoles.includes(r)).sort();
-        const nextRoles = ["all", ...orderedRoles, ...extraRoles];
+        const nextRoles = buildRegisterTargetRoleOptions();
         setTargetOptions(nextRoles);
         setTargetRole((prev) => (nextRoles.includes(prev) ? prev : "all"));
 
-        // Debug: expose counts and sample keys
-        try {
-          console.log("MyPosts RecentContacts debug:", {
-            financeUserId,
-            schoolCode,
-            teachersCount: Object.keys(teachersData || {}).length,
-            usersCount: Object.keys(usersData || {}).length,
-            chatsCount: Object.keys(chatsData || {}).length,
-            chatSample: Object.keys(chatsData || {}).slice(0, 10),
-          });
-        } catch (e) {}
+        const summaries = await fetchConversationSummaries({
+          rtdbBase: DB_URL,
+          currentUserId: financeUserId,
+          includeWithoutLastMessage: true,
+          limit: 5,
+        });
 
-        const getMessageTime = (message) => {
-          const raw =
-            message?.timeStamp ||
-            message?.timestamp ||
-            message?.time ||
-            message?.createdAt ||
-            message?.sentAt ||
-            0;
-          if (typeof raw === "number") return raw < 1e12 ? raw * 1000 : raw;
-          const parsed = new Date(raw).getTime();
-          return Number.isFinite(parsed) ? parsed : 0;
-        };
-
-        const myIds = new Set(
-          [financeUserId, admin.userId, admin.adminId, finance.financeId]
-            .map((v) => String(v || ""))
-            .filter(Boolean)
+        setRecentContacts(
+          summaries.map((summary) => ({
+            userId: summary?.contact?.userId || "",
+            name: summary?.contact?.name || summary?.displayName || "Unknown",
+            profileImage: summary?.contact?.profileImage || "/default-profile.png",
+            lastMessage: summary?.lastMessageText || "",
+            lastTime: Number(summary?.lastMessageTime || 0),
+            type: summary?.contact?.type || "user",
+          }))
         );
-
-        const recentByUser = {};
-        for (const [, chatNode] of Object.entries(chatsData || {})) {
-          const msgs = Object.values(chatNode?.messages || {});
-          if (!msgs.length) continue;
-
-          for (const m of msgs) {
-            const senderId = String(m?.senderId || "");
-            const receiverId = String(m?.receiverId || "");
-            if (!senderId || !receiverId) continue;
-
-            const isMineSender = myIds.has(senderId);
-            const isMineReceiver = myIds.has(receiverId);
-            if (!isMineSender && !isMineReceiver) continue;
-
-            const rawPartnerId = isMineSender ? receiverId : senderId;
-            if (!rawPartnerId || myIds.has(rawPartnerId)) continue;
-
-            const contactMeta = resolveContactMeta(rawPartnerId);
-            const stableContactId = String(contactMeta.userId || rawPartnerId);
-            if (!stableContactId || myIds.has(stableContactId)) continue;
-
-            const messageTime = getMessageTime(m);
-            if (!messageTime) continue;
-
-            const current = recentByUser[stableContactId];
-            if (!current || messageTime > current.lastTime) {
-              recentByUser[stableContactId] = {
-                userId: stableContactId,
-                name: contactMeta.name,
-                profileImage: contactMeta.profileImage,
-                lastMessage: m?.message || m?.text || m?.content || "",
-                lastTime: messageTime,
-                type: contactMeta.type,
-              };
-            }
-          }
-        }
-
-        const topRecent = Object.values(recentByUser)
-          .sort((a, b) => b.lastTime - a.lastTime)
-          .slice(0, 5);
-
-        setRecentContacts(topRecent);
       } catch (err) {
         console.error("Error fetching recent contacts in MyPosts:", err);
       }
     };
 
     fetchTeachersAndRecent();
-  }, [finance.userId, schoolCode]);
+  }, [DB_URL, finance.userId]);
 
   useEffect(() => {
     const closeDropdown = (e) => {
@@ -1276,6 +1215,45 @@ function MyPosts() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [showCreatePostModal]);
+
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+
+    setIsOptimizingMedia(true);
+
+    try {
+      const optimizedResult = await optimizePostMedia(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
+
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
 
   useEffect(() => {
     if (!calendarActionMessage) {
@@ -1387,7 +1365,9 @@ function MyPosts() {
                             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           >
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <div style={{ width: 46, height: 46, flexShrink: 0 }}>
+                              {renderProfileAvatar(n.adminProfile, n.adminName, 46)}
+                            </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{n.adminName}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
@@ -1428,7 +1408,7 @@ function MyPosts() {
                                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                                 onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                               >
-                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                                {renderProfileAvatar(sender.profileImage, sender.name, 46, 8)}
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{sender.name}</strong>
                                   <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
@@ -1448,7 +1428,9 @@ function MyPosts() {
             {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
 
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <div className="profile-img" style={{ width: 38, height: 38, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+            {renderProfileAvatar(admin.profileImage, admin.name, 38)}
+          </div>
         </div>
       </nav>
 
@@ -1493,11 +1475,7 @@ function MyPosts() {
                 padding: 0,
               }}
             >
-              <img
-                src={admin.profileImage || "/default-profile.png"}
-                alt="me"
-                style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-soft)", flexShrink: 0 }}
-              />
+              {renderProfileAvatar(admin.profileImage, admin.name, 38)}
               <button
                 type="button"
                 onClick={() => setShowCreatePostModal(true)}
@@ -1578,19 +1556,11 @@ function MyPosts() {
                 >
                   <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                      <div className="img-circle" style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                        <img
-                          src={post.adminProfile || admin.profileImage || "/default-profile.png"}
-                          alt="profile"
-                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        />
-                      </div>
+                      {renderProfileAvatar(post.adminProfile, post.adminName || admin.name, 38)}
                       <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                         <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName || admin.name || "Admin"}</h4>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2, fontSize: 13, color: "var(--text-secondary)", fontWeight: 500 }}>
                           <span>{post.time}{post.edited ? " · Edited" : ""}</span>
-                          <span>·</span>
-                          <span>{post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}</span>
                         </div>
                       </div>
                     </div>
@@ -1624,11 +1594,48 @@ function MyPosts() {
                     </div>
                   ) : (
                     <>
-                      {post.message ? (
-                        <div style={{ padding: "0 16px 12px", color: "var(--text-primary)", fontSize: 15, lineHeight: 1.3333, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                          {post.message}
-                        </div>
-                      ) : null}
+                      {post.message ? (() => {
+                        const canExpandPost = shouldShowPostSeeMore(post.message);
+                        const isPostExpanded = !!expandedPostDescriptions[post.postId];
+
+                        return (
+                          <div style={{ padding: "0 16px 12px" }}>
+                            <div
+                              style={{
+                                color: "var(--text-primary)",
+                                fontSize: 15,
+                                lineHeight: 1.5,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                                maxHeight: canExpandPost && !isPostExpanded ? "3.9em" : "none",
+                                overflow: canExpandPost && !isPostExpanded ? "hidden" : "visible",
+                                position: "relative",
+                              }}
+                            >
+                              {post.message}
+                            </div>
+                            {canExpandPost ? (
+                              <button
+                                type="button"
+                                onClick={() => togglePostDescription(post.postId)}
+                                style={{
+                                  marginTop: 6,
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "var(--accent-strong)",
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                  padding: 0,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {isPostExpanded ? "See less" : "See more"}
+                              </button>
+                            ) : null}
+                          </div>
+                        );
+                      })() : null}
+
                       {post.postUrl && (
                         <div style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {post.isVideo ? (
@@ -1649,24 +1656,48 @@ function MyPosts() {
                         </div>
                       )}
 
-                      <div style={{ padding: "10px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--text-secondary)", borderTop: "1px solid var(--border-soft)" }}>
-                        <div style={{ whiteSpace: "nowrap", fontSize: 12, fontWeight: 600 }}>
+                      <div style={{ padding: "10px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--text-muted)", borderTop: "1px solid var(--border-soft)", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => handleLike(post.postId)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            minWidth: 0,
+                            border: "none",
+                            background: "transparent",
+                            padding: 0,
+                            cursor: "pointer",
+                            color: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--text-muted)",
+                            fontSize: 13,
+                            fontWeight: 600,
+                          }}
+                        >
+                          <span style={{ width: 20, height: 20, borderRadius: "50%", background: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--surface-strong)", color: post.likes && post.likes[currentLikeActorId] ? "#fff" : "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <FaThumbsUp style={{ width: 10, height: 10 }} />
+                          </span>
+                          <span style={{ whiteSpace: "nowrap" }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? "" : "s"}</span>
+                        </button>
+
+                        <div style={{ whiteSpace: "nowrap", fontSize: 12 }}>
                           {post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}
                         </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button
-                          onClick={() => handleEdit(post.postId, post.message)}
-                          style={{ ...subtleButtonStyle, borderRadius: 999, height: 34, padding: "0 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(post.postId)}
-                          disabled={deletingId === post.postId}
-                          style={{ border: "none", background: "var(--danger)", borderRadius: 999, height: 34, padding: "0 14px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
-                        >
-                          {deletingId === post.postId ? "Deleting..." : "Delete"}
-                        </button>
+
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginLeft: "auto" }}>
+                          <button
+                            onClick={() => handleEdit(post.postId, post.message)}
+                            style={{ ...subtleButtonStyle, borderRadius: 999, height: 34, padding: "0 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(post.postId)}
+                            disabled={deletingId === post.postId}
+                            style={{ border: "none", background: "var(--danger)", borderRadius: 999, height: 34, padding: "0 14px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            {deletingId === post.postId ? "Deleting..." : "Delete"}
+                          </button>
                         </div>
                       </div>
                     </>
@@ -1737,11 +1768,7 @@ function MyPosts() {
                         })}
                         style={{ ...softPanelStyle, display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '5px 6px', cursor: 'pointer' }}
                       >
-                        <img
-                          src={contact.profileImage || '/default-profile.png'}
-                          alt={contact.name}
-                          style={{ width: 24, height: 24, borderRadius: '50%', objectFit: 'cover' }}
-                        />
+                        {renderProfileAvatar(contact.profileImage, contact.name, 24)}
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {contact.name}
@@ -2178,11 +2205,7 @@ function MyPosts() {
 
               <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <img
-                    src={admin.profileImage || "/default-profile.png"}
-                    alt="me"
-                    style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover" }}
-                  />
+                  {renderProfileAvatar(admin.profileImage, admin.name, 40)}
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>{admin.name || "Register Office"}</div>
                     <select
@@ -2224,18 +2247,46 @@ function MyPosts() {
                 <div style={{ border: "1px solid var(--border-soft)", borderRadius: 12, padding: "8px 12px", boxShadow: "var(--shadow-soft)", background: "var(--surface-overlay)" }}>
                   <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <div style={{ marginRight: "auto", fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Add to your post</div>
-                    <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "50%", background: "transparent", cursor: "pointer", color: "var(--success)", fontSize: 24 }}>
-                    <AiFillPicture className="fb-icon" />
                     <input
                       ref={fileInputRef}
                       type="file"
-                      onChange={(e) => {
-                        const file = e.target.files && e.target.files[0];
-                        setPostMedia(file || null);
-                      }}
+                      onChange={handlePostMediaSelection}
                       accept="image/*,video/*"
+                      style={{ display: "none" }}
                     />
-                    </label>
+                    <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "14px 16px", background: "linear-gradient(180deg, var(--surface-muted) 0%, #ffffff 100%)", borderRadius: 14, border: "1px dashed var(--border-strong)", boxSizing: "border-box", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 250px" }}>
+                        <div style={{ width: 44, height: 44, borderRadius: 14, background: "var(--accent-soft)", border: "1px solid var(--border-strong)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
+                          {postMedia && String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera /> : <AiFillPicture />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>
+                            {postMedia ? "Media ready to attach" : "Choose a photo or video"}
+                          </div>
+                          <div style={{ marginTop: 3, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.45 }}>
+                            {isOptimizingMedia
+                              ? "Optimizing your image before upload."
+                              : "Images are automatically compressed and converted to JPEG when that reduces size."}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 12px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontSize: 11, fontWeight: 800, letterSpacing: "0.02em" }}>
+                          <AiFillVideoCamera style={{ color: "var(--danger)", fontSize: 15 }} />
+                          Photos and videos
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleOpenPostMediaPicker}
+                          disabled={isOptimizingMedia}
+                          style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, height: 40, padding: "0 16px", borderRadius: 999, background: isOptimizingMedia ? "var(--surface-strong)" : "var(--accent)", border: "none", cursor: isOptimizingMedia ? "progress" : "pointer", color: "#fff", fontSize: 13, fontWeight: 800, opacity: isOptimizingMedia ? 0.86 : 1, minWidth: 132 }}
+                        >
+                          <AiFillPicture style={{ fontSize: 17 }} />
+                          <span>{isOptimizingMedia ? "Optimizing..." : postMedia ? "Change file" : "Choose file"}</span>
+                        </button>
+                      </div>
+                    </div>
 
                     {postMedia && (
                       <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--surface-muted)", borderRadius: 10, boxSizing: "border-box" }}>
@@ -2244,12 +2295,21 @@ function MyPosts() {
                         ) : (
                           <AiFillPicture style={{ color: "var(--success)", fontSize: 18, flexShrink: 0 }} />
                         )}
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {postMedia.name}
-                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {postMedia.name}
+                          </div>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                            {postMediaMeta?.wasCompressed
+                              ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? " as JPEG" : ""}`
+                              : `Ready to attach to this post${postMediaMeta?.wasConvertedToJpeg ? " as JPEG" : ""}`}
+                          </div>
+                        </div>
                         <button
+                          type="button"
                           onClick={() => {
                             setPostMedia(null);
+                            setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
                           style={{ background: "var(--surface-strong)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", width: 26, height: 26, borderRadius: "50%", cursor: "pointer", fontSize: 16, lineHeight: 1 }}
@@ -2266,20 +2326,20 @@ function MyPosts() {
                 <button
                   type="button"
                   onClick={handleSubmitCreatePost}
-                  disabled={!postText.trim() && !postMedia}
+                  disabled={!canSubmitPost}
                   style={{
                     width: "100%",
                     border: "none",
-                    background: postText.trim() || postMedia ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)" : "var(--surface-strong)",
+                    background: canSubmitPost ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)" : "var(--surface-strong)",
                     borderRadius: 6,
                     height: 36,
-                    color: postText.trim() || postMedia ? "#fff" : "var(--text-muted)",
+                    color: canSubmitPost ? "#fff" : "var(--text-muted)",
                     fontSize: 15,
                     fontWeight: 700,
-                    cursor: postText.trim() || postMedia ? "pointer" : "not-allowed",
+                    cursor: canSubmitPost ? "pointer" : "not-allowed",
                   }}
                 >
-                  Post
+                  {isOptimizingMedia ? "Optimizing..." : "Post"}
                 </button>
               </div>
             </div>

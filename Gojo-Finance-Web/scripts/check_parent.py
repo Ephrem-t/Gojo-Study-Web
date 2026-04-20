@@ -2,20 +2,24 @@ import os
 import sys
 import firebase_admin
 from firebase_admin import credentials, db
+from pathlib import Path
 
-BASE = os.path.join(os.path.dirname(__file__), '..')
-FIREBASE_JSON = os.path.join(BASE, 'bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json')
-if not os.path.exists(FIREBASE_JSON):
-    print(f"Firebase JSON not found: {FIREBASE_JSON}")
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
+
+firebase_json = require_firebase_credentials()
+if not os.path.exists(firebase_json):
+    print(f"Firebase JSON not found: {firebase_json}")
     sys.exit(1)
 
-cred = credentials.Certificate(FIREBASE_JSON)
+cred = credentials.Certificate(firebase_json)
 try:
     firebase_admin.get_app()
 except Exception:
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': 'https://bale-house-rental-default-rtdb.firebaseio.com/'
-    })
+    firebase_admin.initialize_app(cred, get_firebase_options())
 
 school_code = 'TEST_SCHOOL'
 root = db.reference(f"Platform1/Schools/{school_code}")

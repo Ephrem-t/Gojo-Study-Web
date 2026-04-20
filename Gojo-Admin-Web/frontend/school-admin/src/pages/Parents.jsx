@@ -20,10 +20,81 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
+const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DIRECTORY_CACHE_TTL_MS = 15 * 60 * 1000;
+
+const normalizeText = (value) => String(value || "").trim();
+
+const uniqueTextValues = (values = []) => {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : []).reduce((result, value) => {
+    const text = normalizeText(value);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) {
+      return result;
+    }
+    seen.add(key);
+    result.push(text);
+    return result;
+  }, []);
+};
+
+const normalizeParentDirectoryChild = (child = {}) => ({
+  studentId: normalizeText(child?.studentId),
+  userId: normalizeText(child?.userId),
+  name: normalizeText(child?.name) || "N/A",
+  email: normalizeText(child?.email) || "N/A",
+  grade: normalizeText(child?.grade) || "N/A",
+  section: normalizeText(child?.section) || "N/A",
+  relationship: normalizeText(child?.relationship) || "N/A",
+  profileImage: normalizeText(child?.profileImage) || "/default-profile.png",
+});
+
+const normalizeParentDirectoryEntry = (parentKey, parentValue = {}) => {
+  const children = Array.isArray(parentValue?.children)
+    ? parentValue.children.map((child) => normalizeParentDirectoryChild(child)).filter((child) => child.studentId)
+    : Object.values(parentValue?.children || {})
+        .map((child) => normalizeParentDirectoryChild(child))
+        .filter((child) => child.studentId);
+  const relationships = uniqueTextValues([
+    ...(Array.isArray(parentValue?.relationships) ? parentValue.relationships : []),
+    ...children.map((child) => child.relationship),
+  ]);
+  const firstChild = children[0] || {};
+  const isActive = parentValue?.isActive !== false;
+
+  return {
+    userId: normalizeText(parentValue?.userId) || normalizeText(parentKey),
+    parentId: normalizeText(parentValue?.parentId) || "N/A",
+    name: normalizeText(parentValue?.name) || normalizeText(parentValue?.username) || "No Name",
+    username: normalizeText(parentValue?.username) || null,
+    email: normalizeText(parentValue?.email) || "N/A",
+    childName: normalizeText(parentValue?.childName) || firstChild.name || "N/A",
+    childRelationship: normalizeText(parentValue?.childRelationship) || firstChild.relationship || "N/A",
+    profileImage: normalizeText(parentValue?.profileImage) || "/default-profile.png",
+    phone: normalizeText(parentValue?.phone) || "N/A",
+    age: parentValue?.age ?? null,
+    city: normalizeText(parentValue?.city) || (parentValue?.address && parentValue.address.city) || null,
+    citizenship: normalizeText(parentValue?.citizenship) || null,
+    job: normalizeText(parentValue?.job) || null,
+    address: parentValue?.address || null,
+    isActive,
+    status: normalizeText(parentValue?.status) || (isActive ? "Active" : "Inactive"),
+    additionalInfo: normalizeText(parentValue?.additionalInfo) || "N/A",
+    createdAt: parentValue?.createdAt || parentValue?.updatedAt || null,
+    relationships,
+    children,
+    detailsLoaded: true,
+  };
+};
+
+const sortParentsByName = (items = []) =>
+  [...items].sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
 
 function Parent() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -35,7 +106,6 @@ function Parent() {
   const [newMessageText, setNewMessageText] = useState("");
   const [parentInfo, setParentInfo] = useState(null);
   const [children, setChildren] = useState([]);
-  const [expandedChildren, setExpandedChildren] = useState({});
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [selectedParent, setSelectedParent] = useState(null);
@@ -45,6 +115,9 @@ function Parent() {
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const typingTimeoutRef = useRef(null);
+  const usersDataRef = useRef({});
+  const parentsDataRef = useRef({});
+  const studentsDataRef = useRef({});
   const [typingUserId, setTypingUserId] = useState(null);
 
   const navigate = useNavigate();
@@ -70,6 +143,7 @@ function Parent() {
   };
   const schoolCode = _stored.schoolCode || "";
   const DB = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const PARENT_DIRECTORY_URL = `${DB}/ParentDirectory.json`;
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";
   const adminId = admin.userId;
@@ -119,6 +193,50 @@ function Parent() {
   const isPortrait = windowW <= 600;
   const contentLeft = 0;
   const contentWidth = isNarrow ? "92%" : "760px";
+
+  const loadParentDatasets = async (options = {}) => {
+    const force = Boolean(options?.force);
+    const hasCachedDatasets =
+      Object.keys(usersDataRef.current || {}).length > 0 &&
+      Object.keys(parentsDataRef.current || {}).length > 0 &&
+      Object.keys(studentsDataRef.current || {}).length > 0;
+
+    if (!force && hasCachedDatasets) {
+      return {
+        usersData: usersDataRef.current,
+        parentsData: parentsDataRef.current,
+        studentsData: studentsDataRef.current,
+      };
+    }
+
+    const [usersData, parentsData, studentsData] = await Promise.all([
+      fetchCachedJson(`${DB}/Users.json`, {
+        ttlMs: BIG_NODE_CACHE_TTL_MS,
+        fallbackValue: {},
+        force,
+      }),
+      fetchCachedJson(`${DB}/Parents.json`, {
+        ttlMs: BIG_NODE_CACHE_TTL_MS,
+        fallbackValue: {},
+        force,
+      }),
+      fetchCachedJson(`${DB}/Students.json`, {
+        ttlMs: BIG_NODE_CACHE_TTL_MS,
+        fallbackValue: {},
+        force,
+      }),
+    ]);
+
+    usersDataRef.current = usersData || {};
+    parentsDataRef.current = parentsData || {};
+    studentsDataRef.current = studentsData || {};
+
+    return {
+      usersData: usersDataRef.current,
+      parentsData: parentsDataRef.current,
+      studentsData: studentsDataRef.current,
+    };
+  };
 
   const getUserByKeyOrUserId = (usersData, maybeUserId) => {
     if (!maybeUserId) return null;
@@ -257,18 +375,32 @@ function Parent() {
 
   // Fetch parents
   useEffect(() => {
+    let cancelled = false;
+
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersRes, parentsRes, studentsRes] = await Promise.all([
-          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
-        ]);
+        const parentDirectoryData = await fetchCachedJson(PARENT_DIRECTORY_URL, {
+          ttlMs: DIRECTORY_CACHE_TTL_MS,
+          fallbackValue: {},
+        });
+        const directoryParentList = sortParentsByName(
+          Object.entries(parentDirectoryData || {})
+            .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
+            .filter((parentValue) => parentValue.userId)
+        );
 
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const studentsData = studentsRes.data || {};
+        if (directoryParentList.length > 0) {
+          if (cancelled) return;
+          setParents(directoryParentList);
+          setSelectedParent((previousParent) => {
+            if (!previousParent?.userId) return previousParent;
+            return directoryParentList.find((parentValue) => String(parentValue.userId) === String(previousParent.userId)) || previousParent;
+          });
+          return;
+        }
+
+        const { usersData: users, parentsData, studentsData } = await loadParentDatasets();
 
         const findParentRecordByUserId = (canonicalUserId) => {
           if (!canonicalUserId) return null;
@@ -325,6 +457,7 @@ function Parent() {
               userId: canonicalUserId,
               parentId: parentRecord?.parentId || "N/A",
               name: u.name || u.username || "No Name",
+              username: u.username || null,
               email: u.email || "N/A",
               childName: firstChild?.name || "N/A",
               childRelationship: firstChild?.relationship || "N/A",
@@ -335,18 +468,31 @@ function Parent() {
               citizenship: u.citizenship || null,
               job: u.job || null,
               address: u.address || null,
+              isActive: u.isActive ?? parentRecord?.isActive ?? true,
+              status: parentRecord?.status || (u.isActive === false ? "Inactive" : "Active"),
+              createdAt: parentRecord?.createdAt || u.createdAt || null,
+              detailsLoaded: false,
             };
           });
-        setParents(parentList);
+
+        if (cancelled) return;
+        setParents(sortParentsByName(parentList));
       } catch (err) {
         console.error("Error fetching parents:", err);
+        if (cancelled) return;
         setParents([]);
       } finally {
-        setLoadingParents(false);
+        if (!cancelled) {
+          setLoadingParents(false);
+        }
       }
     };
     fetchParents();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [PARENT_DIRECTORY_URL]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -379,14 +525,23 @@ function Parent() {
 
   // Fetch parent info & children
   useEffect(() => {
-    if (!selectedParentId) return;
+    if (!selectedParentId) {
+      setParentInfo(null);
+      setChildren([]);
+      return;
+    }
+
+    if (selectedParent?.detailsLoaded) {
+      setParentInfo(selectedParent);
+      setChildren(Array.isArray(selectedParent.children) ? selectedParent.children : []);
+      return;
+    }
 
     let cancelled = false;
 
     const fetchParentInfoAndChildren = async () => {
       try {
-        const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-        const parentsData = parentsRes.data || {};
+        const { parentsData, usersData, studentsData } = await loadParentDatasets();
         const parentRecordEntry =
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -395,11 +550,7 @@ function Parent() {
           ) || [];
         const parentRecordKey = parentRecordEntry[0] || null;
         const parentRecord = parentRecordEntry[1] || null;
-        const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
         const userInfo = getUserByKeyOrUserId(usersData, selectedParentId) || {};
-        const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-        const studentsData = studentsRes.data || {};
         const resolvedChildLinks = getResolvedParentChildLinks({
           parentRecord,
           parentRecordKey,
@@ -450,14 +601,6 @@ function Parent() {
 
         if (cancelled) return;
 
-        setParentInfo(info);
-        setSelectedParent((prev) => {
-          if (!prev || String(prev.userId) !== String(selectedParentId)) {
-            return prev;
-          }
-          return { ...prev, ...info };
-        });
-
         const childrenList = resolvedChildLinks
           .map((childLink) => {
             const studentMatch = findStudentMatchById(studentsData, childLink.studentId);
@@ -478,6 +621,20 @@ function Parent() {
           })
           .filter(Boolean);
 
+        const hydratedParent = {
+          ...info,
+          children: childrenList,
+          detailsLoaded: true,
+        };
+
+        setParentInfo(hydratedParent);
+        setSelectedParent((prev) => {
+          if (!prev || String(prev.userId) !== String(selectedParentId)) {
+            return prev;
+          }
+          return { ...prev, ...hydratedParent };
+        });
+
         if (cancelled) return;
 
         setChildren(childrenList);
@@ -496,11 +653,14 @@ function Parent() {
     return () => {
       cancelled = true;
     };
-  }, [DB, selectedParentId]);
+  }, [DB, selectedParent, selectedParentId]);
 
   // Fetch chat messages in realtime
   useEffect(() => {
-    if (!chatId) return;
+    if (!chatId || !parentChatOpen) {
+      setMessages([]);
+      return;
+    }
     const db = getDatabase();
     const messagesRef = rdbRef(db, `Chats/${chatId}/messages`);
     const unsubscribe = onValue(messagesRef, async (snapshot) => {
@@ -532,7 +692,7 @@ function Parent() {
       }
     });
     return () => unsubscribe();
-  }, [chatId]);
+  }, [DB, admin.userId, chatId, parentChatOpen]);
 
   // Listen to typing in realtime (only while popup open)
   useEffect(() => {
@@ -548,41 +708,6 @@ function Parent() {
     });
     return () => unsub();
   }, [chatId, parentChatOpen]);
-
-  // Mark messages as seen when the chat popup opens or selected parent changes
-  useEffect(() => {
-    if (!parentChatOpen || !selectedParent || !admin?.userId) return;
-    const chatKey = getChatId(admin.userId, selectedParent.userId);
-
-    const markSeen = async () => {
-      try {
-        const res = await axios.get(`${DB}/Chats/${chatKey}/messages.json`);
-        const data = res.data || {};
-        const updates = {};
-        Object.entries(data).forEach(([msgId, msg]) => {
-          if (msg && msg.receiverId === admin.userId && !msg.seen) {
-            updates[`${msgId}/seen`] = true;
-          }
-        });
-
-        if (Object.keys(updates).length > 0) {
-          // Patch the messages node with per-message seen updates
-          await axios.patch(`${DB}/Chats/${chatKey}/messages.json`, updates).catch(() => {});
-        }
-
-        // Optimistically update local state
-        setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
-      } catch (err) {
-        console.warn("Failed to mark messages as seen:", err);
-      }
-    };
-
-    markSeen();
-    // also reset unread counter for admin in chat root
-    axios.patch(`${DB}/Chats/${chatKey}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-    maybeMarkLastMessageSeenForAdmin(chatKey);
-    axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
-  }, [parentChatOpen, selectedParent, admin]);
 
   // Typing handler: write typing.userId to chat root while admin types
   const handleTyping = (text) => {
@@ -962,11 +1087,7 @@ function Parent() {
                 ...elevatedPanelStyle,
               }}
             >
-              <img
-                src={c.profileImage}
-                alt={c.name}
-                style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid var(--accent-strong)" }}
-              />
+              <ProfileAvatar src={c.profileImage} name={c.name} alt={c.name} loading="lazy" style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid var(--accent-strong)" }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {c.name}
@@ -1033,11 +1154,7 @@ function Parent() {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img
-                  src={activeParent.profileImage || "/default-profile.png"}
-                  alt={activeParent.name}
-                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
-                />
+                <ProfileAvatar src={activeParent.profileImage} name={activeParent.name} alt={activeParent.name} style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }} />
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{activeParent.name || "Parent"}</div>
                   <div style={{ fontSize: 12, opacity: 0.95 }}>
@@ -1194,11 +1311,7 @@ function Parent() {
                 border: "3px solid rgba(255,255,255,0.8)",
               }}
             >
-              <img
-                src={selectedParent.profileImage}
-                alt={selectedParent.name}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              />
+              <ProfileAvatar src={selectedParent.profileImage} name={selectedParent.name} alt={selectedParent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
             <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedParent.name}</h2>
             <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedParent.parentId || "No Parent ID"}</p>
@@ -1311,7 +1424,15 @@ function Parent() {
   return (
     <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh", height: "100vh", overflow: "hidden" }}>
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        <Sidebar admin={admin} />
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         {/* MAIN CONTENT */}
         <main className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`} style={mainContentStyle}>
@@ -1403,18 +1524,7 @@ function Parent() {
                       >
                         {i + 1}
                       </div>
-                      <img
-                        src={p.profileImage}
-                        alt={p.name}
-                        style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: "50%",
-                          objectFit: "cover",
-                          border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)",
-                          transition: "all 0.3s ease",
-                        }}
-                      />
+                      <ProfileAvatar src={p.profileImage} name={p.name} alt={p.name} loading="lazy" style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)", transition: "all 0.3s ease" }} />
                       <div style={{ minWidth: 0 }}>
                         <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {p.name}

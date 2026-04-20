@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { FaBell, FaCog, FaFacebookMessenger } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 export default function TeacherTopbarActions({
   showNotifications = false,
@@ -14,6 +15,7 @@ export default function TeacherTopbarActions({
   messageCount = 0,
   settingsTo = "/settings",
   profileImage = "/default-profile.png",
+  profileName = "Teacher",
 }) {
   const hasNotifications = (postNotifications?.length || 0) + (messageNotifications?.length || 0) > 0;
 
@@ -201,13 +203,11 @@ export default function TeacherTopbarActions({
       <Link className="icon-circle" to={settingsTo}>
         <FaCog />
       </Link>
-      <img
+      <ProfileAvatar
         src={profileImage || "/default-profile.png"}
+        name={profileName}
         alt="teacher"
         className="profile-img"
-        onError={(event) => {
-          event.currentTarget.src = "/default-profile.png";
-        }}
       />
     </>
   );

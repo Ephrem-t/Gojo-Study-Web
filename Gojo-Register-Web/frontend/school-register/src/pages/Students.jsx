@@ -14,6 +14,19 @@ import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  buildUserLookupFromNode,
+  loadAttendanceForStudent,
+  loadGradeManagementNode,
+  loadMarksForStudent,
+  loadParentRecordsByIds,
+  loadSchoolInfoNode,
+  loadSchoolStudentsNode,
+  loadSchoolUsersNode,
+  loadUserRecordById,
+  loadUserRecordsByIds,
+} from "../utils/registerData";
 
 
 function StudentsPage() {
@@ -407,56 +420,31 @@ useEffect(() => {
   const handleSelectStudent = async (s) => {
     const requestId = studentSelectionRequestRef.current + 1;
     studentSelectionRequestRef.current = requestId;
-    setSelectedStudent((prev) => ({ ...(prev || {}), ...s }));
+    setSelectedStudent((prev) => {
+      const isSameStudent = String(prev?.studentId || "") === String(s?.studentId || "");
+
+      if (isSameStudent) {
+        return {
+          ...prev,
+          ...s,
+          profileImage: s?.profileImage || prev?.profileImage || "",
+        };
+      }
+
+      return { ...s };
+    });
     setRightSidebarOpen(true);
     try {
-      // 1️⃣ Fetch user info
-      const userRes = await axios.get(`${DB_URL}/Users/${s.userId}.json`);
-      const user = userRes.data || {};
-
-      // 2️⃣ Fetch ClassMarks from Firebase
-      const marksRes = await axios.get(`${DB_URL}/ClassMarks.json`);
-      const classMarks = marksRes.data || {};
-
-      const studentMarksObj = {};
-      const courseTeacherMap = {};
-
-      // Loop through all courses
-      Object.entries(classMarks).forEach(([courseId, studentsObj]) => {
-        // There are two common ways to key student records under a course:
-        // 1) by the Students node key (student_123) -> that's stored in s.studentId
-        // 2) by a nested object where student objects might include userId properties
-        // We'll prefer matching by s.studentId (the RTDB Students key).
-        const studentMark =
-          studentsObj?.[s.studentId] ||
-          // fallback: try to find a student object whose userId matches s.userId
-          Object.values(studentsObj || {}).find(
-            (st) => st && (st.userId === s.userId || st.studentId === s.studentId)
-          );
-
-        if (studentMark) {
-          studentMarksObj[courseId] = studentMark;
-          courseTeacherMap[courseId] = studentMark.teacherName || "Teacher";
-        }
+      const user = (await loadUserRecordById({ rtdbBase: DB_URL, schoolCode, userId: s.userId })) || {};
+      const studentMarksObj = await loadMarksForStudent({
+        rtdbBase: DB_URL,
+        student: s,
+        allowLegacy: true,
       });
-
-      // 3️⃣ Fetch Attendance (optional)
-      const attendanceRes = await axios.get(`${DB_URL}/Attendance.json`);
-      const attendanceRaw = attendanceRes.data || {};
-
-      const attendanceData = [];
-      Object.entries(attendanceRaw).forEach(([courseId, datesObj]) => {
-        Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-          const status = studentsObj?.[s.studentId];
-          if (status) {
-            attendanceData.push({
-              courseId,
-              date,
-              status,
-              teacherName: courseTeacherMap[courseId] || "Teacher",
-            });
-          }
-        });
+      const attendanceData = await loadAttendanceForStudent({
+        rtdbBase: DB_URL,
+        student: s,
+        courseIds: Object.keys(studentMarksObj || {}),
       });
 
       // 4️⃣ Fetch student RTDB record (to read parents / dob if available)
@@ -497,29 +485,36 @@ useEffect(() => {
       let parentPhone = null;
       try {
         const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
-        for (const pid of parentIds) {
-          try {
-            const pRes = await axios.get(`${DB_URL}/Parents/${pid}.json`);
-            const parentNode = pRes.data || {};
-            const parentUserId = parentNode.userId;
-            if (parentUserId) {
-              const uRes = await axios.get(`${DB_URL}/Users/${parentUserId}.json`);
-              const parentUser = uRes.data || {};
-              const pInfo = {
-                parentId: pid,
-                userId: parentUserId || null,
-                name: parentUser.name || parentNode.name || "Parent",
-                phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null,
-                profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
-              };
-              parentsList.push(pInfo);
-              if (!parentName) parentName = pInfo.name;
-              if (!parentPhone) parentPhone = pInfo.phone;
-            }
-          } catch (e) {
-            // ignore per-parent errors
+        const parentRecords = await loadParentRecordsByIds({
+          rtdbBase: DB_URL,
+          schoolCode,
+          parentIds,
+        });
+        const parentUsers = await loadUserRecordsByIds({
+          rtdbBase: DB_URL,
+          schoolCode,
+          userIds: Object.values(parentRecords || {}).map((parentRecord) => parentRecord?.userId),
+        });
+
+        parentIds.forEach((pid) => {
+          const parentNode = parentRecords?.[pid] || {};
+          const parentUserId = parentNode.userId;
+          if (!parentUserId) {
+            return;
           }
-        }
+
+          const parentUser = parentUsers?.[parentUserId] || {};
+          const pInfo = {
+            parentId: pid,
+            userId: parentUserId || null,
+            name: parentUser.name || parentNode.name || "Parent",
+            phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null,
+            profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
+          };
+          parentsList.push(pInfo);
+          if (!parentName) parentName = pInfo.name;
+          if (!parentPhone) parentPhone = pInfo.phone;
+        });
       } catch (e) {
         // ignore
       }
@@ -654,51 +649,7 @@ useEffect(() => {
 
   useEffect(() => {
     const fetchTeachersAndUnread = async () => {
-      try {
-        const [teachersRes, usersRes] = await Promise.all([
-          axios.get(`${DB_URL}/Teachers.json`),
-          axios.get(`${DB_URL}/Users.json`)
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
-          };
-        });
-
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        for (const t of teacherList) {
-          const chatKey = `${t.userId}_${adminUserId}`;
-          const res = await axios.get(`${DB_URL}/Chats/${chatKey}/messages.json`);
-          const msgs = Object.values(res.data || {}).map(m => ({
-            ...m,
-            sender: m.senderId === adminUserId ? "admin" : "teacher"
-          }));
-          allMessages.push(...msgs);
-
-          const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
-        }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-      } catch (err) {
-        console.error(err);
-      }
+      setTeachers([]);
     };
 
     fetchTeachersAndUnread();
@@ -709,17 +660,15 @@ useEffect(() => {
     const fetchStudents = async () => {
       try {
         setStudentsLoading(true);
-        const [studentsRes, usersRes, schoolInfoRes, gradesRes] = await Promise.all([
-          axios.get(`${DB_URL}/Students.json`),
-          axios.get(`${DB_URL}/Users.json`),
-          axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
+        const [studentsData, usersNode, schoolInfo, gradesData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+          loadSchoolUsersNode({ rtdbBase: DB_URL }),
+          loadSchoolInfoNode({ rtdbBase: DB_URL }),
+          loadGradeManagementNode({ rtdbBase: DB_URL }),
         ]);
 
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
-        const activeAcademicYear = (schoolInfoRes.data || {}).currentAcademicYear || "";
-        const gradesData = gradesRes.data || {};
+        const usersData = buildUserLookupFromNode(usersNode);
+        const activeAcademicYear = schoolInfo?.currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
 
         const managedGrades = Object.keys(gradesData)
@@ -757,7 +706,7 @@ useEffect(() => {
     };
 
     fetchStudents();
-  }, []);
+  }, [DB_URL]);
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
@@ -802,14 +751,50 @@ useEffect(() => {
     );
   }, [filteredStudentsBase, previousAcademicYearKey]);
 
+  const assignedGrades = useMemo(() => {
+    const source = gradeOptions.length
+      ? gradeOptions
+      : [...new Set(students.map((student) => student.grade).filter(Boolean))];
+
+    return [...new Set(source.map((gradeValue) => String(gradeValue)))].sort((leftGrade, rightGrade) => {
+      const numericDiff = Number(leftGrade) - Number(rightGrade);
+      if (!Number.isNaN(numericDiff) && numericDiff !== 0) return numericDiff;
+      return String(leftGrade).localeCompare(String(rightGrade));
+    });
+  }, [gradeOptions, students]);
+
+  const assignedSectionsForSelectedGrade = useMemo(() => {
+    if (selectedGrade === "All") return [];
+
+    return [...new Set(
+      students
+        .filter((student) => String(student.grade) === String(selectedGrade))
+        .map((student) => student.section)
+        .filter(Boolean)
+    )].sort((leftSection, rightSection) => String(leftSection).localeCompare(String(rightSection)));
+  }, [students, selectedGrade]);
+
+  const selectedFilterLabel =
+    selectedGrade === "All"
+      ? "All grades"
+      : selectedSection === "All"
+      ? `Grade ${selectedGrade} (select section)`
+      : `Grade ${selectedGrade} - Section ${selectedSection}`;
+
+  const listShellWidth = isPortrait ? "100%" : "min(100%, 640px)";
+
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
     if (selectedGrade === "All") {
       setSections([]);
-    } else {
-      const gradeSections = [...new Set(students.filter(s => String(s.grade) === String(selectedGrade)).map(s => s.section))];
-      setSections(gradeSections);
       setSelectedSection("All");
+    } else {
+      const gradeSections = [...new Set(students.filter(s => String(s.grade) === String(selectedGrade)).map(s => s.section).filter(Boolean))];
+      setSections(gradeSections);
+      setSelectedSection((prev) => {
+        if (!gradeSections.length) return "All";
+        return gradeSections.includes(prev) ? prev : gradeSections[0];
+      });
     }
   }, [selectedGrade, students]);
 
@@ -826,57 +811,10 @@ useEffect(() => {
 
     async function fetchMarks() {
       try {
-        let classMarks = {};
-
-        try {
-          const scopedRes = await axios.get(`${DB_URL}/ClassMarks.json`);
-          classMarks = scopedRes.data || {};
-        } catch {
-          classMarks = {};
-        }
-
-        if (!Object.keys(classMarks).length) {
-          try {
-            const legacyRes = await axios.get(`${DB_BASE}/ClassMarks.json`);
-            classMarks = legacyRes.data || {};
-          } catch {
-            classMarks = classMarks || {};
-          }
-        }
-
-        const studentIdCandidates = Array.from(
-          new Set(
-            [
-              selectedStudent.studentId,
-              selectedStudent.userId,
-              selectedStudent.id,
-              selectedStudent.uid,
-            ]
-              .filter(Boolean)
-              .map((v) => String(v))
-          )
-        );
-
-        const marksObj = {};
-        Object.entries(classMarks || {}).forEach(([courseId, students]) => {
-          const byKey = studentIdCandidates.find((candidate) => students?.[candidate]);
-          if (byKey) {
-            marksObj[courseId] = students[byKey];
-            return;
-          }
-
-          const found = Object.values(students || {}).find(
-            (record) =>
-              record &&
-              studentIdCandidates.some(
-                (candidate) =>
-                  String(record.userId || "") === candidate ||
-                  String(record.studentId || "") === candidate ||
-                  String(record.id || "") === candidate
-              )
-          );
-
-          if (found) marksObj[courseId] = found;
+        const marksObj = await loadMarksForStudent({
+          rtdbBase: DB_URL,
+          student: selectedStudent,
+          allowLegacy: true,
         });
 
         if (!cancelled) {
@@ -893,7 +831,7 @@ useEffect(() => {
     return () => {
       cancelled = true;
     };
-  }, [selectedStudent, DB_URL, DB_BASE]);
+  }, [selectedStudent, DB_URL]);
 
   useEffect(() => {
     if (studentTab !== "payment" || !selectedStudent) return;
@@ -1269,6 +1207,65 @@ useEffect(() => {
       .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
       .join(" ");
   };
+
+const StudentItem = ({ student, selected, onClick, number }) => (
+  <div
+    onClick={() => onClick(student)}
+    style={{
+      width: "100%",
+      borderRadius: "14px",
+      padding: "11px",
+      display: "flex",
+      alignItems: "center",
+      gap: "12px",
+      cursor: "pointer",
+      background: "#ffffff",
+      border: selected ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+      boxShadow: selected
+        ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+        : "0 4px 10px rgba(15, 23, 42, 0.06)",
+      transition: "all 0.24s ease",
+      boxSizing: "border-box",
+    }}
+  >
+    <div
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: "50%",
+        background: selected ? "#1d4ed8" : "#eef2ff",
+        color: selected ? "#fff" : "#334155",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontWeight: 800,
+        fontSize: 12,
+        flexShrink: 0,
+      }}
+    >
+      {number}
+    </div>
+
+    <ProfileAvatar
+      imageUrl={student.profileImage}
+      name={student.name}
+      size={48}
+      style={{
+        border: selected ? "2px solid #60a5fa" : "2px solid #e2e8f0",
+        background: "#ffffff",
+      }}
+    />
+
+    <div style={{ minWidth: 0 }}>
+      <h3 style={{ margin: 0, fontSize: 14, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {student.name}
+      </h3>
+      <p style={{ margin: "4px 0", color: "#555", fontSize: 11 }}>
+        Grade {student.grade} - Section {student.section}
+      </p>
+    </div>
+  </div>
+);
 
 
 
@@ -1650,7 +1647,42 @@ useEffect(() => {
   };
 
  return (
-   <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
+   <div
+     className="dashboard-page"
+     style={{
+       background: "#ffffff",
+       minHeight: "100vh",
+       height: "100vh",
+       overflow: "hidden",
+       color: "var(--text-primary)",
+       "--surface-panel": "#ffffff",
+       "--surface-accent": "#eff6ff",
+       "--surface-muted": "#f8fbff",
+       "--surface-strong": "#e2e8f0",
+       "--surface-overlay": "rgba(255,255,255,0.92)",
+       "--page-bg": "#ffffff",
+       "--page-bg-secondary": "#f8fbff",
+       "--border-soft": "#e2e8f0",
+       "--border-strong": "#cbd5e1",
+       "--text-primary": "#0f172a",
+       "--text-secondary": "#334155",
+       "--text-muted": "#64748b",
+       "--accent": "#3b82f6",
+       "--accent-soft": "#dbeafe",
+       "--accent-strong": "#007AFB",
+       "--shadow-soft": "0 10px 22px rgba(15, 23, 42, 0.07)",
+       "--shadow-panel": "0 16px 34px rgba(15, 23, 42, 0.12)",
+       "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+       "--success": "#16a34a",
+       "--success-soft": "#dcfce7",
+       "--warning": "#d97706",
+       "--warning-soft": "#fef3c7",
+       "--danger": "#dc2626",
+       "--danger-soft": "#fee2e2",
+       "--input-border": "#dbeafe",
+       "--input-bg": "#ffffff",
+     }}
+   >
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
         <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
@@ -1685,7 +1717,7 @@ useEffect(() => {
                         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-soft)", fontWeight: 700, color: "var(--text-primary)" }}>Posts</div>
                         {postNotifications.map(n => (
                           <div key={n.notificationId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={() => handleNotificationClick(n)}>
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={n.adminProfile} name={n.adminName} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
@@ -1701,7 +1733,7 @@ useEffect(() => {
                         <div style={{ padding: '8px 10px', color: 'var(--text-primary)', fontWeight: 700, background: 'var(--surface-muted)', borderRadius: 6, margin: '8px 6px' }}>Messages</div>
                         {Object.entries(unreadSenders || {}).map(([userId, sender]) => (
                           <div key={userId} style={{ padding: 10, display: "flex", alignItems: "center", gap: 12, cursor: "pointer", borderBottom: "1px solid var(--border-soft)", transition: "background 120ms ease" }} onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-muted)')} onMouseLeave={(e) => (e.currentTarget.style.background = '')} onClick={async () => { await markMessagesAsSeen(userId); setUnreadSenders(prev => { const copy = { ...prev }; delete copy[userId]; return copy; }); setShowPostDropdown(false); navigate('/all-chat', { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } }); }}>
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={sender.profileImage} name={sender.name} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && 's'}</p>
@@ -1723,60 +1755,78 @@ useEffect(() => {
             )}
           </div>
 
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden", background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)" }}>
         {/* ---------------- SIDEBAR ---------------- */}
         <RegisterSidebar user={admin} sticky fullHeight />
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
           style={{
-            padding: "10px 20px 20px",
+            padding: "10px 20px 52px",
             flex: 1,
             minWidth: 0,
             boxSizing: "border-box",
             height: "100%",
             overflowY: "auto",
             overflowX: "hidden",
+            display: "flex",
+            justifyContent: "flex-start",
+            alignItems: "flex-start",
           }}
         >
-          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
-            <div
-              className="section-header-card"
-              style={{
-                marginBottom: "12px",
-                marginLeft: contentLeft,
-                width: isNarrow ? "92%" : "560px",
-              }}
-            >
-              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Students</h2>
+          <div
+            className="student-list-card-responsive"
+            style={{
+              width: listShellWidth,
+              maxWidth: 640,
+              position: "relative",
+              marginLeft: 0,
+              marginRight: isPortrait ? 0 : "24px",
+              background: "#ffffff",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 18,
+              boxShadow: "var(--shadow-soft)",
+              padding: "14px 14px 22px",
+              boxSizing: "border-box",
+            }}
+          >
+            <style>{`
+              @media (max-width: 600px) {
+                .student-list-card-responsive {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                  margin-left: 0 !important;
+                  margin-right: 0 !important;
+                }
+              }
+            `}</style>
+
+            <div className="section-header-card" style={{ marginBottom: 12 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Students</h2>
               <div className="section-header-card__meta">
-                <span>Total: {filteredStudentsBase.length}</span>
-                <span>Current Year: {currentYearStudents.length}</span>
+                <span>Total: {currentYearStudents.length}</span>
                 <span className="section-header-card__chip">
-                  {currentAcademicYear
-                    ? `Academic Year: ${String(currentAcademicYear).replace("_", "/")}`
-                    : "Academic Year: Not Set"}
+                  {currentAcademicYear ? String(currentAcademicYear).replace("_", "/") : "Register View"}
                 </span>
               </div>
             </div>
 
-            {/* Search */}
-            <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
+            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
               <div
                 style={{
-                  width: isNarrow ? "92%" : "560px",
+                  width: "100%",
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "var(--surface-panel)",
-                  border: "1px solid var(--border-soft)",
+                  background: "#f8fbff",
+                  border: "1px solid #dbeafe",
                   borderRadius: "12px",
                   padding: "10px 12px",
-                  boxShadow: "var(--shadow-soft)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)",
                 }}
               >
                 <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
@@ -1785,121 +1835,119 @@ useEffect(() => {
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search students..."
-                  style={{
-                    width: "100%",
-                    border: "none",
-                    outline: "none",
-                    fontSize: 13,
-                    background: "transparent",
-                  }}
+                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent" }}
                 />
               </div>
             </div>
 
-            {/* Grade Filter */}
-            <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
-              <div
-                style={{
-                  display: "flex",
-                  gap: "8px",
-                  flexWrap: "wrap",
-                  justifyContent: "center",
-                  maxWidth: "100%",
-                  overflowX: "auto",
-                  paddingBottom: 1,
+            <div style={{ display: "flex", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  setSelectedGrade("All");
+                  setSelectedSection("All");
                 }}
+                style={chipStyle(selectedGrade === "All" && selectedSection === "All")}
               >
-                {["All", ...gradeOptions].map(g => (
-                  <button
-                    key={g}
-                    onClick={() => setSelectedGrade(g)}
-                    style={chipStyle(selectedGrade === g)}
-                  >
-                    {g === "All" ? "All Grades" : `Grade ${g}`}
+                All Grades
+              </button>
+              {assignedGrades.map((gradeValue) => (
+                <button
+                  key={`grade-${gradeValue}`}
+                  onClick={() => {
+                    const firstSectionForGrade = students
+                      .filter((item) => String(item.grade) === String(gradeValue))
+                      .map((item) => item.section)
+                      .find(Boolean);
+
+                    setSelectedGrade(gradeValue);
+                    setSelectedSection(firstSectionForGrade || "All");
+                  }}
+                  style={chipStyle(selectedGrade === gradeValue)}
+                >
+                  {`Grade ${gradeValue}`}
+                </button>
+              ))}
+            </div>
+
+            {selectedGrade !== "All" && (
+              <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
+                <button
+                  onClick={() => setSelectedSection("All")}
+                  style={{
+                    ...chipStyle(selectedSection === "All"),
+                    boxShadow: selectedSection === "All" ? "0 0 0 2px var(--accent-soft)" : "none",
+                    transform: selectedSection === "All" ? "translateY(-1px)" : "none",
+                  }}
+                >
+                  All Sections
+                </button>
+                {assignedSectionsForSelectedGrade.map((sectionValue) => (
+                  <button key={sectionValue} onClick={() => setSelectedSection(sectionValue)} style={chipStyle(selectedSection === sectionValue)}>
+                    Section {sectionValue}
                   </button>
                 ))}
               </div>
+            )}
+
+            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>
+              {selectedFilterLabel}
             </div>
+            {studentsLoading ? <p style={{ color: "var(--text-muted)", marginTop: 2 }}>Loading students...</p> : null}
+            {!studentsLoading && selectedGrade !== "All" && selectedSection === "All" ? (
+              <p style={{ color: "var(--text-muted)", marginTop: 2 }}>{`Showing all students in Grade ${selectedGrade}. Select a section to narrow down.`}</p>
+            ) : null}
+            {!studentsLoading && currentYearStudents.length === 0 ? <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No students found.</p> : null}
 
+            <style>{`
+              .student-list-responsive {
+                display: flex;
+                flex-direction: column;
+                margin-top: 12px;
+                gap: 12px;
+                width: 100%;
+                max-width: 100%;
+                margin-left: 0;
+                margin-right: 0;
+              }
 
-            {/* Section Filter */}
-            {selectedGrade !== "All" && sections.length > 0 && (
-              <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "8px",
-                    flexWrap: "wrap",
-                    justifyContent: "center",
-                    maxWidth: "100%",
-                    overflowX: "auto",
-                    paddingBottom: 1,
-                  }}
-                >
-                  {["All", ...sections].map(section => (
-                    <button
-                      key={section}
-                      onClick={() => setSelectedSection(section)}
-                      style={chipStyle(selectedSection === section)}
-                    >
-                      {section === "All" ? "All Sections" : `Section ${section}`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+              .student-list-responsive > div {
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+              }
 
-            {/* Students List */}
-            {studentsLoading ? (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {Array.from({ length: 6 }).map((_, idx) => (
-                    <div key={idx} style={{ width: isNarrow ? "92%" : "560px", height: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
-                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ width: "60%", height: 12, background: "var(--surface-muted)", borderRadius: 6, marginBottom: 8 }} />
-                        <div style={{ width: "40%", height: 10, background: "var(--surface-muted)", borderRadius: 6 }} />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {currentYearStudents.length === 0 ? (
-                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
-                ) : (
-                  currentYearStudents.map((s, i) => (
-                    <div
-                      key={`current-${s.studentId || s.userId || i}`}
-                      onClick={() => handleSelectStudent(s)}
-                      className="student-card"
-                      style={listCardStyle(selectedStudent?.studentId === s.studentId)}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
-                        <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
-                          {i + 1}
-                        </div>
-                        <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
-                        <div style={{ minWidth: 0 }}>
-                          <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                          <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
-                            Grade {s.grade} • Section {s.section}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+              @media (max-width: 600px) {
+                .student-list-responsive {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                }
+
+                .student-list-responsive > div {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                  min-width: 0 !important;
+                }
+              }
+            `}</style>
+
+            <div className="student-list-responsive">
+              {currentYearStudents.map((student, index) => (
+                <StudentItem
+                  key={student.userId || student.studentId || index}
+                  student={student}
+                  number={index + 1}
+                  selected={selectedStudent?.studentId === student.studentId}
+                  onClick={handleSelectStudent}
+                />
+              ))}
+              <div aria-hidden="true" style={{ height: 18 }} />
+            </div>
           </div>
         </div>
 
         {/* RIGHT SIDEBAR */}
         {/* RIGHT SIDEBAR */}
-{selectedStudent && (
+{selectedStudent ? (
   <div
     style={{
       width: isPortrait ? "100%" : "380px",
@@ -1907,12 +1955,14 @@ useEffect(() => {
       position: "fixed",
       right: 0,
       top: isPortrait ? 0 : "55px",
-      background: "var(--page-bg-secondary)",
+      background: "#ffffff",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
       overflowY: "auto",
+      overflowX: "hidden",
       padding: "14px",
+      paddingBottom: "130px",
       boxShadow: "var(--shadow-panel)",
       borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
       transition: "all 0.35s ease",
@@ -1983,22 +2033,7 @@ useEffect(() => {
         textAlign: "center",
       }}
     >
-      <div
-        style={{
-          width: "70px",
-          height: "70px",
-          margin: "0 auto 10px",
-          borderRadius: "50%",
-          overflow: "hidden",
-          border: "3px solid rgba(255,255,255,0.8)",
-        }}
-      >
-        <img
-          src={selectedStudent.profileImage}
-          alt={selectedStudent.name}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
+      <ProfileAvatar imageUrl={selectedStudent.profileImage} name={selectedStudent.name} size={70} style={{ margin: "0 auto 10px", border: "3px solid rgba(255,255,255,0.8)" }} />
 
       <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedStudent.name}</h2>
       <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedStudent.studentId}</p>
@@ -3070,6 +3105,66 @@ useEffect(() => {
       </div>
     )}
   </div>
+) : (
+  <div
+    style={{
+      width: isPortrait ? "100%" : "380px",
+      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      position: "fixed",
+      right: 0,
+      top: isPortrait ? 0 : "55px",
+      background: "var(--surface-muted)",
+      backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+      zIndex: 90,
+      display: "flex",
+      flexDirection: "column",
+      overflowY: "auto",
+      overflowX: "hidden",
+      boxShadow: "var(--shadow-panel)",
+      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+      transition: "all 0.35s ease",
+      fontSize: 10,
+      padding: "14px",
+      alignItems: "center",
+      justifyContent: "center",
+    }}
+  >
+    <div
+      style={{
+        width: "100%",
+        maxWidth: 360,
+        borderRadius: 12,
+        border: "1px solid var(--border-soft)",
+        background: "var(--surface-panel)",
+        boxShadow: "var(--shadow-soft)",
+        padding: "18px 14px",
+        textAlign: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: "50%",
+          margin: "0 auto 10px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "var(--accent-soft)",
+          color: "var(--accent-strong)",
+          fontSize: 24,
+        }}
+      >
+        <FaChalkboardTeacher />
+      </div>
+      <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
+        Student Details
+      </h3>
+      <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
+        Select a student from the list to view profile, attendance, performance, and payment details.
+      </p>
+    </div>
+  </div>
 )}
 
 {selectedStudent && studentFullscreenOpen && (
@@ -3106,11 +3201,7 @@ useEffect(() => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img
-            src={selectedStudent.profileImage || "/default-profile.png"}
-            alt={selectedStudent.name}
-            style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
-          />
+          <ProfileAvatar imageUrl={selectedStudent.profileImage} name={selectedStudent.name} size={56} style={{ border: "2px solid rgba(255,255,255,0.8)" }} />
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedStudent.name || "Student"}</div>
             <div style={{ fontSize: 12, opacity: 0.95 }}>{selectedStudent.studentId} • Grade {selectedStudent.grade || "-"} • Section {selectedStudent.section || "-"}</div>

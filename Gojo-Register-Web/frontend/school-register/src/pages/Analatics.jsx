@@ -33,6 +33,9 @@ import {
 } from "recharts";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { buildUserLookupFromNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -115,16 +118,15 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsRes, usersRes, monthlyPaidRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} })),
+        const [studentsData, usersNode, monthlyPaidData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
+          loadSchoolUsersNode({ rtdbBase: DB_ROOT }),
+          fetchCachedJson(`${DB_ROOT}/monthlyPaid.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
         if (cancelled) return;
 
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
+        const usersData = buildUserLookupFromNode(usersNode);
 
         const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
           const userNode = usersData?.[studentNode.userId] || {};
@@ -141,7 +143,7 @@ function Analatics() {
         });
 
         setStudents(list);
-        setMonthlyPaidRaw(monthlyPaidRes.data || {});
+        setMonthlyPaidRaw(monthlyPaidData || {});
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -662,7 +664,7 @@ function Analatics() {
                             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           >
-                            <img src={post.adminProfile || "/default-profile.png"} alt="" style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={post.adminProfile} name={post.adminName || "Admin"} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ color: "var(--text-primary)" }}>{post.adminName || "Admin"}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -711,7 +713,7 @@ function Analatics() {
                               });
                             }}
                           >
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={sender.profileImage} name={sender.name} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{sender.name}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
@@ -731,7 +733,7 @@ function Analatics() {
             {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
 
-          <img src={finance.profileImage || "/default-profile.png"} alt="Register Office" className="profile-img" />
+          <ProfileAvatar imageUrl={finance.profileImage} name={finance.name} size={38} className="profile-img" />
         </div>
       </nav>
 

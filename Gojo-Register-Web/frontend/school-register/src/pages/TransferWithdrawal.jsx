@@ -19,6 +19,14 @@ import {
 import axios from "axios";
 import { BACKEND_BASE } from "../config";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  loadSchoolInfoNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolUsersNode,
+} from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 const PAGE_BG = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
 
@@ -354,23 +362,23 @@ export default function TransferWithdrawal() {
 
     setLoading(true);
     try {
-      const [yearsRes, dbYearsRes, dbCurrentYearRes, studentsRes, parentsRes] = await Promise.all([
+      const [yearsRes, dbYearsData, schoolInfo, studentsData, parentsData] = await Promise.all([
         axios.get(`${BACKEND_BASE}/api/academic-years`, { params: { schoolCode } }).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/AcademicYears.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo/currentAcademicYear.json`).catch(() => ({ data: "" })),
-        axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Parents.json`).catch(() => ({ data: {} })),
+        fetchCachedJson(`${DB_URL}/AcademicYears.json`, { ttlMs: 60000 }).catch(() => ({})),
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+        loadSchoolParentsNode({ rtdbBase: DB_URL }),
       ]);
 
       const yearsPayload = yearsRes.data || {};
-      const nextYears = yearsPayload.academicYears || dbYearsRes.data || {};
+      const nextYears = yearsPayload.academicYears || dbYearsData || {};
       const derivedCurrent = Object.entries(nextYears || {}).find(([, row]) => !!row?.isCurrent)?.[0] || "";
-      const nextCurrent = yearsPayload.currentAcademicYear || dbCurrentYearRes.data || derivedCurrent || "";
+      const nextCurrent = yearsPayload.currentAcademicYear || schoolInfo?.currentAcademicYear || derivedCurrent || "";
 
       setAcademicYears(nextYears);
       setCurrentAcademicYear(nextCurrent);
-      setStudentsMap(studentsRes.data || {});
-      setParentsMap(parentsRes.data || {});
+      setStudentsMap(studentsData || {});
+      setParentsMap(parentsData || {});
 
       notify("", "");
     } catch (err) {
@@ -495,8 +503,7 @@ export default function TransferWithdrawal() {
   };
 
   const setUsersActiveByStudent = async (studentNode, isActive) => {
-    const usersRes = await axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} }));
-    const users = usersRes.data || {};
+    const users = await loadSchoolUsersNode({ rtdbBase: DB_URL });
 
     const studentId = String(studentNode?.studentId || "");
     const studentUserId = String(studentNode?.userId || studentNode?.systemAccountInformation?.userId || "");
@@ -526,8 +533,7 @@ export default function TransferWithdrawal() {
     const linkedParentIds = getLinkedParentIds(studentNode);
     if (linkedParentIds.length === 0) return;
 
-    const usersRes = await axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} }));
-    const users = usersRes.data || {};
+    const users = await loadSchoolUsersNode({ rtdbBase: DB_URL });
     const remainingStudents = Object.entries(studentsMap || {}).filter(([sid]) => String(sid) !== studentId);
 
     await Promise.all(
@@ -657,7 +663,7 @@ export default function TransferWithdrawal() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 

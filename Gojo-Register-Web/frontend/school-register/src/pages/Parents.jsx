@@ -21,6 +21,13 @@ import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  buildUserLookupFromNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolUsersNode,
+} from "../utils/registerData";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -259,15 +266,13 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersRes, parentsRes, studentsRes] = await Promise.all([
-          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
+        const [usersNode, parentsData, studentsData] = await Promise.all([
+          loadSchoolUsersNode({ rtdbBase: DB }),
+          loadSchoolParentsNode({ rtdbBase: DB }),
+          loadSchoolStudentsNode({ rtdbBase: DB }),
         ]);
 
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const studentsData = studentsRes.data || {};
+        const users = buildUserLookupFromNode(usersNode);
 
         const findParentRecordByUserId = (canonicalUserId) => {
           if (!canonicalUserId) return null;
@@ -295,12 +300,18 @@ function Parent() {
             parentUserId: canonicalUserId,
             studentsData,
           });
-          if (!childLinks.length) return null;
+          if (!childLinks.length) return { name: null, relationship: null, childCount: 0 };
 
           const firstLink = childLinks[0] || {};
           const studentMatch = findStudentMatchById(studentsData, firstLink.studentId);
           const studentRecord = studentMatch?.record;
-          if (!studentRecord) return null;
+          if (!studentRecord) {
+            return {
+              name: null,
+              relationship: firstLink.relationship || null,
+              childCount: childLinks.length,
+            };
+          }
           const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
           const studentUser = getUserByKeyOrUserId(users, studentUserId);
           const name =
@@ -310,7 +321,7 @@ function Parent() {
             studentRecord?.username ||
             null;
           const relationship = firstLink.relationship || null;
-          return { name, relationship };
+          return { name, relationship, childCount: childLinks.length };
         };
 
         const parentList = Object.keys(users)
@@ -327,6 +338,7 @@ function Parent() {
               email: u.email || "N/A",
               childName: firstChild?.name || "N/A",
               childRelationship: firstChild?.relationship || "N/A",
+              childCount: firstChild?.childCount || 0,
               profileImage: u.profileImage || "/default-profile.png",
               phone: u.phone || u.phoneNumber || "N/A",
               age: u.age || null,
@@ -345,7 +357,7 @@ function Parent() {
       }
     };
     fetchParents();
-  }, []);
+  }, [DB]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -384,8 +396,12 @@ function Parent() {
 
     const fetchParentInfoAndChildren = async () => {
       try {
-        const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-        const parentsData = parentsRes.data || {};
+        const [parentsData, usersNode, studentsData] = await Promise.all([
+          loadSchoolParentsNode({ rtdbBase: DB }),
+          loadSchoolUsersNode({ rtdbBase: DB }),
+          loadSchoolStudentsNode({ rtdbBase: DB }),
+        ]);
+        const usersData = buildUserLookupFromNode(usersNode);
         const parentRecordEntry =
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -394,11 +410,7 @@ function Parent() {
           ) || [];
         const parentRecordKey = parentRecordEntry[0] || null;
         const parentRecord = parentRecordEntry[1] || null;
-        const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
         const userInfo = getUserByKeyOrUserId(usersData, selectedParentId) || {};
-        const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-        const studentsData = studentsRes.data || {};
         const resolvedChildLinks = getResolvedParentChildLinks({
           parentRecord,
           parentRecordKey,
@@ -732,13 +744,16 @@ function Parent() {
 
   // MAIN CONTENT (Teachers-like layout)
   const mainContentStyle = {
-    padding: "10px 20px 20px",
+    padding: "10px 20px 52px",
     flex: 1,
     minWidth: 0,
     boxSizing: "border-box",
     height: "100%",
     overflowY: "auto",
     overflowX: "hidden",
+    display: "flex",
+    justifyContent: "flex-start",
+    alignItems: "flex-start",
   };
 
   const pageBackground = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
@@ -876,6 +891,130 @@ function Parent() {
     boxSizing: "border-box",
   };
 
+  const listShellWidth = isPortrait ? "100%" : "min(100%, 640px)";
+
+  const ParentItem = ({ parent, selected, onClick, number }) => (
+    <div
+      onClick={() => onClick(parent)}
+      style={{
+        ...parentCardBase,
+        padding: "11px",
+        display: "flex",
+        alignItems: "center",
+        gap: "12px",
+        background: "#ffffff",
+        border: selected ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+        boxShadow: selected
+          ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+          : "0 4px 10px rgba(15, 23, 42, 0.06)",
+      }}
+    >
+      <div
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          background: selected ? "#007AFB" : "#eef2ff",
+          color: selected ? "#fff" : "#334155",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontWeight: 800,
+          fontSize: 12,
+          flexShrink: 0,
+        }}
+      >
+        {number}
+      </div>
+
+      <ProfileAvatar
+        imageUrl={parent.profileImage}
+        name={parent.name}
+        size={48}
+        style={{
+          border: selected ? "2px solid #60a5fa" : "2px solid #e2e8f0",
+          background: "#ffffff",
+        }}
+      />
+
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {parent.name}
+        </h3>
+        <p style={{ margin: "4px 0", color: "#555", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {parent.email && parent.email !== "N/A"
+            ? parent.email
+            : `${parent.childRelationship || "N/A"}: ${parent.childName || "N/A"}`}
+        </p>
+        <p style={{ margin: 0, color: "#475569", fontSize: 10, fontWeight: 700 }}>
+          {(parent.childCount || 0) === 1 ? "1 Child" : `${parent.childCount || 0} Children`}
+        </p>
+      </div>
+    </div>
+  );
+
+  const renderEmptyParentPanel = () => (
+    <div
+      style={{
+        width: isPortrait ? "100%" : "380px",
+        height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+        position: "fixed",
+        right: 0,
+        top: isPortrait ? 0 : "55px",
+        background: "var(--surface-muted)",
+        backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+        zIndex: 90,
+        display: "flex",
+        flexDirection: "column",
+        overflowY: "auto",
+        overflowX: "hidden",
+        boxShadow: "var(--shadow-panel)",
+        borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+        transition: "all 0.35s ease",
+        fontSize: 10,
+        padding: "14px",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 360,
+          borderRadius: 12,
+          border: "1px solid var(--border-soft)",
+          background: "var(--surface-panel)",
+          boxShadow: "var(--shadow-soft)",
+          padding: "18px 14px",
+          textAlign: "center",
+        }}
+      >
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: "50%",
+            margin: "0 auto 10px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--accent-soft)",
+            color: "var(--accent-strong)",
+            fontSize: 24,
+          }}
+        >
+          <FaHome />
+        </div>
+        <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
+          Parent Details
+        </h3>
+        <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
+          Select a parent from the list to view profile details, linked children, status, and message options.
+        </p>
+      </div>
+    </div>
+  );
+
   const renderParentProfilePanel = (isFullscreen = false) => {
     if (!selectedParent) return null;
 
@@ -961,10 +1100,11 @@ function Parent() {
                 ...elevatedPanelStyle,
               }}
             >
-              <img
-                src={c.profileImage}
-                alt={c.name}
-                style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid var(--accent-strong)" }}
+              <ProfileAvatar
+                imageUrl={c.profileImage}
+                name={c.name}
+                size={44}
+                style={{ border: "2px solid var(--accent-strong)" }}
               />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -985,8 +1125,8 @@ function Parent() {
       <div style={{ padding: "12px", borderRadius: 12, border: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           {[
-            { label: "Status", value: selectedParent.status || "Active" },
-            { label: "Created", value: selectedParent.createdAt ? new Date(selectedParent.createdAt).toLocaleString() : "—" },
+            { label: "Status", value: activeParent.status || "Active" },
+            { label: "Created", value: activeParent.createdAt ? new Date(activeParent.createdAt).toLocaleString() : "—" },
           ].map((item) => (
             <div key={item.label} style={{ padding: 8, borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
               <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.4px", color: "var(--text-muted)", textTransform: "uppercase" }}>{item.label}</div>
@@ -1032,10 +1172,11 @@ function Parent() {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img
-                  src={activeParent.profileImage || "/default-profile.png"}
-                  alt={activeParent.name}
-                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
+                <ProfileAvatar
+                  imageUrl={activeParent.profileImage}
+                  name={activeParent.name}
+                  size={56}
+                  style={{ border: "2px solid rgba(255,255,255,0.8)" }}
                 />
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{activeParent.name || "Parent"}</div>
@@ -1107,11 +1248,17 @@ function Parent() {
           right: 0,
           top: isPortrait ? 0 : "55px",
           height: isPortrait ? "100vh" : "calc(100vh - 55px)",
-          ...sidebarShellStyle,
-          zIndex: 300,
+          background: "#ffffff",
+          zIndex: 1000,
           display: "flex",
           flexDirection: "column",
-          overflow: "hidden",
+          overflowY: "auto",
+          overflowX: "hidden",
+          padding: "14px",
+          paddingBottom: "130px",
+          boxShadow: "var(--shadow-panel)",
+          borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+          transition: "all 0.35s ease",
           fontSize: "10px",
         };
 
@@ -1124,6 +1271,8 @@ function Parent() {
                 setParentFullscreenOpen(false);
                 return;
               }
+              setSelectedParent(null);
+              setParentChatOpen(false);
               setParentFullscreenOpen(false);
               setSidebarVisible(false);
             }}
@@ -1183,22 +1332,12 @@ function Parent() {
               textAlign: "center",
             }}
           >
-            <div
-              style={{
-                width: "70px",
-                height: "70px",
-                margin: "0 auto 10px",
-                borderRadius: "50%",
-                overflow: "hidden",
-                border: "3px solid rgba(255,255,255,0.8)",
-              }}
-            >
-              <img
-                src={selectedParent.profileImage}
-                alt={selectedParent.name}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              />
-            </div>
+            <ProfileAvatar
+              imageUrl={activeParent.profileImage}
+              name={activeParent.name}
+              size={70}
+              style={{ margin: "0 auto 10px", border: "3px solid rgba(255,255,255,0.8)" }}
+            />
             <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedParent.name}</h2>
             <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedParent.parentId || "No Parent ID"}</p>
             <p style={{ margin: 0, color: "#dbeafe", fontSize: "10px" }}>
@@ -1308,7 +1447,42 @@ function Parent() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh", height: "100vh", overflow: "hidden" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: "#ffffff",
+        minHeight: "100vh",
+        height: "100vh",
+        overflow: "hidden",
+        color: "var(--text-primary)",
+        "--surface-panel": "#ffffff",
+        "--surface-accent": "#eff6ff",
+        "--surface-muted": "#f8fbff",
+        "--surface-strong": "#e2e8f0",
+        "--surface-overlay": "rgba(255,255,255,0.92)",
+        "--page-bg": "#ffffff",
+        "--page-bg-secondary": "#f8fbff",
+        "--border-soft": "#e2e8f0",
+        "--border-strong": "#cbd5e1",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#3b82f6",
+        "--accent-soft": "#dbeafe",
+        "--accent-strong": "#007AFB",
+        "--shadow-soft": "0 10px 22px rgba(15, 23, 42, 0.07)",
+        "--shadow-panel": "0 16px 34px rgba(15, 23, 42, 0.12)",
+        "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+        "--success": "#16a34a",
+        "--success-soft": "#dcfce7",
+        "--warning": "#d97706",
+        "--warning-soft": "#fef3c7",
+        "--danger": "#dc2626",
+        "--danger-soft": "#fee2e2",
+        "--input-border": "#dbeafe",
+        "--input-bg": "#ffffff",
+      }}
+    >
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
         <h2 style={{ color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.2px" }}>Gojo Register Portal</h2>
 
@@ -1387,7 +1561,7 @@ function Parent() {
                             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           >
-                            <img src={n.adminProfile || "/default-profile.png"} alt={n.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={n.adminProfile} name={n.adminName} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{n.adminName}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{n.message}</p>
@@ -1428,7 +1602,7 @@ function Parent() {
                                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                                 onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                               >
-                                <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                                <ProfileAvatar imageUrl={sender.profileImage} name={sender.name} size={46} borderRadius={8} />
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
                                   <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
@@ -1451,133 +1625,126 @@ function Parent() {
             )}
           </div>
 
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden", background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)" }}>
         <RegisterSidebar user={admin} sticky fullHeight />
 
         {/* MAIN CONTENT */}
         <main className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`} style={mainContentStyle}>
-          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
-            <div
-              className="section-header-card"
-              style={{
-                marginBottom: "12px",
-                marginLeft: contentLeft,
-                width: isNarrow ? "92%" : "560px",
-                ...heroStyle,
-              }}
-            >
-              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Parents</h2>
-              <div className="section-header-card__subtitle">Total parents: {filteredParents.length}</div>
+          <div
+            className="parent-list-card-responsive"
+            style={{
+              width: listShellWidth,
+              maxWidth: 640,
+              position: "relative",
+              marginLeft: 0,
+              marginRight: isPortrait ? 0 : "24px",
+              background: "#ffffff",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 18,
+              boxShadow: "var(--shadow-soft)",
+              padding: "14px 14px 22px",
+              boxSizing: "border-box",
+            }}
+          >
+            <style>{`
+              @media (max-width: 600px) {
+                .parent-list-card-responsive {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                  margin-left: 0 !important;
+                  margin-right: 0 !important;
+                }
+              }
+
+              .parent-list-responsive {
+                display: flex;
+                flex-direction: column;
+                margin-top: 12px;
+                gap: 12px;
+                width: 100%;
+                max-width: 100%;
+              }
+
+              .parent-list-responsive > div {
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+              }
+
+              @media (max-width: 600px) {
+                .parent-list-responsive {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                }
+
+                .parent-list-responsive > div {
+                  width: 100% !important;
+                  max-width: 100% !important;
+                  min-width: 0 !important;
+                }
+              }
+            `}</style>
+
+            <div className="section-header-card" style={{ marginBottom: 12 }}>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Parents</h2>
+              <div className="section-header-card__meta">
+                <span>Total: {filteredParents.length}</span>
+                <span className="section-header-card__chip">Family View</span>
+              </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
+            <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "10px" }}>
               <div
                 style={{
-                  width: isNarrow ? "92%" : "560px",
-                  ...searchShellStyle,
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  background: "#f8fbff",
+                  border: "1px solid #dbeafe",
+                  borderRadius: "12px",
+                  padding: "10px 12px",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)",
                 }}
               >
-                <FaSearch style={{ color: "var(--text-muted)", fontSize: "12px" }} />
+                <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
                 <input
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search parents by name, email, phone"
-                  style={{
-                    border: "none",
-                    outline: "none",
-                    width: "100%",
-                    fontSize: "13px",
-                    color: "var(--text-primary)",
-                    background: "transparent",
-                  }}
+                  placeholder="Search parents..."
+                  style={{ width: "100%", border: "none", outline: "none", fontSize: 13, background: "transparent" }}
                 />
               </div>
             </div>
 
-            {loadingParents ? (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {Array.from({ length: 6 }).map((_, idx) => (
-                  <div key={idx} style={{ width: isNarrow ? "92%" : "560px", minHeight: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
-                      <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ width: "55%", height: 12, background: "var(--surface-muted)", borderRadius: 6, marginBottom: 8 }} />
-                        <div style={{ width: "45%", height: 10, background: "var(--surface-muted)", borderRadius: 6 }} />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : filteredParents.length === 0 ? (
-              <p style={{ width: isNarrow ? "92%" : "560px", marginLeft: contentLeft, textAlign: "center", color: "var(--text-secondary)" }}>No parents found.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {filteredParents.map((p, i) => (
-                  <div
-                    key={p.userId}
-                    onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
-                    style={{
-                      ...parentCardBase,
-                      width: isNarrow ? "92%" : "560px",
-                      background: selectedParent?.userId === p.userId ? "var(--accent-soft)" : "var(--surface-panel)",
-                      border: selectedParent?.userId === p.userId ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
-                      boxShadow: selectedParent?.userId === p.userId ? "var(--shadow-glow)" : "var(--shadow-soft)",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 10,
-                          background: "color-mix(in srgb, var(--accent-soft) 75%, var(--surface-panel) 25%)",
-                          color: "var(--accent-strong)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: 800,
-                          fontSize: 13,
-                          flex: "0 0 auto",
-                        }}
-                      >
-                        {i + 1}
-                      </div>
-                      <img
-                        src={p.profileImage}
-                        alt={p.name}
-                        style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: "50%",
-                          objectFit: "cover",
-                          border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)",
-                          transition: "all 0.3s ease",
-                        }}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {p.name}
-                        </h3>
-                        <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            {loadingParents ? <p style={{ color: "var(--text-muted)", marginTop: 2 }}>Loading parents...</p> : null}
+            {!loadingParents && filteredParents.length === 0 ? <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No parents found.</p> : null}
+
+            <div className="parent-list-responsive">
+              {!loadingParents && filteredParents.map((parent, index) => (
+                <ParentItem
+                  key={parent.userId || index}
+                  parent={parent}
+                  number={index + 1}
+                  selected={selectedParent?.userId === parent.userId}
+                  onClick={(parentRecord) => {
+                    setSelectedParent(parentRecord);
+                    setSidebarVisible(true);
+                  }}
+                />
+              ))}
+              <div aria-hidden="true" style={{ height: 18 }} />
+            </div>
           </div>
         </main>
 
         {/* RIGHT SIDEBAR */}
-        {selectedParent && sidebarVisible && !parentFullscreenOpen && renderParentProfilePanel(false)}
+        {!parentFullscreenOpen && (selectedParent ? renderParentProfilePanel(false) : renderEmptyParentPanel())}
         {selectedParent && parentFullscreenOpen && renderParentProfilePanel(true)}
 
       </div>
