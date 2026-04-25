@@ -1786,6 +1786,63 @@ a {
   animation: examStageReveal 180ms ease;
 }
 
+.exam-smart-defaults {
+  display: grid;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(31, 41, 51, 0.08);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.9));
+}
+
+.exam-smart-defaults.is-linked {
+  border-color: rgba(15, 118, 110, 0.18);
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.96), rgba(236, 248, 255, 0.92));
+}
+
+.exam-smart-defaults-copy,
+.exam-smart-defaults-copy h3,
+.exam-smart-defaults-note {
+  margin: 0;
+}
+
+.exam-smart-defaults-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.exam-smart-defaults-copy h3 {
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--text-primary);
+}
+
+.exam-smart-defaults-copy p,
+.exam-smart-defaults-note {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.exam-smart-defaults-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.exam-smart-defaults-metrics > div {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 41, 51, 0.06);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.exam-smart-defaults-metrics strong {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
 .exam-stage-lock-note {
   margin: 0;
   padding: 14px 16px;
@@ -2077,6 +2134,7 @@ a {
   }
 
   .exam-premium-pulse-grid,
+  .exam-smart-defaults-metrics,
   .exam-package-snapshot-grid,
   .exam-stage-launchers,
   .exam-stat-grid {
@@ -2086,6 +2144,7 @@ a {
 
 @media (max-width: 960px) {
   .exam-premium-pulse-grid,
+  .exam-smart-defaults-metrics,
   .exam-package-snapshot-grid,
   .exam-stage-launchers {
     grid-template-columns: 1fr;

@@ -2532,10 +2532,53 @@ def _normalize_exam(exam_id, payload, normalized_question_banks):
     }
 
 
+def _round_sort_key(round_id):
+    match = re.search(r"(\d+)$", str(round_id or ""))
+    return (int(match.group(1)) if match else 999, str(round_id or ""))
+
+
 def _normalize_package(package_id, payload, normalized_exams):
     payload = payload if isinstance(payload, dict) else {}
     package_grade = str(payload.get("grade") or "").strip().lower()
     package_type = _normalize_exam_mode(payload.get("type"), "package.type", allow_none=True) or "practice"
+    subjects_node = payload.get("subjects") if isinstance(payload.get("subjects"), dict) else {}
+
+    normalized_subjects = {}
+    round_count = 0
+    for subject_key, subject_payload in subjects_node.items():
+        if not isinstance(subject_payload, dict):
+            continue
+
+        rounds_node = subject_payload.get("rounds") if isinstance(subject_payload.get("rounds"), dict) else {}
+        normalized_rounds = []
+        for round_id, round_payload in rounds_node.items():
+            if not isinstance(round_payload, dict):
+                continue
+
+            normalized_round = {
+                "roundId": round_id,
+                "examId": _non_empty_string(round_payload.get("examId")),
+                "name": _non_empty_string(round_payload.get("name")) or round_id,
+                "status": _non_empty_string(round_payload.get("status")) or "active",
+            }
+
+            chapter = _non_empty_string(round_payload.get("chapter"))
+            if chapter:
+                normalized_round["chapter"] = chapter
+
+            for field_name in ["createdAt", "updatedAt", "startTimestamp", "endTimestamp", "resultReleaseTimestamp"]:
+                if isinstance(round_payload.get(field_name), int):
+                    normalized_round[field_name] = round_payload[field_name]
+
+            normalized_rounds.append(normalized_round)
+
+        normalized_rounds.sort(key=lambda item: _round_sort_key(item.get("roundId")))
+        round_count += len(normalized_rounds)
+        normalized_subjects[subject_key] = {
+            "subjectKey": subject_key,
+            "name": _non_empty_string(subject_payload.get("name")) or subject_key,
+            "rounds": normalized_rounds,
+        }
 
     linked_exams = []
     for exam in normalized_exams.values():
@@ -2558,6 +2601,10 @@ def _normalize_package(package_id, payload, normalized_exams):
         "entranceYear": payload.get("entranceYear") if isinstance(payload.get("entranceYear"), int) else None,
         "examCount": len(linked_exams),
         "examIds": [exam["examId"] for exam in linked_exams],
+        "subjectCount": len(normalized_subjects),
+        "roundCount": round_count,
+        "subjectKeys": sorted(normalized_subjects.keys()),
+        "subjects": normalized_subjects,
     }
 
 
