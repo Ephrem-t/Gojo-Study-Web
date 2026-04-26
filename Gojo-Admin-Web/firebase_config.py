@@ -25,10 +25,29 @@ def _load_shared_service_account():
     return module
 
 
-_SHARED = _load_shared_service_account()
+_SHARED = None
 
-FIREBASE_CREDENTIALS = _SHARED.FIREBASE_CREDENTIALS
-FIREBASE_DATABASE_URL = _SHARED.FIREBASE_DATABASE_URL
-FIREBASE_STORAGE_BUCKET = _SHARED.FIREBASE_STORAGE_BUCKET
-get_firebase_options = _SHARED.get_firebase_options
-require_firebase_credentials = _SHARED.require_firebase_credentials
+
+def _get_shared_service_account():
+    global _SHARED
+    if _SHARED is None:
+        _SHARED = _load_shared_service_account()
+    return _SHARED
+
+
+def get_firebase_options(*args, **kwargs):
+    return _get_shared_service_account().get_firebase_options(*args, **kwargs)
+
+
+def require_firebase_credentials(*args, **kwargs):
+    return _get_shared_service_account().require_firebase_credentials(*args, **kwargs)
+
+
+def __getattr__(name):
+    if name in {
+        'FIREBASE_CREDENTIALS',
+        'FIREBASE_DATABASE_URL',
+        'FIREBASE_STORAGE_BUCKET',
+    }:
+        return getattr(_get_shared_service_account(), name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
