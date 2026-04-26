@@ -1,4 +1,4 @@
 # Firebase service account files
 bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json
 bale-house-rental-firebase-adminsdk-*.json
-./frontend/school-admin/node_modules
+frontend/school-admin/node_modules/
