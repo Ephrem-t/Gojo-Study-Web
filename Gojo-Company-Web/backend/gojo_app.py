@@ -1,17 +1,20 @@
 import mimetypes
 import os
 from functools import lru_cache
+import ipaddress
+from io import BytesIO
 import re
 import secrets
 import string
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
+from pypdf import PdfReader
 from werkzeug.exceptions import HTTPException
 
 
@@ -80,7 +83,33 @@ CORS(
 )
 
 
-LOCAL_DEV_ORIGIN_PATTERN = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
+
+def _is_allowed_local_dev_origin(origin):
+    origin = str(origin or "").strip()
+    if not origin:
+        return False
+
+    try:
+        parsed_origin = urlparse(origin)
+    except ValueError:
+        return False
+
+    if parsed_origin.scheme not in {"http", "https"}:
+        return False
+
+    hostname = str(parsed_origin.hostname or "").strip().lower()
+    if not hostname:
+        return False
+
+    if hostname == "localhost":
+        return True
+
+    try:
+        parsed_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+
+    return parsed_ip.is_loopback or parsed_ip.is_private
 
 
 def _credential_path():
@@ -233,6 +262,12 @@ TEXTBOOK_DOCUMENT_MIME_TYPES = {
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+QUESTION_BANK_IMPORT_EXTENSIONS = {".pdf"}
+QUESTION_BANK_IMPORT_MIME_TYPES = {"application/pdf", "application/x-pdf"}
+QUESTION_BANK_START_RE = re.compile(r"^\s*(\d{1,4})[\.)]\s*(.+)?$")
+QUESTION_BANK_OPTION_RE = re.compile(r"^\s*(?:option\s*)?([A-H])[\.)\:\-]\s*(.+)?$", re.IGNORECASE)
+QUESTION_BANK_ANSWER_RE = re.compile(r"^\s*(?:correct\s*)?(?:answer|ans)\s*[:\-]?\s*(.+)$", re.IGNORECASE)
+QUESTION_BANK_EXPLANATION_RE = re.compile(r"^\s*(?:explanation|reason|solution)\s*[:\-]?\s*(.*)$", re.IGNORECASE)
 
 
 def _extract_grade_token(*values):
@@ -1190,7 +1225,7 @@ def _school_detail_payload(school_code, school_data):
 @app.after_request
 def _apply_local_dev_cors_headers(response):
     origin = str(request.headers.get("Origin") or "").strip()
-    if origin and LOCAL_DEV_ORIGIN_PATTERN.fullmatch(origin):
+    if _is_allowed_local_dev_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
@@ -1359,6 +1394,233 @@ def _validate_textbook_asset_file(file_storage, asset_type):
         }
 
     raise ValueError("assetType must be cover or unit")
+
+
+def _validate_question_bank_import_file(file_storage):
+    if file_storage is None:
+        raise ValueError("file is required")
+
+    original_name = _sanitize_storage_segment(file_storage.filename, "question-bank")
+    extension = os.path.splitext(original_name)[1].lower()
+    content_type = _non_empty_string(file_storage.mimetype) or mimetypes.guess_type(original_name)[0] or "application/octet-stream"
+
+    if extension not in QUESTION_BANK_IMPORT_EXTENSIONS and content_type not in QUESTION_BANK_IMPORT_MIME_TYPES:
+        raise ValueError("Only PDF files are supported for question bank import")
+
+    return {
+        "contentType": content_type,
+        "fileName": original_name,
+    }
+
+
+def _append_question_bank_import_text(current_value, next_value):
+    next_text = _non_empty_string(next_value)
+    if not next_text:
+        return current_value
+    if not current_value:
+        return next_text
+    return f"{current_value} {next_text}".strip()
+
+
+def _resolve_imported_correct_answer(raw_answer, options):
+    option_keys = [key for key in options.keys() if key]
+    fallback_key = option_keys[0] if option_keys else "A"
+    normalized_raw_answer = _non_empty_string(raw_answer)
+
+    if not normalized_raw_answer:
+        return fallback_key, f"no answer line was detected, so the correct answer defaulted to {fallback_key}"
+
+    direct_match = re.search(r"\b([A-H])\b", normalized_raw_answer.upper())
+    if direct_match:
+        option_key = direct_match.group(1)
+        if option_key in options:
+            return option_key, ""
+
+    answer_without_prefix = re.sub(
+        r"^(?:correct\s*)?(?:answer|ans|option)\s*[:\-]?\s*",
+        "",
+        normalized_raw_answer,
+        flags=re.IGNORECASE,
+    ).strip()
+    answer_without_letter = re.sub(r"^(?:option\s*)?([A-H])[\.)\:\-]?\s*", "", answer_without_prefix, flags=re.IGNORECASE).strip()
+
+    lookup_values = []
+    if answer_without_prefix:
+        lookup_values.append(answer_without_prefix.casefold())
+    if answer_without_letter:
+        lookup_values.append(answer_without_letter.casefold())
+
+    for key, option_text in options.items():
+        normalized_option_text = _non_empty_string(option_text)
+        if not normalized_option_text:
+            continue
+
+        option_lookup = normalized_option_text.casefold()
+        if option_lookup in lookup_values:
+            return key, ""
+        if any(value and (value in option_lookup or option_lookup in value) for value in lookup_values):
+            return key, ""
+
+    return fallback_key, (
+        f"could not match answer '{normalized_raw_answer}' to one of the imported options, so the correct answer defaulted to {fallback_key}"
+    )
+
+
+def _finalize_imported_question(current_question, parsed_questions, warnings):
+    if not current_question:
+        return
+
+    question_number = current_question.get("number") or len(parsed_questions) + 1
+    question_text = _non_empty_string(current_question.get("question"))
+    normalized_options = {}
+    for option_key, option_value in (current_question.get("options") or {}).items():
+        option_label = str(option_key or "").strip().upper()
+        option_text = _non_empty_string(option_value)
+        if option_label and option_text:
+            normalized_options[option_label] = option_text
+
+    if not question_text or len(normalized_options) < 2:
+        warnings.append(f"Question {question_number} was skipped because it did not include a complete multiple-choice structure.")
+        return
+
+    correct_answer, answer_warning = _resolve_imported_correct_answer(current_question.get("correctAnswerRaw"), normalized_options)
+    if answer_warning:
+        warnings.append(f"Question {question_number}: {answer_warning}.")
+
+    parsed_questions.append(
+        {
+            "key": f"Q{len(parsed_questions) + 1}",
+            "question": question_text,
+            "type": "mcq",
+            "correctAnswer": correct_answer,
+            "explanation": _non_empty_string(current_question.get("explanation")),
+            "marks": 1,
+            "options": normalized_options,
+        }
+    )
+
+
+def _parse_question_bank_import_text(text):
+    normalized_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"\s+", " ", line).strip() for line in normalized_text.split("\n")]
+
+    parsed_questions = []
+    warnings = []
+    current_question = None
+    active_section = ""
+    active_option_key = ""
+
+    for line in lines:
+        if not line:
+            continue
+
+        question_match = QUESTION_BANK_START_RE.match(line)
+        if question_match:
+            _finalize_imported_question(current_question, parsed_questions, warnings)
+            current_question = {
+                "number": question_match.group(1),
+                "question": _non_empty_string(question_match.group(2)),
+                "options": {},
+                "correctAnswerRaw": "",
+                "explanation": "",
+            }
+            active_section = "question"
+            active_option_key = ""
+            continue
+
+        if current_question is None:
+            continue
+
+        option_match = QUESTION_BANK_OPTION_RE.match(line)
+        if option_match:
+            active_option_key = option_match.group(1).upper()
+            current_question["options"][active_option_key] = _non_empty_string(option_match.group(2))
+            active_section = "option"
+            continue
+
+        answer_match = QUESTION_BANK_ANSWER_RE.match(line)
+        if answer_match:
+            current_question["correctAnswerRaw"] = _append_question_bank_import_text("", answer_match.group(1))
+            active_section = "answer"
+            active_option_key = ""
+            continue
+
+        explanation_match = QUESTION_BANK_EXPLANATION_RE.match(line)
+        if explanation_match:
+            current_question["explanation"] = _append_question_bank_import_text("", explanation_match.group(1))
+            active_section = "explanation"
+            active_option_key = ""
+            continue
+
+        if active_section == "question":
+            current_question["question"] = _append_question_bank_import_text(current_question.get("question", ""), line)
+            continue
+
+        if active_section == "option" and active_option_key:
+            current_question["options"][active_option_key] = _append_question_bank_import_text(
+                current_question["options"].get(active_option_key, ""),
+                line,
+            )
+            continue
+
+        if active_section == "answer":
+            current_question["correctAnswerRaw"] = _append_question_bank_import_text(current_question.get("correctAnswerRaw", ""), line)
+            continue
+
+        if active_section == "explanation":
+            current_question["explanation"] = _append_question_bank_import_text(current_question.get("explanation", ""), line)
+            continue
+
+        current_question["question"] = _append_question_bank_import_text(current_question.get("question", ""), line)
+
+    _finalize_imported_question(current_question, parsed_questions, warnings)
+
+    if not parsed_questions:
+        raise ValueError(
+            "No multiple-choice questions were detected. Use a PDF where each question starts with 1. or 1), choices start with A./A), and answers use Answer: or Correct Answer:."
+        )
+
+    return {
+        "questions": parsed_questions,
+        "warnings": warnings,
+    }
+
+
+def _parse_question_bank_import_pdf(file_storage):
+    validated_file = _validate_question_bank_import_file(file_storage)
+    file_bytes = file_storage.read()
+    if not file_bytes:
+        raise ValueError("The uploaded PDF is empty")
+
+    try:
+        reader = PdfReader(BytesIO(file_bytes))
+    except Exception as error:
+        raise ValueError(f"Unable to read this PDF: {error}") from error
+
+    page_text = []
+    for page in reader.pages:
+        page_text.append(page.extract_text() or "")
+
+    extracted_text = "\n".join(page_text).strip()
+    if not extracted_text:
+        raise ValueError("The PDF did not contain readable text. Try a text-based PDF instead of a scanned image.")
+
+    parsed_payload = _parse_question_bank_import_text(extracted_text)
+    question_count = len(parsed_payload["questions"])
+
+    return {
+        "fileName": validated_file["fileName"],
+        "questions": parsed_payload["questions"],
+        "warnings": parsed_payload["warnings"],
+        "stats": {
+            "pageCount": len(reader.pages),
+            "questionCount": question_count,
+            "warningCount": len(parsed_payload["warnings"]),
+        },
+        "metadata": {
+            "totalQuestions": question_count,
+        },
+    }
 
 
 def _store_uploaded_asset(file_storage, validated_file, storage_path, local_asset_path):
@@ -3250,6 +3512,25 @@ def upload_company_exam_asset():
             "packageKey": _sanitize_storage_segment(package_id or package_name, "package"),
             "downloadUrl": uploaded_asset.get("url"),
             **uploaded_asset,
+        }
+    )
+
+
+@app.post("/api/company-exams/question-banks/import-pdf")
+def import_company_exam_question_bank_pdf():
+    file_storage = request.files.get("file")
+
+    try:
+        imported_payload = _parse_question_bank_import_pdf(file_storage)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        return jsonify({"error": f"Question bank import failed: {error}"}), 500
+
+    return jsonify(
+        {
+            "status": "parsed",
+            **imported_payload,
         }
     )
 
