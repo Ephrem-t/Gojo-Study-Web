@@ -43,7 +43,126 @@ const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
   { month: 4, day: 29, title: "Genna", notes: "Ethiopian Christmas." },
   { month: 5, day: 11, title: "Timkat", notes: "Epiphany celebration." },
   { month: 6, day: 23, title: "Adwa Victory Day", notes: "National remembrance day." },
+  { month: 8, day: 23, title: "International Labour Day", notes: "Public holiday." },
+  { month: 9, day: 1, title: "Patriots' Victory Day", notes: "Public holiday." },
+  { month: 9, day: 20, title: "Downfall of the Derg", notes: "National public holiday." },
 ];
+
+const YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN = {
+  2017: [
+    { date: "2025-03-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2025-06-06", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2025-09-05", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2018: [
+    { date: "2026-03-20", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2026-05-27", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2026-08-26", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2019: [
+    { date: "2027-03-10", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2027-05-17", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2027-08-15", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2020: [
+    { date: "2028-02-27", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2028-05-05", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2028-08-04", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2021: [
+    { date: "2029-02-14", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2029-04-24", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2029-07-24", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2022: [
+    { date: "2030-02-03", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2030-04-13", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2030-07-13", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2023: [
+    { date: "2031-01-23", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2031-04-02", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2031-07-02", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2024: [
+    { date: "2032-01-11", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2032-03-21", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2032-06-20", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+  2025: [
+    { date: "2032-12-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2033-03-10", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
+    { date: "2033-06-09", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
+  ],
+};
+
+function buildYearSpecificGovernmentClosures(ethiopianYear) {
+  const gregorianEvents = YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN[ethiopianYear] || [];
+  return gregorianEvents.map((eventItem) => {
+    const [year, month, day] = eventItem.date.split("-").map(Number);
+    if (!year || !month || !day) return null;
+
+    const ethDate = EthiopicCalendar.ge(year, month, day);
+    if (ethDate.year !== ethiopianYear) return null;
+
+    return {
+      month: ethDate.month,
+      day: ethDate.day,
+      title: eventItem.title,
+      notes: eventItem.notes,
+    };
+  }).filter(Boolean);
+}
+
+function getOrthodoxEasterDate(gregorianYear) {
+  const a = gregorianYear % 4;
+  const b = gregorianYear % 7;
+  const c = gregorianYear % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const julianMonth = Math.floor((d + e + 114) / 31);
+  const julianDay = ((d + e + 114) % 31) + 1;
+  const julianDateAsGregorian = new Date(gregorianYear, julianMonth - 1, julianDay);
+  julianDateAsGregorian.setDate(julianDateAsGregorian.getDate() + 13);
+  return julianDateAsGregorian;
+}
+
+function buildMovableOrthodoxClosures(ethiopianYear) {
+  const movableEvents = [];
+  const seenEventKeys = new Set();
+
+  [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
+    const easterDate = getOrthodoxEasterDate(gregorianYear);
+    const goodFridayDate = new Date(easterDate);
+    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
+
+    [
+      { title: "Siklet (Good Friday)", notes: "Orthodox movable feast.", date: goodFridayDate },
+      { title: "Fasika (Easter)", notes: "Orthodox movable feast.", date: easterDate },
+    ].forEach((eventItem) => {
+      const ethDate = EthiopicCalendar.ge(
+        eventItem.date.getFullYear(),
+        eventItem.date.getMonth() + 1,
+        eventItem.date.getDate()
+      );
+
+      if (ethDate.year !== ethiopianYear) return;
+
+      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
+      if (seenEventKeys.has(eventKey)) return;
+
+      seenEventKeys.add(eventKey);
+      movableEvents.push({
+        month: ethDate.month,
+        day: ethDate.day,
+        title: eventItem.title,
+        notes: eventItem.notes,
+      });
+    });
+  });
+
+  return movableEvents;
+}
 
 const CALENDAR_EVENT_META = {
   academic: {
@@ -77,28 +196,36 @@ const getCalendarEventMeta = (category) => {
   return CALENDAR_EVENT_META[eventKey] || CALENDAR_EVENT_META.academic;
 };
 
-const buildDefaultCalendarEvents = (ethiopianYear) => DEFAULT_ETHIOPIAN_SPECIAL_DAYS.map((eventItem) => {
-  const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
-  const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, "0")}-${String(gregorianDate.day).padStart(2, "0")}`;
+const buildDefaultCalendarEvents = (ethiopianYear) => {
+  const allEvents = [
+    ...DEFAULT_ETHIOPIAN_SPECIAL_DAYS,
+    ...buildMovableOrthodoxClosures(ethiopianYear),
+    ...buildYearSpecificGovernmentClosures(ethiopianYear),
+  ];
 
-  return {
-    id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
-    title: eventItem.title,
-    type: "no-class",
-    category: "no-class",
-    subType: "general",
-    notes: eventItem.notes,
-    gregorianDate: isoDate,
-    ethiopianDate: {
-      year: ethiopianYear,
-      month: eventItem.month,
-      day: eventItem.day,
-    },
-    createdAt: "",
-    createdBy: "system-default",
-    isDefault: true,
-  };
-});
+  return allEvents.map((eventItem) => {
+    const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
+    const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, "0")}-${String(gregorianDate.day).padStart(2, "0")}`;
+
+    return {
+      id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}-${eventItem.title}`,
+      title: eventItem.title,
+      type: "no-class",
+      category: "no-class",
+      subType: "general",
+      notes: eventItem.notes,
+      gregorianDate: isoDate,
+      ethiopianDate: {
+        year: ethiopianYear,
+        month: eventItem.month,
+        day: eventItem.day,
+      },
+      createdAt: "",
+      createdBy: "system-default",
+      isDefault: true,
+    };
+  });
+};
 
 const normalizeCalendarEvent = (eventId, eventValue) => {
   const legacyType = eventValue?.type || "academic";
@@ -358,6 +485,43 @@ function MyPosts() {
     borderRadius: 16,
     padding: "11px",
     border: "1px solid var(--border-soft)",
+  };
+  const rightRailCardStyle = {
+    background: "var(--surface-panel)",
+    borderRadius: 12,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+  };
+  const rightRailIconStyle = {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    background: "#F8FAFC",
+    color: "var(--text-primary)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+  };
+  const rightRailIconButtonStyle = {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "#F8FAFC",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    lineHeight: 1,
+  };
+  const rightRailPillStyle = {
+    padding: "4px 8px",
+    borderRadius: 999,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
+    fontSize: 9,
+    color: "var(--text-secondary)",
+    fontWeight: 800,
   };
   const softPanelStyle = {
     background: "var(--surface-muted)",
@@ -1330,8 +1494,8 @@ function MyPosts() {
                 <div className="post-card facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden" }}>
                   <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                      <div className="img-circle" style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                        <ProfileAvatar src={post.adminProfile || admin.profileImage} name={post.adminName || admin.name || "Admin"} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      <div className="img-circle" style={{ width: 40, height: 40, minWidth: 40, minHeight: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
+                        <ProfileAvatar src={post.adminProfile || admin.profileImage} name={post.adminName || admin.name || "Admin"} alt="profile" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover", display: "block", flexShrink: 0 }} />
                       </div>
                       <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                         <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName || admin.name || "Admin"}</h4>
@@ -1441,7 +1605,7 @@ function MyPosts() {
           }}
         />
 
-        <div className="dashboard-widgets" onWheel={(event) => event.stopPropagation()} style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, flex: "0 0 clamp(300px, 21vw, 360px)", display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh - 88px)", maxHeight: "calc(100vh - 88px)", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "fixed", top: 74, right: 14, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, paddingLeft: 12, paddingBottom: 12, marginLeft: 10, marginRight: 0, borderLeft: "1px solid var(--border-soft)", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease", zIndex: 20 }}>
+        <div className="dashboard-widgets" onWheel={(event) => event.stopPropagation()} style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, flex: "0 0 clamp(300px, 21vw, 360px)", display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh - 88px)", maxHeight: "calc(100vh - 88px)", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "fixed", top: 74, right: 14, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, paddingLeft: 14, paddingBottom: 14, marginLeft: 10, marginRight: 0, borderLeft: "none", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease", zIndex: 20 }}>
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Quick Statistics</h4>
             <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", justifyContent: "center", flexWrap: "nowrap" }}>
@@ -1495,12 +1659,12 @@ function MyPosts() {
               </div>
             </div>
 
-            <div style={{ background: "var(--surface-panel)", borderRadius: 20, boxShadow: "0 10px 24px rgba(15, 23, 42, 0.05)", padding: "10px", border: "1px solid var(--border-soft)", overflow: "hidden", position: "relative" }}>
+            <div style={{ ...rightRailCardStyle, overflow: "hidden", position: "relative" }}>
               <div style={{ position: "absolute", top: -34, right: -24, width: 104, height: 104, borderRadius: "50%", background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 10%, transparent) 0%, transparent 74%)", pointerEvents: "none" }} />
-              <div style={{ margin: "-10px -10px 10px", padding: "12px 10px 10px", background: "var(--surface-panel)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
+              <div style={{ padding: "14px 14px 12px", background: "var(--surface-panel)", borderBottom: "1px solid rgba(15, 23, 42, 0.08)", position: "relative" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 12, background: "var(--accent-soft)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border-strong)" }}>
+                    <div style={rightRailIconStyle}>
                       <FaCalendarAlt style={{ width: 14, height: 14 }} />
                     </div>
                     <div>
@@ -1512,14 +1676,14 @@ function MyPosts() {
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    <button type="button" onClick={() => handleCalendarMonthChange(-1)} style={{ width: 28, height: 28, borderRadius: 9, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 17, lineHeight: 1 }} aria-label="Previous month" title="Previous month">‹</button>
-                    <button type="button" onClick={() => handleCalendarMonthChange(1)} style={{ width: 28, height: 28, borderRadius: 9, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 17, lineHeight: 1 }} aria-label="Next month" title="Next month">›</button>
+                    <button type="button" onClick={() => handleCalendarMonthChange(-1)} style={{ ...rightRailIconButtonStyle, fontSize: 17 }} aria-label="Previous month" title="Previous month">‹</button>
+                    <button type="button" onClick={() => handleCalendarMonthChange(1)} style={{ ...rightRailIconButtonStyle, fontSize: 17 }} aria-label="Next month" title="Next month">›</button>
                   </div>
                 </div>
                 <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, flexWrap: "wrap" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <div style={{ padding: "4px 8px", borderRadius: 999, background: "var(--surface-muted)", border: "1px solid var(--border-soft)", fontSize: 9, color: "var(--accent-strong)", fontWeight: 800 }}>{monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? "" : "s"}</div>
-                    <div style={{ padding: "4px 8px", borderRadius: 999, background: canManageCalendar ? "var(--accent-soft)" : "var(--surface-muted)", border: "1px solid var(--border-soft)", fontSize: 9, color: canManageCalendar ? "var(--accent-strong)" : "var(--text-secondary)", fontWeight: 800 }}>{canManageCalendar ? "Manage access" : "View only"}</div>
+                    <div style={{ ...rightRailPillStyle, color: "var(--text-primary)" }}>{monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? "" : "s"}</div>
+                    <div style={{ ...rightRailPillStyle, color: canManageCalendar ? "var(--text-primary)" : "var(--text-secondary)" }}>{canManageCalendar ? "Manage access" : "View only"}</div>
                   </div>
                 </div>
               </div>
@@ -1589,7 +1753,7 @@ function MyPosts() {
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "var(--surface-panel)", border: "1px solid var(--warning-border)", borderRadius: 999, padding: "5px 8px" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--warning)" }} /> No class</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "var(--surface-panel)", border: "1px solid var(--border-strong)", borderRadius: 999, padding: "5px 8px" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)" }} /> Academic</div>
                 {canManageCalendar ? (
-                  <button type="button" onClick={handleOpenCalendarEventModal} style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid var(--border-strong)", background: "var(--surface-panel)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }} aria-label="Add school calendar event" title="Add school calendar event"><FaPlus style={{ width: 12, height: 12 }} /></button>
+                  <button type="button" onClick={handleOpenCalendarEventModal} style={{ ...rightRailIconButtonStyle, width: 30, height: 30, borderRadius: 999, color: "var(--text-primary)", display: "flex", alignItems: "center", justifyContent: "center" }} aria-label="Add school calendar event" title="Add school calendar event"><FaPlus style={{ width: 12, height: 12 }} /></button>
                 ) : null}
               </div>
 

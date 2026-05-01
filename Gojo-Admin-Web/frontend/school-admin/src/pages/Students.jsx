@@ -386,10 +386,14 @@ function StudentsPage() {
   const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
 
+  const DEFAULT_STUDENT_PROFILE_IMAGE = "/default-profile.png";
+
   const isWebImageUrl = (value) => {
     const normalized = String(value || "").trim();
-    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized);
+    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized) || /^blob:/i.test(normalized) || normalized.startsWith("/");
   };
+
+  const isPlaceholderProfileImage = (value) => String(value || "").trim() === DEFAULT_STUDENT_PROFILE_IMAGE;
 
   const getSafeImage = (...candidates) => {
     for (const candidate of candidates) {
@@ -397,7 +401,12 @@ function StudentsPage() {
       const normalized = String(candidate).trim();
       if (isWebImageUrl(normalized)) return normalized;
     }
-    return "/default-profile.png";
+    return DEFAULT_STUDENT_PROFILE_IMAGE;
+  };
+
+  const hasDatabaseProfileImage = (value) => {
+    const normalized = String(value || "").trim();
+    return Boolean(normalized && isWebImageUrl(normalized) && !isPlaceholderProfileImage(normalized));
   };
 
   const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -422,6 +431,57 @@ function StudentsPage() {
     email: String(student?.email || "").trim(),
     isActive: student?.isActive !== false,
   });
+
+  const hydrateMissingStudentProfileImages = async (studentList = []) => {
+    if (!Array.isArray(studentList) || studentList.length === 0) {
+      return [];
+    }
+
+    return mapInBatches(studentList, 8, async (studentItem) => {
+      if (hasDatabaseProfileImage(studentItem?.profileImage)) {
+        return studentItem;
+      }
+
+      let userRecord = {};
+      if (studentItem?.userId) {
+        userRecord = await fetchCachedJson(`${DB_URL}/Users/${studentItem.userId}.json`, {
+          ttlMs: BIG_NODE_CACHE_TTL_MS,
+          fallbackValue: {},
+        });
+      }
+
+      let nextProfileImage = getSafeImage(userRecord?.profileImage, studentItem?.profileImage);
+      let studentRecord = {};
+
+      if (!hasDatabaseProfileImage(nextProfileImage) && studentItem?.studentId) {
+        studentRecord = await fetchCachedJson(`${DB_URL}/Students/${studentItem.studentId}.json`, {
+          ttlMs: BIG_NODE_CACHE_TTL_MS,
+          fallbackValue: {},
+        });
+
+        nextProfileImage = getSafeImage(
+          studentRecord?.profileImage,
+          studentRecord?.basicStudentInformation?.studentPhoto,
+          studentRecord?.studentPhoto,
+          userRecord?.profileImage,
+          studentItem?.profileImage
+        );
+      }
+
+      if (!hasDatabaseProfileImage(nextProfileImage)) {
+        return studentItem;
+      }
+
+      return {
+        ...studentItem,
+        name:
+          String(userRecord?.name || userRecord?.username || studentRecord?.name || studentRecord?.basicStudentInformation?.studentFullName || "").trim() ||
+          studentItem.name,
+        email: userRecord?.email || studentRecord?.email || studentItem.email || "",
+        profileImage: nextProfileImage,
+      };
+    });
+  };
 
   const getStudentIdentityCandidates = (studentLike = {}) => uniqueNonEmptyValues([
     studentLike?.userId,
@@ -531,12 +591,33 @@ function StudentsPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const cached = readStudentsCache();
-    if (!cached) return;
+    if (!cached) return undefined;
 
     if (Array.isArray(cached.studentList) && cached.studentList.length) {
-      setStudents(cached.studentList);
+      const cachedStudentList = cached.studentList;
+      setStudents(cachedStudentList);
       setStudentsLoading(false);
+
+      hydrateMissingStudentProfileImages(cachedStudentList).then((hydratedStudentList) => {
+        if (cancelled || !Array.isArray(hydratedStudentList) || hydratedStudentList.length === 0) {
+          return;
+        }
+
+        const hasProfileFix = hydratedStudentList.some(
+          (studentItem, index) => studentItem?.profileImage !== cachedStudentList[index]?.profileImage
+        );
+        if (!hasProfileFix) {
+          return;
+        }
+
+        persistStudentList(
+          hydratedStudentList,
+          Array.isArray(cached.gradeOptions) ? cached.gradeOptions : gradeOptions,
+          String(cached.currentAcademicYear || currentAcademicYear || "")
+        );
+      });
     }
 
     if (Array.isArray(cached.gradeOptions)) {
@@ -546,6 +627,10 @@ function StudentsPage() {
     if (typeof cached.currentAcademicYear === "string") {
       setCurrentAcademicYear(cached.currentAcademicYear);
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // If we have a `finance.userId`, fetch the Users record to ensure
@@ -856,6 +941,8 @@ function StudentsPage() {
         if (directoryStudentList.length > 0) {
           persistStudentList(directoryStudentList, managedGrades, activeAcademicYear);
           setStudentsLoading(false);
+          const hydratedDirectoryStudentList = await hydrateMissingStudentProfileImages(directoryStudentList);
+          persistStudentList(hydratedDirectoryStudentList, managedGrades, activeAcademicYear);
           return;
         }
 

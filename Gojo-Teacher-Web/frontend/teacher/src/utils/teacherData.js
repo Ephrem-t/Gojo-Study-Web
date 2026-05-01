@@ -494,9 +494,12 @@ export const loadStudentsByGradeSections = async ({
         row.raw?.name ||
         row.raw?.basicStudentInformation?.name ||
         "Student";
+      const resolvedStudentId = normalizeIdentifier(row.studentId || row.studentKey || row.userId);
 
       return {
         ...row,
+        id: resolvedStudentId,
+        studentId: resolvedStudentId,
         user: userRecord,
         name,
         profileImage: resolveAvatarImage(

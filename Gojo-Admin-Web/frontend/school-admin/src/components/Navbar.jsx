@@ -21,7 +21,7 @@ export default function Navbar({
       className="top-navbar register-shell__topbar"
       style={{
         borderBottom: "1px solid var(--border-soft)",
-        background: "var(--surface-overlay)",
+        background: "#ffffff",
         backdropFilter: "blur(10px)",
         ...style,
       }}

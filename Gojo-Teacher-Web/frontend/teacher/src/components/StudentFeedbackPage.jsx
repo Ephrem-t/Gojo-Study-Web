@@ -883,6 +883,24 @@ function StudentFeedbackPage() {
       .sort((leftRow, rightRow) => Number(rightRow.updatedAt || 0) - Number(leftRow.updatedAt || 0));
   }, [filteredEntries]);
 
+  const totalResponses = filteredEntries.length;
+  const ratedEntries = filteredEntries.filter((entry) => Number(entry.teacherRating || 0) > 0);
+  const ratedResponses = ratedEntries.length;
+  const averageRating = getAverage(
+    ratedEntries.reduce((sum, entry) => sum + Number(entry.teacherRating || 0), 0),
+    ratedResponses
+  );
+  const supportEntries = filteredEntries.filter((entry) => entry.supportStatus === "needs-support");
+  const supportShare = getPercent(supportEntries.length, totalResponses);
+  const strongEntriesCount = filteredEntries.filter((entry) => entry.supportStatus === "strong").length;
+  const activeLessons = lessonSummaryRows.length;
+  const lastUpdatedLabel = formatDateTimeLabel(
+    filteredEntries.reduce(
+      (latestTime, entry) => Math.max(latestTime, Number(entry.updatedAt || entry.createdAt || 0)),
+      0
+    )
+  );
+
   const understandingRows = useMemo(() => {
     return UNDERSTANDING_ORDER.map((key) => {
       const count = filteredEntries.filter((entry) => entry.understandingLevel === key).length;

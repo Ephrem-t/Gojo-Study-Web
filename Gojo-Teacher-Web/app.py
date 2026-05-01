@@ -1377,6 +1377,11 @@ def update_course_marks(course_id):
 @app.route("/api/get_posts", methods=["GET"])
 def get_posts():
     viewer_role = str(request.args.get("viewerRole") or "").strip().lower()
+    try:
+        requested_limit = int(request.args.get("limit") or 25)
+    except (TypeError, ValueError):
+        requested_limit = 25
+    posts_limit = max(1, min(requested_limit, 100))
 
     def _normalize_target_role(post_value):
         if not isinstance(post_value, dict):
@@ -1413,30 +1418,99 @@ def get_posts():
         ]
 
         if not target_parts:
-            return False
+            return True
 
         return "all" in target_parts or "teacher" in target_parts or "teachers" in target_parts
+
+    def _limited_posts_snapshot(posts_reference):
+        try:
+            posts_snapshot = posts_reference.order_by_child("time").limit_to_last(posts_limit).get() or {}
+        except Exception:
+            try:
+                posts_snapshot = posts_reference.order_by_key().limit_to_last(posts_limit).get() or {}
+            except Exception:
+                posts_snapshot = posts_reference.get() or {}
+
+        if not isinstance(posts_snapshot, dict):
+            return {}
+        return posts_snapshot
+
+    def _first_query_result(snapshot):
+        if isinstance(snapshot, dict):
+            for item_key, item_value in snapshot.items():
+                if isinstance(item_value, dict):
+                    return item_key, item_value
+        return None, None
+
+    def _load_actor_record(raw_actor_id):
+        normalized_actor_id = str(raw_actor_id or "").strip()
+        if not normalized_actor_id:
+            return None, {}, {}
+
+        school_admin_key = None
+        school_admin_record = school_admin_cache.get(normalized_actor_id)
+        if school_admin_record is None:
+            school_admin_record = school_admins_ref.child(normalized_actor_id).get() or {}
+            if isinstance(school_admin_record, dict) and school_admin_record:
+                school_admin_cache[normalized_actor_id] = school_admin_record
+            else:
+                school_admin_cache[normalized_actor_id] = {}
+
+        if isinstance(school_admin_record, dict) and school_admin_record:
+            school_admin_key = normalized_actor_id
+
+        user = users_cache.get(normalized_actor_id)
+        if user is None:
+            user = users_ref.child(normalized_actor_id).get() or {}
+            users_cache[normalized_actor_id] = user if isinstance(user, dict) else {}
+
+        if (not isinstance(user, dict) or not user) and isinstance(school_admin_record, dict):
+            admin_user_id = str(school_admin_record.get("userId") or "").strip()
+            if admin_user_id:
+                user = users_cache.get(admin_user_id)
+                if user is None:
+                    user = users_ref.child(admin_user_id).get() or {}
+                    users_cache[admin_user_id] = user if isinstance(user, dict) else {}
+
+        if not isinstance(user, dict) or not user:
+            user_query_key = f"userId:{normalized_actor_id}"
+            user = users_cache.get(user_query_key)
+            if user is None:
+                try:
+                    _, user = _first_query_result(
+                        users_ref.order_by_child("userId").equal_to(normalized_actor_id).limit_to_first(1).get()
+                    )
+                except Exception:
+                    user = {}
+                users_cache[user_query_key] = user if isinstance(user, dict) else {}
+
+        if not isinstance(school_admin_record, dict) or not school_admin_record:
+            admin_query_key = f"userId:{normalized_actor_id}"
+            cached_admin_query = school_admin_cache.get(admin_query_key)
+            if cached_admin_query is None:
+                try:
+                    school_admin_key, school_admin_record = _first_query_result(
+                        school_admins_ref.order_by_child("userId").equal_to(normalized_actor_id).limit_to_first(1).get()
+                    )
+                except Exception:
+                    school_admin_key, school_admin_record = None, {}
+                school_admin_cache[admin_query_key] = {
+                    "key": school_admin_key,
+                    "record": school_admin_record if isinstance(school_admin_record, dict) else {},
+                }
+            else:
+                school_admin_key = cached_admin_query.get("key")
+                school_admin_record = cached_admin_query.get("record") or {}
+
+        return school_admin_key, user if isinstance(user, dict) else {}, school_admin_record if isinstance(school_admin_record, dict) else {}
 
     posts_ref = school_reference("Posts")
     users_ref = school_reference("Users")
     school_admins_ref = school_reference("School_Admins")
 
-    all_posts = posts_ref.get() or {}
-    if not isinstance(all_posts, dict):
-        all_posts = {}
-    all_users = users_ref.get() or {}
-    all_school_admins = school_admins_ref.get() or {}
-
-    users_by_user_id = {
-        str(user_value.get("userId")): user_value
-        for user_value in all_users.values()
-        if isinstance(user_value, dict) and user_value.get("userId")
-    }
-    school_admins_by_user_id = {
-        str(admin_value.get("userId")): (admin_key, admin_value)
-        for admin_key, admin_value in all_school_admins.items()
-        if isinstance(admin_value, dict) and admin_value.get("userId")
-    }
+    all_posts = _limited_posts_snapshot(posts_ref)
+    users_cache = {}
+    school_admin_cache = {}
 
     result = []
 
@@ -1447,20 +1521,7 @@ def get_posts():
             continue
 
         raw_admin_id = post.get("adminId")
-        school_admin_key = None
-        school_admin_record = None
-        user = all_users.get(raw_admin_id, {}) if raw_admin_id in all_users else {}
-
-        if not user and raw_admin_id:
-            user = users_by_user_id.get(str(raw_admin_id), {})
-
-        if raw_admin_id in all_school_admins:
-            school_admin_key = raw_admin_id
-            school_admin_record = all_school_admins.get(raw_admin_id) or {}
-            if not user and school_admin_record.get("userId"):
-                user = users_by_user_id.get(str(school_admin_record.get("userId")), {})
-        else:
-            school_admin_key, school_admin_record = school_admins_by_user_id.get(str(raw_admin_id), (None, None))
+        school_admin_key, user, school_admin_record = _load_actor_record(raw_admin_id)
 
         admin_user_id = str(user.get("userId") or (school_admin_record or {}).get("userId") or raw_admin_id or "").strip()
 

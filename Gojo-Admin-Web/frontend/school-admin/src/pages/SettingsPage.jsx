@@ -242,7 +242,7 @@ function SettingsPage() {
     if (!oldPassword || !password || !confirmPassword) {
       return setStatus({ type: "error", message: "Fill old password, new password, and confirm password." });
     }
-    if (password.length < 6) return setStatus({ type: "error", message: "Password must be at least 6 characters." });
+    if (password.length < 8) return setStatus({ type: "error", message: "Password must be at least 8 characters." });
     if (password !== confirmPassword) return setStatus({ type: "error", message: "Passwords do not match." });
     try {
       setSavingPassword(true);

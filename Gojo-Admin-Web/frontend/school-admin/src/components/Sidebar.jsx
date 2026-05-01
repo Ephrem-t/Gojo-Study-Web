@@ -48,10 +48,11 @@ const SIDEBAR_SECTIONS = [
   },
   {
     key: "teaching",
-    title: "Students",
+    title: "Students & Parents",
     icon: FaBook,
     items: [
       { to: "/students", label: "Students", icon: FaUsers },
+      { to: "/parents", label: "Parents", icon: FaUsers },
       { to: "/schedule", label: "Timetable", icon: FaCalendarAlt },
     ],
   },

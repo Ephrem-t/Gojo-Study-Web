@@ -61,6 +61,14 @@ const EMPTY_TEACHER_COURSE_CONTEXT = {
   assignmentsByCourseId: {},
 };
 
+const getChatId = (teacherUserId, otherUserId) => {
+  const teacherId = String(teacherUserId || "").trim();
+  const contactId = String(otherUserId || "").trim();
+  return `${teacherId}_${contactId}`;
+};
+
+const QUICK_CHAT_HISTORY_LIMIT = 50;
+
 const normalizeGrade = (value) => String(value ?? "").trim();
 const normalizeSection = (value) => String(value ?? "").trim().toUpperCase();
 const buildGradeSectionKey = (grade, section) => `${normalizeGrade(grade)}|${normalizeSection(section)}`;

@@ -468,7 +468,7 @@ export default function Dashboard() {
       .filter(Boolean);
 
     if (targetParts.length === 0) {
-      return false;
+      return true;
     }
 
     if (targetParts.includes("all")) {
@@ -771,7 +771,9 @@ export default function Dashboard() {
 
     try {
       const postsResp = await axios.get(`${API_BASE}/get_posts`, {
-        params: resolvedSchoolCode ? { schoolCode: resolvedSchoolCode, viewerRole: "teacher" } : { viewerRole: "teacher" },
+        params: resolvedSchoolCode
+          ? { schoolCode: resolvedSchoolCode, viewerRole: "teacher", limit: 25 }
+          : { viewerRole: "teacher", limit: 25 },
         headers: resolvedSchoolCode ? { "X-School-Code": resolvedSchoolCode } : {},
       });
       let postsData = postsResp.data || [];
@@ -811,12 +813,13 @@ export default function Dashboard() {
 
       setExpandedPostIds({});
 
-      if (finalPosts.length > 0 || !cachedPostsRaw) {
-        setPosts(finalPosts);
-      }
+      setPosts(finalPosts);
       if (finalPosts.length > 0) {
         localStorage.setItem(cacheKey, JSON.stringify(finalPosts));
         writeSessionResource(sessionCacheKey, finalPosts);
+      } else {
+        localStorage.removeItem(cacheKey);
+        writeSessionResource(sessionCacheKey, []);
       }
 
       const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
@@ -1597,7 +1600,12 @@ export default function Dashboard() {
                   <div className="facebook-post-card__header" style={{ padding: compactCards ? "10px 12px 8px" : "12px 14px 10px" }}>
                     <div className="facebook-post-card__header-main">
                       <div className="facebook-post-card__avatar">
-                        <img src={getSafeProfileImage(post.adminProfile)} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        <ProfileAvatar
+                          src={post.adminProfile}
+                          name={post.adminName || "Admin"}
+                          alt={post.adminName || "Admin"}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
                       </div>
                       <div className="facebook-post-card__identity">
                         <div className="facebook-post-card__identity-row">

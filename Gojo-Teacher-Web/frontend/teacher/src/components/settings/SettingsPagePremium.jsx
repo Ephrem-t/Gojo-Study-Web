@@ -18,6 +18,7 @@ import "../../styles/global.css";
 import "../../styles/settingsPage.css";
 import { getRtdbRoot } from "../../api/rtdbScope";
 import Sidebar from "../Sidebar";
+import ProfileAvatar from "../ProfileAvatar";
 import QuickLessonPlanCheckModal from "./QuickLessonPlanCheckModal";
 
 const API_BASE = "http://127.0.0.1:5000/api";
@@ -164,7 +165,11 @@ function ActivityItem({ item, onClick }) {
   return (
     <button type="button" className="settings-activity-item" onClick={() => onClick(item)}>
       <div className="settings-activity-avatar">
-        <img src={item.actorProfile || "/default-profile.png"} alt={item.actorName || item.label || "Activity"} />
+        <ProfileAvatar
+          src={item.actorProfile}
+          name={item.actorName || item.label || "Activity"}
+          alt={item.actorName || item.label || "Activity"}
+        />
       </div>
       <div className="settings-activity-copy">
         <div className="settings-activity-copy-top">
@@ -653,7 +658,11 @@ export default function SettingsPagePremium() {
             <aside className="settings-account-card">
               <div className="settings-account-identity">
                 <div className="settings-account-avatar">
-                  <img src={profilePreview || "/default-profile.png"} alt={teacher?.name || "Teacher"} />
+                  <ProfileAvatar
+                    src={profilePreview}
+                    name={teacher?.name || "Teacher"}
+                    alt={teacher?.name || "Teacher"}
+                  />
                 </div>
                 <div>
                   <strong>{teacher?.name || "Teacher"}</strong>
@@ -694,7 +703,11 @@ export default function SettingsPagePremium() {
                 <div className="settings-profile-layout">
                   <div className="settings-avatar-panel">
                     <div className="settings-avatar-shell">
-                      <img src={profilePreview || "/default-profile.png"} alt="Profile preview" />
+                      <ProfileAvatar
+                        src={profilePreview}
+                        name={teacher?.name || "Teacher"}
+                        alt="Profile preview"
+                      />
                       <label className="settings-camera-trigger">
                         <FaCamera />
                         <input type="file" accept="image/*" onChange={handleFileChange} />

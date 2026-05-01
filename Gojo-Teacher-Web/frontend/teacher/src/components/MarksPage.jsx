@@ -117,6 +117,68 @@ const getStudentSection = (student = {}) =>
     .trim()
     .toUpperCase();
 
+const getFirstNonEmpty = (...values) => {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
+const getStudentGender = (student = {}) => {
+  const raw = student?.raw || {};
+  const user = student?.user || {};
+  const gender = getFirstNonEmpty(
+    student?.gender,
+    student?.sex,
+    user?.gender,
+    user?.sex,
+    raw?.gender,
+    raw?.sex,
+    raw?.basicStudentInformation?.gender,
+    raw?.basicStudentInformation?.sex,
+    raw?.personal?.gender
+  );
+
+  return gender ? gender.charAt(0).toUpperCase() + gender.slice(1).toLowerCase() : "";
+};
+
+const getStudentDob = (student = {}) => {
+  const raw = student?.raw || {};
+  const user = student?.user || {};
+  return getFirstNonEmpty(
+    student?.dob,
+    student?.birthDate,
+    user?.dob,
+    user?.birthDate,
+    raw?.dob,
+    raw?.birthDate,
+    raw?.basicStudentInformation?.dob,
+    raw?.basicStudentInformation?.birthDate,
+    raw?.personal?.dob,
+    raw?.personal?.birthDate
+  );
+};
+
+const getStudentAge = (student = {}) => {
+  const explicitAge = getFirstNonEmpty(student?.age, student?.user?.age, student?.raw?.age);
+  if (explicitAge) return explicitAge;
+
+  const dob = getStudentDob(student);
+  if (!dob) return "";
+
+  const birthDate = new Date(dob);
+  if (Number.isNaN(birthDate.getTime())) return "";
+
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age -= 1;
+  }
+  return age >= 0 ? age : "";
+};
+
 const clampScoreToMax = (rawValue, maxValue) => {
   const digits = String(rawValue || "").replace(/[^0-9]/g, "");
   if (!digits) return "";
@@ -1266,7 +1328,7 @@ export default function MarksPage() {
     // Determine assessment metadata and order
     let assList = assessmentList && assessmentList.length ? assessmentList : [];
     const assessmentKeys = assList.length ? assList.map((_, i) => `a${i + 1}`) : [];
-    const headers = ["No", "Name", "Gender", "Age"];
+    const headers = ["No", "Name", "Age", "Gender"];
     // include father column if any student has it
     const includeFather = students.some((s) => s.father || s.fatherName || s.parentName);
     if (includeFather) headers.push("Father");
@@ -1285,15 +1347,9 @@ export default function MarksPage() {
       const sumMax = maxes.reduce((a, b) => a + b, 0) || 100;
       const percent = sumMax > 0 ? (sumScores / sumMax) * 100 : 0;
       const extra = includeFather ? [s.father || s.fatherName || s.parentName || ''] : [];
-      const gender = s.gender || s.sex || '';
-      const age = (() => {
-        if (s.dob) {
-          const d = new Date(s.dob);
-          if (!isNaN(d)) return Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 365.25));
-        }
-        return s.age || '';
-      })();
-      const row = [idx + 1, s.name, gender, age, ...extra, ...scores, sumScores, `${percent.toFixed(1)}%`];
+      const age = getStudentAge(s);
+      const gender = getStudentGender(s);
+      const row = [idx + 1, s.name, age, gender, ...extra, ...scores, sumScores, `${percent.toFixed(1)}%`];
       rows.push(row);
     });
 

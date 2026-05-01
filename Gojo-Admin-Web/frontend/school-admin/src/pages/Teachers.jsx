@@ -1464,6 +1464,90 @@ useEffect(() => {
         };
       };
 
+      const parseLessonFeedbackPointer = (rawKey, fallbackCourseId = '') => {
+        const pointer = String(rawKey || '').trim();
+        if (!pointer) {
+          return {
+            courseId: String(fallbackCourseId || '').trim(),
+            semesterKey: '',
+            monthKey: '',
+            weekKey: '',
+            dateKey: '',
+            topic: '',
+          };
+        }
+
+        const parts = pointer.split('__');
+        const [courseIdPart, semesterKey = '', monthKey = '', weekKey = '', dateKey = '', ...topicParts] = parts;
+        const hasStructuredPointer = parts.length >= 6;
+        const resolvedCourseId = String(hasStructuredPointer ? (courseIdPart || fallbackCourseId || '') : (fallbackCourseId || courseIdPart || '')).trim();
+        let topic = topicParts.join('__');
+
+        if (hasStructuredPointer && topic) {
+          try {
+            topic = decodeURIComponent(topic);
+          } catch {
+            topic = topic.replace(/%20/g, ' ');
+          }
+        }
+
+        return {
+          courseId: resolvedCourseId,
+          semesterKey: hasStructuredPointer ? semesterKey : '',
+          monthKey: hasStructuredPointer ? monthKey : '',
+          weekKey: hasStructuredPointer ? weekKey : '',
+          dateKey: hasStructuredPointer ? dateKey : '',
+          topic: hasStructuredPointer ? topic : '',
+        };
+      };
+
+      const isFeedbackEntryRecord = (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        return [
+          value.teacherRating,
+          value.understandingLevel,
+          value.understandingLabel,
+          value.teacherId,
+          value.courseId,
+        ].some((field) => field !== undefined && field !== null && String(field).trim() !== '');
+      };
+
+      const collectLessonFeedbackEntries = (root) => {
+        const collected = [];
+
+        const pushEntry = (studentId, entry, lessonKey = '', fallbackCourseId = '') => {
+          if (!isFeedbackEntryRecord(entry)) return;
+          const pointerParts = parseLessonFeedbackPointer(lessonKey, entry?.courseId || fallbackCourseId);
+          collected.push({
+            ...entry,
+            ...pointerParts,
+            courseId: String(entry?.courseId || pointerParts.courseId || fallbackCourseId || '').trim(),
+            lessonKey: String(lessonKey || '').trim(),
+            studentId: String(studentId || '').trim(),
+          });
+        };
+
+        Object.entries(root || {}).forEach(([studentId, studentNode]) => {
+          if (!studentNode || typeof studentNode !== 'object') return;
+
+          Object.entries(studentNode).forEach(([firstKey, firstValue]) => {
+            if (!firstValue || typeof firstValue !== 'object') return;
+
+            if (isFeedbackEntryRecord(firstValue)) {
+              pushEntry(studentId, firstValue, firstKey, firstValue?.courseId || '');
+              return;
+            }
+
+            Object.entries(firstValue).forEach(([secondKey, secondValue]) => {
+              if (!secondValue || typeof secondValue !== 'object') return;
+              pushEntry(studentId, secondValue, secondKey, firstKey);
+            });
+          });
+        });
+
+        return collected;
+      };
+
       const pickAcademicYearKey = (obj, preferred = null) => {
         if (!obj || typeof obj !== 'object') return null;
         const keys = Object.keys(obj);
@@ -1722,33 +1806,57 @@ useEffect(() => {
       // Submissions are keyed by teacherId in LessonPlanSubmissions (per provided schema)
       const teacherSubmissionId = String(teacherId || teacherUserId || '').trim();
 
-      const studentWhatLearnNode = await readSchoolNode("StudentWhatLearn");
+      const feedbackRoots = [];
+      const feedbackResults = await Promise.all([
+        axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${RTDB_BASE}/LessonPlans/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${SCHOOL_DB_ROOT}/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${RTDB_BASE}/StudentWhatLearn.json`).catch(() => ({ data: null })),
+      ]);
+
+      feedbackResults.forEach((res) => {
+        if (res && res.data && typeof res.data === 'object' && Object.keys(res.data).length) {
+          feedbackRoots.push(res.data);
+        }
+      });
+
       const feedbackBucketsByLessonKey = {};
+      const seenFeedbackEntries = new Set();
 
-      Object.values(studentWhatLearnNode || {}).forEach((studentCoursesNode) => {
-        if (!studentCoursesNode || typeof studentCoursesNode !== 'object') return;
-        Object.entries(studentCoursesNode).forEach(([fallbackCourseId, lessonEntriesNode]) => {
-          if (!lessonEntriesNode || typeof lessonEntriesNode !== 'object') return;
-          Object.values(lessonEntriesNode).forEach((entry) => {
-            if (!entry || typeof entry !== 'object') return;
-            const entryTeacherId = String(entry?.teacherId || '').trim();
-            if (teacherSubmissionId && entryTeacherId && entryTeacherId !== teacherSubmissionId) return;
+      feedbackRoots.forEach((feedbackRoot) => {
+        collectLessonFeedbackEntries(feedbackRoot).forEach((entry) => {
+          const entryTeacherId = String(entry?.teacherId || '').trim();
+          if (teacherSubmissionId && entryTeacherId && entryTeacherId !== teacherSubmissionId) return;
 
-            const feedbackKey = buildLessonFeedbackKey({
-              courseId: entry?.courseId || fallbackCourseId,
-              semesterKey: entry?.normalizedSemesterKey || entry?.semesterKey,
-              monthKey: entry?.monthKey,
-              weekKey: entry?.weekKey,
-              dateKey: entry?.dateKey,
-              topic: entry?.topic,
-            });
-
-            if (!feedbackKey.replace(/:/g, '').trim()) return;
-            if (!feedbackBucketsByLessonKey[feedbackKey]) {
-              feedbackBucketsByLessonKey[feedbackKey] = [];
-            }
-            feedbackBucketsByLessonKey[feedbackKey].push(entry);
+          const feedbackKey = buildLessonFeedbackKey({
+            courseId: entry?.courseId,
+            semesterKey: entry?.normalizedSemesterKey || entry?.semesterKey,
+            monthKey: entry?.monthKey,
+            weekKey: entry?.weekKey,
+            dateKey: entry?.dateKey,
+            topic: entry?.topic,
           });
+
+          if (!feedbackKey.replace(/:/g, '').trim()) return;
+
+          const dedupeKey = [
+            String(entry?.studentId || '').trim(),
+            String(entry?.lessonKey || '').trim(),
+            String(entry?.courseId || '').trim(),
+            String(entry?.teacherId || '').trim(),
+            String(entry?.createdAt || '').trim(),
+            String(entry?.updatedAt || '').trim(),
+            String(entry?.teacherRating || '').trim(),
+            String(entry?.understandingLevel || entry?.understandingLabel || '').trim(),
+          ].join('::');
+
+          if (seenFeedbackEntries.has(dedupeKey)) return;
+          seenFeedbackEntries.add(dedupeKey);
+
+          if (!feedbackBucketsByLessonKey[feedbackKey]) {
+            feedbackBucketsByLessonKey[feedbackKey] = [];
+          }
+          feedbackBucketsByLessonKey[feedbackKey].push(entry);
         });
       });
 

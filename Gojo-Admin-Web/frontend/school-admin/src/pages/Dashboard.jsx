@@ -33,6 +33,8 @@ const DEFAULT_TARGET_ROLE_OPTIONS = ["all", "student", "parent", "teacher", "reg
 const SCHOOL_SCOPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const CALENDAR_EVENTS_CACHE_TTL_MS = 5 * 60 * 1000;
 const POSTS_CACHE_TTL_MS = 10 * 60 * 1000;
+const DASHBOARD_POST_FETCH_LIMIT = 60;
+const DASHBOARD_POST_CACHE_LIMIT = 60;
 
 const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
   { month: 1, day: 1, title: "Enkutatash", notes: "Ethiopian New Year." },
@@ -98,8 +100,10 @@ function buildYearSpecificGovernmentClosures(ethiopianYear) {
   return gregorianEvents.map((eventItem) => {
     const [year, month, day] = eventItem.date.split("-").map(Number);
     if (!year || !month || !day) return null;
-    // Convert Gregorian to Ethiopic
+
     const ethDate = EthiopicCalendar.ge(year, month, day);
+    if (ethDate.year !== ethiopianYear) return null;
+
     return {
       month: ethDate.month,
       day: ethDate.day,
@@ -125,25 +129,37 @@ function getOrthodoxEasterDate(gregorianYear) {
 function buildMovableOrthodoxClosures(ethiopianYear) {
   const movableEvents = [];
   const seenEventKeys = new Set();
+
   [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
-    // Easter (Fasika)
-    const easter = getOrthodoxEasterDate(gregorianYear);
-    const ethEaster = EthiopicCalendar.ge(easter.getFullYear(), easter.getMonth() + 1, easter.getDate());
-    const key = `${ethEaster.year}-${ethEaster.month}-${ethEaster.day}`;
-    if (!seenEventKeys.has(key)) {
-      movableEvents.push({ month: ethEaster.month, day: ethEaster.day, title: "Fasika (Easter)", notes: "Orthodox movable feast." });
-      seenEventKeys.add(key);
-    }
-    // Good Friday (2 days before Easter)
-    const goodFriday = new Date(easter);
-    goodFriday.setDate(goodFriday.getDate() - 2);
-    const ethGoodFriday = EthiopicCalendar.ge(goodFriday.getFullYear(), goodFriday.getMonth() + 1, goodFriday.getDate());
-    const key2 = `${ethGoodFriday.year}-${ethGoodFriday.month}-${ethGoodFriday.day}`;
-    if (!seenEventKeys.has(key2)) {
-      movableEvents.push({ month: ethGoodFriday.month, day: ethGoodFriday.day, title: "Siklet (Good Friday)", notes: "Orthodox movable feast." });
-      seenEventKeys.add(key2);
-    }
+    const easterDate = getOrthodoxEasterDate(gregorianYear);
+    const goodFridayDate = new Date(easterDate);
+    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
+
+    [
+      { title: "Siklet (Good Friday)", notes: "Orthodox movable feast.", date: goodFridayDate },
+      { title: "Fasika (Easter)", notes: "Orthodox movable feast.", date: easterDate },
+    ].forEach((eventItem) => {
+      const ethDate = EthiopicCalendar.ge(
+        eventItem.date.getFullYear(),
+        eventItem.date.getMonth() + 1,
+        eventItem.date.getDate()
+      );
+
+      if (ethDate.year !== ethiopianYear) return;
+
+      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
+      if (seenEventKeys.has(eventKey)) return;
+
+      seenEventKeys.add(eventKey);
+      movableEvents.push({
+        month: ethDate.month,
+        day: ethDate.day,
+        title: eventItem.title,
+        notes: eventItem.notes,
+      });
+    });
   });
+
   return movableEvents;
 }
 
@@ -273,6 +289,29 @@ const getConversationSortTime = (rawValue) => {
   }
 
   return 0;
+};
+
+const formatPostTimestamp = (timestamp) => {
+  if (!timestamp) return "Recent update";
+
+  const parsedDate = new Date(timestamp);
+  if (Number.isNaN(parsedDate.getTime())) return "Recent update";
+
+  const diffInMinutes = Math.max(0, Math.floor((Date.now() - parsedDate.getTime()) / 60000));
+  if (diffInMinutes < 1) return "Just now";
+  if (diffInMinutes < 60) return `${diffInMinutes}m`;
+
+  const diffInHours = Math.floor(diffInMinutes / 60);
+  if (diffInHours < 24) return `${diffInHours}h`;
+
+  const diffInDays = Math.floor(diffInHours / 24);
+  if (diffInDays < 7) return `${diffInDays}d`;
+
+  const dateOptions = parsedDate.getFullYear() === new Date().getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" };
+
+  return parsedDate.toLocaleDateString("en-US", dateOptions);
 };
 
 const hasConversationUserSentMessage = (chatValue, userId) => {
@@ -921,6 +960,8 @@ function Dashboard() {
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [unreadPostList, setUnreadPostList] = useState([]);
+  const [postSubmitting, setPostSubmitting] = useState(false);
+  const [postSubmitError, setPostSubmitError] = useState("");
   const currentLikeActorId = admin.userId || admin.adminId || "";
 
   const navigate = useNavigate();
@@ -985,17 +1026,26 @@ function Dashboard() {
         }
 
         const parsedCache = JSON.parse(rawCache);
-        if (!Array.isArray(parsedCache)) {
+        const cachedPosts = Array.isArray(parsedCache)
+          ? parsedCache
+          : Array.isArray(parsedCache?.posts)
+            ? parsedCache.posts
+            : [];
+
+        if (cachedPosts.length === 0) {
           return;
         }
 
-        const nextCachedPosts = parsedCache.map((postItem) =>
+        const nextCachedPosts = cachedPosts.map((postItem) =>
           String(postItem?.postId || "") === String(postIdValue || "")
             ? updater(postItem)
             : postItem
         );
 
-        localStorage.setItem(cacheKey, JSON.stringify(nextCachedPosts.slice(0, 120)));
+        localStorage.setItem(cacheKey, JSON.stringify({
+          posts: nextCachedPosts.slice(0, DASHBOARD_POST_CACHE_LIMIT),
+          expiresAt: Date.now() + POSTS_CACHE_TTL_MS,
+        }));
       } catch (error) {
         // Ignore cache sync issues.
       }
@@ -1257,7 +1307,7 @@ function Dashboard() {
       const writeCachedPosts = (postItems, schoolCodeValues = initialCacheCodes) => {
         try {
           const serializedPosts = JSON.stringify({
-            posts: postItems.slice(0, 120),
+            posts: postItems.slice(0, DASHBOARD_POST_CACHE_LIMIT),
             expiresAt: Date.now() + POSTS_CACHE_TTL_MS,
           });
           getPostCacheKeys(schoolCodeValues).forEach((cacheKey) => {
@@ -1295,36 +1345,42 @@ function Dashboard() {
           return [];
         }
 
+        const apiPostsResponses = await Promise.all(
+          normalizedCandidateCodes.map((candidateCode) =>
+            safeGet(
+              `${API_BASE}/get_posts`,
+              {
+                params: { schoolCode: candidateCode, limit: DASHBOARD_POST_FETCH_LIMIT },
+                timeout: 4500,
+              },
+              []
+            )
+          )
+        );
+
+        const apiPosts = mergeUniquePosts(
+          apiPostsResponses.flatMap((response) => normalizePostsResponse(response?.data))
+        );
+
+        if (apiPosts.length > 0) {
+          return apiPosts;
+        }
+
         const schoolDbRoots = buildSchoolDbRoots(normalizedCandidateCodes);
-        const [apiPostsResponses, firebasePostsResponses] = await Promise.all([
-          Promise.all(
-            normalizedCandidateCodes.map((candidateCode) =>
-              safeGet(
-                `${API_BASE}/get_posts`,
-                {
-                  params: { schoolCode: candidateCode },
-                  timeout: 4500,
-                },
-                []
-              )
+        const firebasePostsResponses = await Promise.all(
+          schoolDbRoots.map((schoolDbRoot) =>
+            safeGet(
+              `${schoolDbRoot}/Posts.json`,
+              {
+                params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
+                timeout: 4500,
+              },
+              {}
             )
-          ),
-          Promise.all(
-            schoolDbRoots.map((schoolDbRoot) =>
-              safeGet(
-                `${schoolDbRoot}/Posts.json`,
-                {
-                  params: { orderBy: '"$key"', limitToLast: 120 },
-                  timeout: 4500,
-                },
-                {}
-              )
-            )
-          ),
-        ]);
+          )
+        );
 
         return mergeUniquePosts(
-          apiPostsResponses.flatMap((response) => normalizePostsResponse(response?.data)),
           firebasePostsResponses.flatMap((response) => normalizePostsNode(response?.data || {}))
         );
       };
@@ -1334,13 +1390,6 @@ function Dashboard() {
       if (cachedPosts.length > 0 && isCurrentRequest()) {
         setPosts(cachedPosts);
         setPostsLoading(false);
-      }
-
-      if (cachedPostsResult.isFresh) {
-        if (isCurrentRequest()) {
-          setPostsInitialized(true);
-        }
-        return;
       }
 
       const directSchoolCodes = uniqueNonEmptyValues([
@@ -1377,7 +1426,7 @@ function Dashboard() {
           safeGet(
             `${DB_URL}/Posts.json`,
             {
-              params: { orderBy: '"$key"', limitToLast: 120 },
+              params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
               timeout: 4500,
             },
             {}
@@ -1794,35 +1843,49 @@ function Dashboard() {
 
   const handlePost = async () => {
     if (!postText && !postMedia) return;
-    if (isOptimizingMedia) return;
+    if (isOptimizingMedia || postSubmitting) return;
 
     if (!admin.adminId || !admin.userId) {
-      alert("Session expired");
+      setPostSubmitError("Session expired. Please log in again.");
       return;
     }
 
-    const formData = new FormData();
-    formData.append("message", postText);
-    formData.append("adminId", admin.adminId);
-    formData.append("userId", admin.userId);
-    formData.append("adminName", admin.name);
-    formData.append("adminProfile", admin.profileImage);
-    formData.append("schoolCode", schoolCode || "");
-    formData.append("targetRole", targetRole || "all");
+    setPostSubmitting(true);
+    setPostSubmitError("");
 
-    if (postMedia) {
-      formData.append("post_media", postMedia);
+    try {
+      const formData = new FormData();
+      formData.append("message", postText);
+      formData.append("adminId", admin.adminId);
+      formData.append("userId", admin.userId);
+      formData.append("adminName", admin.name || admin.username || "Admin");
+      formData.append("adminProfile", admin.profileImage || DEFAULT_PROFILE_IMAGE);
+      formData.append("schoolCode", schoolScopeCode || schoolCode || "");
+      formData.append("targetRole", targetRole || "all");
+
+      if (postMedia) {
+        formData.append("post_media", postMedia);
+      }
+
+      const response = await axios.post(`${API_BASE}/create_post`, formData);
+      if (response.data && response.data.success === false) {
+        throw new Error(response.data.message || "Post could not be published.");
+      }
+
+      setPostText("");
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      await fetchPosts();
+    } catch (error) {
+      const message = error?.response?.data?.message || error?.message || "Post could not be published.";
+      setPostSubmitError(message);
+      throw error;
+    } finally {
+      setPostSubmitting(false);
     }
-
-    await axios.post(`${API_BASE}/create_post`, formData);
-
-    setPostText("");
-    setPostMedia(null);
-    setPostMediaMeta(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    fetchPosts();
   };
 
   const handleSubmitCreatePost = async () => {
@@ -2631,6 +2694,9 @@ function Dashboard() {
               const isLikedByAdmin = isPostLikedByActor(post, currentLikeActorId);
               const isLikePending = Boolean(likePendingPostIds[post.postId]);
               const mediaUrl = getSafeMediaUrl(post.postUrl);
+              const postTimestamp = post.time || post.createdAt || "";
+              const postTimeLabel = formatPostTimestamp(postTimestamp);
+              const postTimestampTitle = postTimestamp ? new Date(postTimestamp).toLocaleString() : "";
 
               return (
                 <div className="facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(15, 23, 42, 0.08)", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)", transition: "background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease" }}>
@@ -2644,8 +2710,8 @@ function Dashboard() {
                           <h4>{post.adminName || "Admin"}</h4>
                           <span className="facebook-post-card__page-badge">School Page</span>
                         </div>
-                        <div className="facebook-post-card__meta">
-                          <span>{post.time || post.createdAt || "Recent update"}</span>
+                        <div className="facebook-post-card__meta" title={postTimestampTitle || undefined}>
+                          <span>{postTimeLabel}</span>
                           <span aria-hidden="true">·</span>
                           <span>{targetRoleLabel}</span>
                         </div>
@@ -3206,25 +3272,31 @@ function Dashboard() {
                       Cancel
                     </button>
 
+                    {postSubmitError ? (
+                      <div style={{ color: "var(--danger)", fontSize: 12, fontWeight: 700, marginRight: "auto" }}>
+                        {postSubmitError}
+                      </div>
+                    ) : null}
+
                     <button
                       type="button"
                       onClick={handleSubmitCreatePost}
-                      disabled={!canSubmitPost}
+                      disabled={!canSubmitPost || postSubmitting}
                       style={{
                         minWidth: 160,
                         height: 46,
                         border: "none",
-                        background: canSubmitPost ? "var(--accent)" : "var(--surface-strong)",
+                        background: canSubmitPost && !postSubmitting ? "var(--accent)" : "var(--surface-strong)",
                         borderRadius: 999,
-                        color: canSubmitPost ? "#fff" : "var(--text-muted)",
+                        color: canSubmitPost && !postSubmitting ? "#fff" : "var(--text-muted)",
                         fontSize: 14,
                         fontWeight: 800,
                         letterSpacing: "0.01em",
-                        cursor: canSubmitPost ? "pointer" : "not-allowed",
-                        boxShadow: canSubmitPost ? "0 8px 18px rgba(0, 122, 251, 0.14)" : "none",
+                        cursor: canSubmitPost && !postSubmitting ? "pointer" : "not-allowed",
+                        boxShadow: canSubmitPost && !postSubmitting ? "0 8px 18px rgba(0, 122, 251, 0.14)" : "none",
                       }}
                     >
-                      {isOptimizingMedia ? "Optimizing..." : "Publish post"}
+                      {postSubmitting ? "Publishing..." : isOptimizingMedia ? "Optimizing..." : "Publish post"}
                     </button>
                   </div>
                 </div>
