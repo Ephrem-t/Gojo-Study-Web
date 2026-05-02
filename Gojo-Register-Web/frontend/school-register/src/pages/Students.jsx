@@ -128,6 +128,63 @@ function StudentsPage() {
   const adminId = admin?.adminId || admin?.userId || null;
   const adminUserId = admin?.userId || null;
 
+  const normalizeParentLinks = (studentNode = {}) => {
+    const links = [];
+
+    Object.entries(studentNode?.parents || {}).forEach(([parentId, parentLink]) => {
+      links.push({
+        parentId: String(parentId || parentLink?.parentId || "").trim(),
+        userId: String(parentLink?.userId || "").trim(),
+        relationship: parentLink?.relationship || null,
+        name: parentLink?.name || null,
+        phone: parentLink?.phone || null,
+        profileImage: parentLink?.profileImage || null,
+      });
+    });
+
+    const guardianParents = Array.isArray(studentNode?.parentGuardianInformation?.parents)
+      ? studentNode.parentGuardianInformation.parents
+      : Object.values(studentNode?.parentGuardianInformation?.parents || {});
+
+    guardianParents.forEach((parentLink) => {
+      const systemInfo = parentLink?.systemAccountInformation || {};
+      links.push({
+        parentId: String(parentLink?.parentId || "").trim(),
+        userId: String(parentLink?.userId || systemInfo?.userId || "").trim(),
+        relationship: parentLink?.relationship || null,
+        name:
+          parentLink?.parentFullName ||
+          parentLink?.name ||
+          systemInfo?.username ||
+          null,
+        phone:
+          parentLink?.phone ||
+          parentLink?.parentPhone ||
+          parentLink?.phoneNumber ||
+          null,
+        profileImage: parentLink?.profileImage || null,
+      });
+    });
+
+    const deduped = new Map();
+    links.forEach((link) => {
+      const key = String(link.parentId || link.userId || "").trim();
+      if (!key) return;
+
+      const existing = deduped.get(key) || {};
+      deduped.set(key, {
+        parentId: link.parentId || existing.parentId || "",
+        userId: link.userId || existing.userId || "",
+        relationship: link.relationship || existing.relationship || null,
+        name: link.name || existing.name || null,
+        phone: link.phone || existing.phone || null,
+        profileImage: link.profileImage || existing.profileImage || null,
+      });
+    });
+
+    return Array.from(deduped.values());
+  };
+
   useEffect(() => {
     const resolveScope = async () => {
       if (!schoolCode) return;
@@ -513,7 +570,17 @@ useEffect(() => {
       let parentName = null;
       let parentPhone = null;
       try {
-        const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
+        const parentLinks = normalizeParentLinks({
+          ...(rtStudent || {}),
+          parents: rtStudent?.parents || s?.parents || {},
+          parentGuardianInformation:
+            rtStudent?.parentGuardianInformation ||
+            s?.parentGuardianInformation ||
+            {},
+        });
+
+        const parentIds = parentLinks.map((parentLink) => parentLink.parentId).filter(Boolean);
+        const directParentUserIds = parentLinks.map((parentLink) => parentLink.userId).filter(Boolean);
         const parentRecords = await loadParentRecordsByIds({
           rtdbBase: DB_URL,
           schoolCode: activeSchoolCode,
@@ -522,23 +589,40 @@ useEffect(() => {
         const parentUsers = await loadUserRecordsByIds({
           rtdbBase: DB_URL,
           schoolCode: activeSchoolCode,
-          userIds: Object.values(parentRecords || {}).map((parentRecord) => parentRecord?.userId),
+          userIds: [
+            ...new Set(
+              [
+                ...Object.values(parentRecords || {}).map((parentRecord) => parentRecord?.userId),
+                ...directParentUserIds,
+              ].filter(Boolean)
+            ),
+          ],
         });
 
-        parentIds.forEach((pid) => {
-          const parentNode = parentRecords?.[pid] || {};
-          const parentUserId = parentNode.userId;
-          if (!parentUserId) {
+        parentLinks.forEach((parentLink) => {
+          const parentNode = parentRecords?.[parentLink.parentId] || {};
+          const parentUserId = parentNode.userId || parentLink.userId;
+          if (!parentUserId && !parentLink.name) {
             return;
           }
 
           const parentUser = parentUsers?.[parentUserId] || {};
           const pInfo = {
-            parentId: pid,
+            parentId: parentLink.parentId || parentNode.parentId || null,
             userId: parentUserId || null,
-            name: parentUser.name || parentNode.name || "Parent",
-            phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null,
-            profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
+            name: parentUser.name || parentNode.name || parentLink.name || "Parent",
+            phone:
+              parentUser.phone ||
+              parentUser.phoneNumber ||
+              parentNode.phone ||
+              parentLink.phone ||
+              null,
+            relationship: parentLink.relationship || null,
+            profileImage:
+              parentUser.profileImage ||
+              parentNode.profileImage ||
+              parentLink.profileImage ||
+              "/default-profile.png",
           };
           parentsList.push(pInfo);
           if (!parentName) parentName = pInfo.name;

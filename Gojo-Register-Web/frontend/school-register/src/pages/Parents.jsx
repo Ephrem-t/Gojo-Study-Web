@@ -17,9 +17,10 @@ import {
   FaChevronDown,
 } from "react-icons/fa";
 import axios from "axios";
-import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
+import { limitToLast, onValue, query, ref as rdbRef } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import { buildSchoolRtdbBase } from "../api/rtdbScope";
+import { db } from "../firebase";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -53,6 +54,8 @@ function Parent() {
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const typingTimeoutRef = useRef(null);
+  const chatMessagesContainerRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const [typingUserId, setTypingUserId] = useState(null);
 
   const navigate = useNavigate();
@@ -81,6 +84,7 @@ function Parent() {
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
   const [resolvedDbUrl, setResolvedDbUrl] = useState(initialDbUrl);
   const DB = String(resolvedDbUrl || initialDbUrl || "").trim();
+  const DB_PATH = resolvedSchoolCode ? `Platform1/Schools/${resolvedSchoolCode}` : "";
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";
   const adminId = admin.userId;
@@ -149,6 +153,14 @@ function Parent() {
     try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ""; }
   };
   const [windowW, setWindowW] = useState(window.innerWidth);
+
+  const handleChatScroll = () => {
+    const container = chatMessagesContainerRef.current;
+    if (!container) return;
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom <= 80;
+  };
 
   const isNarrow = windowW < 900;
 
@@ -542,13 +554,13 @@ function Parent() {
   // Fetch chat messages in realtime
   useEffect(() => {
     if (!chatId) return;
-    const db = getDatabase();
-    const messagesRef = rdbRef(db, `Chats/${chatId}/messages`);
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatId}` : `Chats/${chatId}`;
+    const messagesRef = query(rdbRef(db, `${basePath}/messages`), limitToLast(20));
     const unsubscribe = onValue(messagesRef, async (snapshot) => {
       const data = snapshot.val() || {};
       const list = Object.entries(data)
         .map(([id, msg]) => ({ messageId: id, ...msg }))
-        .sort((a, b) => a.timeStamp - b.timeStamp);
+        .sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
       setMessages(list);
 
       // mark unseen messages addressed to admin as seen
@@ -573,7 +585,7 @@ function Parent() {
       }
     });
     return () => unsubscribe();
-  }, [chatId]);
+  }, [DB_PATH, chatId, admin.userId]);
 
   // Listen to typing in realtime (only while popup open)
   useEffect(() => {
@@ -581,14 +593,14 @@ function Parent() {
       setTypingUserId(null);
       return;
     }
-    const db = getDatabase();
-    const typingRef = rdbRef(db, `Chats/${chatId}/typing`);
+    const basePath = DB_PATH ? `${DB_PATH}/Chats/${chatId}` : `Chats/${chatId}`;
+    const typingRef = rdbRef(db, `${basePath}/typing`);
     const unsub = onValue(typingRef, (snapshot) => {
       const t = snapshot.val();
       setTypingUserId(t && t.userId ? t.userId : null);
     });
     return () => unsub();
-  }, [chatId, parentChatOpen]);
+  }, [DB_PATH, chatId, parentChatOpen]);
 
   // Mark messages as seen when the chat popup opens or selected parent changes
   useEffect(() => {
@@ -663,8 +675,23 @@ function Parent() {
   }, [parentChatOpen, selectedParent, admin]);
 
   useEffect(() => {
+    if (!parentChatOpen) return;
+
+    const container = chatMessagesContainerRef.current;
+    if (!container) return;
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (!shouldAutoScrollRef.current && distanceFromBottom > 80) {
+      return;
+    }
+
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, parentChatOpen]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    shouldAutoScrollRef.current = true;
+  }, [chatId, parentChatOpen]);
 
   // Ensure chat object exists
   const initChatIfMissing = async () => {
@@ -681,6 +708,7 @@ function Parent() {
   const sendMessage = async (text) => {
     if (!text || !text.trim() || !selectedParent) return;
     if (!admin?.userId || !selectedParent?.userId) return;
+    shouldAutoScrollRef.current = true;
     const id = getChatId(admin.userId, selectedParent.userId);
     await initChatIfMissing();
 
@@ -1441,7 +1469,11 @@ function Parent() {
                 </div>
               </div>
 
-              <div style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "var(--surface-muted)" }}>
+              <div
+                ref={chatMessagesContainerRef}
+                onScroll={handleChatScroll}
+                style={{ flex: 1, padding: "12px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "var(--surface-muted)" }}
+              >
                 {messages.length === 0 ? (
                   <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Start chatting with {selectedParent.name}</p>
                 ) : (
