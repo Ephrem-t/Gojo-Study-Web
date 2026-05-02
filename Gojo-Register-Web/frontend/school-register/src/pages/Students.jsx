@@ -12,6 +12,7 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -27,6 +28,7 @@ import {
   loadUserRecordById,
   loadUserRecordsByIds,
 } from "../utils/registerData";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
 
 function StudentsPage() {
@@ -65,7 +67,6 @@ function StudentsPage() {
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const navigate = useNavigate();
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
   // Prefer the best available session payload. Sometimes `finance` can be stale/empty
   // while `admin` still contains a valid adminId/userId (or vice-versa).
@@ -96,9 +97,11 @@ function StudentsPage() {
   })();
 
   const schoolCode = _storedFinance.schoolCode || "";
-  const DB_URL = schoolCode
-    ? `${DB_BASE}/Platform1/Schools/${schoolCode}`
-    : DB_BASE;
+  const initialDbUrl = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(initialDbUrl);
+  const DB_URL = String(resolvedDbUrl || initialDbUrl || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
 
   const [finance, setFinance] = useState({
     financeId: _storedFinance.financeId || _storedFinance.adminId || "",
@@ -124,6 +127,32 @@ function StudentsPage() {
 
   const adminId = admin?.adminId || admin?.userId || null;
   const adminUserId = admin?.userId || null;
+
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbUrl = String(resolvedScope?.dbUrl || initialDbUrl || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbUrl(nextResolvedDbUrl);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve students page school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbUrl(initialDbUrl);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbUrl]);
 
   const [loadingFinance, setLoadingFinance] = useState(true);
   // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
@@ -435,7 +464,7 @@ useEffect(() => {
     });
     setRightSidebarOpen(true);
     try {
-      const user = (await loadUserRecordById({ rtdbBase: DB_URL, schoolCode, userId: s.userId })) || {};
+      const user = (await loadUserRecordById({ rtdbBase: DB_URL, schoolCode: activeSchoolCode, userId: s.userId })) || {};
       const studentMarksObj = await loadMarksForStudent({
         rtdbBase: DB_URL,
         student: s,
@@ -487,12 +516,12 @@ useEffect(() => {
         const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
         const parentRecords = await loadParentRecordsByIds({
           rtdbBase: DB_URL,
-          schoolCode,
+          schoolCode: activeSchoolCode,
           parentIds,
         });
         const parentUsers = await loadUserRecordsByIds({
           rtdbBase: DB_URL,
-          schoolCode,
+          schoolCode: activeSchoolCode,
           userIds: Object.values(parentRecords || {}).map((parentRecord) => parentRecord?.userId),
         });
 
@@ -661,10 +690,10 @@ useEffect(() => {
       try {
         setStudentsLoading(true);
         const [studentsData, usersNode, schoolInfo, gradesData] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
-          loadSchoolUsersNode({ rtdbBase: DB_URL }),
-          loadSchoolInfoNode({ rtdbBase: DB_URL }),
-          loadGradeManagementNode({ rtdbBase: DB_URL }),
+          loadSchoolStudentsNode({ rtdbBase: DB_URL, force: true }),
+          loadSchoolUsersNode({ rtdbBase: DB_URL, force: true }),
+          loadSchoolInfoNode({ rtdbBase: DB_URL, force: true }),
+          loadGradeManagementNode({ rtdbBase: DB_URL, force: true }),
         ]);
 
         const usersData = buildUserLookupFromNode(usersNode);

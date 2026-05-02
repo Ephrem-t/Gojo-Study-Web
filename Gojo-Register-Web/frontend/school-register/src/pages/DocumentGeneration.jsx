@@ -19,10 +19,12 @@ import axios from "axios";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { buildUserLookupFromNode, loadSchoolInfoNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
 const DOC_TYPES = {
   id_card: "Student ID Card",
@@ -78,8 +80,11 @@ export default function DocumentGeneration() {
   }, []);
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const initialDbUrl = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(initialDbUrl);
+  const DB_URL = String(resolvedDbUrl || initialDbUrl || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
 
   const admin = {
     name: stored.name || stored.username || "Register Office",
@@ -154,8 +159,34 @@ export default function DocumentGeneration() {
 
   const notify = (type, text) => setFeedback({ type, text });
 
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbUrl = String(resolvedScope?.dbUrl || initialDbUrl || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbUrl(nextResolvedDbUrl);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve document generation school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbUrl(initialDbUrl);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbUrl]);
+
   const loadData = async () => {
-    if (!schoolCode) {
+    if (!activeSchoolCode) {
       notify("error", "Missing schoolCode in session. Please login again.");
       return;
     }
@@ -163,9 +194,9 @@ export default function DocumentGeneration() {
     setLoading(true);
     try {
       const [nextSchoolInfo, studentsData, usersNode, yearHistoryData] = await Promise.all([
-        loadSchoolInfoNode({ rtdbBase: DB_URL }),
-        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
-        loadSchoolUsersNode({ rtdbBase: DB_URL }),
+        loadSchoolInfoNode({ rtdbBase: DB_URL, force: true }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL, force: true }),
+        loadSchoolUsersNode({ rtdbBase: DB_URL, force: true }),
         fetchCachedJson(`${DB_URL}/YearHistory.json`, { ttlMs: 60000 }).catch(() => ({})),
       ]);
 
@@ -184,7 +215,7 @@ export default function DocumentGeneration() {
 
   useEffect(() => {
     loadData();
-  }, [schoolCode]);
+  }, [activeSchoolCode, DB_URL]);
 
   const mergedStudents = useMemo(() => {
     const map = { ...(studentsMap || {}) };
@@ -373,7 +404,7 @@ export default function DocumentGeneration() {
     const key = `${Date.now()}_${selectedStudent.studentId}`;
     await axios.patch(`${DB_URL}/GeneratedDocuments/${key}.json`, {
       key,
-      schoolCode,
+      schoolCode: activeSchoolCode,
       studentId: selectedStudent.studentId,
       studentName: selectedStudent.name,
       documentType,

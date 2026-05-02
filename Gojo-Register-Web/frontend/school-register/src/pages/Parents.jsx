@@ -19,6 +19,7 @@ import {
 import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -28,8 +29,8 @@ import {
   loadSchoolStudentsNode,
   loadSchoolUsersNode,
 } from "../utils/registerData";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
 
 function Parent() {
@@ -76,7 +77,10 @@ function Parent() {
     token: _stored.token || _stored.accessToken || _stored.idToken || null,
   };
   const schoolCode = _stored.schoolCode || "";
-  const DB = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const initialDbUrl = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(initialDbUrl);
+  const DB = String(resolvedDbUrl || initialDbUrl || "").trim();
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";
   const adminId = admin.userId;
@@ -95,6 +99,32 @@ function Parent() {
     dbRoot: DB,
     currentUserId: admin.userId,
   });
+
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbUrl = String(resolvedScope?.dbUrl || initialDbUrl || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbUrl(nextResolvedDbUrl);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve parents page school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbUrl(initialDbUrl);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbUrl]);
 
   const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
     try {
@@ -267,9 +297,9 @@ function Parent() {
       setLoadingParents(true);
       try {
         const [usersNode, parentsData, studentsData] = await Promise.all([
-          loadSchoolUsersNode({ rtdbBase: DB }),
-          loadSchoolParentsNode({ rtdbBase: DB }),
-          loadSchoolStudentsNode({ rtdbBase: DB }),
+          loadSchoolUsersNode({ rtdbBase: DB, force: true }),
+          loadSchoolParentsNode({ rtdbBase: DB, force: true }),
+          loadSchoolStudentsNode({ rtdbBase: DB, force: true }),
         ]);
 
         const users = buildUserLookupFromNode(usersNode);
@@ -397,9 +427,9 @@ function Parent() {
     const fetchParentInfoAndChildren = async () => {
       try {
         const [parentsData, usersNode, studentsData] = await Promise.all([
-          loadSchoolParentsNode({ rtdbBase: DB }),
-          loadSchoolUsersNode({ rtdbBase: DB }),
-          loadSchoolStudentsNode({ rtdbBase: DB }),
+          loadSchoolParentsNode({ rtdbBase: DB, force: true }),
+          loadSchoolUsersNode({ rtdbBase: DB, force: true }),
+          loadSchoolStudentsNode({ rtdbBase: DB, force: true }),
         ]);
         const usersData = buildUserLookupFromNode(usersNode);
         const parentRecordEntry =

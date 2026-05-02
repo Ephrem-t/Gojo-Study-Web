@@ -31,6 +31,7 @@ import {
   persistStoredSession,
   readStoredRegistrar,
 } from "../utils/registerSettings";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 import ProfileAvatar from "../components/ProfileAvatar";
 import {
   loadGradeManagementNode,
@@ -123,8 +124,11 @@ export default function SettingsPage() {
   const [backupStats, setBackupStats] = useState({ snapshots: 0, lastSnapshot: "" });
 
   const schoolCode = storedAdmin.schoolCode || "";
-  const dbRoot = buildSchoolRoot(schoolCode);
-  const backupRoot = schoolCode ? `${dbRoot.replace(`/Schools/${schoolCode}`, "")}/SchoolBackups/${schoolCode}` : "";
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbRoot, setResolvedDbRoot] = useState(buildSchoolRoot(schoolCode));
+  const dbRoot = String(resolvedDbRoot || buildSchoolRoot(schoolCode) || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
+  const backupRoot = activeSchoolCode ? `${dbRoot.replace(`/Schools/${activeSchoolCode}`, "")}/SchoolBackups/${activeSchoolCode}` : "";
 
   const notify = (type, text) => setFeedback({ type, text });
 
@@ -134,16 +138,42 @@ export default function SettingsPage() {
   };
 
   const syncSettingsCache = (settingsPatch) => {
-    const normalized = cacheSchoolSettings(schoolCode, settingsPatch);
+    const normalized = cacheSchoolSettings(activeSchoolCode, settingsPatch);
     setAppSettings(normalized);
     return normalized;
   };
 
   useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbRoot = String(resolvedScope?.dbUrl || buildSchoolRoot(schoolCode) || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbRoot(nextResolvedDbRoot);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve settings school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbRoot(buildSchoolRoot(schoolCode));
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const loadSettings = async () => {
-      if (!schoolCode) {
+      if (!activeSchoolCode) {
         setLoading(false);
         notify("error", "No school session found. Please sign in again.");
         return;
@@ -153,23 +183,26 @@ export default function SettingsPage() {
         setLoading(true);
 
         const [nextSchoolInfo, gradesMap, studentsData, parentsData, teachersData, registerersData, backups] = await Promise.all([
-          loadSchoolInfoNode({ rtdbBase: dbRoot }),
-          loadGradeManagementNode({ rtdbBase: dbRoot }),
-          loadSchoolStudentsNode({ rtdbBase: dbRoot }),
-          loadSchoolParentsNode({ rtdbBase: dbRoot }),
-          loadSchoolTeachersNode({ rtdbBase: dbRoot }),
-          fetchCachedJson(`${dbRoot}/Registerers.json`, { ttlMs: 60000 }).catch(() => ({})),
-          backupRoot ? fetchCachedJson(`${backupRoot}.json`, { ttlMs: 60000 }).catch(() => ({})) : Promise.resolve({}),
+          loadSchoolInfoNode({ rtdbBase: dbRoot, force: true }),
+          loadGradeManagementNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolStudentsNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolParentsNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolTeachersNode({ rtdbBase: dbRoot, force: true }),
+          fetchCachedJson(`${dbRoot}/Registerers.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})),
+          backupRoot ? fetchCachedJson(`${backupRoot}.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})) : Promise.resolve({}),
         ]);
 
         if (cancelled) return;
+
+        const normalizedBackups = backups && typeof backups === "object" ? backups : {};
+        const normalizedRegisterers = registerersData && typeof registerersData === "object" ? registerersData : {};
 
         const normalizedSettings = syncSettingsCache(nextSchoolInfo);
         const academicSettings = normalizedSettings.academic || {};
         const documentTemplates = normalizedSettings.documentTemplates || {};
         const preferences = normalizedSettings.preferences || {};
         const security = normalizedSettings.security || {};
-        const sortedBackups = Object.values(backups)
+        const sortedBackups = Object.values(normalizedBackups)
           .filter((entry) => entry && typeof entry === "object")
           .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
 
@@ -217,7 +250,7 @@ export default function SettingsPage() {
         }));
         setPermissionsForm(normalizedSettings.permissions || DEFAULT_ROLE_PERMISSIONS);
         setBackupStats({
-          snapshots: Object.keys(backups).length,
+          snapshots: Object.keys(normalizedBackups).length,
           lastSnapshot: sortedBackups[0]?.createdAt || "",
         });
         setProfileImage(storedAdmin.profileImage || "/default-profile.png");
@@ -225,7 +258,7 @@ export default function SettingsPage() {
           students: Object.keys(studentsData || {}).length,
           parents: Object.keys(parentsData || {}).length,
           teachers: Object.keys(teachersData || {}).length,
-          registerers: Object.keys(registerersData || {}).length,
+          registerers: Object.keys(normalizedRegisterers).length,
           grades: gradeKeys.length,
           sections: sectionCount,
         });
@@ -241,7 +274,7 @@ export default function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [backupRoot, dbRoot, schoolCode, storedAdmin.name, storedAdmin.profileImage, storedAdmin.schoolShortName, storedAdmin.shortName, storedAdmin.username]);
+  }, [activeSchoolCode, backupRoot, dbRoot, storedAdmin.name, storedAdmin.profileImage, storedAdmin.schoolShortName, storedAdmin.shortName, storedAdmin.username]);
 
   useEffect(() => {
     if (!securityForm.twoFactorEnabled || securityForm.twoFactorSecret) return;

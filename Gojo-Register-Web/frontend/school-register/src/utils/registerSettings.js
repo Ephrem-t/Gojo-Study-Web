@@ -1,4 +1,6 @@
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import { buildSchoolRtdbBase, RTDB_BASE_RAW } from "../api/rtdbScope";
+
+const DB_BASE = RTDB_BASE_RAW;
 const SETTINGS_CACHE_PREFIX = "gojo-register-settings:";
 
 export const DEFAULT_TEMPLATE_SETTINGS = {
@@ -144,8 +146,7 @@ function normalizeSettings(source) {
 }
 
 export function buildSchoolRoot(schoolCode) {
-  if (!schoolCode) return DB_BASE;
-  return `${DB_BASE}/Platform1/Schools/${schoolCode}`;
+  return buildSchoolRtdbBase(schoolCode);
 }
 
 export function readStoredRegistrar() {

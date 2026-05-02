@@ -5,6 +5,7 @@ import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import {
   FaHome,
   FaFileAlt,
@@ -36,8 +37,8 @@ import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { buildUserLookupFromNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function Analatics() {
@@ -61,7 +62,11 @@ function Analatics() {
   });
 
   const schoolCode = finance.schoolCode || stored.schoolCode || "";
-  const DB_ROOT = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const initialDbRoot = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbRoot, setResolvedDbRoot] = useState(initialDbRoot);
+  const DB_ROOT = String(resolvedDbRoot || initialDbRoot || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
 
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
@@ -85,6 +90,32 @@ function Analatics() {
     dbRoot: DB_ROOT,
     currentUserId: finance.userId,
   });
+
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbRoot = String(resolvedScope?.dbUrl || initialDbRoot || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbRoot(nextResolvedDbRoot);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve analytics school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbRoot(initialDbRoot);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbRoot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,8 +150,8 @@ function Analatics() {
       try {
         setLoading(true);
         const [studentsData, usersNode, monthlyPaidData] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
-          loadSchoolUsersNode({ rtdbBase: DB_ROOT }),
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT, force: true }),
+          loadSchoolUsersNode({ rtdbBase: DB_ROOT, force: true }),
           fetchCachedJson(`${DB_ROOT}/monthlyPaid.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
