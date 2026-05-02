@@ -431,8 +431,15 @@ def _resolve_teacher_course_ids(school_code, teacher_identifiers=None, teacher_r
 
 def _extract_short_name_from_teacher_id(teacher_id):
     normalized = str(teacher_id or "").strip().upper()
-    prefix = "".join(ch for ch in normalized if ch.isalpha())[:3]
-    return _normalize_short_name(prefix)
+    if not normalized:
+        return ""
+
+    first_token = normalized.split("_", 1)[0]
+    letters_only = "".join(ch for ch in first_token if ch.isalpha())
+    if letters_only.endswith("T") and len(letters_only) > 1:
+        letters_only = letters_only[:-1]
+
+    return _normalize_short_name(letters_only)
 
 
 def _resolve_school_code_by_short_name(short_name):
@@ -1975,5 +1982,5 @@ def submit_daily_lesson_plan():
 
 # ===================== RUN APP =====================
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+    app.run(host='127.0.0.1', port=5001, debug=True, use_reloader=False)
 

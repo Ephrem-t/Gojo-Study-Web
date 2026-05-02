@@ -2,10 +2,9 @@ import axios from "axios";
 import { equalTo, get, orderByChild, query as dbQuery, ref as dbRef } from "firebase/database";
 import { db, schoolPath } from "../firebase";
 import { getRtdbRoot } from "./rtdbScope";
+import { API_BASE } from "./apiConfig";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import { extractSchoolCodeFromRtdbBase } from "../utils/teacherData";
-
-const API_BASE = "http://127.0.0.1:5000/api";
 const TEACHER_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const TEACHER_NODE_TTL_MS = 10 * 60 * 1000;
 const teacherCourseContextCache = new Map();

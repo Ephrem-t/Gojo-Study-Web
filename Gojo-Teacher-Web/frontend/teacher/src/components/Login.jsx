@@ -30,7 +30,7 @@ export default function Login() {
     if (!usernameValue) {
       nextErrors.username = "Username is required.";
     } else if (!/^[A-Za-z]{3}/.test(usernameValue)) {
-      nextErrors.username = "Username must start with a 3-letter school code (example: GMI).";
+      nextErrors.username = "Username must start with your school short name (example: GMI or GOJO).";
     } else if (usernameValue.length < 6) {
       nextErrors.username = "Username looks too short.";
     }

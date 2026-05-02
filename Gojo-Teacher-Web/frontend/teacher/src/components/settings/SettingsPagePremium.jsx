@@ -16,12 +16,12 @@ import {
 } from "react-icons/fa";
 import "../../styles/global.css";
 import "../../styles/settingsPage.css";
+import { API_BASE } from "../../api/apiConfig";
 import { getRtdbRoot } from "../../api/rtdbScope";
 import Sidebar from "../Sidebar";
 import ProfileAvatar from "../ProfileAvatar";
 import QuickLessonPlanCheckModal from "./QuickLessonPlanCheckModal";
 
-const API_BASE = "http://127.0.0.1:5000/api";
 const RTDB_BASE = getRtdbRoot();
 const DEFAULT_PREFERENCES = {
   emailAlerts: true,
@@ -62,6 +62,8 @@ const passwordLabel = (score) => {
   return "Empty";
 };
 
+const hasRequiredPasswordMix = (value) => /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+
 const normalizeTimestamp = (value) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -98,6 +100,47 @@ const saveSeenPost = (teacherId, postId) => {
   if (!seenPosts.includes(postId)) {
     localStorage.setItem(`seen_posts_${teacherId}`, JSON.stringify([...seenPosts, postId]));
   }
+};
+
+const isRecordObject = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const resolveTeacherUserNode = async (teacher) => {
+  const directUserKey = String(teacher?.userId || "").trim();
+  const directUsername = String(teacher?.username || "").trim();
+
+  if (!directUserKey && !directUsername) {
+    throw new Error("Teacher user reference is missing.");
+  }
+
+  if (directUserKey) {
+    const directResponse = await axios.get(`${RTDB_BASE}/Users/${encodeURIComponent(directUserKey)}.json`);
+    const directRecord = directResponse.data;
+    const directMatches =
+      isRecordObject(directRecord) &&
+      (String(directRecord.userId || "").trim() === directUserKey ||
+        String(directRecord.username || "").trim() === directUsername);
+
+    if (directMatches) {
+      return { key: directUserKey, record: directRecord };
+    }
+  }
+
+  const usersResponse = await axios.get(`${RTDB_BASE}/Users.json`);
+  const users = isRecordObject(usersResponse.data) ? usersResponse.data : {};
+
+  for (const [nodeKey, userRecord] of Object.entries(users)) {
+    if (!isRecordObject(userRecord)) continue;
+
+    const matchesUserId = directUserKey && String(userRecord.userId || "").trim() === directUserKey;
+    const matchesUsername = directUsername && String(userRecord.username || "").trim() === directUsername;
+    const matchesNodeKey = directUserKey && String(nodeKey || "").trim() === directUserKey;
+
+    if (matchesUserId || matchesUsername || matchesNodeKey) {
+      return { key: nodeKey, record: userRecord };
+    }
+  }
+
+  throw new Error("Teacher user node not found.");
 };
 
 function SectionHeader({ kicker, title, description, icon, actions }) {
@@ -511,7 +554,9 @@ export default function SettingsPagePremium() {
         reader.readAsDataURL(selectedFile);
       });
 
-      await axios.patch(`${RTDB_BASE}/Users/${teacher.userId}.json`, { profileImage: base64Image });
+      const { key: userNodeKey } = await resolveTeacherUserNode(teacher);
+
+      await axios.patch(`${RTDB_BASE}/Users/${encodeURIComponent(userNodeKey)}.json`, { profileImage: base64Image });
 
       const updatedTeacher = { ...teacher, profileImage: base64Image };
       localStorage.setItem("teacher", JSON.stringify(updatedTeacher));
@@ -541,12 +586,16 @@ export default function SettingsPagePremium() {
       flashMessage("error", "Passwords do not match.");
       return;
     }
+    if (!hasRequiredPasswordMix(password)) {
+      flashMessage("error", "New password must include both letters and numbers.");
+      return;
+    }
 
     setSavingSection("security");
 
     try {
-      const userResponse = await axios.get(`${RTDB_BASE}/Users/${teacher.userId}.json`);
-      const savedPassword = String(userResponse.data?.password ?? teacher?.password ?? "");
+      const { key: userNodeKey, record: userRecord } = await resolveTeacherUserNode(teacher);
+      const savedPassword = String(userRecord?.password ?? teacher?.password ?? "");
 
       if (!savedPassword) {
         flashMessage("error", "Current password could not be verified. Please log in again.");
@@ -558,7 +607,7 @@ export default function SettingsPagePremium() {
         return;
       }
 
-      await axios.patch(`${RTDB_BASE}/Users/${teacher.userId}.json`, { password });
+      await axios.patch(`${RTDB_BASE}/Users/${encodeURIComponent(userNodeKey)}.json`, { password });
       const updatedTeacher = { ...teacher, password };
       localStorage.setItem("teacher", JSON.stringify(updatedTeacher));
       setTeacher(updatedTeacher);
@@ -765,6 +814,7 @@ export default function SettingsPagePremium() {
                       onToggle={() => setShowPassword((previousValue) => !previousValue)}
                       placeholder="Create a stronger password"
                     />
+                    <p className="settings-inline-note">New password must include at least one letter and one number.</p>
 
                     <PasswordField
                       label="Confirm Password"
