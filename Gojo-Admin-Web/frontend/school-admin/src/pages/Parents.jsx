@@ -22,8 +22,8 @@ import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
 const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
 const DIRECTORY_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -125,9 +125,9 @@ function Parent() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Build backward-compatible admin object from `finance` or legacy `admin` in localStorage
+  // Build the admin object from the Admin session for the Admin web app.
   const _stored = (() => {
-    const s = localStorage.getItem("registrar") || localStorage.getItem("admin");
+    const s = localStorage.getItem("admin");
     if (!s) return {};
     try {
       return JSON.parse(s) || {};
@@ -144,7 +144,7 @@ function Parent() {
     token: _stored.token || _stored.accessToken || _stored.idToken || null,
   };
   const schoolCode = _stored.schoolCode || "";
-  const DB = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB = schoolNodeBase(schoolCode);
   const PARENT_DIRECTORY_URL = `${DB}/ParentDirectory.json`;
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";

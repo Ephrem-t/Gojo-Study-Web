@@ -15,6 +15,7 @@ import { BACKEND_BASE } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { buildChatKeyCandidates, mapInBatches, uniqueNonEmptyValues } from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 
 function StudentsPage() {
@@ -57,7 +58,6 @@ function StudentsPage() {
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const navigate = useNavigate();
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
   // Prefer the best available session payload. Sometimes `finance` can be stale/empty
   // while `admin` still contains a valid adminId/userId (or vice-versa).
@@ -70,17 +70,14 @@ function StudentsPage() {
       }
     };
 
-    const rawFinance = localStorage.getItem("registrar");
     const rawAdmin = localStorage.getItem("admin");
-    const financeObj = parse(rawFinance);
     const adminObj = parse(rawAdmin);
 
     const hasIdentity = (obj) => Boolean(obj && (obj.financeId || obj.adminId || obj.userId));
 
-    if (hasIdentity(financeObj)) return { raw: rawFinance, data: financeObj, source: "finance" };
     if (hasIdentity(adminObj)) return { raw: rawAdmin, data: adminObj, source: "admin" };
 
-    return { raw: rawFinance || rawAdmin, data: financeObj || adminObj || {}, source: rawFinance ? "registrar" : "admin" };
+    return { raw: rawAdmin, data: adminObj || {}, source: "admin" };
   };
 
   const toggleStudentActive = async () => {
@@ -153,9 +150,7 @@ function StudentsPage() {
   })();
 
   const schoolCode = _storedFinance.schoolCode || "";
-  const DB_URL = schoolCode
-    ? `${DB_BASE}/Platform1/Schools/${schoolCode}`
-    : DB_BASE;
+  const DB_URL = schoolNodeBase(schoolCode);
   const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
   const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 

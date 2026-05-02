@@ -21,6 +21,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
 import { fetchJson, getSafeProfileImage, mapInBatches, parseChatParticipantIds } from "../utils/chatRtdb";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 /* ================= CONSTANTS ================= */
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -56,10 +57,8 @@ export default function SchedulePage() {
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
   const API_BASE = `${BACKEND_BASE}/api`;
   const [schoolCode, setSchoolCode] = useState(() => String(admin.schoolCode || "").trim());
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const RTDB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
   const getSchoolNodePath = (nodeName) =>
