@@ -48,7 +48,7 @@ export default function RegisterShell() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const user = useMemo(() => {
+  const [user, setUser] = useState(() => {
     const stored = readStoredRegistrar();
 
     return {
@@ -59,7 +59,33 @@ export default function RegisterShell() {
       userId: stored.userId || "",
       schoolCode: stored.schoolCode || "",
     };
-  }, [location.pathname]);
+  });
+
+  useEffect(() => {
+    const refreshUser = () => {
+      const stored = readStoredRegistrar();
+      setUser({
+        name: stored.name || stored.username || "Register Office",
+        username: stored.username || "",
+        profileImage: stored.profileImage || "/default-profile.png",
+        adminId: stored.registrarId || stored.financeId || stored.adminId || stored.userId || "",
+        userId: stored.userId || "",
+        schoolCode: stored.schoolCode || "",
+      });
+    };
+
+    window.addEventListener("storage", refreshUser);
+    window.addEventListener("registrar-profile-updated", refreshUser);
+    return () => {
+      window.removeEventListener("storage", refreshUser);
+      window.removeEventListener("registrar-profile-updated", refreshUser);
+    };
+  }, []);
+
+  const sidebarStyle = useMemo(
+    () => (isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { width: "100%", height: "100%", minWidth: 0 }),
+    [isNarrow]
+  );
 
   const dbRoot = useMemo(() => (user.schoolCode ? `${DB_BASE}/Platform1/Schools/${user.schoolCode}` : DB_BASE), [user.schoolCode]);
 
@@ -223,9 +249,10 @@ export default function RegisterShell() {
         <div className="register-shell__sidebar">
           <RegisterSidebar
             user={user}
-            sticky={!isNarrow}
+            sticky={false}
             fullHeight={!isNarrow}
-            style={isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { flex: "0 0 auto" }}
+            top={0}
+            style={sidebarStyle}
             onLogout={handleLogout}
           />
         </div>

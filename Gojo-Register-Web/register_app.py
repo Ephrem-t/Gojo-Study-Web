@@ -5,7 +5,9 @@ from firebase_admin import credentials, db, storage
 import os
 import sys
 import json
+import uuid
 from datetime import datetime, timezone
+from werkzeug.utils import secure_filename
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
@@ -32,6 +34,26 @@ def schools_data():
 
 def school_ref(school_code):
     return db.reference(f"{PLATFORM_SCHOOLS_REF}/{school_code}")
+
+
+def upload_file_to_firebase(file, folder=""):
+    try:
+        filename = secure_filename(file.filename or "")
+        if not filename:
+            filename = f"upload_{uuid.uuid4().hex}"
+
+        object_name = f"{uuid.uuid4().hex}_{filename}"
+        normalized_folder = str(folder or "").strip().strip("/")
+        if normalized_folder:
+            object_name = f"{normalized_folder}/{object_name}"
+
+        blob = bucket.blob(object_name)
+        blob.upload_from_file(file, content_type=file.content_type)
+        blob.make_public()
+        return blob.public_url
+    except Exception as exc:
+        print("Upload Error:", exc)
+        return ""
 
 
 def find_school_code_for_user(user_id=None, finance_id=None):
@@ -1034,55 +1056,72 @@ def create_post():
             }
             return aliases.get(value, value or "all")
 
-        # Accept form-data from frontend. File uploads handled client-side to Firebase Storage.
-        message = request.form.get("message") or ""
-        postUrl = request.form.get("postUrl") or ""
-        adminId = request.form.get("adminId") or ""
-        adminName = request.form.get("adminName") or ""
-        adminProfile = request.form.get("adminProfile") or ""
-        financeId = request.form.get("financeId") or ""
-        financeName = request.form.get("financeName") or ""
-        financeProfile = request.form.get("financeProfile") or ""
-        userId = request.form.get("userId") or ""
-        targetRole = normalize_target_role(request.form.get("targetRole") or request.form.get("target") or "all")
-        schoolCode = request.form.get("schoolCode") or request.args.get("schoolCode") or ""
+        data = request.form
+        message = data.get("message") or data.get("postText") or ""
+        raw_post_url = data.get("postUrl") or ""
+        media_file = request.files.get("post_media")
+        if media_file is None:
+            media_file = request.files.get("postMedia")
+
+        raw_admin_id = str(data.get("adminId") or "").strip()
+        finance_id = str(data.get("financeId") or "").strip()
+        user_id = str(data.get("userId") or "").strip()
+        owner_user_id = user_id or raw_admin_id or finance_id
+        compatibility_finance_id = finance_id or raw_admin_id
+        admin_name = data.get("adminName") or data.get("financeName") or "Register Office"
+        admin_profile = data.get("adminProfile") or data.get("financeProfile") or "/default-profile.png"
+        targetRole = normalize_target_role(data.get("targetRole") or data.get("target") or "all")
+        schoolCode = data.get("schoolCode") or request.args.get("schoolCode") or ""
+        has_media_file = media_file is not None and getattr(media_file, "stream", None) is not None
+
+        if not owner_user_id and not compatibility_finance_id:
+            return jsonify({"success": False, "message": "Admin not logged in"}), 400
 
         if not schoolCode:
-            schoolCode = find_school_code_for_user(user_id=userId, finance_id=financeId or adminId)
+            schoolCode = find_school_code_for_user(
+                user_id=owner_user_id or user_id,
+                finance_id=compatibility_finance_id,
+            )
 
         if not schoolCode:
             return jsonify({"success": False, "message": "schoolCode is required"}), 400
 
+        post_url = raw_post_url
+        if has_media_file:
+            post_url = upload_file_to_firebase(media_file, folder="posts")
+            if not post_url:
+                return jsonify({"success": False, "message": "Failed to upload post media"}), 500
+
+        time_now = datetime.utcnow().isoformat()
+
+        post_ref = school_ref(schoolCode).child("Posts").push()
         post_obj = {
-            # prefer financeId as the owner identifier (replace adminId)
-            "financeId": financeId or adminId,
-            "adminId": adminId or financeId,
-            "userId": userId,
-            "adminName": adminName or financeName,
-            "adminProfile": adminProfile or financeProfile,
-            "postUrl": postUrl,
+            "postId": post_ref.key,
             "message": message,
+            "postUrl": post_url,
+            "adminId": owner_user_id,
+            "userId": owner_user_id,
+            "adminName": admin_name,
+            "adminProfile": admin_profile,
+            "schoolCode": schoolCode,
             "targetRole": targetRole,
+            "time": time_now,
+            "createdAt": time_now,
             "likeCount": 0,
             "likes": {},
             "seenBy": {},
-            "time": datetime.utcnow().isoformat()
         }
 
-        # mark as seen by owner (finance/admin) if available
-        owner_key = post_obj.get("financeId")
-        if owner_key:
-            post_obj["seenBy"][owner_key] = True
+        if owner_user_id:
+            post_obj["seenBy"][owner_user_id] = True
+        if compatibility_finance_id and compatibility_finance_id != owner_user_id:
+            post_obj["financeId"] = compatibility_finance_id
+            post_obj["seenBy"][compatibility_finance_id] = True
 
-        posts_ref = school_ref(schoolCode).child("Posts")
-        new_ref = posts_ref.push(post_obj)
-        post_id = new_ref.key
-        # ensure postId field exists
-        school_ref(schoolCode).child(f"Posts/{post_id}").update({"postId": post_id, "schoolCode": schoolCode})
+        post_ref.set(post_obj)
 
-        # return created post
-        created = school_ref(schoolCode).child(f"Posts/{post_id}").get() or {}
-        created["postId"] = post_id
+        created = school_ref(schoolCode).child(f"Posts/{post_ref.key}").get() or {}
+        created["postId"] = post_ref.key
         created["schoolCode"] = schoolCode
 
         return jsonify({"success": True, "post": created}), 200

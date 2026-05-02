@@ -283,7 +283,7 @@ export const loadUserRecordById = async ({ rtdbBase, schoolCode, userId, force =
     return directRecord;
   }
 
-  for (const childPath of ["userId", "username"]) {
+  for (const childPath of ["userId", "username", "teacherId", "studentId", "parentId", "employeeId"]) {
     const { recordKey, record } = await querySingleScopedRecord({
       nodePath: "Users",
       schoolCode: scopedSchoolCode,
@@ -314,6 +314,73 @@ export const loadUserRecordsByIds = async ({ rtdbBase, schoolCode, userIds, forc
 
   const records = await mapInBatches(normalizedUserIds, 8, async (userId) => {
     const record = await loadUserRecordById({ rtdbBase, schoolCode, userId, force });
+    return [userId, record];
+  });
+
+  return records.reduce((result, [userId, record]) => {
+    if (record) {
+      result[userId] = record;
+    }
+    return result;
+  }, {});
+};
+
+const getPersonDisplayName = (record = {}) => {
+  const joinedName = [record?.firstName, record?.middleName, record?.lastName]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+
+  return String(
+    record?.name ||
+      record?.fullName ||
+      record?.displayName ||
+      joinedName ||
+      record?.username ||
+      ""
+  ).trim();
+};
+
+const isFallbackIdentifierName = (name, userId) => {
+  const normalizedName = normalizeIdentifier(name).toLowerCase();
+  const normalizedUserId = normalizeIdentifier(userId).toLowerCase();
+  return !normalizedName || Boolean(normalizedUserId && normalizedName === normalizedUserId);
+};
+
+const loadTeacherRecordByUserId = async ({ rtdbBase, schoolCode, userId, force = false } = {}) => {
+  const normalizedUserId = normalizeIdentifier(userId);
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !normalizedUserId) {
+    return null;
+  }
+
+  const directRecord = await fetchCachedJson(`${normalizedBase}/Teachers/${encodeURIComponent(normalizedUserId)}.json`, {
+    ttlMs: DIRECTORY_TTL_MS,
+    fallbackValue: null,
+    force,
+  });
+  if (isRecordObject(directRecord)) {
+    return directRecord;
+  }
+
+  const { record } = await querySingleScopedRecord({
+    nodePath: "Teachers",
+    schoolCode: normalizeIdentifier(schoolCode || extractSchoolCodeFromRtdbBase(normalizedBase)),
+    childPath: "userId",
+    matchValue: normalizedUserId,
+  });
+
+  return isRecordObject(record) ? record : null;
+};
+
+const loadTeacherRecordsByUserIds = async ({ rtdbBase, schoolCode, userIds, force = false } = {}) => {
+  const normalizedUserIds = [...new Set((userIds || []).map(normalizeIdentifier).filter(Boolean))];
+  if (!normalizedUserIds.length) {
+    return {};
+  }
+
+  const records = await mapInBatches(normalizedUserIds, 8, async (userId) => {
+    const record = await loadTeacherRecordByUserId({ rtdbBase, schoolCode, userId, force });
     return [userId, record];
   });
 
@@ -729,19 +796,35 @@ export const fetchConversationSummaries = async ({
     force,
   });
 
+  const unresolvedUserIds = userIdsToLoad.filter((userId) => {
+    const fallbackContact = contactHintsByUserId.get(userId) || {};
+    const userRecord = usersById[userId] || null;
+    return isFallbackIdentifierName(getPersonDisplayName(userRecord) || fallbackContact?.name || fallbackContact?.displayName, userId);
+  });
+
+  const teachersByUserId = await loadTeacherRecordsByUserIds({
+    rtdbBase: normalizedBase,
+    schoolCode: scopedSchoolCode,
+    userIds: unresolvedUserIds,
+    force,
+  });
+
   const conversationList = summaries
     .map((summary) => {
       const fallbackContact = contactHintsByUserId.get(summary.otherUserId) || {};
       const userRecord = usersById[summary.otherUserId] || null;
+      const teacherRecord = teachersByUserId[summary.otherUserId] || null;
+      const userDisplayName = getPersonDisplayName(userRecord);
+      const teacherDisplayName = getPersonDisplayName(teacherRecord);
+      const fallbackDisplayName = String(fallbackContact?.name || fallbackContact?.displayName || "").trim();
       const displayName =
-        userRecord?.name ||
-        userRecord?.username ||
-        fallbackContact?.name ||
-        fallbackContact?.displayName ||
+        (!isFallbackIdentifierName(userDisplayName, summary.otherUserId) ? userDisplayName : "") ||
+        teacherDisplayName ||
+        (!isFallbackIdentifierName(fallbackDisplayName, summary.otherUserId) ? fallbackDisplayName : "") ||
         summary.otherUserId ||
         "User";
       const profileImage = getSafeProfileImage(
-        userRecord?.profileImage || fallbackContact?.profileImage,
+        userRecord?.profileImage || teacherRecord?.profileImage || fallbackContact?.profileImage,
         "/default-profile.png"
       );
 
@@ -754,7 +837,7 @@ export const fetchConversationSummaries = async ({
           type:
             fallbackContact?.type ||
             fallbackContact?.tab ||
-            inferContactTypeFromUser(userRecord || fallbackContact),
+            inferContactTypeFromUser(userRecord || teacherRecord || fallbackContact),
         },
         displayName,
         profile: profileImage,

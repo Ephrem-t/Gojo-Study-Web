@@ -335,4 +335,4 @@ function RegisterSidebar({
   );
 }
 
-export default RegisterSidebar;
+export default React.memo(RegisterSidebar);

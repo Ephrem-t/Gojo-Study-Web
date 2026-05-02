@@ -343,61 +343,17 @@ useEffect(() => {
         className="google-dashboard"
         style={{ background: darkMode ? "#2c2c2c" : "#f1f1f1" }}
       >
-        {/* SIDEBAR */}
-        <div
-          className="google-sidebar"
-          style={{ background: darkMode ? "#1a1a1a" : "#fff" }}
-        >
-          <div className="sidebar-profile">
-            <div className="sidebar-img-circle">
-              <img src={admin.profileImage || "/default-profile.png"} alt="profile" />
-            </div>
-            <h3>{admin.name}</h3>
-            <p>{admin?.adminId || "username"}</p>
-          </div>
-          <div className="sidebar-menu">
-            <Link className="sidebar-btn" to="/dashboard">
-              <FaHome style={{ width: "28px", height: "28px" }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts">
-              <FaFileAlt /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/teachers">
-              <FaChalkboardTeacher /> Teachers
-            </Link>
-            <Link className="sidebar-btn" to="/students">
-              <FaChalkboardTeacher /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/schedule">
-              <FaCalendarAlt /> Schedule
-            </Link>
-            <Link className="sidebar-btn" to="/parents">
-              <FaChalkboardTeacher /> Parents
-            </Link>
-           <Link className="sidebar-btn" to="/registration-form" ><FaChalkboardTeacher /> Registration Form
-                        </Link>
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-            >
-              <FaSignOutAlt /> Logout
-            </button>
-          </div>
-        </div>
-
         {/* MAIN CONTENT */}
         <div
-          className="main-content"
+          className="main-content google-main"
           style={{
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
             padding: "50px",
-            width: "100%",
+            flex: 1,
+            minWidth: 0,
             gap: "30px",
           }}
         >

@@ -26,6 +26,7 @@ import EthiopicCalendar from "ethiopic-calendar";
 import RegisterSidebar from "../components/RegisterSidebar";
 import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
 import { buildRegisterTargetRoleOptions, fetchConversationSummaries } from "../utils/registerData";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -171,6 +172,8 @@ const getAvatarInitials = (value) => {
   if (!parts.length) return "RO";
   return parts.map((part) => part.charAt(0).toUpperCase()).join("");
 };
+
+const RECENT_CONTACT_LIMIT = 3;
 
 const readStoredRegisterUser = () => {
   try {
@@ -400,44 +403,17 @@ function MyPosts() {
       [postId]: !prev[postId],
     }));
   };
-  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%") => {
-    const hasImage = hasUsableProfileImage(imageUrl);
-    const initials = getAvatarInitials(name);
-    const resolvedBorderRadius = typeof borderRadius === "number" ? `${borderRadius}px` : borderRadius;
-
+  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%", style = {}) => {
     return (
-      <div
+      <ProfileAvatar
         className="img-circle"
-        style={{
-          width: size,
-          height: size,
-          borderRadius: resolvedBorderRadius,
-          overflow: "hidden",
-          flexShrink: 0,
-          border: hasImage ? "1px solid var(--border-soft)" : "1px solid var(--accent-strong)",
-          background: hasImage ? "var(--surface-panel)" : "var(--accent-strong)",
-          color: hasImage ? "var(--text-primary)" : "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: Math.max(12, Math.round(size * 0.34)),
-          fontWeight: 900,
-          letterSpacing: "0.03em",
-          position: "relative",
-        }}
-      >
-        <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials}</span>
-        {hasImage ? (
-          <img
-            src={imageUrl}
-            alt={name || "profile"}
-            style={{ width: "100%", height: "100%", objectFit: "cover", position: "relative", zIndex: 1 }}
-            onError={(event) => {
-              event.currentTarget.style.display = "none";
-            }}
-          />
-        ) : null}
-      </div>
+        imageUrl={imageUrl}
+        name={name || "Register Office"}
+        alt={name || "profile"}
+        size={size}
+        borderRadius={borderRadius}
+        style={style}
+      />
     );
   };
 
@@ -962,27 +938,32 @@ function MyPosts() {
   const handlePost = async () => {
     if (!(postText.trim() || postMedia) || isOptimizingMedia) return false;
     try {
-      const formData = new FormData();
-      // Use backend-compatible field names: `message`, `postUrl` (if uploading client-side), and include finance fields
-      formData.append("adminId", adminId);
-      formData.append("message", postText);
-      if (postMedia) formData.append("postMedia", postMedia);
+      const ownerUserId = finance.userId || admin.userId || adminId || "";
+      const compatibilityFinanceId = finance.financeId || admin.adminId || "";
 
-      // Include finance fields for new schema compatibility
-      formData.append("financeId", finance.financeId || admin.adminId || "");
+      if (!ownerUserId) {
+        alert("Session expired");
+        return false;
+      }
+
+      const formData = new FormData();
+      formData.append("adminId", ownerUserId);
+      formData.append("userId", ownerUserId);
+      formData.append("postText", postText);
+      formData.append("message", postText);
+      if (postMedia) {
+        formData.append("post_media", postMedia);
+      }
+
+      formData.append("financeId", compatibilityFinanceId);
       formData.append("financeName", finance.name || admin.name || "");
       formData.append("financeProfile", finance.profileImage || admin.profileImage || "");
-      // also include admin display fields for older backend compatibility
       formData.append("adminName", admin.name || "");
       formData.append("adminProfile", admin.profileImage || "");
-      // include userId if available
-      formData.append("userId", finance.userId || admin.userId || "");
       formData.append("schoolCode", schoolCode || "");
       formData.append("targetRole", targetRole || "all");
 
-      await axios.post(`${API_BASE}/create_post`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await axios.post(`${API_BASE}/create_post`, formData);
 
       setPostText("");
       setPostMedia(null);
@@ -1168,11 +1149,11 @@ function MyPosts() {
           rtdbBase: DB_URL,
           currentUserId: financeUserId,
           includeWithoutLastMessage: true,
-          limit: 5,
+          limit: RECENT_CONTACT_LIMIT,
         });
 
         setRecentContacts(
-          summaries.map((summary) => ({
+          summaries.slice(0, RECENT_CONTACT_LIMIT).map((summary) => ({
             userId: summary?.contact?.userId || "",
             name: summary?.contact?.name || summary?.displayName || "Unknown",
             profileImage: summary?.contact?.profileImage || "/default-profile.png",
@@ -1768,7 +1749,10 @@ function MyPosts() {
                         })}
                         style={{ ...softPanelStyle, display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '5px 6px', cursor: 'pointer' }}
                       >
-                        {renderProfileAvatar(contact.profileImage, contact.name, 24)}
+                        {renderProfileAvatar(contact.profileImage, contact.name, 30, "50%", {
+                          border: "2px solid var(--border-strong)",
+                          boxShadow: "0 8px 18px rgba(15,23,42,0.14)",
+                        })}
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {contact.name}

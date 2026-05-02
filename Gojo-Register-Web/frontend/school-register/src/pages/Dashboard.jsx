@@ -1,8 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import "../styles/global.css";
-import { storage } from "../firebase.js";
-import { ref as sRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaCalendarAlt, FaChartLine, FaPlus, FaThumbsUp, FaEllipsisH, FaExchangeAlt, FaFolderOpen, FaUserGraduate, FaChevronDown } from "react-icons/fa";
 import { Link } from "react-router-dom";
@@ -13,6 +11,7 @@ import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import EthiopicCalendar from "ethiopic-calendar";
 import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
 import { buildRegisterTargetRoleOptions, fetchConversationSummaries } from "../utils/registerData";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -319,6 +318,8 @@ const getAvatarInitials = (value) => {
   return parts.map((part) => part.charAt(0).toUpperCase()).join("");
 };
 
+const RECENT_CONTACT_LIMIT = 3;
+
 function Dashboard() {
   const PRIMARY = "#007AFB";
   const BACKGROUND = "#FFFFFF";
@@ -456,12 +457,56 @@ function Dashboard() {
   });
 
   const navigate = useNavigate();
-  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const FEED_MAX_WIDTH = 760;
+  const MESSAGE_PREVIEW_LIMIT = 220;
   const FEED_SECTION_STYLE = {
     width: "100%",
     maxWidth: FEED_MAX_WIDTH,
     margin: "0 auto",
     boxSizing: "border-box",
+  };
+  const formatPostTimestamp = (timestamp) => {
+    if (!timestamp) return "Recent update";
+
+    const parsedDate = new Date(timestamp);
+    if (Number.isNaN(parsedDate.getTime())) {
+      return String(timestamp);
+    }
+
+    const now = Date.now();
+    const differenceMs = now - parsedDate.getTime();
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (differenceMs >= 0 && differenceMs < minuteMs) return "Just now";
+    if (differenceMs >= 0 && differenceMs < hourMs) return `${Math.floor(differenceMs / minuteMs)}m ago`;
+    if (differenceMs >= 0 && differenceMs < dayMs) return `${Math.floor(differenceMs / hourMs)}h ago`;
+    if (differenceMs >= 0 && differenceMs < 7 * dayMs) return `${Math.floor(differenceMs / dayMs)}d ago`;
+
+    return parsedDate.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: parsedDate.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+    });
+  };
+  const formatAudienceLabel = (targetRoleValue) => {
+    const normalizedValue = String(targetRoleValue || "all").trim().toLowerCase();
+    if (!normalizedValue || normalizedValue === "all") return "everyone";
+    return normalizedValue
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+      .join(" ");
+  };
+  const isPostLikedByActor = (post, actorId) => {
+    if (!actorId || !post?.likes) return false;
+    return Boolean(post.likes[actorId]);
+  };
+  const getResolvedLikeCount = (post) => {
+    if (Number.isFinite(Number(post?.likeCount))) return Number(post.likeCount);
+    if (post?.likes && typeof post.likes === "object") return Object.keys(post.likes).length;
+    return 0;
   };
   const shellCardStyle = {
     background: "var(--surface-panel)",
@@ -568,44 +613,17 @@ function Dashboard() {
       ? { ...sidebarLinkBaseStyle, ...sidebarLinkActiveStyle }
       : sidebarLinkBaseStyle
   );
-  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%") => {
-    const hasImage = hasUsableProfileImage(imageUrl);
-    const initials = getAvatarInitials(name);
-    const resolvedBorderRadius = typeof borderRadius === "number" ? `${borderRadius}px` : borderRadius;
-
+  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%", style = {}) => {
     return (
-      <div
+      <ProfileAvatar
         className="img-circle"
-        style={{
-          width: size,
-          height: size,
-          borderRadius: resolvedBorderRadius,
-          overflow: "hidden",
-          flexShrink: 0,
-          border: hasImage ? "1px solid var(--border-soft)" : "1px solid var(--accent-strong)",
-          background: hasImage ? "var(--surface-panel)" : "var(--accent-strong)",
-          color: hasImage ? "var(--text-primary)" : "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: Math.max(12, Math.round(size * 0.34)),
-          fontWeight: 900,
-          letterSpacing: "0.03em",
-          position: "relative",
-        }}
-      >
-        <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials}</span>
-        {hasImage ? (
-          <img
-            src={imageUrl}
-            alt={name || "profile"}
-            style={{ width: "100%", height: "100%", objectFit: "cover", position: "relative", zIndex: 1 }}
-            onError={(event) => {
-              event.currentTarget.style.display = "none";
-            }}
-          />
-        ) : null}
-      </div>
+        imageUrl={imageUrl}
+        name={name || "Register Office"}
+        alt={name || "profile"}
+        size={size}
+        borderRadius={borderRadius}
+        style={style}
+      />
     );
   };
   const toggleSidebarSection = (sectionKey) => {
@@ -1151,11 +1169,11 @@ function Dashboard() {
           rtdbBase: DB_ROOT,
           currentUserId: financeUserId,
           includeWithoutLastMessage: true,
-          limit: 5,
+          limit: RECENT_CONTACT_LIMIT,
         });
 
         setRecentContacts(
-          summaries.map((summary) => ({
+          summaries.slice(0, RECENT_CONTACT_LIMIT).map((summary) => ({
             userId: summary?.contact?.userId || "",
             name: summary?.contact?.name || summary?.displayName || "Unknown",
             profileImage: summary?.contact?.profileImage || "/default-profile.png",
@@ -1327,44 +1345,36 @@ function Dashboard() {
   const handlePost = async () => {
     if (!(postText.trim() || postMedia) || isOptimizingMedia) return;
 
-    if (!admin.adminId || !admin.userId) {
+    const ownerUserId = admin.userId || admin.adminId || "";
+    const compatibilityFinanceId = finance.financeId || admin.adminId || "";
+
+    if (!ownerUserId) {
       alert("Session expired");
       return;
     }
 
-    // If a media file is selected, upload it to Firebase Storage and get a download URL
-    let postUrl = "";
-    try {
-      if (postMedia) {
-        const path = `posts/${Date.now()}_${postMedia.name.replace(/[^a-zA-Z0-9.\-_/]/g, "_")}`;
-        const storageRef = sRef(storage, path);
-        // upload as blob/file
-        await uploadBytes(storageRef, postMedia);
-        postUrl = await getDownloadURL(storageRef);
-      }
-    } catch (err) {
-      console.error("Failed to upload media to Firebase Storage:", err);
-      // proceed without media URL
-    }
-
     const formData = new FormData();
     formData.append("message", postText);
-    formData.append("postUrl", postUrl);
+    if (postMedia) {
+      formData.append("post_media", postMedia);
+    }
 
-    // keep old admin fields for compatibility
-    formData.append("adminId", admin.adminId); // ownership
-    formData.append("userId", admin.userId);   // display & likes
+    formData.append("adminId", ownerUserId);
+    formData.append("userId", ownerUserId);
     formData.append("adminName", admin.name);
     formData.append("adminProfile", admin.profileImage);
 
-    // new finance fields (for Finance schema)
-    formData.append("financeId", admin.adminId || "");
+    formData.append("financeId", compatibilityFinanceId);
     formData.append("financeName", admin.name || "");
     formData.append("financeProfile", admin.profileImage || "");
     formData.append("schoolCode", schoolCode || "");
     formData.append("targetRole", targetRole || "all");
 
-    await axios.post(`${API_BASE}/create_post`, formData);
+    const response = await axios.post(`${API_BASE}/create_post`, formData);
+
+    if (response.data && response.data.success === false) {
+      throw new Error(response.data.message || "Post could not be published.");
+    }
 
     setPostText("");
     setPostMedia(null);
@@ -1468,7 +1478,7 @@ function Dashboard() {
         "--text-muted": "#64748b",
         "--accent": PRIMARY,
         "--accent-soft": "#E7F2FF",
-        "--accent-strong": "#005FCC",
+        "--accent-strong": "#007AFB",
         "--success": ACCENT,
         "--success-soft": "#E9FBF9",
         "--success-border": "#AAEDE7",
@@ -1690,7 +1700,7 @@ function Dashboard() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
         {/* LEFT SIDEBAR */}
         <div className="google-sidebar" style={{ width: 'clamp(230px, 16vw, 290px)', minWidth: 230, padding: 14, borderRadius: 24, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', height: 'calc(100vh - 24px)', overflowY: 'auto', alignSelf: 'flex-start', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Sidebar profile */}
@@ -1850,7 +1860,8 @@ function Dashboard() {
         </div>
 
         {/* MIDDLE FEED COLUMN */}
-        <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="main-content google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', top: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+          <div style={{ width: '100%', maxWidth: FEED_SECTION_STYLE.maxWidth }}>
           {/* Feed header */}
           <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
@@ -1938,108 +1949,101 @@ function Dashboard() {
 
           {/* Posts container */}
           <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: 12 }}>
-            {posts.map((post) => (
-              <div className="post-card facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden" }}>
-                <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                  {renderProfileAvatar(post.adminProfile, post.adminName, 40)}
-                  <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                    <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName}</h4>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2, fontSize: 13, color: "var(--text-muted)", fontWeight: 500 }}>
-                      <span>{post.time}</span>
-                      <span>·</span>
-                      <span>{post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}</span>
+            {posts.length === 0 ? (
+              <div style={{ ...shellCardStyle, borderRadius: 12, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
+                No posts available right now.
+              </div>
+            ) : posts.map((post) => {
+              const messageText = String(post.message || "");
+              const canExpandPost = shouldShowPostSeeMore(messageText);
+              const isPostExpanded = !!expandedPostDescriptions[post.postId];
+              const normalizedTargetRole = String(post.targetRole || "all").trim().toLowerCase();
+              const audienceLabel = formatAudienceLabel(normalizedTargetRole);
+              const isPublicPost = !normalizedTargetRole || normalizedTargetRole === "all";
+              const targetRoleLabel = isPublicPost ? "Visible to everyone" : `Visible to ${audienceLabel}`;
+              const audienceBadgeLabel = isPublicPost ? "Public update" : `${audienceLabel} update`;
+              const likeCount = getResolvedLikeCount(post);
+              const isLikedByRegister = isPostLikedByActor(post, currentLikeActorId);
+              const postTimestamp = post.time || post.createdAt || "";
+              const postTimeLabel = formatPostTimestamp(postTimestamp);
+              const postTimestampTitle = postTimestamp && !Number.isNaN(new Date(postTimestamp).getTime()) ? new Date(postTimestamp).toLocaleString() : String(postTimestamp || "");
+
+              return (
+                <div className="facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(15, 23, 42, 0.08)", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)", transition: "background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease" }}>
+                  <div className="facebook-post-card__header" style={{ padding: "12px 14px 10px" }}>
+                    <div className="facebook-post-card__header-main">
+                      <div className="facebook-post-card__avatar">
+                        {renderProfileAvatar(post.adminProfile, post.adminName || "Register Office", 42)}
+                      </div>
+                      <div className="facebook-post-card__identity">
+                        <div className="facebook-post-card__identity-row">
+                          <h4>{post.adminName || "Register Office"}</h4>
+                          <span className="facebook-post-card__page-badge">School Page</span>
+                        </div>
+                        <div className="facebook-post-card__meta" title={postTimestampTitle || undefined}>
+                          <span>{postTimeLabel}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{targetRoleLabel}</span>
+                        </div>
+                      </div>
                     </div>
+                    <div className="facebook-post-card__type-chip">Announcement</div>
                   </div>
-                  </div>
-                  <button
-                    type="button"
-                    style={{ width: 36, height: 36, border: "none", borderRadius: "50%", background: "transparent", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                    aria-label="Post options"
-                    title="Post options"
-                  >
-                    <FaEllipsisH style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
 
-                {post.message ? (() => {
-                  const canExpandPost = shouldShowPostSeeMore(post.message);
-                  const isPostExpanded = !!expandedPostDescriptions[post.postId];
-
-                  return (
-                    <div style={{ padding: "0 16px 12px", color: "var(--text-primary)", fontSize: 15, lineHeight: 1.3333, wordBreak: "break-word" }}>
-                      <div
-                        style={{
-                          whiteSpace: "pre-wrap",
-                          overflow: canExpandPost && !isPostExpanded ? "hidden" : "visible",
-                          display: canExpandPost && !isPostExpanded ? "-webkit-box" : "block",
-                          WebkitBoxOrient: canExpandPost && !isPostExpanded ? "vertical" : "initial",
-                          WebkitLineClamp: canExpandPost && !isPostExpanded ? 3 : "unset",
-                        }}
-                      >
-                        {post.message}
+                  {messageText ? (
+                    <div className="facebook-post-card__body" style={{ padding: "0 14px 12px" }}>
+                      <div className="facebook-post-card__message">
+                        {canExpandPost && !isPostExpanded
+                          ? `${messageText.slice(0, MESSAGE_PREVIEW_LIMIT).trimEnd()}...`
+                          : messageText}
                       </div>
                       {canExpandPost ? (
-                        <button
-                          type="button"
-                          onClick={() => togglePostDescription(post.postId)}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            padding: 0,
-                            marginTop: 4,
-                            color: "var(--text-muted)",
-                            fontSize: 15,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          {isPostExpanded ? "See less" : "See more"}
+                        <button type="button" className="facebook-post-card__read-more" onClick={() => togglePostDescription(post.postId)}>
+                          {isPostExpanded ? "See less" : "Read more"}
                         </button>
                       ) : null}
                     </div>
-                  );
-                })() : null}
-                {post.postUrl && (
-                  <div className="facebook-post-media-wrap" style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <img
-                      className="facebook-post-media"
-                      src={post.postUrl}
-                      alt="post media"
-                      style={{ width: "100%", height: "auto", maxHeight: "min(78vh, 720px)", objectFit: "contain", display: "block", margin: "0 auto" }}
-                    />
-                  </div>
-                )}
+                  ) : null}
 
-                <div style={{ padding: "10px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  <button
-                    type="button"
-                    onClick={() => handleLike(post.postId)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      minWidth: 0,
-                      border: "none",
-                      background: "transparent",
-                      padding: 0,
-                      cursor: "pointer",
-                      color: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--text-muted)",
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
-                    <span style={{ width: 20, height: 20, borderRadius: "50%", background: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--surface-strong)", color: post.likes && post.likes[currentLikeActorId] ? "#fff" : "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <FaThumbsUp style={{ width: 10, height: 10 }} />
-                    </span>
-                    <span style={{ whiteSpace: "nowrap" }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? "" : "s"}</span>
-                  </button>
-                  <div style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                    {post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}
+                  {post.postUrl ? (
+                    <div className="facebook-post-card__media-shell">
+                      <img className="facebook-post-card__media" src={post.postUrl} alt="post media" />
+                    </div>
+                  ) : null}
+
+                  <div className="facebook-post-card__stats" style={{ padding: "10px 14px 8px" }}>
+                    <div className="facebook-post-card__stats-left">
+                      {likeCount > 0 ? (
+                        <>
+                          <span className="facebook-post-card__reaction-bubble">
+                            <FaThumbsUp style={{ width: 10, height: 10 }} />
+                          </span>
+                          <span>{`${likeCount} ${likeCount === 1 ? "like" : "likes"}`}</span>
+                        </>
+                      ) : (
+                        <span>Be the first to react</span>
+                      )}
+                    </div>
+                    <div className="facebook-post-card__stats-right" title={targetRoleLabel}>
+                      <span>{audienceBadgeLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="facebook-post-card__actions" style={{ padding: "4px 10px 10px" }}>
+                    <button
+                      type="button"
+                      aria-pressed={isLikedByRegister}
+                      onClick={() => handleLike(post.postId)}
+                      className={`facebook-post-card__action-button${isLikedByRegister ? " is-active" : ""}`}
+                    >
+                      <FaThumbsUp style={{ width: 14, height: 14 }} />
+                      <span>{isLikedByRegister ? "Liked" : "Like"}</span>
+                    </button>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
+          </div>
           </div>
         </div>
 
@@ -2107,7 +2111,10 @@ function Dashboard() {
                         })}
                         style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', ...softPanelStyle, padding: '5px 6px', cursor: 'pointer' }}
                       >
-                        {renderProfileAvatar(contact.profileImage, contact.name, 24)}
+                        {renderProfileAvatar(contact.profileImage, contact.name, 30, "50%", {
+                          border: "2px solid var(--border-strong)",
+                          boxShadow: "0 8px 18px rgba(15,23,42,0.14)",
+                        })}
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {contact.name}
