@@ -27,6 +27,7 @@ import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
 import LessonPlanInsightsModal from "../components/LessonPlanInsightsModal";
 import ProfileAvatar from "../components/ProfileAvatar";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 import { fetchJson, getSafeProfileImage, mapInBatches, parseChatParticipantIds } from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 
@@ -45,8 +46,8 @@ function TeachersPage() {
     }
   })();
   const bootstrapSchoolCode = String(bootstrapAdmin.schoolCode || "").trim();
-  const TEACHERS_CACHE_KEY = `teachers_page_cache_${bootstrapSchoolCode || "global"}`;
-  const TEACHERS_UI_STATE_KEY = `teachers_page_ui_${bootstrapSchoolCode || "global"}`;
+  const TEACHERS_CACHE_KEY = `teachers_page_cache_v2_${bootstrapSchoolCode || "global"}`;
+  const TEACHERS_UI_STATE_KEY = `teachers_page_ui_v2_${bootstrapSchoolCode || "global"}`;
   const readBootstrapTeachersCache = () => {
     try {
       const rawSession = sessionStorage.getItem(TEACHERS_CACHE_KEY);
@@ -338,10 +339,8 @@ function TeachersPage() {
   const nowDate = new Date(nowTick);
   const currentDayName = nowDate.toLocaleDateString("en-US", { weekday: "long" });
   const currentMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const RTDB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
   const TEACHER_DIRECTORY_URL = `${SCHOOL_DB_ROOT}/TeacherDirectory.json`;
   const PRIMARY = "#007afb";
   const BACKGROUND = "#ffffff";

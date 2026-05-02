@@ -149,6 +149,24 @@ def _merged_dict(*nodes):
     return merged
 
 
+def _normalize_users_node(users_node):
+    normalized = {}
+    if not isinstance(users_node, dict):
+        return normalized
+
+    for user_key, user_value in users_node.items():
+        if not isinstance(user_value, dict):
+            continue
+
+        normalized_user = dict(user_value)
+        normalized_user["userId"] = str(
+            normalized_user.get("userId") or user_key or ""
+        ).strip()
+        normalized[str(user_key)] = normalized_user
+
+    return normalized
+
+
 def get_users_snapshot():
     """Read users from all schools under Platform1/Schools/*/Users."""
     users = {}
@@ -157,13 +175,12 @@ def get_users_snapshot():
         if not isinstance(school, dict):
             continue
         school_users = school.get("Users") or {}
-        if isinstance(school_users, dict):
-            users.update(school_users)
+        users.update(_normalize_users_node(school_users))
     return users
 
 
 def get_users_snapshot_for_school(school_code):
-    return school_node_ref(school_code, "Users").get() or {}
+    return _normalize_users_node(school_node_ref(school_code, "Users").get() or {})
 
 
 def get_school_admins_snapshot():

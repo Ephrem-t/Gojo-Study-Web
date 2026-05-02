@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
-import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
+import { get, onValue, push, ref, set, update } from "firebase/database";
 import axios from "axios";
 import "../styles/global.css";
 import ProfileAvatar from "../components/ProfileAvatar";
+import { db } from "../firebase";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import {
   buildConversationSummaryMap,
   buildUserLookupFromNode,
@@ -15,8 +17,6 @@ import {
   loadSchoolUsersNode,
   loadUserRecordsByIds,
 } from "../utils/registerData";
-
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
 function AllChat() {
   const location = useLocation();
@@ -38,7 +38,7 @@ function AllChat() {
   const financeUserId = stored.userId || "";
   const financeAccountId = stored.financeId || stored.adminId || "";
   const schoolCode = stored.schoolCode || "";
-  const DB_ROOT = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB_ROOT = buildSchoolRtdbBase(schoolCode);
   const DB_PATH = schoolCode ? `Platform1/Schools/${schoolCode}` : "";
 
   const isSelfUser = (value) => {
@@ -283,13 +283,12 @@ function AllChat() {
     let mounted = true;
 
     const resolveKey = async () => {
-      const dbInst = getDatabase();
       const candidates = getChatKeyCandidates(financeUserId, selectedChatUser.userId);
 
       for (const key of candidates) {
         const basePath = DB_PATH ? `${DB_PATH}/Chats/${key}` : `Chats/${key}`;
         try {
-          const snap = await get(ref(dbInst, basePath));
+          const snap = await get(ref(db, basePath));
           if (snap.exists()) {
             if (mounted) setActiveChatKey(key);
             return;
@@ -312,13 +311,12 @@ function AllChat() {
   useEffect(() => {
     if (!activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     const userPath = DB_PATH ? `${DB_PATH}/Users/${selectedChatUser.userId}/lastSeen` : `Users/${selectedChatUser.userId}/lastSeen`;
 
-    const messagesRef = ref(dbInst, `${basePath}/messages`);
-    const typingRef = ref(dbInst, `${basePath}/typing`);
-    const lastSeenRef = ref(dbInst, userPath);
+    const messagesRef = ref(db, `${basePath}/messages`);
+    const typingRef = ref(db, `${basePath}/typing`);
+    const lastSeenRef = ref(db, userPath);
 
     const unsubMessages = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
@@ -363,13 +361,12 @@ function AllChat() {
   const sendMessage = async () => {
     if (!messageInput.trim() || !activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const messagesRef = ref(dbInst, `${basePath}/messages`);
-    const chatRef = ref(dbInst, basePath);
+    const messagesRef = ref(db, `${basePath}/messages`);
+    const chatRef = ref(db, basePath);
 
     if (editingMsgId) {
-      await update(ref(dbInst, `${basePath}/messages/${editingMsgId}`), {
+      await update(ref(db, `${basePath}/messages/${editingMsgId}`), {
         text: messageInput,
         edited: true,
       });
@@ -396,7 +393,7 @@ function AllChat() {
 
     let unreadNode = {};
     try {
-      const unreadSnap = await get(ref(dbInst, `${basePath}/unread`));
+      const unreadSnap = await get(ref(db, `${basePath}/unread`));
       unreadNode = unreadSnap.val() || {};
     } catch {
       unreadNode = {};
@@ -423,9 +420,8 @@ function AllChat() {
 
   const deleteMessage = async (msgId) => {
     if (!activeChatKey || !msgId) return;
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    await update(ref(dbInst, `${basePath}/messages/${msgId}`), { deleted: true });
+    await update(ref(db, `${basePath}/messages/${msgId}`), { deleted: true });
   };
 
   const handleTyping = async (e) => {
@@ -433,9 +429,8 @@ function AllChat() {
     setMessageInput(text);
 
     if (!activeChatKey || !financeUserId) return;
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const typingRef = ref(dbInst, `${basePath}/typing`);
+    const typingRef = ref(db, `${basePath}/typing`);
 
     if (!text.trim()) {
       await set(typingRef, { userId: null });

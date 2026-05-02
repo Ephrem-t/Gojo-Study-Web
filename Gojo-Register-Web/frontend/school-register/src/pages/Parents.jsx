@@ -892,6 +892,10 @@ function Parent() {
   };
 
   const listShellWidth = isPortrait ? "100%" : "min(100%, 640px)";
+  const rightSidebarOffset = isPortrait ? 0 : 408;
+  const detailDrawerTop = isPortrait ? 0 : "calc(var(--topbar-height) + 18px)";
+  const detailDrawerHeight = isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)";
+  const detailDrawerRight = isPortrait ? 0 : 14;
 
   const ParentItem = ({ parent, selected, onClick, number }) => (
     <div
@@ -957,10 +961,10 @@ function Parent() {
     <div
       style={{
         width: isPortrait ? "100%" : "380px",
-        height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+        height: detailDrawerHeight,
         position: "fixed",
-        right: 0,
-        top: isPortrait ? 0 : "55px",
+        right: detailDrawerRight,
+        top: detailDrawerTop,
         background: "var(--surface-muted)",
         backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
         zIndex: 90,
@@ -970,6 +974,7 @@ function Parent() {
         overflowX: "hidden",
         boxShadow: "var(--shadow-panel)",
         borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+        borderRadius: isPortrait ? 0 : 18,
         transition: "all 0.35s ease",
         fontSize: 10,
         padding: "14px",
@@ -1245,9 +1250,9 @@ function Parent() {
           width: isPortrait ? "100%" : "380px",
           position: "fixed",
           left: isPortrait ? 0 : "auto",
-          right: 0,
-          top: isPortrait ? 0 : "55px",
-          height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+          right: detailDrawerRight,
+          top: detailDrawerTop,
+          height: detailDrawerHeight,
           background: "#ffffff",
           zIndex: 1000,
           display: "flex",
@@ -1258,6 +1263,7 @@ function Parent() {
           paddingBottom: "130px",
           boxShadow: "var(--shadow-panel)",
           borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+          borderRadius: isPortrait ? 0 : 18,
           transition: "all 0.35s ease",
           fontSize: "10px",
         };
@@ -1635,6 +1641,16 @@ function Parent() {
         {/* MAIN CONTENT */}
         <main className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`} style={mainContentStyle}>
           <div
+            style={{
+              width: "100%",
+              minWidth: 0,
+              boxSizing: "border-box",
+              paddingRight: rightSidebarOffset,
+              display: "flex",
+              justifyContent: "flex-start",
+            }}
+          >
+          <div
             className="parent-list-card-responsive"
             style={{
               width: listShellWidth,
@@ -1740,6 +1756,7 @@ function Parent() {
               ))}
               <div aria-hidden="true" style={{ height: 18 }} />
             </div>
+          </div>
           </div>
         </main>
 

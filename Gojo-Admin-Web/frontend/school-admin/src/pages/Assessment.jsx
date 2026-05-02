@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const ALL_GRADES_VALUE = "__ALL_GRADES__";
 const ALL_SUBJECTS_VALUE = "__ALL_SUBJECTS__";
 
@@ -15,9 +15,7 @@ export default function AssessmentPage() {
   })();
 
   const schoolCode = String(admin.schoolCode || "").trim();
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
 
   const [gradeRows, setGradeRows] = useState([]);
   const [loading, setLoading] = useState(true);

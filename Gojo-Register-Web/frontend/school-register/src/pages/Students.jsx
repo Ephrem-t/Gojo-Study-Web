@@ -782,6 +782,11 @@ useEffect(() => {
       : `Grade ${selectedGrade} - Section ${selectedSection}`;
 
   const listShellWidth = isPortrait ? "100%" : "min(100%, 640px)";
+  const rightSidebarOffset = isPortrait ? 0 : 408;
+  const stackChatActions = isPortrait || isNarrow;
+  const detailDrawerTop = isPortrait ? 0 : "calc(var(--topbar-height) + 18px)";
+  const detailDrawerHeight = isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)";
+  const detailDrawerRight = isPortrait ? 0 : 14;
 
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
@@ -1779,6 +1784,16 @@ const StudentItem = ({ student, selected, onClick, number }) => (
           }}
         >
           <div
+            style={{
+              width: "100%",
+              minWidth: 0,
+              boxSizing: "border-box",
+              paddingRight: rightSidebarOffset,
+              display: "flex",
+              justifyContent: "flex-start",
+            }}
+          >
+          <div
             className="student-list-card-responsive"
             style={{
               width: listShellWidth,
@@ -1943,6 +1958,7 @@ const StudentItem = ({ student, selected, onClick, number }) => (
               <div aria-hidden="true" style={{ height: 18 }} />
             </div>
           </div>
+          </div>
         </div>
 
         {/* RIGHT SIDEBAR */}
@@ -1951,10 +1967,10 @@ const StudentItem = ({ student, selected, onClick, number }) => (
   <div
     style={{
       width: isPortrait ? "100%" : "380px",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      height: detailDrawerHeight,
       position: "fixed",
-      right: 0,
-      top: isPortrait ? 0 : "55px",
+      right: detailDrawerRight,
+      top: detailDrawerTop,
       background: "#ffffff",
       zIndex: 1000,
       display: "flex",
@@ -1965,6 +1981,7 @@ const StudentItem = ({ student, selected, onClick, number }) => (
       paddingBottom: "130px",
       boxShadow: "var(--shadow-panel)",
       borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+      borderRadius: isPortrait ? 0 : 18,
       transition: "all 0.35s ease",
       fontSize: "10px",
     }}
@@ -2754,7 +2771,7 @@ const StudentItem = ({ student, selected, onClick, number }) => (
       )}
     </div>
     {/* Parent Chat Button */}
-    {!studentChatOpen && (
+    {selectedStudent && !studentChatOpen && (
       <div
         onClick={() => {
           if (!selectedStudent?.userId) {
@@ -2782,8 +2799,8 @@ const StudentItem = ({ student, selected, onClick, number }) => (
         title="Chat with student's parent"
         style={{
           position: "fixed",
-          bottom: "20px",
-          right: "220px",
+          bottom: stackChatActions ? "78px" : "20px",
+          right: stackChatActions ? "20px" : "220px",
           width: "140px",
           height: "48px",
           background: "linear-gradient(135deg, color-mix(in srgb, var(--success) 78%, #0f172a), var(--success))",
@@ -2837,7 +2854,7 @@ const StudentItem = ({ student, selected, onClick, number }) => (
     )}
 
     {/* Student Chat Button (styled like Parent Chat) */}
-    {!studentChatOpen && (
+    {selectedStudent && !studentChatOpen && (
       <div
         onClick={() => {
           if (!selectedStudent?.userId) {
@@ -3109,10 +3126,10 @@ const StudentItem = ({ student, selected, onClick, number }) => (
   <div
     style={{
       width: isPortrait ? "100%" : "380px",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      height: detailDrawerHeight,
       position: "fixed",
-      right: 0,
-      top: isPortrait ? 0 : "55px",
+      right: detailDrawerRight,
+      top: detailDrawerTop,
       background: "var(--surface-muted)",
       backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
       zIndex: 90,
@@ -3122,6 +3139,7 @@ const StudentItem = ({ student, selected, onClick, number }) => (
       overflowX: "hidden",
       boxShadow: "var(--shadow-panel)",
       borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+      borderRadius: isPortrait ? 0 : 18,
       transition: "all 0.35s ease",
       fontSize: 10,
       padding: "14px",

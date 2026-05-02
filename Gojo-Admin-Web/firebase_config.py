@@ -5,24 +5,33 @@ from pathlib import Path
 
 def _load_shared_service_account():
     service_account_key_path = os.environ.get('SERVICE_ACCOUNT_KEY_PATH')
-    if not service_account_key_path:
-        raise FileNotFoundError(
-            'SERVICE_ACCOUNT_KEY_PATH must be set to the exact path of serviceAccountKey.py.'
-        )
+    candidates = []
 
-    candidate = Path(service_account_key_path).expanduser().resolve()
-    if candidate.name != 'serviceAccountKey.py' or not candidate.is_file():
+    if service_account_key_path:
+        candidates.append(Path(service_account_key_path).expanduser().resolve())
+
+    current_file = Path(__file__).resolve()
+    for parent in current_file.parents:
+        candidates.append(parent / 'serviceAccountKey.py')
+
+    for candidate in candidates:
+        if candidate.name != 'serviceAccountKey.py' or not candidate.is_file():
+            continue
+
+        spec = spec_from_file_location('gojo_service_account_key', candidate)
+        if spec is None or spec.loader is None:
+            continue
+
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    if service_account_key_path:
         raise FileNotFoundError(
             'SERVICE_ACCOUNT_KEY_PATH must point to an existing serviceAccountKey.py file.'
         )
 
-    spec = spec_from_file_location('gojo_service_account_key', candidate)
-    if spec is None or spec.loader is None:
-        raise ImportError(f'Unable to load service account module from {candidate}.')
-
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    raise FileNotFoundError('serviceAccountKey.py not found in parent directories.')
 
 
 _SHARED = None

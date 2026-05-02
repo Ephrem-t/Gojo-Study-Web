@@ -1,9 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-const GRADE_CACHE_KEY = "gojo_admin_grade_section_grades_v1";
-const TEACHER_CACHE_KEY = "gojo_admin_grade_section_teachers_v1";
 const GRADE_CACHE_TTL_MS = 45 * 1000;
 const TEACHER_CACHE_TTL_MS = 45 * 1000;
 
@@ -41,9 +39,13 @@ export default function SubjectManagementPage() {
   const ACCENT = "#00B6A9";
 
   const schoolCode = String(admin.schoolCode || "").trim();
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
+  const GRADE_CACHE_KEY = schoolCode
+    ? `gojo_admin_grade_section_grades_v2:${schoolCode}`
+    : "gojo_admin_grade_section_grades_v2";
+  const TEACHER_CACHE_KEY = schoolCode
+    ? `gojo_admin_grade_section_teachers_v2:${schoolCode}`
+    : "gojo_admin_grade_section_teachers_v2";
 
   const [grades, setGrades] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,39 +61,19 @@ export default function SubjectManagementPage() {
   const [expandedByGrade, setExpandedByGrade] = useState({});
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
   const getSchoolPathUrl = (path) => `${SCHOOL_DB_ROOT}/${path}.json`;
-  const getRootPathUrl = (path) => `${RTDB_BASE}/${path}.json`;
 
   const readSchoolNode = async (nodeName) => {
-    if (schoolCode) {
-      try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
-        if (schoolRes.data !== null && schoolRes.data !== undefined) {
-          return schoolRes.data;
-        }
-      } catch (readError) {
-      }
-    }
-
     try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName));
-      return rootRes.data ?? {};
+      const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
+      return schoolRes.data ?? {};
     } catch (readError) {
       return {};
     }
   };
 
   const putNodeWithFallback = async (path, payload) => {
-    if (schoolCode) {
-      try {
-        await axios.put(getSchoolPathUrl(path), payload);
-        return;
-      } catch (writeError) {
-      }
-    }
-
-    await axios.put(getRootPathUrl(path), payload);
+    await axios.put(getSchoolPathUrl(path), payload);
   };
 
   const normalizeSubjects = (subjectsNode) => {
@@ -323,7 +305,7 @@ export default function SubjectManagementPage() {
 
   useEffect(() => {
     fetchGrades();
-  }, []);
+  }, [schoolCode]);
 
   useEffect(() => {
     const fetchTeachers = async () => {
@@ -373,7 +355,7 @@ export default function SubjectManagementPage() {
     };
 
     fetchTeachers();
-  }, []);
+  }, [schoolCode]);
 
   const totalSubjects = useMemo(
     () => grades.reduce((sum, gradeItem) => sum + (gradeItem.subjects?.length || 0), 0),

@@ -1,4 +1,4 @@
-const RTDB_BASE_RAW = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const RTDB_BASE_RAW = "https://gojo-education-default-rtdb.firebaseio.com";
 
 const SCOPED_ROOTS = new Set([
   "Users",

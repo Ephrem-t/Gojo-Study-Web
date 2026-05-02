@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 import { FaChevronDown, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { BACKEND_BASE } from "../config.js";
@@ -101,10 +102,9 @@ export default function AcademicYearPage() {
   const ACCENT = "#00B6A9";
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
-  const academicYearsCacheKey = schoolCode ? `academic-years:${schoolCode}` : "academic-years";
-  const yearHistoryCachePrefix = schoolCode ? `academic-year-history:${schoolCode}:` : "academic-year-history:";
+  const DB_URL = schoolNodeBase(schoolCode);
+  const academicYearsCacheKey = schoolCode ? `academic-years:v2:${schoolCode}` : "academic-years:v2";
+  const yearHistoryCachePrefix = schoolCode ? `academic-year-history:v2:${schoolCode}:` : "academic-year-history:v2:";
 
   const [academicYears, setAcademicYears] = useState({});
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
