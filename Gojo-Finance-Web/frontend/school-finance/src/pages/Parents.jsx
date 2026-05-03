@@ -20,6 +20,7 @@ import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import { getOrLoad } from "../utils/requestCache";
+import { loadSchoolPeople } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -130,7 +131,7 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [users, parentsData, studentsData] = await Promise.all([
+        const [users, parentsData, studentsData, parentContacts] = await Promise.all([
           getOrLoad(
             `finance:parents:users:${DB}`,
             async () => {
@@ -155,6 +156,7 @@ function Parent() {
             },
             { ttlMs: 5 * 60 * 1000 }
           ),
+          loadSchoolPeople(DB, "parent"),
         ]);
 
         const getUserByKeyOrUserId = (maybeUserId) => {
@@ -212,27 +214,26 @@ function Parent() {
           return { name, relationship };
         };
 
-        const parentList = Object.keys(users)
-          .filter((uid) => users[uid].role === "parent")
-          .map((uid) => {
-            const u = users[uid] || {};
-            const canonicalUserId = u.userId || uid;
-            const firstChild = resolveFirstChildPreview(canonicalUserId);
-            return {
-              userId: canonicalUserId,
-              name: u.name || u.username || "No Name",
-              email: u.email || "N/A",
-              childName: firstChild?.name || "N/A",
-              childRelationship: firstChild?.relationship || "N/A",
-              profileImage: u.profileImage || "/default-profile.png",
-              phone: u.phone || u.phoneNumber || "N/A",
-              age: u.age || null,
-              city: u.city || (u.address && u.address.city) || null,
-              citizenship: u.citizenship || null,
-              job: u.job || null,
-              address: u.address || null,
-            };
-          });
+        const parentList = (parentContacts || []).map((parentContact) => {
+          const u = getUserByKeyOrUserId(parentContact.userId) || {};
+          const firstChild = resolveFirstChildPreview(parentContact.userId);
+
+          return {
+            parentId: parentContact.parentId || parentContact.id,
+            userId: parentContact.userId,
+            name: parentContact.name || u.name || u.username || "No Name",
+            email: parentContact.email || u.email || "N/A",
+            childName: firstChild?.name || parentContact.childName || "N/A",
+            childRelationship: firstChild?.relationship || parentContact.childRelationship || "N/A",
+            profileImage: parentContact.profileImage || u.profileImage || "/default-profile.png",
+            phone: parentContact.phone || u.phone || u.phoneNumber || "N/A",
+            age: u.age || null,
+            city: u.city || (u.address && u.address.city) || null,
+            citizenship: u.citizenship || null,
+            job: u.job || null,
+            address: u.address || null,
+          };
+        });
         setParents(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
@@ -242,7 +243,7 @@ function Parent() {
       }
     };
     fetchParents();
-  }, []);
+  }, [DB]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {

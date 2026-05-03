@@ -14,12 +14,14 @@ import { BACKEND_BASE } from "../config.js";
 import { useFinanceShell } from "../context/FinanceShellContext";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import { getOrLoad } from "../utils/requestCache";
+import { loadManagedGrades, loadSchoolPeople, sortGradeValues } from "../utils/chatRtdb";
 
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
   // ------------------ STATES ------------------
   const [students, setStudents] = useState([]); // List of all students
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
   const [selectedPaidFilter, setSelectedPaidFilter] = useState("all"); // all | paid | unpaid
@@ -700,60 +702,49 @@ useEffect(() => {
     const fetchStudents = async () => {
       try {
         setStudentsLoading(true);
-        const [studentsData, usersData] = await Promise.all([
-          getOrLoad(
-            `finance:students:list:${DB_URL}`,
-            async () => {
-              const response = await axios.get(`${DB_URL}/Students.json`);
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
-          getOrLoad(
-            `finance:students:users:${DB_URL}`,
-            async () => {
-              const response = await axios.get(`${DB_URL}/Users.json`);
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
+        const [studentList, managedGrades] = await Promise.all([
+          loadSchoolPeople(DB_URL, "student"),
+          loadManagedGrades(DB_URL),
         ]);
 
-        const studentList = Object.keys(studentsData).map((id) => {
-          const student = studentsData[id];
-          const user = usersData[student.userId] || {};
-          return {
-            studentId: id,
-            userId: student.userId,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
-            grade: student.grade,
-            section: student.section,
-            email: user.email || ""
-          };
-        });
+        const fallbackGrades = sortGradeValues(studentList.map((student) => student?.grade));
 
         setStudents(studentList);
+        setGradeOptions(managedGrades.length ? managedGrades : fallbackGrades);
       } catch (err) {
         console.error("Error fetching students:", err);
+        setStudents([]);
+        setGradeOptions([]);
       } finally {
         setStudentsLoading(false);
       }
     };
 
     fetchStudents();
-  }, []);
+  }, [DB_URL]);
 
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
     if (selectedGrade === "All") {
       setSections([]);
-    } else {
-      const gradeSections = [...new Set(students.filter(s => s.grade === selectedGrade).map(s => s.section))];
-      setSections(gradeSections);
       setSelectedSection("All");
+    } else {
+      const gradeSections = [...new Set(
+        students
+          .filter((s) => String(s.grade) === String(selectedGrade))
+          .map((s) => s.section)
+          .filter(Boolean)
+      )].sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" }));
+      setSections(gradeSections);
+      setSelectedSection((prev) => (gradeSections.includes(prev) ? prev : "All"));
     }
   }, [selectedGrade, students]);
+
+  useEffect(() => {
+    if (selectedGrade === "All") return;
+    if (gradeOptions.includes(String(selectedGrade))) return;
+    setSelectedGrade("All");
+  }, [gradeOptions, selectedGrade]);
 
   // ------------------ FILTER STUDENTS ------------------
   const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -1343,7 +1334,7 @@ useEffect(() => {
                   paddingBottom: 1,
                 }}
               >
-                {["All","5","6","7","8"].map(g => (
+                {["All", ...gradeOptions].map(g => (
                   <button
                     key={g}
                     onClick={() => setSelectedGrade(g)}

@@ -4,7 +4,7 @@ import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
 import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
 import "../styles/global.css";
 import { useFinanceShell } from "../context/FinanceShellContext";
-import { loadUsersByRole } from "../utils/chatRtdb";
+import { loadSchoolPeople } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -71,7 +71,7 @@ function AllChat() {
 
       try {
         const role = selectedTab === "parent" ? "parent" : "student";
-        const users = await loadUsersByRole(DB_ROOT, role);
+        const users = await loadSchoolPeople(DB_ROOT, role);
         if (cancelled) return;
 
         const nextContacts = (users || [])
@@ -80,7 +80,7 @@ function AllChat() {
             const summary = summaryMap.get(String(user?.userId || ""));
 
             return {
-              id: user?.userId || "",
+              id: user?.id || user?.userId || "",
               type: selectedTab,
               userId: user?.userId || "",
               name: user?.name || user?.username || `${selectedTab} ${user?.userId || ""}`,

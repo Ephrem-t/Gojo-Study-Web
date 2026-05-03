@@ -21,6 +21,14 @@ function getRoleKey(dbRoot, role) {
   return `finance:users-by-role:${dbRoot}:${role}`;
 }
 
+function getSchoolPeopleKey(dbRoot, role) {
+  return `finance:school-people:${dbRoot}:${role}`;
+}
+
+function getManagedGradesKey(dbRoot) {
+  return `finance:managed-grades:${dbRoot}`;
+}
+
 function parseChatParts(chatKey) {
   return String(chatKey || "")
     .split("_")
@@ -43,6 +51,88 @@ function inferPeerUserId(chatKey, currentUserId, lastMessage) {
   if (receiverId && receiverId !== normalizedCurrentUserId) return receiverId;
 
   return "";
+}
+
+function findUserRecord(usersNode, userId) {
+  if (!usersNode || !userId) return null;
+
+  return (
+    usersNode[userId] ||
+    Object.values(usersNode).find((user) => String(user?.userId || "") === String(userId)) ||
+    null
+  );
+}
+
+function sortGradeValuesInternal(values) {
+  return Array.from(new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))).sort(
+    (left, right) => {
+      const leftNumber = Number(left);
+      const rightNumber = Number(right);
+      const leftIsNumber = Number.isFinite(leftNumber);
+      const rightIsNumber = Number.isFinite(rightNumber);
+
+      if (leftIsNumber && rightIsNumber && leftNumber !== rightNumber) {
+        return leftNumber - rightNumber;
+      }
+
+      if (leftIsNumber !== rightIsNumber) {
+        return leftIsNumber ? -1 : 1;
+      }
+
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+    }
+  );
+}
+
+function toStudentContact(studentId, studentNode, usersNode) {
+  const userId = studentNode?.userId || studentNode?.use || studentNode?.user || "";
+  const user = findUserRecord(usersNode, userId) || {};
+
+  return {
+    id: studentId,
+    studentId,
+    userId,
+    role: user?.role || "student",
+    type: normalizeUserType(user?.role || "student"),
+    name: user?.name || user?.username || studentNode?.name || studentNode?.username || `Student ${studentId}`,
+    username: user?.username || studentNode?.username || "",
+    email: user?.email || studentNode?.email || "",
+    phone: user?.phone || user?.phoneNumber || studentNode?.phone || "",
+    profileImage: user?.profileImage || studentNode?.profileImage || "/default-profile.png",
+    grade: studentNode?.grade || "",
+    section: studentNode?.section || "",
+    parentLinks: studentNode?.parents || {},
+  };
+}
+
+function toParentContact(parentId, parentNode, usersNode, studentsNode) {
+  const userId = parentNode?.userId || "";
+  const user = findUserRecord(usersNode, userId) || {};
+  const childLinks = Object.values(parentNode?.children || {});
+  const firstChild = childLinks[0] || null;
+  const childStudentId = String(firstChild?.studentId || "");
+  const childStudent = studentsNode?.[childStudentId] || null;
+  const childUser = findUserRecord(
+    usersNode,
+    childStudent?.userId || childStudent?.use || childStudent?.user || ""
+  ) || {};
+
+  return {
+    id: parentId,
+    parentId,
+    userId,
+    role: user?.role || "parent",
+    type: normalizeUserType(user?.role || "parent"),
+    name: user?.name || user?.username || parentNode?.name || parentId || "Parent",
+    username: user?.username || parentNode?.username || "",
+    email: user?.email || parentNode?.email || "",
+    phone: user?.phone || user?.phoneNumber || parentNode?.phone || "",
+    profileImage: user?.profileImage || parentNode?.profileImage || "/default-profile.png",
+    childName:
+      childUser?.name || childUser?.username || childStudent?.name || childStudent?.username || "N/A",
+    childRelationship: firstChild?.relationship || "N/A",
+    children: parentNode?.children || {},
+  };
 }
 
 async function loadChatMeta(dbRoot, chatKey, force = false) {
@@ -111,6 +201,61 @@ export async function loadUsersByRole(dbRoot, role, { force = false } = {}) {
         userId: user?.userId || "",
         role: user?.role || normalizedRole,
       }));
+    },
+    { ttlMs: USER_TTL_MS, persist: true, force }
+  );
+}
+
+export async function loadSchoolPeople(dbRoot, role, { force = false } = {}) {
+  if (!dbRoot || !role) return [];
+
+  const normalizedRole = normalizeUserType(role);
+  const isParent = normalizedRole === "parent";
+  const recordsNode = isParent ? "Parents" : "Students";
+
+  return getOrLoad(
+    getSchoolPeopleKey(dbRoot, normalizedRole),
+    async () => {
+      const [usersResponse, recordsResponse, studentsResponse] = await Promise.all([
+        axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} })),
+        axios.get(`${dbRoot}/${recordsNode}.json`).catch(() => ({ data: {} })),
+        isParent
+          ? axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} }))
+          : Promise.resolve({ data: {} }),
+      ]);
+
+      const usersNode = usersResponse.data || {};
+      const recordsNodeData = recordsResponse.data || {};
+      const studentsNode = studentsResponse.data || {};
+
+      return Object.entries(recordsNodeData)
+        .map(([recordId, recordNode]) => {
+          if (isParent) {
+            return toParentContact(recordId, recordNode || {}, usersNode, studentsNode);
+          }
+
+          return toStudentContact(recordId, recordNode || {}, usersNode);
+        })
+        .filter((person) => Boolean(person?.userId || person?.id))
+        .sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
+    },
+    { ttlMs: USER_TTL_MS, persist: true, force }
+  );
+}
+
+export function sortGradeValues(values) {
+  return sortGradeValuesInternal(values);
+}
+
+export async function loadManagedGrades(dbRoot, { force = false } = {}) {
+  if (!dbRoot) return [];
+
+  return getOrLoad(
+    getManagedGradesKey(dbRoot),
+    async () => {
+      const response = await axios.get(`${dbRoot}/GradeManagement/grades.json`).catch(() => ({ data: {} }));
+      const gradesNode = response.data || {};
+      return sortGradeValuesInternal(Object.keys(gradesNode || {}));
     },
     { ttlMs: USER_TTL_MS, persist: true, force }
   );

@@ -32,6 +32,7 @@ import {
 } from "recharts";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import { getOrLoad } from "../utils/requestCache";
+import { loadManagedGrades, loadSchoolPeople, sortGradeValues } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -61,6 +62,7 @@ function Analatics() {
 
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [monthlyPaidRaw, setMonthlyPaidRaw] = useState({});
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [selectedMonth, setSelectedMonth] = useState(MONTHS[new Date().getMonth()]);
@@ -112,23 +114,9 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsData, usersData, monthlyPaidData] = await Promise.all([
-          getOrLoad(
-            `finance:analytics:students:${DB_ROOT}`,
-            async () => {
-              const response = await axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} }));
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
-          getOrLoad(
-            `finance:analytics:users:${DB_ROOT}`,
-            async () => {
-              const response = await axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} }));
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
+        const [studentList, managedGrades, monthlyPaidData] = await Promise.all([
+          loadSchoolPeople(DB_ROOT, "student"),
+          loadManagedGrades(DB_ROOT),
           getOrLoad(
             `finance:analytics:monthlyPaid:${DB_ROOT}`,
             async () => {
@@ -141,21 +129,17 @@ function Analatics() {
 
         if (cancelled) return;
 
-        const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
-          const userNode = usersData?.[studentNode.userId] || {};
-          const genderRaw = userNode.gender || studentNode.gender || "Unknown";
-
-          return {
-            studentId,
-            userId: studentNode.userId || "",
-            grade: String(studentNode.grade || "Unknown"),
-            section: studentNode.section || "N/A",
-            gender: String(genderRaw).toLowerCase(),
-            name: userNode.name || userNode.username || studentNode.name || "Student",
-          };
-        });
+        const list = (studentList || []).map((student) => ({
+          studentId: student.studentId || student.id || "",
+          userId: student.userId || "",
+          grade: String(student.grade || "Unknown"),
+          section: student.section || "N/A",
+          gender: String(student.gender || "Unknown").toLowerCase(),
+          name: student.name || student.username || "Student",
+        }));
 
         setStudents(list);
+        setGradeOptions(managedGrades.length ? managedGrades : sortGradeValues(list.map((student) => student?.grade)));
         setMonthlyPaidRaw(monthlyPaidData || {});
       } finally {
         if (!cancelled) setLoading(false);
@@ -168,6 +152,28 @@ function Analatics() {
       cancelled = true;
     };
   }, [DB_ROOT]);
+
+  const sortBreakdownRows = (rows) => {
+    const orderedGrades = sortGradeValues([
+      ...(gradeOptions || []),
+      ...rows.map((row) => row?.grade),
+    ]);
+    const orderMap = new Map(orderedGrades.map((grade, index) => [String(grade), index]));
+
+    return [...rows].sort((left, right) => {
+      const leftOrder = orderMap.get(String(left?.grade || ""));
+      const rightOrder = orderMap.get(String(right?.grade || ""));
+
+      if (leftOrder !== undefined && rightOrder !== undefined && leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return String(left?.grade || "").localeCompare(String(right?.grade || ""), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  };
 
   useEffect(() => {
     const closeDropdown = (e) => {
@@ -265,8 +271,8 @@ function Analatics() {
       else map[key].unpaid += 1;
     });
 
-    return Object.values(map).sort((a, b) => Number(a.grade) - Number(b.grade));
-  }, [students, monthlyPaidRaw, selectedMonthKey]);
+    return sortBreakdownRows(Object.values(map));
+  }, [students, monthlyPaidRaw, selectedMonthKey, gradeOptions]);
 
   const genderBreakdown = useMemo(() => {
     const monthNode = monthlyPaidRaw?.[selectedMonthKey] || {};
@@ -363,8 +369,8 @@ function Analatics() {
       });
     });
 
-    return Object.values(map).sort((a, b) => Number(a.grade) - Number(b.grade));
-  }, [students, monthlyPaidRaw, selectedYear]);
+    return sortBreakdownRows(Object.values(map));
+  }, [students, monthlyPaidRaw, selectedYear, gradeOptions]);
 
   const yearlyGenderBreakdown = useMemo(() => {
     const base = {
