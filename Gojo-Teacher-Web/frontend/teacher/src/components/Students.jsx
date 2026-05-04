@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { FaChevronRight } from "react-icons/fa";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
@@ -17,7 +17,7 @@ import {
   FaTimesCircle,
   FaCommentDots,
   FaFacebookMessenger,
-   FaUserCheck,
+  FaUserCheck,
   FaCalendarAlt,
   FaBookOpen,
   FaPaperPlane,
@@ -25,26 +25,67 @@ import {
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getTeacherContext, getTeacherCourseContext } from "../api/teacherApi";
-import { getRtdbRoot } from "../api/rtdbScope";
+import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveProfileImage } from "../utils/profileImage";
-
-// NOTE: we alias `ref` to `dbRef` to avoid confusion with other `ref` variables
 import {
-  getDatabase,
+  clearCachedChatSummary,
+  fetchTeacherConversationSummaries,
+  readSessionResource,
+  resolveTeacherSchoolCode,
+  writeSessionResource,
+} from "../utils/teacherData";
+import ProfileAvatar from "./ProfileAvatar";
+
+import {
   ref as dbRef,
   get,
   onValue,
-  off,
   update,
+  push,
+  runTransaction,
+  query as dbQuery,
+  orderByChild,
+  limitToLast,
+  endAt,
+  equalTo,
 } from "firebase/database";
 import { db, schoolPath } from "../firebase";
 
-// Chat thread key for teacher<->student must be: teacherUserId_studentUserId
-// (teacher first, no sorting) so the DB path is predictable.
-const getChatId = (teacherUserId, studentUserId) => {
-  const t = String(teacherUserId || "").trim();
-  const s = String(studentUserId || "").trim();
-  return `${t}_${s}`;
+const STUDENT_CONVERSATIONS_SESSION_TTL_MS = 20 * 1000;
+const EMPTY_TEACHER_COURSE_CONTEXT = {
+  success: false,
+  teacherKey: "",
+  teacherRecord: null,
+  courses: [],
+  courseIds: [],
+  assignmentsByCourseId: {},
+};
+
+const getChatId = (teacherUserId, otherUserId) => {
+  const teacherId = String(teacherUserId || "").trim();
+  const contactId = String(otherUserId || "").trim();
+  return `${teacherId}_${contactId}`;
+};
+
+const QUICK_CHAT_HISTORY_LIMIT = 50;
+
+const normalizeGrade = (value) => String(value ?? "").trim();
+const normalizeSection = (value) => String(value ?? "").trim().toUpperCase();
+const buildGradeSectionKey = (grade, section) => `${normalizeGrade(grade)}|${normalizeSection(section)}`;
+const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
+const getStudentUserId = (student = {}) =>
+  String(
+    student?.userId ||
+      student?.systemAccountInformation?.userId ||
+      student?.account?.userId ||
+      ""
+  ).trim();
+
+const isActiveRecord = (record = {}) => {
+  const raw = record?.status ?? record?.isActive;
+  if (typeof raw === "boolean") return raw;
+  const normalized = String(raw || "active").toLowerCase();
+  return normalized === "active" || normalized === "true" || normalized === "1";
 };
 // helper: ISO week number for a Date
 const getWeekNumber = (d) => {
@@ -74,8 +115,6 @@ const formatSubjectName = (courseId = "") => {
     .join(" ");
 
 };
-
-const RTDB_BASE = getRtdbRoot();
 
 // compute age helper
 const computeAge = (rawDob) => {
@@ -112,6 +151,35 @@ const formatDateLabel = (ts) => {
   return msgDate.toLocaleDateString();
 };
 
+const mergeChatMessages = (...groups) => {
+  const merged = new Map();
+
+  groups
+    .flat()
+    .filter(Boolean)
+    .forEach((message) => {
+      const key = String(message?.id || message?.messageId || "").trim();
+      if (!key) return;
+
+      const previous = merged.get(key) || {};
+      merged.set(key, {
+        ...previous,
+        ...message,
+        id: key,
+        messageId: key,
+      });
+
+      const buildStudentConversationsSessionKey = (schoolCode, teacherUserId) => {
+        return `students_unread_conversations_${String(schoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
+      };
+    });
+
+  return [...merged.values()].sort(
+    (leftMessage, rightMessage) =>
+      Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+  );
+};
+
 // find user by userId in Users node object
 const findUserByUserId = (usersObj, userId) => {
   if (!usersObj || !userId) return null;
@@ -129,29 +197,276 @@ const findUserByUserId = (usersObj, userId) => {
   );
 };
 
+const normalizeIdentifier = (value) => String(value || "").trim();
+
+const findUserByIdentifiers = (usersObj, ...identifiers) => {
+  if (!usersObj) return null;
+
+  const wanted = new Set(
+    identifiers
+      .flat()
+      .map(normalizeIdentifier)
+      .filter(Boolean)
+  );
+
+  if (!wanted.size) return null;
+
+  for (const identifier of wanted) {
+    if (usersObj?.[identifier]) return usersObj[identifier];
+  }
+
+  return (
+    Object.entries(usersObj).find(([userKey, userValue]) => {
+      const refs = [
+        userKey,
+        userValue?.userId,
+        userValue?.parentId,
+        userValue?.studentId,
+        userValue?.teacherId,
+        userValue?.adminId,
+        userValue?.managementId,
+        userValue?.hrId,
+        userValue?.registererId,
+        userValue?.employeeId,
+        userValue?.username,
+      ]
+        .map(normalizeIdentifier)
+        .filter(Boolean);
+
+      return refs.some((ref) => wanted.has(ref));
+    })?.[1] || null
+  );
+};
+
+const collectStudentParentLinks = (student = {}, userRec = null) => {
+  const rawStudent = student?.raw || student || {};
+  const links = [];
+
+  const pushLink = (candidate = {}, fallbackParentId = "") => {
+    const parentId = normalizeIdentifier(candidate?.parentId || candidate?.id || fallbackParentId);
+    const userId = normalizeIdentifier(candidate?.userId || candidate?.parentUserId);
+    const name = String(candidate?.name || candidate?.parentName || "").trim();
+    const phone = String(candidate?.phone || candidate?.parentPhone || candidate?.phoneNumber || "").trim();
+    const profileImage = resolveProfileImage(
+      candidate?.profileImage,
+      candidate?.profile,
+      candidate?.parentProfileImage
+    );
+
+    if (!parentId && !userId && !name && !phone && profileImage === "/default-profile.png") {
+      return;
+    }
+
+    links.push({
+      parentId,
+      userId,
+      name,
+      phone,
+      profileImage,
+    });
+  };
+
+  pushLink({
+    parentId: rawStudent?.parentId,
+    userId: rawStudent?.parentUserId,
+    name: rawStudent?.parentName,
+    phone: rawStudent?.parentPhone,
+    parentProfileImage: rawStudent?.parentProfileImage,
+  });
+
+  pushLink({
+    parentId: student?.parentId,
+    userId: student?.parentUserId,
+    name: student?.parentName,
+    phone: student?.parentPhone,
+    parentProfileImage: student?.parentProfileImage,
+  });
+
+  pushLink({
+    parentId: userRec?.parentId,
+    userId: userRec?.parentUserId,
+  });
+
+  Object.entries(rawStudent?.parents || {}).forEach(([parentKey, link]) => {
+    pushLink(link, parentKey);
+  });
+
+  const guardianParents = rawStudent?.parentGuardianInformation?.parents;
+  if (Array.isArray(guardianParents)) {
+    guardianParents.forEach((link) => pushLink(link));
+  } else if (guardianParents && typeof guardianParents === "object") {
+    Object.entries(guardianParents).forEach(([parentKey, link]) => {
+      pushLink(link, parentKey);
+    });
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  links.forEach((link) => {
+    const key = `${link.parentId}__${link.userId}__${link.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(link);
+  });
+
+  return deduped;
+};
+
+const resolveStudentParentInfo = ({ student, usersObj = {}, parentsObj = {} } = {}) => {
+  if (!student) return null;
+
+  const userRec = findUserByIdentifiers(usersObj, student?.userId) || null;
+  const parentLinks = collectStudentParentLinks(student, userRec);
+
+  const parentMatchesStudent = (parent = {}) => {
+    const studentId = normalizeIdentifier(student?.studentId || student?.raw?.studentId);
+    const studentUserId = normalizeIdentifier(student?.userId || student?.raw?.userId);
+    const children = parent?.children || {};
+
+    return Object.values(children).some((child) => {
+      const childStudentId = normalizeIdentifier(child?.studentId);
+      const childUserId = normalizeIdentifier(child?.userId);
+      return (
+        (studentId && childStudentId === studentId) ||
+        (studentId && childUserId === studentId) ||
+        (studentUserId && childUserId === studentUserId) ||
+        (studentUserId && childStudentId === studentUserId)
+      );
+    });
+  };
+
+  let parentRec = null;
+  let parentUserRec = null;
+  let matchedLink = null;
+
+  for (const link of parentLinks) {
+    const parentId = normalizeIdentifier(link.parentId);
+    const parentUserId = normalizeIdentifier(link.userId);
+
+    if (parentId && parentsObj?.[parentId]) {
+      parentRec = parentsObj[parentId];
+    }
+
+    if (!parentRec && (parentId || parentUserId)) {
+      parentRec =
+        Object.entries(parentsObj || {}).find(([parentKey, parentValue]) => {
+          const refs = [parentKey, parentValue?.parentId, parentValue?.userId]
+            .map(normalizeIdentifier)
+            .filter(Boolean);
+          return refs.some((ref) => ref === parentId || ref === parentUserId);
+        })?.[1] || null;
+    }
+
+    parentUserRec = findUserByIdentifiers(
+      usersObj,
+      parentUserId,
+      parentRec?.userId,
+      parentId,
+      parentRec?.parentId
+    );
+
+    if (parentRec || parentUserRec) {
+      matchedLink = link;
+      break;
+    }
+  }
+
+  if (!parentRec) {
+    const fallbackParentEntry =
+      Object.entries(parentsObj || {}).find(([, parent]) => parentMatchesStudent(parent)) || null;
+
+    if (fallbackParentEntry) {
+      matchedLink = matchedLink || { parentId: fallbackParentEntry[0] };
+      parentRec = fallbackParentEntry[1];
+      parentUserRec = findUserByIdentifiers(
+        usersObj,
+        parentRec?.userId,
+        fallbackParentEntry[0],
+        parentRec?.parentId
+      );
+    }
+  }
+
+  if (!matchedLink && parentLinks.length) {
+    matchedLink = parentLinks[0];
+  }
+
+  const parentUserId = normalizeIdentifier(
+    parentUserRec?.userId || parentRec?.userId || matchedLink?.userId
+  );
+  const parentId = normalizeIdentifier(
+    parentRec?.parentId || matchedLink?.parentId
+  );
+  const parentName =
+    parentUserRec?.name ||
+    parentRec?.name ||
+    parentRec?.displayName ||
+    matchedLink?.name ||
+    "";
+  const parentPhone =
+    parentUserRec?.phone ||
+    parentRec?.phone ||
+    parentRec?.phoneNumber ||
+    parentRec?.contact ||
+    matchedLink?.phone ||
+    "";
+  const parentProfileImage = resolveProfileImage(
+    parentUserRec?.profileImage,
+    parentUserRec?.profile,
+    parentRec?.profileImage,
+    parentRec?.profile,
+    matchedLink?.profileImage
+  );
+
+  if (!parentId && !parentUserId && !parentName && !parentPhone) {
+    return null;
+  }
+
+  return {
+    parentId,
+    parentUserId,
+    parentName,
+    parentPhone,
+    parentProfileImage,
+    parentRec,
+    parentUserRec,
+    parentLink: matchedLink,
+    userRec,
+  };
+};
+
+const formatQuarterLabel = (quarterKey) => {
+  const quarterNumber = parseInt(String(quarterKey).replace(/^q/i, ""), 10);
+  return Number.isFinite(quarterNumber)
+    ? `Quarter ${quarterNumber}`
+    : String(quarterKey).toUpperCase();
+};
+
 const StudentItem = ({ student, selected, onClick, number }) => (
   <div
     onClick={() => onClick(student)}
     style={{
       width: "100%",
-      borderRadius: "12px",
-      padding: "10px",
+      borderRadius: "14px",
+      padding: "11px",
       display: "flex",
       alignItems: "center",
       gap: "12px",
       cursor: "pointer",
-      background: selected ? "#e0e7ff" : "#fff",
-      border: selected ? "2px solid #4b6cb7" : "1px solid #ddd",
-      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
-      transition: "all 0.3s ease",
+      background: "#ffffff",
+      border: selected ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+      boxShadow: selected
+        ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+        : "0 4px 10px rgba(15, 23, 42, 0.06)",
+      transition: "all 0.24s ease",
     }}
   >
     <div style={{
       width: 36,
       height: 36,
       borderRadius: "50%",
-      background: selected ? "#4b6cb7" : "#f1f5f9",
-      color: selected ? "#fff" : "#374151",
+      background: selected ? "#1d4ed8" : "#eef2ff",
+      color: selected ? "#fff" : "#334155",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -160,18 +475,16 @@ const StudentItem = ({ student, selected, onClick, number }) => (
       flexShrink: 0,
     }}>{number}</div>
 
-    <img
-      src={student.profileImage || "/default-profile.png"}
+    <ProfileAvatar
+      src={student.profileImage}
+      name={student.name}
       alt={student.name}
-      onError={(event) => {
-        event.currentTarget.src = "/default-profile.png";
-      }}
       style={{
         width: "48px",
         height: "48px",
         borderRadius: "50%",
         objectFit: "cover",
-        border: selected ? "3px solid #4b6cb7" : "3px solid #ddd",
+        border: selected ? "2px solid #60a5fa" : "2px solid #e2e8f0",
       }}
     />
     <div>
@@ -218,6 +531,7 @@ function StudentsPage() {
   const [assignmentsData, setAssignmentsData] = useState({});
   const [teachersData, setTeachersData] = useState({});
   const [usersData, setUsersData] = useState({});
+  const [parentsData, setParentsData] = useState({});
   const [selectedStudentDetails, setSelectedStudentDetails] = useState(null);
   const [teacherNotes, setTeacherNotes] = useState([]);
   const [newTeacherNote, setNewTeacherNote] = useState("");
@@ -227,11 +541,26 @@ function StudentsPage() {
   const [teacher, setTeacher] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentChatOpen, setStudentChatOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  const [liveQuickChatMessages, setLiveQuickChatMessages] = useState([]);
+  const [olderQuickChatMessages, setOlderQuickChatMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState("");
+  const [quickChatLoading, setQuickChatLoading] = useState(false);
+  const [quickChatLoadingOlder, setQuickChatLoadingOlder] = useState(false);
+  const [quickChatHasOlder, setQuickChatHasOlder] = useState(false);
+  const [quickChatTarget, setQuickChatTarget] = useState(null);
+  const [quickChatTab, setQuickChatTab] = useState("student");
+  const [teacherCourseContext, setTeacherCourseContext] = useState(EMPTY_TEACHER_COURSE_CONTEXT);
+  const [teacherCourseContextReady, setTeacherCourseContextReady] = useState(false);
   const messagesEndRef = useRef(null);
+  const quickChatMessagesRef = useRef(null);
+  const quickChatScrollRestoreRef = useRef(null);
+  const userRecordCacheRef = useRef(new Map());
+  const parentRecordCacheRef = useRef(new Map());
+  const teacherRecordCacheRef = useRef(new Map());
+  const attendanceCourseCacheRef = useRef(new Map());
   const teacherData = JSON.parse(localStorage.getItem("teacher")) || {};
   const teacherUserId = String(teacherData.userId || "");
+  const teacherSchoolCode = String(teacherData.schoolCode || "").trim();
   const [studentMarksFlattened, setStudentMarksFlattened] = useState({});
   const [performance, setPerformance] = useState([]);
 const [attendanceView, setAttendanceView] = useState("daily");
@@ -239,6 +568,8 @@ const [attendanceView, setAttendanceView] = useState("daily");
   const [expandedCards, setExpandedCards] = useState({});
   const [marks, setMarks] = useState({});
   const [loading, setLoading] = useState(true);
+  const [marksLoading, setMarksLoading] = useState(false);
+  const [activeQuarterViews, setActiveQuarterViews] = useState({});
 
   const [courses, setCourses] = useState([]);
 
@@ -257,6 +588,423 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   // Messenger states (same behavior as Dashboard)
   const [showMessenger, setShowMessenger] = useState(false);
   const [conversations, setConversations] = useState([]); // only conversations that have unread messages for me
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveSchoolCode = async () => {
+      if (!teacherSchoolCode) {
+        setResolvedSchoolCode("");
+        return;
+      }
+
+      const resolved = await resolveTeacherSchoolCode(teacherSchoolCode);
+      if (!cancelled) {
+        setResolvedSchoolCode(resolved);
+      }
+    };
+
+    resolveSchoolCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacherSchoolCode]);
+
+  useEffect(() => {
+    if (!resolvedSchoolCode) return;
+
+    const currentTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+    if (String(currentTeacher?.schoolCode || "") !== resolvedSchoolCode) {
+      localStorage.setItem(
+        "teacher",
+        JSON.stringify({
+          ...currentTeacher,
+          schoolCode: resolvedSchoolCode,
+        })
+      );
+    }
+
+    setTeacher((prev) => (prev ? { ...prev, schoolCode: resolvedSchoolCode } : prev));
+    setTeacherInfo((prev) => (prev ? { ...prev, schoolCode: resolvedSchoolCode } : prev));
+  }, [resolvedSchoolCode]);
+
+  const rtdbBase = useMemo(() => {
+    if (resolvedSchoolCode) {
+      return `${RTDB_BASE_RAW}/Platform1/Schools/${resolvedSchoolCode}`;
+    }
+    return getRtdbRoot();
+  }, [resolvedSchoolCode]);
+
+  const scopedStudentPath = (path) => schoolPath(path, resolvedSchoolCode || teacherSchoolCode);
+  const messages = useMemo(
+    () => mergeChatMessages(olderQuickChatMessages, liveQuickChatMessages),
+    [olderQuickChatMessages, liveQuickChatMessages]
+  );
+
+  const cacheUserRecord = (recordKey, userRecord) => {
+    if (!userRecord || typeof userRecord !== "object") return;
+
+    [recordKey, userRecord?.userId, userRecord?.username]
+      .map(normalizeIdentifier)
+      .filter(Boolean)
+      .forEach((key) => {
+        userRecordCacheRef.current.set(key, userRecord);
+      });
+  };
+
+  const cacheParentRecord = (recordKey, parentRecord) => {
+    if (!parentRecord || typeof parentRecord !== "object") return;
+
+    [recordKey, parentRecord?.parentId, parentRecord?.userId]
+      .map(normalizeIdentifier)
+      .filter(Boolean)
+      .forEach((key) => {
+        parentRecordCacheRef.current.set(key, parentRecord);
+      });
+  };
+
+  const cacheTeacherRecord = (recordKey, teacherRecord) => {
+    if (!teacherRecord || typeof teacherRecord !== "object") return;
+
+    [recordKey, teacherRecord?.teacherId, teacherRecord?.teacherKey, teacherRecord?.userId]
+      .map(normalizeIdentifier)
+      .filter(Boolean)
+      .forEach((key) => {
+        teacherRecordCacheRef.current.set(key, teacherRecord);
+      });
+  };
+
+  const closeQuickChat = () => {
+    setChatOpen(false);
+    setQuickChatTarget(null);
+    setQuickChatTab("student");
+  };
+
+  const openQuickChat = (target, tab = "student") => {
+    const targetUserId = normalizeIdentifier(target?.userId);
+    if (!targetUserId) return;
+
+    setQuickChatTarget({
+      ...target,
+      userId: targetUserId,
+      type: tab,
+    });
+    setQuickChatTab(tab);
+    setChatOpen(true);
+  };
+
+  const loadUsersByIds = async (userIds = []) => {
+    const normalizedUserIds = [...new Set(userIds.map(normalizeIdentifier).filter(Boolean))];
+    if (!normalizedUserIds.length) return {};
+
+    const cachedUsers = {};
+    const missingUserIds = [];
+
+    normalizedUserIds.forEach((userId) => {
+      const cachedRecord = userRecordCacheRef.current.get(userId) || usersData?.[userId] || null;
+      if (cachedRecord) {
+        cachedUsers[userId] = cachedRecord;
+        cacheUserRecord(userId, cachedRecord);
+        return;
+      }
+      missingUserIds.push(userId);
+    });
+
+    if (!missingUserIds.length) return cachedUsers;
+
+    const fetchedEntries = await Promise.all(
+      missingUserIds.map(async (userId) => {
+        try {
+          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Users/${userId}`)));
+          if (directSnapshot.exists()) {
+            return [userId, directSnapshot.val()];
+          }
+        } catch (error) {
+          // fall through to indexed lookup
+        }
+
+        try {
+          const lookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedStudentPath("Users")), orderByChild("userId"), equalTo(userId))
+          );
+          if (lookupSnapshot.exists()) {
+            return [userId, Object.values(lookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // ignore missing indexed lookup support and return null below
+        }
+
+        return [userId, null];
+      })
+    );
+
+    const fetchedUsers = {};
+    fetchedEntries.forEach(([userId, userRecord]) => {
+      if (!userRecord) return;
+      fetchedUsers[userId] = userRecord;
+      cacheUserRecord(userId, userRecord);
+    });
+
+    if (Object.keys(fetchedUsers).length) {
+      setUsersData((previousUsers) => ({
+        ...(previousUsers || {}),
+        ...fetchedUsers,
+      }));
+    }
+
+    return {
+      ...cachedUsers,
+      ...fetchedUsers,
+    };
+  };
+
+  const loadTeachersByIds = async (teacherIds = []) => {
+    const normalizedTeacherIds = [...new Set(teacherIds.map(normalizeIdentifier).filter(Boolean))];
+    if (!normalizedTeacherIds.length) return {};
+
+    const cachedTeachers = {};
+    const missingTeacherIds = [];
+
+    normalizedTeacherIds.forEach((teacherId) => {
+      const cachedRecord = teacherRecordCacheRef.current.get(teacherId) || teachersData?.[teacherId] || null;
+      if (cachedRecord) {
+        cachedTeachers[teacherId] = cachedRecord;
+        cacheTeacherRecord(teacherId, cachedRecord);
+        return;
+      }
+      missingTeacherIds.push(teacherId);
+    });
+
+    if (!missingTeacherIds.length) return cachedTeachers;
+
+    const fetchedEntries = await Promise.all(
+      missingTeacherIds.map(async (teacherId) => {
+        try {
+          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Teachers/${teacherId}`)));
+          if (directSnapshot.exists()) {
+            return [teacherId, directSnapshot.val()];
+          }
+        } catch (error) {
+          // fall through to indexed lookups
+        }
+
+        try {
+          const teacherLookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedStudentPath("Teachers")), orderByChild("teacherId"), equalTo(teacherId))
+          );
+          if (teacherLookupSnapshot.exists()) {
+            return [teacherId, Object.values(teacherLookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // continue to userId lookup below
+        }
+
+        try {
+          const userLookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedStudentPath("Teachers")), orderByChild("userId"), equalTo(teacherId))
+          );
+          if (userLookupSnapshot.exists()) {
+            return [teacherId, Object.values(userLookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // ignore missing indexed lookup support and return null below
+        }
+
+        return [teacherId, null];
+      })
+    );
+
+    const fetchedTeachers = {};
+    fetchedEntries.forEach(([teacherId, teacherRecord]) => {
+      if (!teacherRecord) return;
+      fetchedTeachers[teacherId] = teacherRecord;
+      cacheTeacherRecord(teacherId, teacherRecord);
+    });
+
+    if (Object.keys(fetchedTeachers).length) {
+      setTeachersData((previousTeachers) => ({
+        ...(previousTeachers || {}),
+        ...fetchedTeachers,
+      }));
+    }
+
+    return {
+      ...cachedTeachers,
+      ...fetchedTeachers,
+    };
+  };
+
+  const loadParentsForStudent = async (student, usersObj = {}) => {
+    if (!student) return {};
+
+    const parentLinks = collectStudentParentLinks(
+      student,
+      findUserByIdentifiers({ ...(usersData || {}), ...(usersObj || {}) }, student?.userId) || null
+    );
+    const parentIdentifiers = [...new Set(
+      parentLinks.flatMap((link) => [link?.parentId, link?.userId]).map(normalizeIdentifier).filter(Boolean)
+    )];
+
+    if (!parentIdentifiers.length) return {};
+
+    const cachedParents = {};
+    const missingParentIdentifiers = [];
+
+    parentIdentifiers.forEach((parentIdentifier) => {
+      const cachedRecord = parentRecordCacheRef.current.get(parentIdentifier) || parentsData?.[parentIdentifier] || null;
+      if (cachedRecord) {
+        cachedParents[parentIdentifier] = cachedRecord;
+        cacheParentRecord(parentIdentifier, cachedRecord);
+        return;
+      }
+      missingParentIdentifiers.push(parentIdentifier);
+    });
+
+    if (!missingParentIdentifiers.length) return cachedParents;
+
+    const fetchedEntries = await Promise.all(
+      missingParentIdentifiers.map(async (parentIdentifier) => {
+        try {
+          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Parents/${parentIdentifier}`)));
+          if (directSnapshot.exists()) {
+            return [parentIdentifier, directSnapshot.val()];
+          }
+        } catch (error) {
+          // fall through to indexed lookups
+        }
+
+        try {
+          const parentIdLookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedStudentPath("Parents")), orderByChild("parentId"), equalTo(parentIdentifier))
+          );
+          if (parentIdLookupSnapshot.exists()) {
+            return [parentIdentifier, Object.values(parentIdLookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // continue to userId lookup below
+        }
+
+        try {
+          const userLookupSnapshot = await get(
+            dbQuery(dbRef(db, scopedStudentPath("Parents")), orderByChild("userId"), equalTo(parentIdentifier))
+          );
+          if (userLookupSnapshot.exists()) {
+            return [parentIdentifier, Object.values(userLookupSnapshot.val() || {})[0] || null];
+          }
+        } catch (error) {
+          // ignore missing indexed lookup support and return null below
+        }
+
+        return [parentIdentifier, null];
+      })
+    );
+
+    const fetchedParents = {};
+    fetchedEntries.forEach(([parentIdentifier, parentRecord]) => {
+      if (!parentRecord) return;
+      fetchedParents[parentIdentifier] = parentRecord;
+      cacheParentRecord(parentIdentifier, parentRecord);
+    });
+
+    if (Object.keys(fetchedParents).length) {
+      setParentsData((previousParents) => ({
+        ...(previousParents || {}),
+        ...fetchedParents,
+      }));
+    }
+
+    return {
+      ...cachedParents,
+      ...fetchedParents,
+    };
+  };
+
+  const loadAttendanceByCourseIds = async (courseIds = []) => {
+    const normalizedCourseIds = [...new Set(courseIds.map(normalizeIdentifier).filter(Boolean))];
+    if (!normalizedCourseIds.length) return {};
+
+    const schoolScopeKey = normalizeIdentifier(resolvedSchoolCode || teacherSchoolCode || "default");
+    const cachedAttendance = {};
+    const missingCourseIds = [];
+
+    normalizedCourseIds.forEach((courseId) => {
+      const cacheKey = `${schoolScopeKey}::${courseId}`;
+      if (attendanceCourseCacheRef.current.has(cacheKey)) {
+        cachedAttendance[courseId] = attendanceCourseCacheRef.current.get(cacheKey) || {};
+        return;
+      }
+      missingCourseIds.push(courseId);
+    });
+
+    if (!missingCourseIds.length) return cachedAttendance;
+
+    const fetchedEntries = await Promise.all(
+      missingCourseIds.map(async (courseId) => {
+        try {
+          const courseAttendanceSnapshot = await get(dbRef(db, scopedStudentPath(`Attendance/${courseId}`)));
+          return [courseId, courseAttendanceSnapshot.exists() ? courseAttendanceSnapshot.val() || {} : {}];
+        } catch (error) {
+          return [courseId, {}];
+        }
+      })
+    );
+
+    const fetchedAttendance = {};
+    fetchedEntries.forEach(([courseId, courseAttendance]) => {
+      const cacheKey = `${schoolScopeKey}::${courseId}`;
+      attendanceCourseCacheRef.current.set(cacheKey, courseAttendance || {});
+      fetchedAttendance[courseId] = courseAttendance || {};
+    });
+
+    return {
+      ...cachedAttendance,
+      ...fetchedAttendance,
+    };
+  };
+
+  useEffect(() => {
+    Object.entries(usersData || {}).forEach(([recordKey, userRecord]) => {
+      cacheUserRecord(recordKey, userRecord);
+    });
+  }, [usersData]);
+
+  useEffect(() => {
+    Object.entries(parentsData || {}).forEach(([recordKey, parentRecord]) => {
+      cacheParentRecord(recordKey, parentRecord);
+    });
+  }, [parentsData]);
+
+  useEffect(() => {
+    Object.entries(teachersData || {}).forEach(([recordKey, teacherRecord]) => {
+      cacheTeacherRecord(recordKey, teacherRecord);
+    });
+  }, [teachersData]);
+
+  useEffect(() => {
+    if (!teacherInfo?.userId || !rtdbBase) {
+      setTeacherCourseContext(EMPTY_TEACHER_COURSE_CONTEXT);
+      setTeacherCourseContextReady(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTeacherCourseContext = async () => {
+      setTeacherCourseContextReady(false);
+      const nextContext = await getTeacherCourseContext({ teacher: teacherInfo, rtdbBase });
+      if (cancelled) return;
+      setTeacherCourseContext(nextContext || EMPTY_TEACHER_COURSE_CONTEXT);
+      setTeacherCourseContextReady(true);
+    };
+
+    loadTeacherCourseContext();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacherInfo, rtdbBase]);
 
   useEffect(() => {
     const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
@@ -382,79 +1130,29 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   const fetchConversations = async (currentTeacher = teacher) => {
     try {
       const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
-      if (!t || !t.userId) {
+      if (!t || !t.userId || !rtdbBase) {
         setConversations([]);
         return;
       }
 
-      // Fetch chats and users
-      const [chatsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Chats.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-      ]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
+      const cacheKey = buildStudentConversationsSessionKey(resolvedSchoolCode || t.schoolCode, t.userId);
+      const cachedConversations = readSessionResource(cacheKey, {
+        ttlMs: STUDENT_CONVERSATIONS_SESSION_TTL_MS,
+      });
+      if (Array.isArray(cachedConversations)) {
+        setConversations(cachedConversations);
+        return;
+      }
 
-      // Build user mappings
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+      const convs = await fetchTeacherConversationSummaries({
+        rtdbBase,
+        schoolCode: resolvedSchoolCode || t.schoolCode,
+        teacherUserId: t.userId,
+        unreadOnly: true,
       });
 
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null; // only show conversations with unread messages
-
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-
-          // Resolve other participant to a Users pushKey + record (if possible)
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-
-          if (!otherRecord) {
-            // fallback minimal record
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-
-          const lastMessage = chat.lastMessage || {};
-
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            lastMessageSeen: Boolean(lastMessage.seen),
-            lastMessageSeenAt: lastMessage.seenAt || lastMessage.seenAt || null,
-            lastMessageSenderId: lastMessage.senderId || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
-
       setConversations(convs);
+      writeSessionResource(cacheKey, convs);
     } catch (err) {
       console.error("Error fetching conversations:", err);
       setConversations([]);
@@ -475,7 +1173,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     // clear unread in RTDB for this teacher
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      clearCachedChatSummary({
+        rtdbBase,
+        chatId,
+        teacherUserId: teacher.userId,
+      });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
@@ -490,199 +1193,148 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   // ---------------- FETCH STUDENTS ----------------
   // FETCH STUDENTS + USERS + COURSES + ASSIGNMENTS + TEACHERS
   useEffect(() => {
-    if (!teacherInfo?.userId) return;
+    if (!teacherInfo?.userId || !resolvedSchoolCode || !rtdbBase || !teacherCourseContextReady) return;
     let cancelled = false;
 
     const fetchStudents = async () => {
       setLoading(true);
       try {
-        const [
-          studentsRes,
-          usersRes,
-          coursesRes,
-          studentCoursesRes,
-          teachersRes,
-          courseContext,
-        ] = await Promise.all([
-          axios.get(`${RTDB_BASE}/Students.json`),
-          axios.get(`${RTDB_BASE}/Users.json`),
-          axios.get(`${RTDB_BASE}/Courses.json`),
-          axios.get(`${RTDB_BASE}/StudentCourses.json`),
-          axios.get(`${RTDB_BASE}/Teachers.json`),
-          getTeacherCourseContext({ teacher: teacherInfo, rtdbBase: RTDB_BASE }),
-        ]);
+        const courseContext = teacherCourseContext || EMPTY_TEACHER_COURSE_CONTEXT;
 
-        const teachers = teachersRes.data || {};
-        const teacherIdentifiers = new Set([
-          String(teacherInfo.teacherId || "").trim(),
-          String(teacherInfo.teacherKey || "").trim(),
-          String(teacherInfo.userId || "").trim(),
-        ].filter(Boolean));
-        const teacherEntry = Object.entries(teachers).find(
-          ([key, t]) => teacherIdentifiers.has(String(key || "").trim()) || teacherIdentifiers.has(String(t.userId || "").trim())
+        const allowedGradeSections = new Set(
+          (courseContext?.courses || [])
+            .map((course) => buildGradeSectionKey(course?.grade, course?.section || course?.secation))
+            .filter((value) => value !== "|")
         );
 
-        if (!teacherEntry) {
-          console.warn("Teacher not found in Teachers node");
-          if (!cancelled) {
-            setStudents([]);
-            setLoading(false);
-            setError("No teacher assignment found");
-          }
-          return;
-        }
-        const teacherKey = teacherEntry[0];
-
-        const assignedCourses = courseContext.courseIds || [];
-        const studentCoursesMap = studentCoursesRes.data || {};
-        const assignedCourseIdSet = new Set(assignedCourses.map((courseId) => String(courseId || "").trim()).filter(Boolean));
-
-        const parseGradeSectionFromCourseId = (courseId) => {
+        (courseContext?.courseIds || []).forEach((courseId) => {
           const raw = String(courseId || "").trim();
           const body = raw.startsWith("course_") ? raw.slice("course_".length) : raw;
           const last = body.split("_").filter(Boolean).at(-1) || "";
           const match = last.match(/^(\d+)([A-Za-z].*)$/);
-          if (!match) return null;
-          return {
-            grade: String(match[1] || "").trim(),
-            section: String(match[2] || "").trim().toUpperCase(),
-          };
-        };
-
-        const taughtGradeSectionSet = new Set(
-          (courseContext.courses || [])
-            .map((course) => ({
-              grade: String(course?.grade || "").trim(),
-              section: String(course?.section || course?.secation || "").trim().toUpperCase(),
-            }))
-            .filter((item) => item.grade && item.section)
-            .map((item) => `${item.grade}|${item.section}`)
-        );
-
-        assignedCourses.forEach((courseId) => {
-          const dbCourse = coursesRes.data?.[courseId];
-          if (dbCourse) {
-            const key = `${String(dbCourse.grade || "").trim()}|${String(dbCourse.section || dbCourse.secation || "").trim().toUpperCase()}`;
-            if (key !== "|") taughtGradeSectionSet.add(key);
-            return;
+          if (!match) return;
+          const grade = String(match[1] || "").trim();
+          const section = String(match[2] || "").trim().toUpperCase();
+          if (grade && section) {
+            allowedGradeSections.add(`${grade}|${section}`);
           }
-
-          const parsed = parseGradeSectionFromCourseId(courseId);
-          if (!parsed) return;
-          taughtGradeSectionSet.add(`${parsed.grade}|${parsed.section}`);
         });
 
-        const hasTeacherScope =
-          assignedCourseIdSet.size > 0 || taughtGradeSectionSet.size > 0;
+        if (!allowedGradeSections.size) {
+          if (!cancelled) {
+            setStudents([]);
+            setAssignedGradeSections([]);
+            setError("No teacher assignment found");
+          }
+          return;
+        }
 
-        const assignedPairs = [...taughtGradeSectionSet]
-          .map((value) => {
-            const [grade, section] = String(value || "").split("|");
-            return {
-              grade: String(grade || "").trim(),
-              section: String(section || "").trim().toUpperCase(),
-            };
-          })
-          .filter((item) => item.grade && item.section)
-          .sort((a, b) => {
-            const gradeDiff = Number(a.grade) - Number(b.grade);
-            if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
-            if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
-            return a.section.localeCompare(b.section);
-          });
-
-        const usersObj = usersRes.data || {};
-        setUsersData(usersObj);
-
-        // helper to find user record
-        const findUser = (userId) => findUserByUserId(usersObj, userId);
-
-        const studentsArr = Object.entries(studentsRes.data || {}).map(([studentId, s]) => {
-          const user = findUser(s.userId);
-
-          const normalizedStudentGrade = String(
-            s.grade || s.basicStudentInformation?.grade || ""
-          ).trim();
-          const normalizedStudentSection = String(
-            s.section || s.basicStudentInformation?.section || ""
-          )
-            .trim()
-            .toUpperCase();
-
-          const studentCourseNode = studentCoursesMap?.[studentId] || {};
-          const studentCourseIds = Object.entries(studentCourseNode)
-            .filter(([, enabled]) => Boolean(enabled))
-            .map(([courseId]) => String(courseId || "").trim())
-            .filter(Boolean);
-
-          const hasAssignedCourseMatch = studentCourseIds.some((courseId) =>
-            assignedCourseIdSet.has(courseId)
-          );
-
-          const hasGradeSectionMatch = taughtGradeSectionSet.has(
-            `${normalizedStudentGrade}|${normalizedStudentSection}`
-          );
-
-          const includeStudent = hasTeacherScope
-            ? hasAssignedCourseMatch || hasGradeSectionMatch
-            : true;
-
-          // attempt to resolve parentName/parentPhone from student raw or user record
-          const parentName =
-            s.parentName ||
-            s.parent?.name ||
-            user?.parentName ||
-            s.rawParentName ||
-            null;
-
-          const parentPhone =
-            s.parentPhone ||
-            s.parent?.phone ||
-            user?.parentPhone ||
-            s.rawParentPhone ||
-            null;
-
-          // detect DOB/age
-          const rawDob = user?.dob || user?.birthDate || s.dob || s.birthDate || null;
-          const age = computeAge(rawDob);
-
-          return {
-            ...s,
-            studentId,
-            name: user?.name || s.name || "Unknown",
-            email: user?.email || s.email || "",
-            profileImage: resolveProfileImage(
-              user?.profileImage,
-              user?.profile,
-              user?.avatar,
-              s?.profileImage,
-              s?.basicStudentInformation?.studentPhoto,
-              s?.studentPhoto
-            ),
-            phone: user?.phone || s.phone || "",
-            gender: user?.gender || s.gender || "",
-            grade: normalizedStudentGrade || s.grade || "",
-            section: normalizedStudentSection || s.section || "",
-            dob: rawDob,
-            age: age,
-            parentName: parentName || null,
-            parentPhone: parentPhone || null,
-            includeStudent,
-            raw: s,
-          };
-        }).filter((studentItem) => studentItem.includeStudent);
-
-        const fallbackPairs = [...new Set(
-          studentsArr
-            .map((studentItem) => {
-              const normalizedGrade = String(studentItem.grade || "").trim();
-              const normalizedSection = String(studentItem.section || "").trim().toUpperCase();
-              return normalizedGrade && normalizedSection
-                ? `${normalizedGrade}|${normalizedSection}`
-                : "";
-            })
+        const allowedGrades = [...new Set(
+          [...allowedGradeSections]
+            .map((gradeSectionKey) => String(gradeSectionKey || "").split("|")[0])
             .filter(Boolean)
-        )]
+        )];
+
+        const studentSnapshots = await Promise.all(
+          allowedGrades.flatMap((gradeValue) => [
+            get(
+              dbQuery(
+                dbRef(db, scopedStudentPath("Students")),
+                orderByChild("grade"),
+                equalTo(gradeValue)
+              )
+            ).catch(() => null),
+            get(
+              dbQuery(
+                dbRef(db, scopedStudentPath("Students")),
+                orderByChild("basicStudentInformation/grade"),
+                equalTo(gradeValue)
+              )
+            ).catch(() => null),
+          ])
+        );
+
+        const allStudentsNode = {};
+        studentSnapshots.forEach((snapshot) => {
+          if (!snapshot?.exists()) return;
+          Object.assign(allStudentsNode, snapshot.val() || {});
+        });
+
+        if (!Object.keys(allStudentsNode).length) {
+          const fallbackStudentsSnapshot = await get(dbRef(db, scopedStudentPath("Students"))).catch(() => null);
+          Object.assign(allStudentsNode, fallbackStudentsSnapshot?.exists() ? fallbackStudentsSnapshot.val() || {} : {});
+        }
+
+        const filteredStudentEntries = Object.entries(allStudentsNode)
+          .filter(([, studentRecord]) => {
+            const studentUserId = getStudentUserId(studentRecord);
+            if (!studentUserId) return false;
+            if (!isActiveRecord(studentRecord)) return false;
+
+            const key = buildGradeSectionKey(
+              studentRecord.grade || studentRecord?.basicStudentInformation?.grade,
+              studentRecord.section || studentRecord?.basicStudentInformation?.section
+            );
+
+            return allowedGradeSections.has(key);
+          });
+
+        const usersObj = await loadUsersByIds(filteredStudentEntries.map(([, studentRecord]) => getStudentUserId(studentRecord)));
+        const findUser = (userId) => findUserByUserId({ ...(usersData || {}), ...(usersObj || {}) }, userId);
+
+        const studentsArr = filteredStudentEntries
+          .map(([studentId, s]) => {
+            const studentUserId = getStudentUserId(s);
+            const user = findUser(studentUserId);
+
+            const normalizedStudentGrade = normalizeGrade(s.grade || s.basicStudentInformation?.grade);
+            const normalizedStudentSection = normalizeSection(s.section || s.basicStudentInformation?.section);
+
+            const parentName =
+              s.parentName ||
+              s.parent?.name ||
+              user?.parentName ||
+              s.rawParentName ||
+              null;
+
+            const parentPhone =
+              s.parentPhone ||
+              s.parent?.phone ||
+              user?.parentPhone ||
+              s.rawParentPhone ||
+              null;
+
+            const rawDob = user?.dob || user?.birthDate || s.dob || s.birthDate || null;
+            const age = computeAge(rawDob);
+
+            return {
+              ...s,
+              studentId: s.studentId || studentId,
+              userId: studentUserId,
+              name: user?.name || s.name || s?.basicStudentInformation?.name || "Unknown",
+              email: user?.email || s.email || "",
+              profileImage: resolveProfileImage(
+                user?.profileImage,
+                user?.profile,
+                user?.avatar,
+                s?.profileImage,
+                s?.basicStudentInformation?.studentPhoto,
+                s?.studentPhoto
+              ),
+              phone: user?.phone || s.phone || "",
+              gender: user?.gender || s.gender || "",
+              grade: normalizedStudentGrade,
+              section: normalizedStudentSection,
+              dob: rawDob,
+              age,
+              parentName: parentName || null,
+              parentPhone: parentPhone || null,
+              raw: s,
+            };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        const assignedPairs = [...allowedGradeSections]
           .map((value) => {
             const [grade, section] = String(value || "").split("|");
             return {
@@ -697,13 +1349,11 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
             if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
             return a.section.localeCompare(b.section);
           });
-
-        const effectiveAssignedPairs = hasTeacherScope ? assignedPairs : fallbackPairs;
 
         if (!cancelled) {
           setStudents(studentsArr);
-          setAssignedGradeSections(effectiveAssignedPairs);
-          setError("");
+          setAssignedGradeSections(assignedPairs);
+          setError(assignedPairs.length ? "" : "No teacher assignment found");
         }
       } catch (err) {
         console.error(err);
@@ -715,7 +1365,7 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     fetchStudents();
     return () => (cancelled = true);
-  }, [teacherInfo]);
+  }, [teacherInfo, resolvedSchoolCode, rtdbBase, teacherCourseContext, teacherCourseContextReady]);
 
   // When user picks a student, set immediate fallback details (so UI won't crash),
   // then fetch Users node and resolve authoritative details (phone/gender/email/parent/dob->age).
@@ -725,6 +1375,11 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       return;
     }
 
+    const fallbackParentInfo = resolveStudentParentInfo({
+      student: selectedStudent,
+      usersObj: usersData || {},
+    });
+
     // immediate fallback derived from selectedStudent to avoid UI errors
     const fallback = {
       fullName: selectedStudent.name || "—",
@@ -733,8 +1388,20 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       email: selectedStudent.email || "—",
       grade: selectedStudent.grade || "—",
       section: selectedStudent.section || "—",
-      parentName: selectedStudent.parentName || selectedStudent.raw?.parentName || "—",
-      parentPhone: selectedStudent.parentPhone || selectedStudent.raw?.parentPhone || "—",
+      parentName:
+        fallbackParentInfo?.parentName ||
+        selectedStudent.parentName ||
+        selectedStudent.raw?.parentName ||
+        "—",
+      parentPhone:
+        fallbackParentInfo?.parentPhone ||
+        selectedStudent.parentPhone ||
+        selectedStudent.raw?.parentPhone ||
+        "—",
+      parentId: fallbackParentInfo?.parentId || selectedStudent.parentId || null,
+      parentUserId: fallbackParentInfo?.parentUserId || selectedStudent.parentUserId || null,
+      parentProfileImage:
+        fallbackParentInfo?.parentProfileImage || selectedStudent.parentProfileImage || "/default-profile.png",
       dob: selectedStudent.dob || selectedStudent.raw?.dob || "—",
       age: selectedStudent.age ?? computeAge(selectedStudent.dob || selectedStudent.raw?.dob) ?? "—",
       profileImage: resolveProfileImage(
@@ -750,53 +1417,26 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     let cancelled = false;
     const loadDetails = async () => {
       try {
-        // use cached usersData if present, otherwise fetch Users node
-        let usersObj = usersData;
-        if (!usersObj || Object.keys(usersObj).length === 0) {
-          const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-          usersObj = usersRes.data || {};
-          setUsersData(usersObj);
+        let usersObj = usersData || {};
+        if (!findUserByIdentifiers(usersObj, selectedStudent.userId)) {
+          const fetchedUsers = await loadUsersByIds([selectedStudent.userId]);
+          usersObj = {
+            ...(usersObj || {}),
+            ...(fetchedUsers || {}),
+          };
         }
 
-        const userRec = findUserByUserId(usersObj, selectedStudent.userId) || {};
-        // Try multiple parent id fields on student or user record
-        const parentId =
-          selectedStudent.raw?.parentId ||
-          selectedStudent.raw?.parentUserId ||
-          userRec?.parentId ||
-          userRec?.parentUserId ||
-          null;
-
-        const parentRec = parentId ? findUserByUserId(usersObj, parentId) : null;
-
-        const parentName =
-          parentRec?.name ||
-          selectedStudent.raw?.parentName ||
-          selectedStudent.parentName ||
-          "—";
-
-        const parentPhone =
-          parentRec?.phone ||
-          selectedStudent.raw?.parentPhone ||
-          selectedStudent.parentPhone ||
-          "—";
+        const userRec = findUserByIdentifiers(usersObj, selectedStudent.userId) || {};
+        const parentInfo = resolveStudentParentInfo({
+          student: selectedStudent,
+          usersObj,
+        });
 
         const phone = userRec?.phone || selectedStudent.phone || selectedStudent.raw?.phone || "—";
         const gender = userRec?.gender || selectedStudent.gender || selectedStudent.raw?.gender || "—";
         const email = userRec?.email || selectedStudent.email || "—";
         const dob = userRec?.dob || userRec?.birthDate || selectedStudent.dob || selectedStudent.raw?.dob || null;
         const age = computeAge(dob) ?? selectedStudent.age ?? "—";
-        const parentUserId =
-          parentRec?.userId ||
-          selectedStudent.raw?.parentUserId ||
-          selectedStudent.parentUserId ||
-          null;
-        const parentProfileImage = resolveProfileImage(
-          parentRec?.profileImage,
-          parentRec?.profile,
-          selectedStudent?.raw?.parentProfileImage,
-          selectedStudent?.parentProfileImage
-        );
 
         const details = {
           fullName: userRec?.name || selectedStudent.name || "—",
@@ -805,10 +1445,23 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           email,
           grade: selectedStudent.grade || "—",
           section: selectedStudent.section || "—",
-          parentName,
-          parentPhone,
-          parentUserId,
-          parentProfileImage,
+          parentId: parentInfo?.parentId || null,
+          parentName:
+            parentInfo?.parentName ||
+            selectedStudent.raw?.parentName ||
+            selectedStudent.parentName ||
+            "—",
+          parentPhone:
+            parentInfo?.parentPhone ||
+            selectedStudent.raw?.parentPhone ||
+            selectedStudent.parentPhone ||
+            "—",
+          parentUserId: parentInfo?.parentUserId || null,
+          parentProfileImage:
+            parentInfo?.parentProfileImage ||
+            selectedStudent?.raw?.parentProfileImage ||
+            selectedStudent?.parentProfileImage ||
+            "/default-profile.png",
           dob: dob || "—",
           age,
           profileImage: resolveProfileImage(
@@ -821,7 +1474,8 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
             selectedStudent.raw?.studentPhoto
           ),
           userRec,
-          parentRec,
+          parentRec: parentInfo?.parentRec || null,
+          parentUserRec: parentInfo?.parentUserRec || null,
         };
 
         if (!cancelled) setSelectedStudentDetails(details);
@@ -833,7 +1487,7 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     loadDetails();
     return () => { cancelled = true; };
-  }, [selectedStudent, usersData]);
+  }, [selectedStudent, usersData, rtdbBase]);
 
   // Ensure parent info is resolved from Parents node if not already present
   useEffect(() => {
@@ -842,80 +1496,47 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     const resolveParent = async () => {
       try {
-        const parentsRes = await axios.get(`${RTDB_BASE}/Parents.json`);
-        const parentsObj = parentsRes.data || {};
-
-        // candidate keys that might point to parent record or userId
-        const candidates = [
-          selectedStudent.raw?.parentId,
-          selectedStudent.raw?.parentUserId,
-          selectedStudent.parentId,
-          selectedStudent.parentUserId,
-        ].filter(Boolean);
-
-        let foundParent = null;
-
-        // direct lookup by key
-        for (const k of candidates) {
-          if (parentsObj[k]) {
-            foundParent = parentsObj[k];
-            break;
-          }
-          // also try matching parent.userId === k
-          const byUserId = Object.values(parentsObj).find((p) => String(p.userId) === String(k));
-          if (byUserId) {
-            foundParent = byUserId;
-            break;
-          }
+        let usersObj = usersData || {};
+        if (!findUserByIdentifiers(usersObj, selectedStudent.userId)) {
+          const fetchedStudentUsers = await loadUsersByIds([selectedStudent.userId]);
+          usersObj = {
+            ...(usersObj || {}),
+            ...(fetchedStudentUsers || {}),
+          };
         }
 
-        // if not found, search children lists for this student
-        if (!foundParent) {
-          const sid = selectedStudent.studentId || selectedStudent.userId;
-          for (const p of Object.values(parentsObj)) {
-            const children = p?.children || {};
-            const match = Object.values(children).find((c) => String(c?.studentId) === String(sid));
-            if (match) {
-              foundParent = p;
-              break;
-            }
-          }
+        const parentsObj = await loadParentsForStudent(selectedStudent, usersObj);
+        const parentUserIds = Object.values(parentsObj || {})
+          .map((parentRecord) => normalizeIdentifier(parentRecord?.userId))
+          .filter(Boolean);
+
+        if (parentUserIds.length) {
+          const fetchedParentUsers = await loadUsersByIds(parentUserIds);
+          usersObj = {
+            ...(usersObj || {}),
+            ...(fetchedParentUsers || {}),
+          };
         }
 
-        let parentName = null;
-        let parentPhone = null;
-
-        if (foundParent) {
-          parentName = foundParent.name || foundParent.displayName || null;
-          parentPhone = foundParent.phone || foundParent.phoneNumber || foundParent.contact || null;
-
-          // if parent has userId, try to enrich from Users node
-          if ((!parentName || !parentPhone) && foundParent.userId) {
-            try {
-              const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-              const usersObj = usersRes.data || {};
-              const userRec = Object.values(usersObj).find((u) => String(u.userId) === String(foundParent.userId));
-              if (userRec) {
-                parentName = parentName || userRec.name || null;
-                parentPhone = parentPhone || userRec.phone || null;
-              }
-            } catch (err) {
-              // ignore
-            }
-          }
-        }
+        const parentInfo = resolveStudentParentInfo({
+          student: selectedStudent,
+          usersObj,
+          parentsObj,
+        });
 
         if (!cancelled) {
           setSelectedStudentDetails((prev) => ({
             ...(prev || {}),
-            parentName: parentName || prev?.parentName || "—",
-            parentPhone: parentPhone || prev?.parentPhone || "—",
-            parentUserId: foundParent?.userId || prev?.parentUserId || null,
+            parentId: parentInfo?.parentId || prev?.parentId || null,
+            parentName: parentInfo?.parentName || prev?.parentName || "—",
+            parentPhone: parentInfo?.parentPhone || prev?.parentPhone || "—",
+            parentUserId: parentInfo?.parentUserId || prev?.parentUserId || null,
             parentProfileImage: resolveProfileImage(
-              foundParent?.profileImage,
-              foundParent?.profile,
+              parentInfo?.parentProfileImage,
               prev?.parentProfileImage
             ),
+            parentRec: parentInfo?.parentRec || prev?.parentRec || null,
+            parentUserRec: parentInfo?.parentUserRec || prev?.parentUserRec || null,
           }));
         }
       } catch (err) {
@@ -925,7 +1546,7 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     resolveParent();
     return () => (cancelled = true);
-  }, [selectedStudent]);
+  }, [selectedStudent, rtdbBase, usersData]);
 
   useEffect(() => {
     const chatContainer = document.querySelector(".chat-messages");
@@ -1000,7 +1621,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
 // Fetch and normalize attendance for selectedStudent
 useEffect(() => {
-  if (!selectedStudent?.studentId && !selectedStudent?.userId) {
+  if (
+    (!selectedStudent?.studentId && !selectedStudent?.userId) ||
+    !rtdbBase ||
+    !teacherInfo?.userId ||
+    !teacherCourseContextReady
+  ) {
     setAttendanceRecords([]);
     return;
   }
@@ -1009,17 +1635,47 @@ useEffect(() => {
   const fetchAttendance = async () => {
     setAttendanceLoading(true);
     try {
-      // Fetch attendance + teachers + users to resolve teacher names when available
-      const [attendanceRes, teachersRes, usersRes, courseContext] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Attendance.json`),
-        axios.get(`${RTDB_BASE}/Teachers.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-        getTeacherCourseContext({ teacher: teacherInfo, rtdbBase: RTDB_BASE }),
+      const selectedGradeKey = normalizeGrade(selectedStudent?.grade || selectedStudent?.raw?.basicStudentInformation?.grade);
+      const selectedSectionKey = normalizeSection(selectedStudent?.section || selectedStudent?.raw?.basicStudentInformation?.section);
+      const relevantCourses = (teacherCourseContext?.courses || []).filter((course) => {
+        const courseGrade = normalizeGrade(course?.grade);
+        const courseSection = normalizeSection(course?.section || course?.secation);
+
+        if (selectedGradeKey && courseGrade && selectedGradeKey !== courseGrade) return false;
+        if (selectedSectionKey && courseSection && selectedSectionKey !== courseSection) return false;
+        return true;
+      });
+
+      const relevantCourseIds = [...new Set(
+        (relevantCourses.length ? relevantCourses : teacherCourseContext?.courses || [])
+          .map((course) => normalizeIdentifier(course?.id || course?.courseId))
+          .filter(Boolean)
+      )];
+
+      if (!relevantCourseIds.length) {
+        if (!cancelled) setAttendanceRecords([]);
+        return;
+      }
+
+      const assignmentsObj = teacherCourseContext?.assignmentsByCourseId || {};
+      const teacherIds = relevantCourseIds
+        .map((courseId) => assignmentsObj?.[courseId]?.teacherId || assignmentsObj?.[courseId]?.teacherRecordKey)
+        .map(normalizeIdentifier)
+        .filter(Boolean);
+
+      const [raw, teachersObj] = await Promise.all([
+        loadAttendanceByCourseIds(relevantCourseIds),
+        loadTeachersByIds(teacherIds),
       ]);
-      const raw = attendanceRes.data || {};
-      const teachersObj = teachersRes.data || {};
-      const usersObj = usersRes.data || {};
-      const assignmentsObj = courseContext.assignmentsByCourseId || {};
+
+      const teacherUserIds = Object.values(teachersObj || {})
+        .map((teacherRecord) => normalizeIdentifier(teacherRecord?.userId))
+        .filter(Boolean);
+      const fetchedTeacherUsers = teacherUserIds.length ? await loadUsersByIds(teacherUserIds) : {};
+      const usersObj = {
+        ...(usersData || {}),
+        ...(fetchedTeacherUsers || {}),
+      };
 
       // Normalized list for this student
       const normalized = [];
@@ -1138,7 +1794,7 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
-}, [selectedStudent]);
+}, [selectedStudent, rtdbBase, teacherInfo, teacherCourseContext, teacherCourseContextReady, usersData]);
 
 // Derived data used by the UI (attendanceBySubject, getProgress, etc.)
 const attendanceData = React.useMemo(() => {
@@ -1167,6 +1823,15 @@ const getProgress = (records) => {
   return Math.round((presentCount / records.length) * 100);
 };
 
+const getLatestRecordDate = (records = []) => {
+  return records.reduce((latest, record) => {
+    const recordDate = new Date(record?.date);
+    if (Number.isNaN(recordDate.getTime())) return latest;
+    if (!latest || recordDate > latest) return recordDate;
+    return latest;
+  }, null);
+};
+
 // Expose getWeekNumber for the UI usage (used when computing weekRecords)
 const _getWeekNumber = getWeekNumber
 
@@ -1188,21 +1853,20 @@ const toggleExpand = (key) => {
   // ---------------- FETCH PERFORMANCE (FIXED)
   useEffect(() => {
     // we only need to fetch marks when a student is selected
-    if (!selectedStudent) {
+    if (!selectedStudent || !resolvedSchoolCode) {
       setStudentMarksFlattened({});
       return;
     }
 
     const fetchMarksForStudent = async () => {
-      setLoading(true);
+      setMarksLoading(true);
       try {
-        const scopedSnapshot = await get(dbRef(db, schoolPath("ClassMarks")));
+        const scopedSnapshot = await get(dbRef(db, schoolPath("ClassMarks", resolvedSchoolCode)));
         const legacySnapshot = scopedSnapshot.exists() ? null : await get(dbRef(db, "ClassMarks"));
         const snapshot = scopedSnapshot.exists() ? scopedSnapshot : legacySnapshot;
 
         if (!snapshot || !snapshot.exists()) {
           setStudentMarksFlattened({});
-          setLoading(false);
           return;
         }
 
@@ -1241,12 +1905,46 @@ const toggleExpand = (key) => {
         console.error("Failed to fetch marks:", err);
         setStudentMarksFlattened({});
       } finally {
-        setLoading(false);
+        setMarksLoading(false);
       }
     };
 
     fetchMarksForStudent();
-  }, [selectedStudent]);
+  }, [selectedStudent, resolvedSchoolCode]);
+
+  const availableSemesters = useMemo(() => {
+    const semesters = new Set();
+
+    Object.values(studentMarksFlattened || {}).forEach((studentCourseData) => {
+      if (!studentCourseData || typeof studentCourseData !== "object") return;
+      Object.keys(studentCourseData).forEach((key) => {
+        if (/^semester\d+$/i.test(String(key || ""))) {
+          semesters.add(String(key));
+        }
+      });
+    });
+
+    return [...semesters].sort((leftSemester, rightSemester) => {
+      const leftNumber = parseInt(String(leftSemester).replace(/\D+/g, ""), 10) || 0;
+      const rightNumber = parseInt(String(rightSemester).replace(/\D+/g, ""), 10) || 0;
+      return leftNumber - rightNumber;
+    });
+  }, [studentMarksFlattened]);
+
+  useEffect(() => {
+    if (!availableSemesters.length) return;
+    if (!availableSemesters.includes(activeSemester)) {
+      setActiveSemester(availableSemesters[0]);
+    }
+  }, [activeSemester, availableSemesters]);
+
+  useEffect(() => {
+    setActiveQuarterViews({});
+  }, [selectedStudent?.userId]);
+
+  const semesterTabs = availableSemesters.length
+    ? availableSemesters
+    : ["semester1", "semester2"];
 
   const statusColor = (status) => (status === "present" ? "#34a853" : status === "absent" ? "#ea4335" : "#fbbc05");
 
@@ -1257,7 +1955,7 @@ const toggleExpand = (key) => {
     async function fetchTeacherNotes() {
       try {
         const res = await axios.get(
-          `${RTDB_BASE}/StudentNotes/${selectedStudent?.userId}.json`
+          `${rtdbBase}/StudentNotes/${selectedStudent?.userId}.json`
         );
 
         if (!res.data) {
@@ -1297,7 +1995,7 @@ const toggleExpand = (key) => {
 
     try {
       await axios.post(
-        `${RTDB_BASE}/StudentNotes/${selectedStudent?.userId}.json`,
+        `${rtdbBase}/StudentNotes/${selectedStudent?.userId}.json`,
         noteData
       );
 
@@ -1311,65 +2009,174 @@ const toggleExpand = (key) => {
   };
 
   // Scroll chat to bottom when messages change
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = (behavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
   };
 
   useEffect(() => {
-    scrollToBottom();
+    if (selectedStudent || !chatOpen) return;
+    closeQuickChat();
+  }, [selectedStudent, chatOpen]);
+
+  useEffect(() => {
+    const restoreSnapshot = quickChatScrollRestoreRef.current;
+    const scrollContainer = quickChatMessagesRef.current;
+
+    if (restoreSnapshot && scrollContainer) {
+      scrollContainer.scrollTop =
+        restoreSnapshot.previousScrollTop +
+        (scrollContainer.scrollHeight - restoreSnapshot.previousScrollHeight);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
+
+    if (!chatOpen) return;
+    scrollToBottom(messages.length > QUICK_CHAT_HISTORY_LIMIT ? "auto" : "smooth");
   }, [messages]);
 
   // Fetch messages for the selected student
   useEffect(() => {
-    if (!teacherUserId || !selectedStudent) return;
+    if (!chatOpen || !teacherUserId || !quickChatTarget?.userId) {
+      setLiveQuickChatMessages([]);
+      setOlderQuickChatMessages([]);
+      setQuickChatLoading(false);
+      setQuickChatLoadingOlder(false);
+      setQuickChatHasOlder(false);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
 
-    const chatKey = getChatId(teacherUserId, selectedStudent.userId);
-    const messagesRef = dbRef(db, schoolPath(`Chats/${chatKey}/messages`));
+    const chatKey = getChatId(teacherUserId, quickChatTarget.userId);
+    const messagesRef = dbQuery(
+      dbRef(db, scopedStudentPath(`Chats/${chatKey}/messages`)),
+      orderByChild("timeStamp"),
+      limitToLast(QUICK_CHAT_HISTORY_LIMIT)
+    );
 
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val() || {};
-      const msgs = Object.entries(data)
-        .map(([id, m]) => ({
-          id,
-          ...m,
-          isTeacher: m.senderId === teacherUserId,
-        }))
-        .sort((a, b) => a.timeStamp - b.timeStamp);
+    setQuickChatLoading(true);
 
-      setMessages(msgs);
-    });
+    const unsubscribe = onValue(
+      messagesRef,
+      (snapshot) => {
+        const data = snapshot.val() || {};
+        const msgs = Object.entries(data)
+          .map(([id, m]) => ({
+            id,
+            messageId: id,
+            ...m,
+            isTeacher: String(m?.senderId || "") === String(teacherUserId),
+          }))
+          .sort((a, b) => Number(a?.timeStamp || 0) - Number(b?.timeStamp || 0));
+
+        setLiveQuickChatMessages(msgs);
+        setQuickChatHasOlder((previousValue) => previousValue || msgs.length >= QUICK_CHAT_HISTORY_LIMIT);
+        setQuickChatLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load quick chat messages:", error);
+        setLiveQuickChatMessages([]);
+        setOlderQuickChatMessages([]);
+        setQuickChatHasOlder(false);
+        setQuickChatLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [teacherUserId, selectedStudent]);
+  }, [chatOpen, teacherUserId, quickChatTarget?.userId, resolvedSchoolCode, teacherSchoolCode]);
+
+  const loadOlderMessages = async () => {
+    if (
+      quickChatLoading ||
+      quickChatLoadingOlder ||
+      !chatOpen ||
+      !teacherUserId ||
+      !quickChatTarget?.userId ||
+      messages.length === 0
+    ) {
+      return;
+    }
+
+    const oldestMessageTimeStamp = Number(messages[0]?.timeStamp || 0);
+    if (!oldestMessageTimeStamp) {
+      setQuickChatHasOlder(false);
+      return;
+    }
+
+    const scrollContainer = quickChatMessagesRef.current;
+    if (scrollContainer) {
+      quickChatScrollRestoreRef.current = {
+        previousScrollHeight: scrollContainer.scrollHeight,
+        previousScrollTop: scrollContainer.scrollTop,
+      };
+    }
+
+    setQuickChatLoadingOlder(true);
+
+    try {
+      const chatId = getChatId(teacherUserId, quickChatTarget.userId);
+      const olderMessagesRef = dbQuery(
+        dbRef(db, scopedStudentPath(`Chats/${chatId}/messages`)),
+        orderByChild("timeStamp"),
+        endAt(oldestMessageTimeStamp - 1),
+        limitToLast(QUICK_CHAT_HISTORY_LIMIT)
+      );
+
+      const snapshot = await get(olderMessagesRef);
+      const data = snapshot.val() || {};
+      const olderMessagesPage = Object.entries(data)
+        .map(([id, message]) => ({
+          id,
+          messageId: id,
+          ...message,
+          isTeacher: String(message?.senderId || "") === String(teacherUserId),
+        }))
+        .sort((leftMessage, rightMessage) => Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0));
+
+      if (!olderMessagesPage.length) {
+        setQuickChatHasOlder(false);
+        quickChatScrollRestoreRef.current = null;
+        return;
+      }
+
+      setOlderQuickChatMessages((previousMessages) =>
+        mergeChatMessages(olderMessagesPage, previousMessages)
+      );
+      setQuickChatHasOlder(olderMessagesPage.length >= QUICK_CHAT_HISTORY_LIMIT);
+    } catch (error) {
+      console.error("Failed to load older quick chat messages:", error);
+      quickChatScrollRestoreRef.current = null;
+    } finally {
+      setQuickChatLoadingOlder(false);
+    }
+  };
 
   // Mark messages as seen when chat popup is open and there are unseen messages for this teacher
   useEffect(() => {
-    if (!chatOpen || !selectedStudent || !teacherUserId) return;
+    if (!chatOpen || !quickChatTarget?.userId || !teacherUserId) return;
     if (!messages || messages.length === 0) return;
 
     const unseen = messages.filter(
-      (m) => String(m.receiverId) === String(teacherUserId) && !m.seen
+      (m) => String(m?.receiverId || "") === String(teacherUserId) && !m?.seen
     );
     if (unseen.length === 0) return;
 
-    const chatId = getChatId(teacherUserId, selectedStudent.userId);
+    const chatId = getChatId(teacherUserId, quickChatTarget.userId);
     const ts = Date.now();
 
-    const payload = { messages: {}, unread: {} };
+    const payload = {
+      [`unread/${teacherUserId}`]: 0,
+      "lastMessage/seen": true,
+      "lastMessage/seenAt": ts,
+    };
     unseen.forEach((m) => {
-      // set seen + seenAt on each message
-      payload.messages[m.id] = { ...(payload.messages[m.id] || {}), seen: true, seenAt: ts };
+      payload[`messages/${m.id}/seen`] = true;
+      payload[`messages/${m.id}/seenAt`] = ts;
     });
-    // clear unread for this teacher (remove the key)
-    payload.unread[teacherUserId] = null;
-    // also mark lastMessage as seen (merge field) so other clients can read it
-    payload.lastMessage = { seen: true, seenAt: ts };
 
-    axios
-      .patch(`${RTDB_BASE}/Chats/${chatId}.json`, payload)
+    update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), payload)
       .catch((err) => console.error("Failed to mark messages seen:", err));
 
-  }, [chatOpen, messages, selectedStudent, teacherUserId]);
+  }, [chatOpen, messages, quickChatTarget?.userId, teacherUserId, resolvedSchoolCode, teacherSchoolCode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1377,10 +2184,11 @@ const toggleExpand = (key) => {
 
   // Send message
   const sendMessage = async () => {
-    if (!newMessageText.trim() || !selectedStudent) return;
+    const text = String(newMessageText || "").trim();
+    if (!text || !quickChatTarget?.userId || !teacherUserId) return;
 
     const senderId = teacherUserId;
-    const receiverId = selectedStudent.userId;
+    const receiverId = quickChatTarget.userId;
     const chatId = getChatId(senderId, receiverId);
     const timeStamp = Date.now();
 
@@ -1388,66 +2196,122 @@ const toggleExpand = (key) => {
       senderId,
       receiverId,
       type: "text",
-      text: newMessageText,
+      text,
       seen: false,
+      edited: false,
+      deleted: false,
       timeStamp,
     };
 
-    await axios.post(
-      `${RTDB_BASE}/Chats/${chatId}/messages.json`,
-      message
-    );
+    try {
+      await push(dbRef(db, scopedStudentPath(`Chats/${chatId}/messages`)), message);
 
-    await axios.patch(
-      `${RTDB_BASE}/Chats/${chatId}.json`,
-      {
-        participants: { [senderId]: true, [receiverId]: true },
-        lastMessage: { text: newMessageText, senderId, seen: false, timeStamp },
-        unread: { [receiverId]: 1 },
-      }
-    );
+      await update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), {
+        [`participants/${senderId}`]: true,
+        [`participants/${receiverId}`]: true,
+        "lastMessage/text": text,
+        "lastMessage/senderId": senderId,
+        "lastMessage/seen": false,
+        "lastMessage/timeStamp": timeStamp,
+        [`unread/${senderId}`]: 0,
+      });
 
-    setNewMessageText("");
+      setNewMessageText("");
+
+      await runTransaction(
+        dbRef(db, scopedStudentPath(`Chats/${chatId}/unread/${receiverId}`)),
+        (current) => (Number(current) || 0) + 1
+      );
+    } catch (err) {
+      console.error("Failed to send quick chat message:", err);
+    }
   };
 
-  const handleOpenParentChat = () => {
-    const parentUserId = String(selectedStudentDetails?.parentUserId || "").trim();
+  const handleOpenParentChat = async () => {
+    let parentTarget = selectedStudentDetails;
+
     if (!selectedStudent) {
       alert("Please select a student first.");
       return;
     }
+
+    if (!String(parentTarget?.parentUserId || "").trim()) {
+      try {
+        let usersObj = usersData || {};
+        if (!findUserByIdentifiers(usersObj, selectedStudent.userId)) {
+          const fetchedStudentUsers = await loadUsersByIds([selectedStudent.userId]);
+          usersObj = {
+            ...(usersObj || {}),
+            ...(fetchedStudentUsers || {}),
+          };
+        }
+
+        const parentsObj = await loadParentsForStudent(selectedStudent, usersObj);
+        const parentUserIds = Object.values(parentsObj || {})
+          .map((parentRecord) => normalizeIdentifier(parentRecord?.userId))
+          .filter(Boolean);
+
+        if (parentUserIds.length) {
+          const fetchedParentUsers = await loadUsersByIds(parentUserIds);
+          usersObj = {
+            ...(usersObj || {}),
+            ...(fetchedParentUsers || {}),
+          };
+        }
+
+        const parentInfo = resolveStudentParentInfo({
+          student: selectedStudent,
+          usersObj,
+          parentsObj,
+        });
+
+        if (parentInfo) {
+          parentTarget = {
+            ...(parentTarget || {}),
+            ...parentInfo,
+          };
+
+          setSelectedStudentDetails((prev) => ({
+            ...(prev || {}),
+            parentId: parentInfo.parentId || prev?.parentId || null,
+            parentName: parentInfo.parentName || prev?.parentName || "—",
+            parentPhone: parentInfo.parentPhone || prev?.parentPhone || "—",
+            parentUserId: parentInfo.parentUserId || prev?.parentUserId || null,
+            parentProfileImage: parentInfo.parentProfileImage || prev?.parentProfileImage || "/default-profile.png",
+            parentRec: parentInfo.parentRec || prev?.parentRec || null,
+            parentUserRec: parentInfo.parentUserRec || prev?.parentUserRec || null,
+          }));
+        }
+      } catch (error) {
+        console.error("Failed to resolve parent chat target:", error);
+      }
+    }
+
+    const parentUserId = String(parentTarget?.parentUserId || "").trim();
     if (!parentUserId) {
       alert("No parent found for this student.");
       return;
     }
 
-    const parentName = selectedStudentDetails?.parentName || "Parent";
+    const parentName = parentTarget?.parentName || "Parent";
     const parentProfileImage = resolveProfileImage(
-      selectedStudentDetails?.parentProfileImage,
-      selectedStudentDetails?.parentRec?.profileImage,
-      selectedStudentDetails?.parentRec?.profile,
+      parentTarget?.parentProfileImage,
+      parentTarget?.parentRec?.profileImage,
+      parentTarget?.parentRec?.profile,
+      parentTarget?.parentUserRec?.profileImage,
+      parentTarget?.parentUserRec?.profile,
       "/default-profile.png"
     );
 
-    const chatId = getChatId(teacherUserId, parentUserId);
-    navigate("/all-chat", {
-      state: {
-        user: {
-          userId: parentUserId,
-          name: parentName,
-          profileImage: parentProfileImage,
-          type: "parent",
-        },
-        contact: {
-          userId: parentUserId,
-          name: parentName,
-          profileImage: parentProfileImage,
-          type: "parent",
-        },
-        chatId,
-        tab: "parent",
+    openQuickChat(
+      {
+        userId: parentUserId,
+        name: parentName,
+        profileImage: parentProfileImage,
+        type: "parent",
       },
-    });
+      "parent"
+    );
   };
 
 const [isPortrait, setIsPortrait] = React.useState(
@@ -1524,37 +2388,37 @@ React.useEffect(() => {
     transition: "all 0.2s ease",
   });
 
-  const listShellWidth = isPortrait ? "92%" : "560px";
+  const listShellWidth = isPortrait ? "100%" : "min(100%, 640px)";
 
   return (
     <div
       className="dashboard-page"
       style={{
-        background: "var(--page-bg)",
+        background: "#ffffff",
         minHeight: "100vh",
         height: "100vh",
         overflow: "hidden",
         color: "var(--text-primary)",
         "--surface-panel": "#ffffff",
         "--surface-accent": "#eff6ff",
-        "--surface-muted": "#f8fafc",
+        "--surface-muted": "#f8fbff",
         "--surface-strong": "#e2e8f0",
-        "--page-bg": "#f5f8ff",
+        "--page-bg": "#ffffff",
         "--border-soft": "#e2e8f0",
         "--border-strong": "#cbd5e1",
         "--text-primary": "#0f172a",
         "--text-secondary": "#334155",
         "--text-muted": "#64748b",
-        "--accent": "#2563eb",
+        "--accent": "#3b82f6",
         "--accent-soft": "#dbeafe",
-        "--accent-strong": "#1d4ed8",
+        "--accent-strong": "#007AFB",
         "--sidebar-width": "clamp(230px, 16vw, 290px)",
-        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
-        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
+        "--shadow-soft": "0 10px 22px rgba(15, 23, 42, 0.07)",
+        "--shadow-panel": "0 16px 34px rgba(15, 23, 42, 0.12)",
         "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
       }}
     >
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden", background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)" }}>
         <Sidebar
           active="students"
           sidebarOpen={sidebarOpen}
@@ -1574,23 +2438,30 @@ React.useEffect(() => {
         />
 
         {/* MAIN CONTENT */}
-        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", alignItems: "flex-start", padding: "10px 20px 52px", boxSizing: "border-box" }}>
            <div
              className="student-list-card-responsive"
              style={{
                width: listShellWidth,
+               maxWidth: 640,
                position: "relative",
                marginLeft: 0,
                marginRight: isPortrait ? 0 : "24px",
+               background: "#ffffff",
+               border: "1px solid var(--border-soft)",
+               borderRadius: 18,
+               boxShadow: "var(--shadow-soft)",
+               padding: "14px 14px 22px",
+               boxSizing: "border-box",
              }}
            >
              <style>{`
                @media (max-width: 600px) {
                  .student-list-card-responsive {
-                   margin-left: -16px !important;
-                   margin-right: auto !important;
-                   width: 70vw !important;
-                   max-width: 70vw !important;
+                   width: 100% !important;
+                   max-width: 100% !important;
+                   margin-left: 0 !important;
+                   margin-right: 0 !important;
                  }
                }
              `}</style>
@@ -1610,11 +2481,11 @@ React.useEffect(() => {
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
-                  background: "var(--surface-panel)",
-                  border: "1px solid var(--border-soft)",
+                  background: "#f8fbff",
+                  border: "1px solid #dbeafe",
                   borderRadius: "12px",
                   padding: "10px 12px",
-                  boxShadow: "var(--shadow-soft)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.85)",
                 }}
               >
                 <FaSearch style={{ color: "var(--text-muted)", fontSize: 14 }} />
@@ -1692,64 +2563,33 @@ React.useEffect(() => {
             )}
             {!loading && !error && filteredStudents.length === 0 && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No students found.</p>}
             <style>{`
-                .student-list-responsive {
+              .student-list-responsive {
                 display: flex;
                 flex-direction: column;
-                  margin-top: 12px;
-                  gap: 12px;
+                margin-top: 12px;
+                gap: 12px;
                 width: 100%;
-                max-width: 100vw;
+                max-width: 100%;
                 margin-left: 0;
                 margin-right: 0;
               }
+
+              .student-list-responsive > div {
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+              }
+
               @media (max-width: 600px) {
                 .student-list-responsive {
-                  width: 100vw !important;
-                  max-width: 100vw !important;
-                  margin-left: 0 !important;
-                  margin-right: 0 !important;
-                  padding: 0 !important;
-                  align-items: flex-start !important;
+                  width: 100% !important;
+                  max-width: 100% !important;
                 }
+
                 .student-list-responsive > div {
-                  margin-left: 10px !important;
-                  padding-left: 10px !important;
-                  width: 100vw !important;
-                  max-width: 100vw !important;
-                  min-width: 100vw !important;
-                  box-sizing: border-box !important;
-                }
-              }
-              @media (min-width: 350px) {
-                .student-list-responsive {
-                  width: 400px;
-                  max-width: 90vw;
-                }
-              }
-               @media (max-width: 600px) {
-                 .student-list-card-responsive {
-                   margin-left: -32px !important;
-                   margin-right: auto !important;
-                   width: 80vw !important;
-                   max-width: 80vw !important;
-                 }
-               }
-                  width: 500px;
-                  max-width: 80vw;
-                }
-              }
-              @media (min-width: 1200px) {
-                .student-list-responsive {
-                  width: 420px;
-                  max-width: 520px;
-                  margin-left: 0;
-                }
-              }
-              @media (min-width: 1500px) {
-                .student-list-responsive {
-                  width: 420px;
-                  max-width: 520px;
-                  margin-left: 0;
+                  width: 100% !important;
+                  max-width: 100% !important;
+                  min-width: 0 !important;
                 }
               }
             `}</style>
@@ -1763,6 +2603,7 @@ React.useEffect(() => {
                   onClick={() => setSelectedStudent(s)}
                 />
               ))}
+              <div aria-hidden="true" style={{ height: 18 }} />
             </div>
           </div>
 
@@ -1775,7 +2616,7 @@ React.useEffect(() => {
       position: "fixed",
       right: 0,
       top: isPortrait ? 0 : "55px",
-      background: "var(--page-bg-secondary, var(--surface-muted))",
+      background: "#ffffff",
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
@@ -1827,8 +2668,9 @@ React.useEffect(() => {
           border: "3px solid rgba(255,255,255,0.8)",
         }}
       >
-        <img
-          src={selectedStudent.profileImage}
+        <ProfileAvatar
+          src={selectedStudentDetails?.profileImage || selectedStudent.profileImage}
+          name={selectedStudent.name}
           alt={selectedStudent.name}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
@@ -2118,6 +2960,11 @@ marginRight: 0,
       boxShadow: "var(--shadow-soft)",
     }}
   >
+    {attendanceLoading && (
+      <div style={{ marginBottom: 10, fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
+        Loading attendance...
+      </div>
+    )}
     {/* ===== VIEW SWITCH ===== */}
     <div
       style={{
@@ -2148,23 +2995,64 @@ marginRight: 0,
     </div>
 
     {/* ===== SUBJECT CARDS ===== */}
-    {Object.entries(attendanceBySubject)
-      .filter(
-        ([course]) =>
-          attendanceCourseFilter === "All" || course === attendanceCourseFilter
-      )
-      .map(([course, records]) => {
-        const today = new Date().toDateString();
-        const weekRecords = records.filter(
-          (r) => new Date(r.date).getWeek?.() === new Date().getWeek?.()
+    {(() => {
+      const subjectEntries = Object.entries(attendanceBySubject).filter(
+        ([course]) => attendanceCourseFilter === "All" || course === attendanceCourseFilter
+      );
+
+      if (subjectEntries.length === 0) {
+        return (
+          <div
+            style={{
+              marginTop: 8,
+              border: "1px dashed #bfdbfe",
+              borderRadius: 12,
+              padding: "18px 12px",
+              textAlign: "center",
+              background: "#f8fbff",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>
+              No attendance records
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.45 }}>
+              There are no attendance entries yet for this student.
+            </div>
+          </div>
         );
-        const monthRecords = records.filter(
-          (r) => new Date(r.date).getMonth() === new Date().getMonth()
-        );
+      }
+
+      return subjectEntries.map(([course, records]) => {
+        const latestRecordDate = getLatestRecordDate(records) || new Date();
+        const latestDateLabel = latestRecordDate.toDateString();
+        const latestWeek = _getWeekNumber(latestRecordDate);
+        const latestMonth = latestRecordDate.getMonth();
+        const latestYear = latestRecordDate.getFullYear();
+
+        const dayRecords = records.filter((r) => {
+          const recordDate = new Date(r.date);
+          return !Number.isNaN(recordDate.getTime()) && recordDate.toDateString() === latestDateLabel;
+        });
+        const weekRecords = records.filter((r) => {
+          const recordDate = new Date(r.date);
+          return (
+            !Number.isNaN(recordDate.getTime()) &&
+            recordDate.getFullYear() === latestYear &&
+            _getWeekNumber(recordDate) === latestWeek
+          );
+        });
+        const monthRecords = records.filter((r) => {
+          const recordDate = new Date(r.date);
+          return (
+            !Number.isNaN(recordDate.getTime()) &&
+            recordDate.getFullYear() === latestYear &&
+            recordDate.getMonth() === latestMonth
+          );
+        });
 
         const displayRecords =
           attendanceView === "daily"
-            ? records.filter((r) => new Date(r.date).toDateString() === today)
+            ? dayRecords
             : attendanceView === "weekly"
             ? weekRecords
             : monthRecords;
@@ -2337,7 +3225,8 @@ marginRight: 0,
             )}
           </div>
         );
-      })}
+      });
+    })()}
   </div>
 )}
 
@@ -2357,7 +3246,7 @@ marginRight: 0,
                         paddingBottom: "6px",
                       }}
                     >
-                      {["semester1", "semester2"].map((sem) => {
+                      {semesterTabs.map((sem) => {
                         const isActive = activeSemester === sem;
                         return (
                           <button
@@ -2374,7 +3263,7 @@ marginRight: 0,
                               borderBottom: isActive ? "2px solid var(--accent-strong)" : "2px solid transparent",
                             }}
                           >
-                            {sem === "semester1" ? "Semester 1" : "Semester 2"}
+                            {String(sem).replace(/semester(\d+)/i, "Semester $1")}
                           </button>
                         );
                       })}
@@ -2389,7 +3278,7 @@ marginRight: 0,
                         padding: "10px",
                       }}
                     >
-                      {loading ? (
+                      {marksLoading ? (
                         <div style={{ textAlign: "center", gridColumn: "1 / -1", padding: 12, color: "var(--text-muted)", fontSize: 11 }}>
                           Loading performance...
                         </div>
@@ -2410,6 +3299,23 @@ marginRight: 0,
                           No performance records
                         </div>
                       ) : (
+                        !availableSemesters.includes(activeSemester) ? (
+                          <div
+                            style={{
+                              textAlign: "center",
+                              padding: 12,
+                              borderRadius: 12,
+                              background: "var(--surface-panel)",
+                              color: "var(--text-secondary)",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              border: "1px solid var(--border-soft)",
+                              gridColumn: "1 / -1",
+                            }}
+                          >
+                            No performance records for {String(activeSemester).replace(/semester(\d+)/i, "Semester $1")}
+                          </div>
+                        ) :
                         Object.entries(studentMarksFlattened)
                           .filter(([, studentCourseData]) => Boolean(studentCourseData?.[activeSemester]))
                           .map(([courseKey, studentCourseData], idx) => {
@@ -2484,7 +3390,7 @@ marginRight: 0,
                                   fontSize: 10,
                                   fontWeight: 800,
                                   marginBottom: 10,
-                                  color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e",
+                                  color: hasQuarterFormatPreview ? "#007AFB" : "#0f766e",
                                   background: hasQuarterFormatPreview ? "#dbeafe" : "#ccfbf1",
                                   border: "1px solid var(--border-soft)",
                                 }}
@@ -2496,12 +3402,15 @@ marginRight: 0,
                               {(() => {
                                 const quarterEntries = quarterEntriesPreview;
                                 const hasQuarterFormat = hasQuarterFormatPreview;
+                                const quarterStateKey = `${courseKey}__${activeSemester}`;
+                                const defaultQuarterKey = quarterEntries[0]?.[0] || "";
+                                const selectedQuarterKey = quarterEntries.some(([quarterKey]) => quarterKey === activeQuarterViews[quarterStateKey])
+                                  ? activeQuarterViews[quarterStateKey]
+                                  : defaultQuarterKey;
+                                const selectedQuarterData = quarterEntries.find(([quarterKey]) => quarterKey === selectedQuarterKey)?.[1] || null;
 
                                 const renderQuarterBlock = (quarterKey, qdata) => {
-                                  const quarterNumber = parseInt(String(quarterKey).replace(/^q/i, ""), 10);
-                                  const label = Number.isFinite(quarterNumber)
-                                    ? `Quarter ${quarterNumber}`
-                                    : String(quarterKey).toUpperCase();
+                                  const label = formatQuarterLabel(quarterKey);
 
                                   const qAss = qdata?.assessments || qdata || {};
                                   const qTotal = Object.values(qAss).reduce((s, a) => s + (a.score || 0), 0);
@@ -2537,13 +3446,48 @@ marginRight: 0,
 
                                 if (hasQuarterFormat) {
                                   return (
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10 }}>
-                                      {quarterEntries.map(([quarterKey, quarterData]) => (
-                                        <React.Fragment key={quarterKey}>
-                                          {renderQuarterBlock(quarterKey, quarterData)}
-                                        </React.Fragment>
-                                      ))}
-                                    </div>
+                                    <>
+                                      <div
+                                        style={{
+                                          display: 'flex',
+                                          flexWrap: 'wrap',
+                                          gap: 8,
+                                          marginBottom: 12,
+                                        }}
+                                      >
+                                        {quarterEntries.map(([quarterKey]) => {
+                                          const isQuarterActive = selectedQuarterKey === quarterKey;
+                                          return (
+                                            <button
+                                              key={quarterKey}
+                                              onClick={() =>
+                                                setActiveQuarterViews((prev) => ({
+                                                  ...prev,
+                                                  [quarterStateKey]: quarterKey,
+                                                }))
+                                              }
+                                              style={{
+                                                padding: '5px 10px',
+                                                borderRadius: 999,
+                                                border: isQuarterActive ? '1px solid var(--accent-strong)' : '1px solid var(--border-soft)',
+                                                background: isQuarterActive ? 'var(--accent-strong)' : 'var(--surface-accent)',
+                                                color: isQuarterActive ? '#ffffff' : 'var(--accent-strong)',
+                                                fontSize: 10,
+                                                fontWeight: 800,
+                                                cursor: 'pointer',
+                                              }}
+                                            >
+                                              {formatQuarterLabel(quarterKey)}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+
+                                      {selectedQuarterData ? renderQuarterBlock(selectedQuarterKey, selectedQuarterData) : null}
+                                      <div style={{ marginTop: 8, textAlign: 'left', fontSize: 10, color: '#64748b' }}>
+                                        {selectedQuarterData?.teacherName || studentCourseData.teacherName || data.teacherName || 'N/A'}
+                                      </div>
+                                    </>
                                   );
                                 }
 
@@ -2645,7 +3589,21 @@ marginRight: 0,
               {/* Student Chat Button */}
               {!chatOpen && (
                 <div
-                  onClick={() => setChatOpen(true)}
+                  onClick={() =>
+                    openQuickChat(
+                      {
+                        userId: selectedStudent?.userId,
+                        name: selectedStudent?.name,
+                        profileImage: resolveProfileImage(
+                          selectedStudentDetails?.profileImage,
+                          selectedStudent?.profileImage,
+                          "/default-profile.png"
+                        ),
+                        type: "student",
+                      },
+                      "student"
+                    )
+                  }
                   title="Chat with student"
                   style={{
                     position: "fixed",
@@ -2731,19 +3689,23 @@ marginRight: 0,
                       background: "#fafafa",
                     }}
                   >
-                    <strong>{selectedStudent.name}</strong>
+                    <strong>{quickChatTarget?.name || selectedStudent.name}</strong>
 
                     <div style={{ display: "flex", gap: "10px" }}>
                       {/* Expand */}
                       <button
                         onClick={() => {
-                          setChatOpen(false); // properly close popup
-                          const chatId = getChatId(teacherUserId, selectedStudent.userId);
+                          const targetUserId = normalizeIdentifier(quickChatTarget?.userId);
+                          if (!targetUserId) return;
+
+                          closeQuickChat();
+                          const chatId = getChatId(teacherUserId, targetUserId);
                           navigate("/all-chat", {
                             state: {
-                              user: selectedStudent, // user to auto-select
+                              user: quickChatTarget || selectedStudent,
+                              contact: quickChatTarget || selectedStudent,
                               chatId, // open the exact chat thread
-                              tab: "student", // tab type
+                              tab: quickChatTab || "student", // tab type
                             },
                           });
                         }}
@@ -2759,7 +3721,7 @@ marginRight: 0,
 
                       {/* Close */}
                       <button
-                        onClick={() => setChatOpen(false)}
+                        onClick={closeQuickChat}
                         style={{
                           background: "none",
                           border: "none",
@@ -2774,6 +3736,7 @@ marginRight: 0,
 
                   {/* Messages */}
                   <div
+                    ref={quickChatMessagesRef}
                     style={{
                       flex: 1,
                       padding: "12px",
@@ -2784,13 +3747,38 @@ marginRight: 0,
                       background: "#f9f9f9",
                     }}
                   >
-                    {messages.length === 0 ? (
+                    {(quickChatHasOlder || quickChatLoadingOlder) && !quickChatLoading && (
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                        <button
+                          onClick={loadOlderMessages}
+                          disabled={quickChatLoadingOlder}
+                          style={{
+                            border: "1px solid #bfdbfe",
+                            background: quickChatLoadingOlder ? "#eff6ff" : "#ffffff",
+                            color: "#007AFB",
+                            borderRadius: 999,
+                            padding: "6px 12px",
+                            fontSize: 10,
+                            fontWeight: 800,
+                            cursor: quickChatLoadingOlder ? "default" : "pointer",
+                          }}
+                        >
+                          {quickChatLoadingOlder ? "Loading older messages..." : "Load older messages"}
+                        </button>
+                      </div>
+                    )}
+
+                    {quickChatLoading ? (
+                      <p style={{ textAlign: "center", color: "#64748b" }}>
+                        Loading recent chat...
+                      </p>
+                    ) : messages.length === 0 ? (
                       <p style={{ textAlign: "center", color: "#aaa" }}>
-                        Start chatting with {selectedStudent.name}
+                        Start chatting with {quickChatTarget?.name || selectedStudent.name}
                       </p>
                     ) : (
                       messages.map((m) => {
-                        const isTeacher = String(m.senderId) === String(teacher?.userId);
+                        const isTeacher = String(m?.senderId || "") === String(teacherUserId);
 
                         return (
                           <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isTeacher ? "flex-end" : "flex-start", marginBottom: 10 }}>
@@ -2884,6 +3872,7 @@ marginRight: 0,
                 right: 0,
                 top: isPortrait ? 0 : "55px",
                 background: "var(--surface-muted)",
+                backgroundImage: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
                 zIndex: 90,
                 display: "flex",
                 flexDirection: "column",

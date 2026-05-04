@@ -2,6 +2,9 @@ import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import "../styles/global.css";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { buildUserLookupFromNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 function StudentChatPage() {
   const location = useLocation();
@@ -12,16 +15,26 @@ function StudentChatPage() {
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState("");
 
-  const admin = JSON.parse(localStorage.getItem("admin")) || {};
+  const stored = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
+    } catch {
+      return {};
+    }
+  })();
+  const admin = stored;
+  const schoolCode = stored.schoolCode || "";
+  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
 
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        const studentsRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://ethiostore-17d9f-default-rtdb.firebaseio.com/Users.json");
-
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
+        const [studentsData, usersNode] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+          loadSchoolUsersNode({ rtdbBase: DB_URL }),
+        ]);
+        const usersData = buildUserLookupFromNode(usersNode);
 
         const studentList = Object.keys(studentsData).map(id => {
           const student = studentsData[id];
@@ -46,14 +59,13 @@ function StudentChatPage() {
     };
 
     fetchStudents();
-  }, [studentId]);
+  }, [DB_URL, studentId]);
 
   useEffect(() => {
     const fetchMessages = async () => {
       if (!selectedStudent) return;
       try {
-        const res = await axios.get(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json`);
-        const allMessages = res.data || {};
+        const allMessages = await fetchCachedJson(`${DB_URL}/StudentMessages.json`, { ttlMs: 15000 }).catch(() => ({}));
         const chatMessages = Object.values(allMessages).filter(
           m =>
             (m.studentId === selectedStudent.studentId && m.adminId === admin.adminId) ||
@@ -79,7 +91,7 @@ function StudentChatPage() {
     };
 
     try {
-      await axios.post(`https://ethiostore-17d9f-default-rtdb.firebaseio.com/StudentMessages.json`, newMessage);
+      await axios.post(`${DB_URL}/StudentMessages.json`, newMessage);
       setMessages(prev => [...prev, newMessage]);
       setMessageInput("");
     } catch (err) {
@@ -144,7 +156,7 @@ function StudentChatPage() {
               borderBottom: "1px solid var(--border-soft)",
             }}
           >
-            <img src={student.profileImage} alt={student.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+            <ProfileAvatar imageUrl={student.profileImage} name={student.name} size={40} />
             <span style={{ color: "var(--text-primary)" }}>{student.name}</span>
           </div>
         ))}
@@ -155,7 +167,7 @@ function StudentChatPage() {
         {selectedStudent ? (
           <>
             <div style={{ ...shellHeaderStyle, justifyContent: "flex-start", gap: "15px" }}>
-              <img src={selectedStudent.profileImage} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
+              <ProfileAvatar imageUrl={selectedStudent.profileImage} name={selectedStudent.name} size={50} />
               <strong style={{ color: "var(--text-primary)" }}>{selectedStudent.name}</strong>
             </div>
 

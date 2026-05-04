@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 import sys
 import re
+from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
 
@@ -16,16 +17,13 @@ app = Flask(__name__)
 CORS(app)
 
 # ---------------- FIREBASE ---------------- #
-firebase_json = "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json"
+firebase_json = require_firebase_credentials()
 if not os.path.exists(firebase_json):
-    print("Firebase JSON missing")
-    sys.exit()
+    print(f"Firebase JSON missing at {firebase_json}")
+    sys.exit(1)
 
 cred = credentials.Certificate(firebase_json)
-firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/",
-    "storageBucket": "bale-house-rental.appspot.com"
-})
+firebase_admin.initialize_app(cred, get_firebase_options())
 bucket = storage.bucket()
 
 # ---------------- REFERENCES ---------------- #
@@ -48,12 +46,125 @@ def all_schools_snapshot():
     return platform_ref("Schools").get() or {}
 
 
+def parse_positive_int(value, default_value, min_value=1, max_value=100):
+    try:
+        parsed_value = int(value)
+    except (TypeError, ValueError):
+        parsed_value = default_value
+
+    return max(min_value, min(max_value, parsed_value))
+
+
+def read_recent_posts_for_school(school_code, limit=60):
+    code = str(school_code or "").strip()
+    if not code:
+        return {}
+
+    try:
+        posts = school_node_ref(code, "Posts").order_by_key().limit_to_last(limit).get() or {}
+        return posts if isinstance(posts, dict) else {}
+    except Exception:
+        return {}
+
+
+def resolve_school_code_alias(school_code):
+    code = str(school_code or "").strip()
+    if not code:
+        return ""
+
+    if read_recent_posts_for_school(code, limit=1):
+        return code
+
+    try:
+        school_keys = platform_ref("Schools").get(shallow=True) or {}
+        if isinstance(school_keys, dict):
+            normalized_code = code.lower()
+            for school_key in school_keys.keys():
+                normalized_key = str(school_key or "").strip().lower()
+                if (
+                    normalized_key == normalized_code
+                    or normalized_key.endswith(f"-{normalized_code}")
+                    or normalized_key.startswith(f"{normalized_code}-")
+                    or f"-{normalized_code}-" in normalized_key
+                ):
+                    return str(school_key)
+    except Exception:
+        pass
+
+    try:
+        matches = platform_ref("Schools").order_by_child("schoolInfo/shortName").equal_to(code).limit_to_first(1).get() or {}
+        if isinstance(matches, dict) and matches:
+            return next(iter(matches.keys()))
+    except Exception:
+        pass
+
+    try:
+        matches = platform_ref("Schools").order_by_child("schoolInfo/schoolCode").equal_to(code).limit_to_first(1).get() or {}
+        if isinstance(matches, dict) and matches:
+            return next(iter(matches.keys()))
+    except Exception:
+        pass
+
+    return code
+
+
+def load_post_actor_profiles(school_code, posts):
+    actor_ids = {
+        str((post or {}).get("adminId") or (post or {}).get("userId") or "").strip()
+        for post in posts
+        if isinstance(post, dict) and str((post or {}).get("adminId") or (post or {}).get("userId") or "").strip()
+    }
+    profiles = {}
+
+    for actor_id in actor_ids:
+        user = school_node_ref(school_code, f"Users/{actor_id}").get() or {}
+        if not isinstance(user, dict):
+            user = {}
+
+        admin_record = {}
+        if not user:
+            admin_record = school_node_ref(school_code, f"School_Admins/{actor_id}").get() or {}
+            if isinstance(admin_record, dict) and admin_record.get("userId"):
+                user = school_node_ref(school_code, f"Users/{admin_record.get('userId')}").get() or {}
+
+        if not isinstance(admin_record, dict):
+            admin_record = {}
+        if not isinstance(user, dict):
+            user = {}
+
+        profiles[actor_id] = {
+            "name": user.get("name") or admin_record.get("name") or "Admin",
+            "profileImage": user.get("profileImage") or admin_record.get("profileImage") or "/default-profile.png",
+            "userId": user.get("userId") or admin_record.get("userId") or actor_id,
+        }
+
+    return profiles
+
+
 def _merged_dict(*nodes):
     merged = {}
     for node in nodes:
         if isinstance(node, dict):
             merged.update(node)
     return merged
+
+
+def _normalize_users_node(users_node):
+    normalized = {}
+    if not isinstance(users_node, dict):
+        return normalized
+
+    for user_key, user_value in users_node.items():
+        if not isinstance(user_value, dict):
+            continue
+
+        normalized_user = dict(user_value)
+        normalized_user["userId"] = str(
+            normalized_user.get("userId") or user_key or ""
+        ).strip()
+        normalized[str(user_key)] = normalized_user
+
+    return normalized
 
 
 def get_users_snapshot():
@@ -64,13 +175,12 @@ def get_users_snapshot():
         if not isinstance(school, dict):
             continue
         school_users = school.get("Users") or {}
-        if isinstance(school_users, dict):
-            users.update(school_users)
+        users.update(_normalize_users_node(school_users))
     return users
 
 
 def get_users_snapshot_for_school(school_code):
-    return school_node_ref(school_code, "Users").get() or {}
+    return _normalize_users_node(school_node_ref(school_code, "Users").get() or {})
 
 
 def get_school_admins_snapshot():
@@ -107,16 +217,20 @@ def get_school_options():
     """Build selectable school options from DB with safe defaults."""
     options = []
 
-    schools_node = all_schools_snapshot()
-    if isinstance(schools_node, dict):
-        for key, school in schools_node.items():
-            if not isinstance(school, dict):
-                continue
-            school_info = school.get("schoolInfo") or {}
+    try:
+        school_keys_node = platform_ref("Schools").get(shallow=True) or {}
+    except TypeError:
+        school_keys_node = platform_ref("Schools").get() or {}
+
+    if isinstance(school_keys_node, dict):
+        for key in school_keys_node.keys():
+            school_info = school_node_ref(key, "schoolInfo").get() or {}
+            if not isinstance(school_info, dict):
+                school_info = {}
             options.append({
                 "code": key,
                 "shortName": school_info.get("shortName") or school_info.get("short_name") or "SCH",
-                "name": school_info.get("name") or school.get("schoolName") or key,
+                "name": school_info.get("name") or key,
             })
 
     deduped = []
@@ -483,13 +597,14 @@ def create_post():
     try:
         data = request.form
         text = data.get("message", "")
-        adminId = data.get("adminId")  # This is userId from frontend
+        adminId = data.get("adminId")
+        userId = data.get("userId")
         media_file = request.files.get("post_media")
 
-        if not adminId:
+        if not adminId and not userId:
             return jsonify({"success": False, "message": "Admin not logged in"})
 
-        resolved = resolve_admin_identifiers(adminId)
+        resolved = resolve_admin_identifiers(userId or adminId) or resolve_admin_identifiers(adminId)
         if not resolved:
             return jsonify({"success": False, "message": "Unknown admin identity"}), 400
 
@@ -497,21 +612,29 @@ def create_post():
         if media_file:
             post_url = upload_file_to_firebase(media_file, folder="posts")
 
-        school_code = resolved.get("schoolCode")
+        school_code = resolve_school_code_alias(data.get("schoolCode") or resolved.get("schoolCode"))
         if not school_code:
             return jsonify({"success": False, "message": "Admin school not found"}), 400
 
         post_ref = school_node_ref(school_code, "Posts").push()
         time_now = datetime.utcnow().isoformat()
         
-        admin_user_id = resolved.get("userId")
+        admin_user_id = resolved.get("userId") or userId or adminId
+        admin_name = data.get("adminName") or (resolved.get("user") or {}).get("name") or "Admin"
+        admin_profile = data.get("adminProfile") or (resolved.get("user") or {}).get("profileImage") or "/default-profile.png"
         
         post_ref.set({
             "postId": post_ref.key,
             "message": text,
             "postUrl": post_url,
             "adminId": admin_user_id,
+            "userId": admin_user_id,
+            "adminName": admin_name,
+            "adminProfile": admin_profile,
+            "schoolCode": school_code,
+            "targetRole": data.get("targetRole") or "all",
             "time": time_now,
+            "createdAt": time_now,
             "likeCount": 0,
             "likes": {},
             "seenBy": {
@@ -547,47 +670,48 @@ def get_posts():
 
         return normalized
 
-    all_posts = {}
     requested_school_code = (request.args.get("schoolCode") or "").strip()
+    limit = parse_positive_int(request.args.get("limit"), 60, 1, 100)
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
 
-    if requested_school_code:
-        school = (all_schools_snapshot() or {}).get(requested_school_code) or {}
-        if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-            all_posts.update(normalize_posts_node(school.get("Posts") or {}, requested_school_code))
-    else:
-        schools = all_schools_snapshot()
-        for school_code, school in schools.items():
-            if isinstance(school, dict) and isinstance(school.get("Posts"), dict):
-                all_posts.update(normalize_posts_node(school.get("Posts") or {}, school_code))
+    if not resolved_school_code:
+        return jsonify([])
 
+    all_posts = normalize_posts_node(
+        read_recent_posts_for_school(resolved_school_code, limit),
+        resolved_school_code,
+    )
     post_list = []
+    ordered_posts = sorted(
+        all_posts.items(),
+        key=lambda item: str((item[1] or {}).get("time") or (item[1] or {}).get("createdAt") or item[0]),
+        reverse=True,
+    )[:limit]
+    actor_profiles = load_post_actor_profiles(resolved_school_code, [post for _, post in ordered_posts])
 
-    for key, post in all_posts.items():
+    for key, post in ordered_posts:
         if not isinstance(post, dict):
             continue
 
-        post_owner = resolve_admin_identifiers(post.get("adminId"))
-        user_data = post_owner.get("user", {}) if post_owner else {}
+        actor_id = str(post.get("adminId") or post.get("userId") or "").strip()
+        user_data = actor_profiles.get(actor_id, {})
         
         post_list.append({
             "postId": key,
             "message": post.get("message"),
             "postUrl": post.get("postUrl"),
             "adminId": post.get("adminId"),
-            "userId": post.get("userId"),
+            "userId": post.get("userId") or user_data.get("userId"),
             "targetRole": post.get("targetRole", "all"),
-            "schoolCode": post.get("schoolCode", requested_school_code),
-            "adminName": user_data.get("name", "Admin"),
-            "adminProfile": user_data.get("profileImage", "/default-profile.png"),
+            "schoolCode": post.get("schoolCode") or resolved_school_code,
+            "adminName": user_data.get("name") or post.get("adminName") or "Admin",
+            "adminProfile": user_data.get("profileImage") or post.get("adminProfile") or "/default-profile.png",
             "time": post.get("time"),
             "likes": post.get("likes", {}),
             "likeCount": post.get("likeCount", 0),
-            "seenBy": post.get("seenBy", {})   # 🔥 THIS LINE
+            "seenBy": post.get("seenBy", {})
         })
 
-
-
-    post_list.reverse()
     return jsonify(post_list)
 
 

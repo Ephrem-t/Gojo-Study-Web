@@ -1,16 +1,139 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { FaBell, FaCalendarAlt, FaCheckCircle, FaClock, FaCog, FaFacebookMessenger, FaFilter, FaSearch, FaTimesCircle, FaUserCheck, FaUsers } from 'react-icons/fa';
 import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
-import Sidebar from '../components/Sidebar';
-import TopNavbar from '../components/TopNavbar';
+import { getEmployeeJob, getEmployeeName, getEmployeeProfileImage, getEmployeesSnapshot } from '../hrData';
+
+const ATTENDANCE_AUTOSAVE_STORAGE_KEY = 'gojo-hr-attendance-autosave-enabled';
 
 function toIsoDate(dateObj) {
   const year = dateObj.getFullYear();
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
   const day = String(dateObj.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function getInitials(name) {
+  return (name || 'Employee')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('') || 'E';
+}
+
+function createAttendanceSignature(date, attendanceMap) {
+  const entries = Object.entries(attendanceMap || {})
+    .map(([employeeId, record]) => {
+      const entry = record && typeof record === 'object' ? record : {};
+      const rawStatus = (entry.status || '').toString().toLowerCase();
+      const status = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
+      const present = typeof entry.present === 'boolean' ? entry.present : status !== 'absent';
+
+      return [String(employeeId), { status, present }];
+    })
+    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
+
+  return JSON.stringify({ date: String(date || ''), attendance: entries });
+}
+
+function AvatarBadge({ src, name, size = 48 }) {
+  const [failed, setFailed] = useState(false);
+
+  if (!src || failed) {
+    return (
+      <div
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 16,
+          border: '1px solid #d7e7fb',
+          background: 'linear-gradient(135deg, #eef6ff 0%, #dfeeff 100%)',
+          color: '#1f4f96',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 15,
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {getInitials(name)}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={name || 'Employee'}
+      onError={() => setFailed(true)}
+      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid #d7e7fb', flexShrink: 0 }}
+    />
+  );
+}
+
+function MetricCard({ icon: Icon, label, value, accent }) {
+  return (
+    <div
+      style={{
+        background: '#ffffff',
+        borderRadius: 18,
+        border: '1px solid #e7ecf3',
+        padding: 18,
+        boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+          <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{value}</div>
+        </div>
+        <div
+          style={{
+            width: 46,
+            height: 46,
+            borderRadius: 16,
+            background: accent.background,
+            border: `1px solid ${accent.border}`,
+            color: accent.color,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 18,
+          }}
+        >
+          <Icon />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusActionButton({ label, value, active, colors, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(value)}
+      style={{
+        minHeight: 34,
+        padding: '0 12px',
+        borderRadius: 999,
+        border: `1px solid ${active ? colors.border : '#dbe2f2'}`,
+        background: active ? colors.background : '#ffffff',
+        color: active ? colors.color : '#475569',
+        fontSize: 12,
+        fontWeight: 800,
+        cursor: 'pointer',
+        transition: 'all 0.18s ease',
+        boxShadow: active ? '0 8px 18px rgba(15, 23, 42, 0.06)' : 'none',
+      }}
+    >
+      {label}
+    </button>
+  );
 }
 
 export default function EmployeesAttendance() {
@@ -31,15 +154,29 @@ export default function EmployeesAttendance() {
   const [attendance, setAttendance] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
+    try {
+      const stored = localStorage.getItem(ATTENDANCE_AUTOSAVE_STORAGE_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const [autoSaveState, setAutoSaveState] = useState('idle');
+
+  const userEditedAttendanceRef = useRef(false);
+  const lastSavedSignatureRef = useRef('');
 
   const markedBy = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || '';
+  const isBusy = isLoading || isSaving || isAutoSaving;
 
   const positions = useMemo(() => {
     const set = new Set();
     (employees || []).forEach((emp) => {
-      const job = emp?.job || emp?.profileData?.job || {};
+      const job = getEmployeeJob(emp);
       const pos = job.position || emp.position || emp.role || 'Staff';
       if (pos) set.add(pos);
     });
@@ -55,24 +192,14 @@ export default function EmployeesAttendance() {
         return status !== 'terminated' && isActive !== false;
       })
       .map((employee) => {
-        const job = employee?.job || employee?.profileData?.job || {};
-        const personal = employee?.personal || employee?.profileData?.personal || {};
-        const name = employee.name || employee.fullName || [personal.firstName, personal.middleName, personal.lastName].filter(Boolean).join(' ') || 'Employee';
-        const avatar =
-          employee.profileImage ||
-          employee.profileImageUrl ||
-          employee.photoURL ||
-          employee.photo ||
-          (employee.profile && (employee.profile.image || employee.profile.photo)) ||
-          (employee.personal && (employee.personal.photo || employee.personal.profileImage)) ||
-          (employee.profileData && employee.profileData.personal && employee.profileData.personal.photo) ||
-          '';
-        const initials = name.split(' ').filter(Boolean).slice(0,2).map(n=>n[0]?.toUpperCase()).join('');
+        const job = getEmployeeJob(employee);
+        const name = getEmployeeName(employee);
+        const avatar = getEmployeeProfileImage(employee);
         return {
           ...employee,
           _name: name,
           _avatar: avatar,
-          _initials: initials || 'E',
+          _initials: getInitials(name),
           _department: job.department || employee.department || 'Unassigned',
           _position: job.position || employee.position || employee.role || 'Staff',
         };
@@ -89,53 +216,8 @@ export default function EmployeesAttendance() {
   useEffect(() => {
     async function loadEmployees() {
       try {
-        const res = await api.get('/employees');
-        const data = res.data || {};
-        const list = Array.isArray(data)
-          ? data
-          : Object.entries(data || {}).map(([id, payload]) => ({
-              ...(payload || {}),
-              id,
-            }));
-        // Best-effort: fetch users to obtain profile images or additional metadata
-        let usersMap = {};
-        try {
-          const ures = await api.get('/users');
-          const udata = ures.data || {};
-          if (Array.isArray(udata)) {
-            usersMap = udata.reduce((acc, u) => {
-              const key = u.id || u.uid || u.userId;
-              if (key) acc[key] = u;
-              return acc;
-            }, {});
-          } else if (udata && typeof udata === 'object') {
-            usersMap = Object.entries(udata).reduce((acc, [k, v]) => {
-              acc[k] = v; return acc;
-            }, {});
-          }
-        } catch (e) {
-          // ignore failure to fetch users — not critical
-          console.warn('Could not fetch /users for profile images', e);
-        }
-
-        const merged = list.map((emp) => {
-          const copy = { ...(emp || {}) };
-          const userByKey = usersMap[emp.id] || usersMap[emp.userId] || usersMap[emp.uid];
-          let fallbackUser = userByKey;
-          if (!fallbackUser) {
-            // try to match by email or employeeId if available
-            const values = Object.values(usersMap || {});
-            fallbackUser = values.find((u) => (u.employeeId && (u.employeeId === emp.id || u.employeeId === emp.userId)) || (u.email && emp.email && u.email.toLowerCase() === emp.email.toLowerCase()));
-          }
-
-          if (fallbackUser) {
-            copy.profileImage = copy.profileImage || fallbackUser.profileImage || fallbackUser.photoURL || fallbackUser.photo || fallbackUser.photoUrl || fallbackUser.avatar || '';
-          }
-
-          return copy;
-        });
-
-        setEmployees(merged);
+        const snapshot = await getEmployeesSnapshot();
+        setEmployees(snapshot);
       } catch (e) {
         console.error(e);
         setEmployees([]);
@@ -144,6 +226,23 @@ export default function EmployeesAttendance() {
 
     loadEmployees();
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ATTENDANCE_AUTOSAVE_STORAGE_KEY, autoSaveEnabled ? 'true' : 'false');
+    } catch {
+      // Ignore storage persistence errors and keep the in-memory toggle working.
+    }
+
+    if (!autoSaveEnabled) {
+      setAutoSaveState('idle');
+    }
+  }, [autoSaveEnabled]);
+
+  useEffect(() => {
+    userEditedAttendanceRef.current = false;
+    setAutoSaveState('idle');
+  }, [selectedDate]);
 
   useEffect(() => {
     async function loadAttendance() {
@@ -170,9 +269,15 @@ export default function EmployeesAttendance() {
           return acc;
         }, {});
         setAttendance(withStatus);
+        lastSavedSignatureRef.current = createAttendanceSignature(selectedDate, withStatus);
+        userEditedAttendanceRef.current = false;
+        setAutoSaveState('idle');
       } catch (e) {
         console.error(e);
         setAttendance({});
+        lastSavedSignatureRef.current = createAttendanceSignature(selectedDate, {});
+        userEditedAttendanceRef.current = false;
+        setAutoSaveState('idle');
         setErrorMessage('Failed to load attendance for the selected date.');
       } finally {
         setIsLoading(false);
@@ -186,6 +291,12 @@ export default function EmployeesAttendance() {
     const normalizedStatus = (status || '').toString().toLowerCase();
     const finalStatus = normalizedStatus === 'late' ? 'late' : normalizedStatus === 'present' ? 'present' : 'absent';
     const present = finalStatus !== 'absent';
+    userEditedAttendanceRef.current = true;
+    setErrorMessage('');
+    setSuccessMessage('');
+    if (autoSaveEnabled) {
+      setAutoSaveState('pending');
+    }
     setAttendance((prev) => {
       const next = { ...(prev || {}) };
       next[employeeId] = {
@@ -198,22 +309,10 @@ export default function EmployeesAttendance() {
   };
 
   const statusStyles = (status) => {
-    if (!status) return { bg: 'var(--surface-panel, #ffffff)', border: 'var(--border-soft, #dbe2f2)', text: 'var(--text-muted, #64748b)' };
-    if (status === 'present') return { bg: 'var(--success-soft, #f0fdf4)', border: 'var(--success-border, #bbf7d0)', text: 'var(--success, #166534)' };
-    if (status === 'late') return { bg: 'var(--warning-soft, #fffbeb)', border: 'var(--warning-border, #fde68a)', text: 'var(--warning, #92400e)' };
-    return { bg: 'var(--danger-soft, #fef2f2)', border: 'var(--danger-border, #fecaca)', text: 'var(--danger, #991b1b)' };
-  };
-
-  const actionButtonStyles = (buttonStatus, activeStatus) => {
-    if (buttonStatus === activeStatus) {
-      return buttonStatus === 'present'
-        ? { background: 'var(--success, #16a34a)', color: '#fff', border: '1px solid var(--success, #16a34a)' }
-        : buttonStatus === 'late'
-          ? { background: 'var(--warning, #d97706)', color: '#fff', border: '1px solid var(--warning, #d97706)' }
-          : { background: 'var(--danger, #dc2626)', color: '#fff', border: '1px solid var(--danger, #dc2626)' };
-    }
-
-    return { background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #475569)', border: '1px solid var(--border-soft, #dbe2f2)' };
+    if (!status) return { bg: '#ffffff', border: '#dbe2f2', text: '#64748b' };
+    if (status === 'present') return { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' };
+    if (status === 'late') return { bg: '#fffbeb', border: '#fde68a', text: '#92400e' };
+    return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
   };
 
   const handleSave = async () => {
@@ -229,89 +328,242 @@ export default function EmployeesAttendance() {
       };
       const res = await api.post('/api/employee_attendance', payload);
       const savedCount = res.data?.savedCount;
-      setSuccessMessage(typeof savedCount === 'number' ? `Saved ${savedCount} records.` : 'Saved attendance.');
+      lastSavedSignatureRef.current = nextSignature;
+      userEditedAttendanceRef.current = false;
+      setAutoSaveState('saved');
+
+      if (!silent) {
+        setSuccessMessage(typeof savedCount === 'number' ? `Saved ${savedCount} records.` : 'Saved attendance.');
+      }
+      return true;
     } catch (e) {
       console.error(e);
-      setErrorMessage('Failed to save attendance.');
+      setAutoSaveState('error');
+      setErrorMessage(silent ? 'Auto-save failed. Use Save Attendance.' : 'Failed to save attendance.');
+      return false;
     } finally {
-      setIsSaving(false);
+      if (silent) {
+        setIsAutoSaving(false);
+      } else {
+        setIsSaving(false);
+      }
     }
-  };
+  }, [attendance, markedBy, selectedDate];
+
+  useEffect(() => {
+    if (!autoSaveEnabled || !selectedDate || isLoading || isSaving || isAutoSaving) {
+      return undefined;
+    }
+
+    if (!userEditedAttendanceRef.current) {
+      return undefined;
+    }
+
+    const nextSignature = createAttendanceSignature(selectedDate, attendance);
+    if (nextSignature === lastSavedSignatureRef.current) {
+      userEditedAttendanceRef.current = false;
+      setAutoSaveState('saved');
+      return undefined;
+    }
+
+    setAutoSaveState('pending');
+    const timeoutId = window.setTimeout(() => {
+      handleSave({ silent: true }).catch(console.error);
+    }, 900);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [attendance, autoSaveEnabled, handleSave, isAutoSaving, isLoading, isSaving, selectedDate]);
+
+  const autoSaveLabel = autoSaveEnabled
+    ? autoSaveState === 'saving'
+      ? 'Auto-saving changes...'
+      : autoSaveState === 'saved'
+        ? 'Changes save automatically'
+        : autoSaveState === 'error'
+          ? 'Auto-save needs attention'
+          : 'Changes will save automatically'
+    : 'Manual save only';
 
   return (
-    <div className="dashboard-page" style={{ minHeight: '100vh' }}>
-      <TopNavbar admin={admin} />
+    <div
+      className="dashboard-page"
+      style={{
+        minHeight: '100vh',
+        background: '#ffffff',
+        color: 'var(--text-primary)',
+        '--surface-panel': '#FFFFFF',
+        '--surface-accent': '#F1F8FF',
+        '--surface-muted': '#F7FBFF',
+        '--surface-strong': '#DCEBFF',
+        '--page-bg': '#FFFFFF',
+        '--border-soft': '#D7E7FB',
+        '--border-strong': '#B5D2F8',
+        '--text-primary': '#0f172a',
+        '--text-secondary': '#334155',
+        '--text-muted': '#64748b',
+        '--accent': '#007AFB',
+        '--accent-soft': '#E7F2FF',
+        '--accent-strong': '#007AFB',
+        '--danger': '#b91c1c',
+        '--danger-soft': '#fff1f2',
+        '--danger-border': '#fecaca',
+        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
+        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
+        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
+        '--sidebar-width': 'clamp(230px, 16vw, 290px)',
+        '--topbar-height': '64px',
+      }}
+    >
+      <nav className="top-navbar" style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--topbar-height)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '0 18px 0 20px', borderBottom: '1px solid var(--border-soft)', background: 'var(--surface-panel)', zIndex: 60 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Gojo HR</h2>
+        </div>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
-        <Sidebar
-          admin={admin}
-          fullHeight
-          top={4}
-          onLogout={() => {
-            localStorage.removeItem('admin');
-            navigate('/login', { replace: true });
-          }}
-        />
+        <div className="nav-right" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
+          <button type="button" title="Messages" onClick={() => navigate('/all-chat')} style={headerActionStyle}><FaFacebookMessenger /></button>
+          <Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
+          <AvatarBadge src={admin.profileImage} name={admin.name || 'HR Office'} size={40} />
+        </div>
+      </nav>
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px', width: '100%' }}>
-          <div style={{ maxWidth: 1500, margin: '0 auto', background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8fafc) 100%)', borderRadius: 16, border: '1px solid var(--border-soft, #e6ecf8)', boxShadow: 'var(--shadow-panel, 0 10px 24px rgba(17,24,39,0.08))', padding: 18 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Employees Attendance</div>
-                <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Set each employee as Present, Late, or Absent then save.</div>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+        <div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
+
+        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
+          <div style={{ width: '100%', maxWidth: 1320 }}>
+            <section
+              style={{
+                background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
+                border: '1px solid #e7ecf3',
+                borderRadius: 22,
+                padding: '22px 24px',
+                boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: '#eef6ff', border: '1px solid #d8e8ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                    Workforce Attendance
+                  </div>
+                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Employees Attendance</h1>
+                  <p style={{ margin: '8px 0 0', fontSize: 14, color: '#64748b', lineHeight: 1.6, maxWidth: 760 }}>
+                    Review daily staff attendance from one premium workspace, filter quickly, and mark each employee with faster status actions.
+                  </p>
+                </div>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
+                  <FaCalendarAlt /> {selectedDate}
+                </div>
               </div>
+            </section>
 
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, borderRadius: 12, background: 'var(--surface-muted, #f8fafc)', border: '1px solid var(--border-soft, #eef2ff)' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Date</label>
+            <section style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+              <MetricCard icon={FaUsers} label="Active Employees" value={attendanceStats.total} accent={{ background: '#f3f8ff', border: '#dbe8f7', color: '#2563eb' }} />
+              <MetricCard icon={FaCheckCircle} label="Present" value={attendanceStats.present} accent={{ background: '#f5fbf7', border: '#d9efe1', color: '#059669' }} />
+              <MetricCard icon={FaClock} label="Late" value={attendanceStats.late} accent={{ background: '#fffbeb', border: '#fde68a', color: '#d97706' }} />
+              <MetricCard icon={FaTimesCircle} label="Absent / Unset" value={attendanceStats.absent + attendanceStats.unset} accent={{ background: '#fff7f7', border: '#fecaca', color: '#dc2626' }} />
+            </section>
+
+            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', flex: '1 1 720px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Date</label>
                     <input
                       type="date"
                       value={selectedDate}
                       onChange={(e) => setSelectedDate(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', background: 'var(--input-bg, #fff)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)' }}
+                      style={{ height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff' }}
                     />
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Position</label>
-                    <select
-                      value={selectedPosition}
-                      onChange={(e) => setSelectedPosition(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)', background: 'var(--input-bg, #fff)', cursor: 'pointer' }}
-                    >
-                      <option value="">All positions</option>
-                      {positions.length ? positions.map((p) => (
-                        <option key={p} value={p}>{p}</option>
-                      )) : <option disabled>No positions</option>}
-                    </select>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Position</label>
+                    <div style={{ position: 'relative' }}>
+                      <FaFilter style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', fontSize: 13 }} />
+                      <select
+                        value={selectedPosition}
+                        onChange={(e) => setSelectedPosition(e.target.value)}
+                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff', cursor: 'pointer' }}
+                      >
+                        <option value="">All positions</option>
+                        {positions.length ? positions.map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        )) : <option disabled>No positions</option>}
+                      </select>
+                    </div>
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 240 }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary, #374151)' }}>Search</label>
-                    <input
-                      placeholder="Search by name or ID"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      style={{ height: 38, borderRadius: 10, border: '1px solid var(--input-border, #dbe2f2)', background: 'var(--input-bg, #fff)', padding: '0 10px', fontWeight: 700, color: 'var(--text-primary, #111827)' }}
-                    />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 280, flex: '1 1 280px' }}>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Search</label>
+                    <div style={{ position: 'relative' }}>
+                      <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', fontSize: 13 }} />
+                      <input
+                        placeholder="Search by name or employee ID"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff' }}
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
+                    <button
+                      type="button"
+                      onClick={() => setAutoSaveEnabled((prev) => !prev)}
+                      aria-pressed={autoSaveEnabled}
+                      style={{
+                        height: 40,
+                        border: `1px solid ${autoSaveEnabled ? '#bfdbfe' : '#dbe4ef'}`,
+                        borderRadius: 999,
+                        padding: '0 14px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        background: autoSaveEnabled ? '#eff6ff' : '#fff',
+                        color: autoSaveEnabled ? '#007afb' : '#334155',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 34,
+                          height: 20,
+                          borderRadius: 999,
+                          background: autoSaveEnabled ? '#007afb' : '#cbd5e1',
+                          position: 'relative',
+                          transition: 'background 0.18s ease',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            position: 'absolute',
+                            top: 2,
+                            left: autoSaveEnabled ? 16 : 2,
+                            width: 16,
+                            height: 16,
+                            borderRadius: '50%',
+                            background: '#ffffff',
+                            boxShadow: '0 2px 6px rgba(15, 23, 42, 0.18)',
+                            transition: 'left 0.18s ease',
+                          }}
+                        />
+                      </span>
+                      Auto-save
+                    </button>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: autoSaveState === 'error' ? '#b91c1c' : '#64748b' }}>
+                      {autoSaveLabel}
+                    </span>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => { setSelectedPosition(''); setSearchTerm(''); }}
-                    style={{
-                      height: 38,
-                      border: '1px solid var(--border-soft, #dbe2f2)',
-                      borderRadius: 10,
-                      padding: '0 12px',
-                      fontWeight: 800,
-                      cursor: 'pointer',
-                      background: 'var(--surface-panel, #fff)',
-                      color: 'var(--text-secondary, #374151)'
-                    }}
+                    style={{ height: 40, border: '1px solid #dbe4ef', borderRadius: 12, padding: '0 14px', fontWeight: 800, cursor: 'pointer', background: '#fff', color: '#334155' }}
                   >
                     Clear
                   </button>
@@ -319,135 +571,121 @@ export default function EmployeesAttendance() {
                   <button
                     type="button"
                     onClick={handleSave}
-                    disabled={isSaving || isLoading}
-                    style={{
-                      height: 38,
-                      border: 'none',
-                      borderRadius: 10,
-                      padding: '0 16px',
-                      fontWeight: 800,
-                      cursor: isSaving || isLoading ? 'not-allowed' : 'pointer',
-                      background: 'linear-gradient(135deg, var(--accent, #4b6cb7) 0%, var(--accent-strong, #1d4ed8) 100%)',
-                      color: '#fff',
-                      opacity: isSaving || isLoading ? 0.7 : 1,
-                    }}
+                    disabled={isBusy}
+                    style={{ height: 40, border: '1px solid #007afb', borderRadius: 12, padding: '0 18px', fontWeight: 800, cursor: isBusy ? 'not-allowed' : 'pointer', background: '#007afb', color: '#fff', opacity: isBusy ? 0.7 : 1 }}
                   >
-                    {isSaving ? 'Saving...' : 'Save'}
+                    {isBusy ? 'Saving...' : 'Save Attendance'}
                   </button>
                 </div>
               </div>
-            </div>
+            </section>
 
             {errorMessage ? (
-              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--danger-border, #fecaca)', background: 'var(--danger-soft, #fef2f2)', color: 'var(--danger, #991b1b)', fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', fontSize: 13, fontWeight: 700 }}>
                 {errorMessage}
               </div>
             ) : null}
 
             {successMessage ? (
-              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--success-border, #bbf7d0)', background: 'var(--success-soft, #f0fdf4)', color: 'var(--success, #166534)', fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#166534', fontSize: 13, fontWeight: 700 }}>
                 {successMessage}
               </div>
             ) : null}
 
-            <div style={{ marginTop: 14, borderRadius: 14, border: '1px solid var(--border-soft, #e6ecf8)', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 1.2fr 1.8fr', gap: 0, padding: '11px 12px', background: 'var(--surface-muted, #f8faff)', borderBottom: '1px solid var(--border-soft, #e6ecf8)', fontSize: 12, fontWeight: 900, color: 'var(--text-secondary, #334155)' }}>
-                <div>Employee</div>
-                <div>Position</div>
-                <div style={{ textAlign: 'right' }}>Attendance</div>
+            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', overflow: 'hidden' }}>
+              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Daily Attendance Sheet</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>Use the action pills for faster marking, then save once when the register is complete.</div>
+                </div>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
+                  <FaUserCheck /> {normalizedEmployees.length} visible employee{normalizedEmployees.length === 1 ? '' : 's'}
+                </div>
               </div>
 
               {isLoading ? (
-                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>Loading attendance...</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>Loading attendance...</div>
               ) : normalizedEmployees.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>No employees found.</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>No employees found for the current filters.</div>
               ) : (
-                normalizedEmployees.map((employee) => {
-                  const employeeId = employee.id;
-                  const isHovered = hoveredEmployeeId === employeeId;
-                  const hasSavedOrSelectedStatus = Object.prototype.hasOwnProperty.call(attendance || {}, employeeId);
-                  const record = attendance?.[employeeId] || {};
-                  const rawStatus = hasSavedOrSelectedStatus
-                    ? (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase()
-                    : '';
-                  const displayStatus = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
-                  const styles = statusStyles(displayStatus);
+                <div style={{ width: '100%', overflowX: 'auto' }}>
+                  <table style={{ width: '100%', minWidth: 1080, borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#fbfdff' }}>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Employee</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Department</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Position</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Current Status</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Mark Attendance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {normalizedEmployees.map((employee) => {
+                        const employeeId = employee.id;
+                        const isHovered = hoveredEmployeeId === employeeId;
+                        const hasSavedOrSelectedStatus = Object.prototype.hasOwnProperty.call(attendance || {}, employeeId);
+                        const record = attendance?.[employeeId] || {};
+                        const rawStatus = hasSavedOrSelectedStatus
+                          ? (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase()
+                          : '';
+                        const displayStatus = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
+                        const styles = statusStyles(displayStatus);
 
-                  return (
-                    <div
-                      key={employeeId}
-                      onMouseEnter={() => setHoveredEmployeeId(employeeId)}
-                      onMouseLeave={() => setHoveredEmployeeId(null)}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '2.4fr 1.2fr 1.8fr',
-                        gap: 0,
-                        padding: '12px 14px',
-                        borderBottom: '1px solid var(--border-soft, #eef6ff)',
-                        alignItems: 'center',
-                        background: styles.bg,
-                        transition: 'transform .12s ease, box-shadow .12s ease',
-                        transform: isHovered ? 'translateY(-4px)' : 'none',
-                        boxShadow: isHovered ? '0 8px 20px rgba(17,24,39,0.06)' : 'none',
-                        borderRadius: isHovered ? 12 : 0,
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ width: 40, height: 40, borderRadius: 999, overflow: 'hidden', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-accent, #eef2ff)', color: 'var(--text-primary, #1f2937)', fontWeight: 800 }}>
-                            {employee._avatar ? (
-                              <img
-                                src={employee._avatar}
-                                alt={employee._name}
-                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = '/default-profile.png'; }}
-                              />
-                            ) : (
-                              <span>{employee._initials}</span>
-                            )}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{employee._name}</div>
-                            <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>{employeeId}</div>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 13, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>{employee._position}</div>
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                          {[
-                            { value: 'present', label: 'Present' },
-                            { value: 'late', label: 'Late' },
-                            { value: 'absent', label: 'Absent' },
-                          ].map((statusOption) => {
-                            const buttonStyle = actionButtonStyles(statusOption.value, displayStatus);
-                            return (
-                              <button
-                                key={statusOption.value}
-                                type="button"
-                                onClick={() => handleSetStatus(employeeId, statusOption.value)}
-                                style={{
-                                  height: 34,
-                                  minWidth: 78,
-                                  borderRadius: 10,
-                                  padding: '0 12px',
-                                  fontWeight: 800,
-                                  cursor: 'pointer',
-                                  transition: 'transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease',
-                                  ...buttonStyle,
-                                }}
-                              >
-                                {statusOption.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
+                        return (
+                          <tr
+                            key={employeeId}
+                            onMouseEnter={() => setHoveredEmployeeId(employeeId)}
+                            onMouseLeave={() => setHoveredEmployeeId(null)}
+                            style={{ background: isHovered ? '#fcfdff' : '#ffffff', transition: 'background 0.18s ease' }}
+                          >
+                            <td style={{ padding: '16px 18px', borderBottom: '1px solid #f1f5f9' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                                <AvatarBadge src={employee._avatar} name={employee._name} size={50} />
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee._name}</div>
+                                  <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>{employeeId}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700, borderBottom: '1px solid #f1f5f9' }}>{employee._department}</td>
+                            <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700, borderBottom: '1px solid #f1f5f9' }}>{employee._position}</td>
+                            <td style={{ padding: '16px 18px', borderBottom: '1px solid #f1f5f9' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: 30, padding: '0 12px', borderRadius: 999, border: `1px solid ${styles.border}`, background: styles.bg, color: styles.text, fontSize: 12, fontWeight: 800, textTransform: displayStatus ? 'capitalize' : 'none' }}>
+                                {displayStatus || 'Not set'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid #f1f5f9' }}>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                <StatusActionButton label="Present" value="present" active={displayStatus === 'present'} colors={presentColors} onClick={(value) => handleSetStatus(employeeId, value)} />
+                                <StatusActionButton label="Late" value="late" active={displayStatus === 'late'} colors={lateColors} onClick={(value) => handleSetStatus(employeeId, value)} />
+                                <StatusActionButton label="Absent" value="absent" active={displayStatus === 'absent'} colors={absentColors} onClick={(value) => handleSetStatus(employeeId, value)} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
-            </div>
+            </section>
+
+            <section style={{ position: 'sticky', bottom: 18, marginTop: 16, background: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(10px)', border: '1px solid #dbe8f6', borderRadius: 20, padding: '14px 18px', boxShadow: '0 16px 38px rgba(15, 23, 42, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>Attendance Ready to Save</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
+                  {attendanceStats.present} present, {attendanceStats.late} late, {attendanceStats.absent} absent, {attendanceStats.unset} not set.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={isBusy}
+                style={{ height: 42, border: '1px solid #007afb', borderRadius: 12, padding: '0 18px', fontWeight: 800, cursor: isBusy ? 'not-allowed' : 'pointer', background: '#007afb', color: '#fff', opacity: isBusy ? 0.7 : 1 }}
+              >
+                {isBusy ? 'Saving...' : 'Save Attendance'}
+              </button>
+            </section>
           </div>
         </main>
       </div>

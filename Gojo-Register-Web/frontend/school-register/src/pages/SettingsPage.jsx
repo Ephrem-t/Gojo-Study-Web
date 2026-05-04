@@ -31,6 +31,16 @@ import {
   persistStoredSession,
   readStoredRegistrar,
 } from "../utils/registerSettings";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  loadGradeManagementNode,
+  loadSchoolInfoNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolTeachersNode,
+} from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -114,8 +124,11 @@ export default function SettingsPage() {
   const [backupStats, setBackupStats] = useState({ snapshots: 0, lastSnapshot: "" });
 
   const schoolCode = storedAdmin.schoolCode || "";
-  const dbRoot = buildSchoolRoot(schoolCode);
-  const backupRoot = schoolCode ? `${dbRoot.replace(`/Schools/${schoolCode}`, "")}/SchoolBackups/${schoolCode}` : "";
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbRoot, setResolvedDbRoot] = useState(buildSchoolRoot(schoolCode));
+  const dbRoot = String(resolvedDbRoot || buildSchoolRoot(schoolCode) || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
+  const backupRoot = activeSchoolCode ? `${dbRoot.replace(`/Schools/${activeSchoolCode}`, "")}/SchoolBackups/${activeSchoolCode}` : "";
 
   const notify = (type, text) => setFeedback({ type, text });
 
@@ -125,16 +138,42 @@ export default function SettingsPage() {
   };
 
   const syncSettingsCache = (settingsPatch) => {
-    const normalized = cacheSchoolSettings(schoolCode, settingsPatch);
+    const normalized = cacheSchoolSettings(activeSchoolCode, settingsPatch);
     setAppSettings(normalized);
     return normalized;
   };
 
   useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbRoot = String(resolvedScope?.dbUrl || buildSchoolRoot(schoolCode) || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbRoot(nextResolvedDbRoot);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve settings school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbRoot(buildSchoolRoot(schoolCode));
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const loadSettings = async () => {
-      if (!schoolCode) {
+      if (!activeSchoolCode) {
         setLoading(false);
         notify("error", "No school session found. Please sign in again.");
         return;
@@ -143,27 +182,27 @@ export default function SettingsPage() {
       try {
         setLoading(true);
 
-        const [schoolInfoRes, gradesRes, studentsRes, parentsRes, teachersRes, registerersRes, backupsRes] = await Promise.all([
-          axios.get(`${dbRoot}/schoolInfo.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${dbRoot}/Registerers.json`).catch(() => ({ data: {} })),
-          backupRoot ? axios.get(`${backupRoot}.json`).catch(() => ({ data: {} })) : Promise.resolve({ data: {} }),
+        const [nextSchoolInfo, gradesMap, studentsData, parentsData, teachersData, registerersData, backups] = await Promise.all([
+          loadSchoolInfoNode({ rtdbBase: dbRoot, force: true }),
+          loadGradeManagementNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolStudentsNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolParentsNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolTeachersNode({ rtdbBase: dbRoot, force: true }),
+          fetchCachedJson(`${dbRoot}/Registerers.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})),
+          backupRoot ? fetchCachedJson(`${backupRoot}.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})) : Promise.resolve({}),
         ]);
 
         if (cancelled) return;
 
-        const nextSchoolInfo = schoolInfoRes.data || {};
-        const gradesMap = gradesRes.data || {};
+        const normalizedBackups = backups && typeof backups === "object" ? backups : {};
+        const normalizedRegisterers = registerersData && typeof registerersData === "object" ? registerersData : {};
+
         const normalizedSettings = syncSettingsCache(nextSchoolInfo);
         const academicSettings = normalizedSettings.academic || {};
         const documentTemplates = normalizedSettings.documentTemplates || {};
         const preferences = normalizedSettings.preferences || {};
         const security = normalizedSettings.security || {};
-        const backups = backupsRes.data || {};
-        const sortedBackups = Object.values(backups)
+        const sortedBackups = Object.values(normalizedBackups)
           .filter((entry) => entry && typeof entry === "object")
           .sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
 
@@ -211,15 +250,15 @@ export default function SettingsPage() {
         }));
         setPermissionsForm(normalizedSettings.permissions || DEFAULT_ROLE_PERMISSIONS);
         setBackupStats({
-          snapshots: Object.keys(backups).length,
+          snapshots: Object.keys(normalizedBackups).length,
           lastSnapshot: sortedBackups[0]?.createdAt || "",
         });
         setProfileImage(storedAdmin.profileImage || "/default-profile.png");
         setCounts({
-          students: Object.keys(studentsRes.data || {}).length,
-          parents: Object.keys(parentsRes.data || {}).length,
-          teachers: Object.keys(teachersRes.data || {}).length,
-          registerers: Object.keys(registerersRes.data || {}).length,
+          students: Object.keys(studentsData || {}).length,
+          parents: Object.keys(parentsData || {}).length,
+          teachers: Object.keys(teachersData || {}).length,
+          registerers: Object.keys(normalizedRegisterers).length,
           grades: gradeKeys.length,
           sections: sectionCount,
         });
@@ -235,7 +274,7 @@ export default function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [backupRoot, dbRoot, schoolCode, storedAdmin.name, storedAdmin.profileImage, storedAdmin.schoolShortName, storedAdmin.shortName, storedAdmin.username]);
+  }, [activeSchoolCode, backupRoot, dbRoot, storedAdmin.name, storedAdmin.profileImage, storedAdmin.schoolShortName, storedAdmin.shortName, storedAdmin.username]);
 
   useEffect(() => {
     if (!securityForm.twoFactorEnabled || securityForm.twoFactorSecret) return;
@@ -1000,7 +1039,7 @@ export default function SettingsPage() {
 
               <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 14 }}>
                 <div style={{ ...panelStyle, padding: 14, background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
-                  <img src={profileImage} alt="Registrar profile" style={{ width: 96, height: 96, borderRadius: "50%", objectFit: "cover", border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }} />
+                  <ProfileAvatar imageUrl={profileImage} name={securityForm.name || "Register Office"} size={96} style={{ border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }} />
                   <div style={{ marginTop: 12, fontSize: 16, fontWeight: 900 }}>{securityForm.name || "Register Office"}</div>
                   <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)" }}>@{securityForm.username || "registrar"}</div>
                   <div style={{ marginTop: 12 }}>

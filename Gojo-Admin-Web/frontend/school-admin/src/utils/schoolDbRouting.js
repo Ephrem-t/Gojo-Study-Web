@@ -1,6 +1,7 @@
 import axios from "axios";
 
 const RTDB_ROOTS = [
+  "https://gojo-education-default-rtdb.firebaseio.com",
   "https://bale-house-rental-default-rtdb.firebaseio.com",
   "https://ethiostore-17d9f-default-rtdb.firebaseio.com",
 ];

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { FaBell, FaFacebookMessenger } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 export default function TopbarActions({
   unreadPosts = [],
@@ -9,6 +10,7 @@ export default function TopbarActions({
   messageCount = 0,
   onPostClick,
   onMessageClick,
+  onOpenNotifications,
   chatTo = "/all-chat",
 }) {
   const notificationRef = useRef(null);
@@ -34,7 +36,13 @@ export default function TopbarActions({
         style={{ position: "relative", cursor: "pointer" }}
         onClick={(event) => {
           event.stopPropagation();
-          setShowNotificationDropdown((currentValue) => !currentValue);
+          setShowNotificationDropdown((currentValue) => {
+            const nextValue = !currentValue;
+            if (nextValue) {
+              onOpenNotifications?.();
+            }
+            return nextValue;
+          });
         }}
       >
         <FaBell />
@@ -66,7 +74,7 @@ export default function TopbarActions({
                           setShowNotificationDropdown(false);
                         }}
                       >
-                        <img src={notification.adminProfile || "/default-profile.png"} alt={notification.adminName || "Notification"} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                        <ProfileAvatar src={notification.adminProfile} name={notification.adminName || "Notification"} alt={notification.adminName || "Notification"} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <strong style={{ display: "block", marginBottom: 4 }}>{notification.adminName || "Admin"}</strong>
                           <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{notification.message || "New post"}</p>
@@ -94,7 +102,7 @@ export default function TopbarActions({
                           setShowNotificationDropdown(false);
                         }}
                       >
-                        <img src={sender.profileImage || "/default-profile.png"} alt={sender.name || "User"} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                        <ProfileAvatar src={sender.profileImage} name={sender.name || "User"} alt={sender.name || "User"} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <strong style={{ display: "block", marginBottom: 4 }}>{sender.name || "User"}</strong>
                           <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>

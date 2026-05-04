@@ -2,27 +2,440 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
-import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaEllipsisH } from "react-icons/fa";
-import { getDatabase, onValue, ref, update } from 'firebase/database';
-import { app } from '../firebase';
+import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaTrashAlt, FaPlus } from "react-icons/fa";
+import { get, getDatabase, ref, update } from 'firebase/database';
+import EthiopicCalendar from 'ethiopic-calendar';
 import './Dashboard.css';
 import '../styles/global.css';
-import Sidebar from "../components/Sidebar";
-import TopNavbar from '../components/TopNavbar';
+import DashboardOverview from '../components/DashboardOverview';
+import { app } from '../firebase';
+import { getEmployeeJob, getEmployeeMeta, getEmployeeName, getEmployeeProfileImage } from '../hrData';
+import { createProfilePlaceholder, resolveAvatarImage, resolveProfileImage } from '../utils/profileImage';
+
+const DASHBOARD_RESOURCE_CACHE = new Map();
+const DASHBOARD_EMPLOYEES_CACHE_KEY = 'dashboard:employees:v2';
+const DASHBOARD_ATTENDANCE_CACHE_KEY = 'dashboard:attendance:90';
+const DASHBOARD_POSTS_CACHE_KEY = 'dashboard:posts:25';
+const DASHBOARD_CALENDAR_CACHE_KEY = 'dashboard:calendar:upcoming:120';
+
+const DEFAULT_PROFILE_IMAGE = '/default-profile.png';
+
+const ETHIOPIAN_MONTHS = [
+  'Meskerem',
+  'Tikimt',
+  'Hidar',
+  'Tahsas',
+  'Tir',
+  'Yekatit',
+  'Megabit',
+  'Miyazya',
+  'Ginbot',
+  'Sene',
+  'Hamle',
+  'Nehase',
+  'Pagume',
+];
+
+const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
+  { month: 1, day: 1, title: 'Enkutatash', notes: 'Ethiopian New Year.' },
+  { month: 1, day: 17, title: 'Meskel', notes: 'Finding of the True Cross.' },
+  { month: 4, day: 29, title: 'Genna', notes: 'Ethiopian Christmas.' },
+  { month: 5, day: 11, title: 'Timkat', notes: 'Epiphany celebration.' },
+  { month: 6, day: 23, title: 'Adwa Victory Day', notes: 'National remembrance day.' },
+  { month: 8, day: 23, title: 'International Labour Day', notes: 'Public holiday.' },
+  { month: 9, day: 1, title: "Patriots' Victory Day", notes: 'Public holiday.' },
+  { month: 9, day: 20, title: 'Downfall of the Derg', notes: 'National public holiday.' },
+];
+
+const YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN = {
+  2017: [
+    { date: '2025-03-31', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2025-06-06', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2025-09-05', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2018: [
+    { date: '2026-03-20', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2026-05-27', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2026-08-26', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2019: [
+    { date: '2027-03-10', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2027-05-17', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2027-08-15', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2020: [
+    { date: '2028-02-27', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2028-05-05', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2028-08-04', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2021: [
+    { date: '2029-02-14', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2029-04-24', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2029-07-24', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2022: [
+    { date: '2030-02-03', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2030-04-13', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2030-07-13', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2023: [
+    { date: '2031-01-23', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2031-04-02', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2031-07-02', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2024: [
+    { date: '2032-01-11', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2032-03-21', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2032-06-20', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+  2025: [
+    { date: '2032-12-31', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2033-03-10', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
+    { date: '2033-06-09', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
+  ],
+};
+
+const CALENDAR_MANAGER_ROLES = new Set([
+  'hr',
+  'hr_admin',
+  'hr_officer',
+  'human_resource',
+  'human_resources',
+  'admin',
+  'admins',
+  'school_admin',
+  'school_admins',
+  'registrar',
+  'registerer',
+]);
+
+const buildYearSpecificGovernmentClosures = (ethiopianYear) => {
+  const gregorianEvents = YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN[ethiopianYear] || [];
+
+  return gregorianEvents
+    .map((eventItem) => {
+      const [year, month, day] = String(eventItem.date || '').split('-').map(Number);
+      if (!year || !month || !day) {
+        return null;
+      }
+
+      const ethiopianDate = EthiopicCalendar.ge(year, month, day);
+      if (ethiopianDate.year !== ethiopianYear) {
+        return null;
+      }
+
+      return {
+        month: ethiopianDate.month,
+        day: ethiopianDate.day,
+        title: eventItem.title,
+        notes: eventItem.notes,
+      };
+    })
+    .filter(Boolean);
+};
+
+const getOrthodoxEasterDate = (gregorianYear) => {
+  const a = gregorianYear % 4;
+  const b = gregorianYear % 7;
+  const c = gregorianYear % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const julianMonth = Math.floor((d + e + 114) / 31);
+  const julianDay = ((d + e + 114) % 31) + 1;
+
+  const julianDateAsGregorian = new Date(gregorianYear, julianMonth - 1, julianDay);
+  julianDateAsGregorian.setDate(julianDateAsGregorian.getDate() + 13);
+  return julianDateAsGregorian;
+};
+
+const buildMovableOrthodoxClosures = (ethiopianYear) => {
+  const movableEvents = [];
+  const seenEventKeys = new Set();
+
+  [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
+    const easterDate = getOrthodoxEasterDate(gregorianYear);
+    const goodFridayDate = new Date(easterDate);
+    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
+
+    [
+      {
+        title: 'Siklet',
+        notes: 'Good Friday school closure.',
+        date: goodFridayDate,
+      },
+      {
+        title: 'Fasika',
+        notes: 'Orthodox Easter school closure.',
+        date: easterDate,
+      },
+    ].forEach((eventItem) => {
+      const ethDate = EthiopicCalendar.ge(
+        eventItem.date.getFullYear(),
+        eventItem.date.getMonth() + 1,
+        eventItem.date.getDate(),
+      );
+
+      if (ethDate.year !== ethiopianYear) {
+        return;
+      }
+
+      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
+      if (seenEventKeys.has(eventKey)) {
+        return;
+      }
+
+      seenEventKeys.add(eventKey);
+      movableEvents.push({
+        month: ethDate.month,
+        day: ethDate.day,
+        title: eventItem.title,
+        notes: eventItem.notes,
+      });
+    });
+  });
+
+  return movableEvents;
+};
+
+const buildDefaultCalendarEvents = (ethiopianYear) => [
+  ...DEFAULT_ETHIOPIAN_SPECIAL_DAYS,
+  ...buildMovableOrthodoxClosures(ethiopianYear),
+  ...buildYearSpecificGovernmentClosures(ethiopianYear),
+].map((eventItem) => {
+  const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
+  const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, '0')}-${String(gregorianDate.day).padStart(2, '0')}`;
+
+  return {
+    id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
+    title: eventItem.title,
+    type: 'no-class',
+    category: 'no-class',
+    subType: 'general',
+    notes: eventItem.notes,
+    gregorianDate: isoDate,
+    ethiopianDate: {
+      year: ethiopianYear,
+      month: eventItem.month,
+      day: eventItem.day,
+    },
+    createdAt: '',
+    createdBy: 'system-default',
+    isDefault: true,
+    showInUpcomingDeadlines: false,
+    source: 'default-closure',
+  };
+});
+
+function isLikelyVideoMedia(mediaType, mediaUrl) {
+  if (String(mediaType || '').toLowerCase().startsWith('video/')) {
+    return true;
+  }
+
+  return /\.(mp4|mov|webm|ogg|m4v)(?:$|\?)/i.test(String(mediaUrl || ''));
+}
+
+function sortedChatId(id1, id2) {
+  return [String(id1 || '').trim(), String(id2 || '').trim()].sort().join('_');
+}
+
+function getConversationSortTime(rawValue) {
+  if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue === 'string') {
+    const numericValue = Number(rawValue);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+
+    const parsedValue = new Date(rawValue).getTime();
+    if (Number.isFinite(parsedValue)) {
+      return parsedValue;
+    }
+  }
+
+  return 0;
+}
+
+function formatFeedTimestamp(rawValue) {
+  const timestamp = getConversationSortTime(rawValue);
+
+  if (!timestamp) {
+    return 'Just now';
+  }
+
+  const diffMs = Date.now() - timestamp;
+
+  if (diffMs < 60 * 1000) {
+    return 'Just now';
+  }
+
+  const diffMinutes = Math.floor(diffMs / (60 * 1000));
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) {
+    return `${diffDays}d`;
+  }
+
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function getCachedDashboardResource(cacheKey, loader, ttlMs = 60 * 1000) {
+  const now = Date.now();
+  const existing = DASHBOARD_RESOURCE_CACHE.get(cacheKey);
+
+  if (existing?.promise) {
+    return existing.promise;
+  }
+
+  if (existing && Object.prototype.hasOwnProperty.call(existing, 'data') && (now - existing.timestamp) < ttlMs) {
+    return Promise.resolve(existing.data);
+  }
+
+  const promise = loader()
+    .then((data) => {
+      DASHBOARD_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
+      return data;
+    })
+    .catch((error) => {
+      DASHBOARD_RESOURCE_CACHE.delete(cacheKey);
+      throw error;
+    });
+
+  DASHBOARD_RESOURCE_CACHE.set(cacheKey, { promise, timestamp: now });
+  return promise;
+}
+
+function setCachedDashboardResource(cacheKey, data) {
+  DASHBOARD_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
+}
+
+function normalizeDashboardCollection(items) {
+  if (Array.isArray(items)) {
+    return items;
+  }
+
+  return Object.entries(items || {}).map(([id, payload]) => ({
+    ...(payload || {}),
+    id,
+  }));
+}
 
 function StatCard({ title, value, icon, color }) {
   return (
-    <div style={{ background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)', borderRadius: 12, padding: 18, minWidth: 180, flex: 1, boxShadow: 'var(--shadow-soft, 0 6px 20px rgba(50,60,90,0.06))', border: '1px solid var(--border-soft, #dbe2f2)', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ background: color || 'var(--accent, #4b6cb7)', color: '#fff', padding: 12, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
+    <div style={{ background: 'var(--surface-panel, #fff)', borderRadius: 16, padding: 16, minWidth: 180, flex: 1, border: '1px solid var(--border-soft, #d7e7fb)', boxShadow: 'var(--shadow-soft, 0 10px 24px rgba(0,122,251,0.1))', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ width: 46, height: 46, background: 'var(--accent-soft, #e7f2ff)', color: color || 'var(--accent-strong, #007afb)', border: '1px solid var(--border-strong, #b5d2f8)', borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{icon}</div>
       <div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)', fontWeight: 700 }}>{title}</div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{value}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</div>
+        <div style={{ marginTop: 3, fontSize: 24, fontWeight: 800, color: 'var(--text-primary, #0f172a)', lineHeight: 1.1 }}>{value}</div>
       </div>
     </div>
   )
 }
 
-function LineChart({ data = [], width = 420, height = 120, color = 'var(--accent, #4b6cb7)' }) {
+function getSafeProfileImage(profileImage) {
+  return resolveProfileImage(profileImage);
+}
+
+function normalizePostLikes(likes) {
+  if (Array.isArray(likes)) {
+    return likes.reduce((accumulator, value) => {
+      const normalizedKey = String(value || '').trim();
+      if (normalizedKey) {
+        accumulator[normalizedKey] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  if (likes && typeof likes === 'object') {
+    return Object.entries(likes).reduce((accumulator, [key, value]) => {
+      const normalizedKey = String(key || '').trim();
+      if (normalizedKey && value) {
+        accumulator[normalizedKey] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  return {};
+}
+
+function isPostLikedByActor(post, actorId) {
+  const normalizedActorId = String(actorId || '').trim();
+  if (!normalizedActorId) {
+    return false;
+  }
+
+  return Boolean(normalizePostLikes(post?.likes)[normalizedActorId]);
+}
+
+function getResolvedLikeCount(post) {
+  const explicitCount = Number(post?.likeCount);
+  if (Number.isFinite(explicitCount) && explicitCount >= 0) {
+    return explicitCount;
+  }
+
+  return Object.keys(normalizePostLikes(post?.likes)).length;
+}
+
+function Avatar({ src, alt, name, size = 40, style = {}, imageStyle = {}, textSize = 14 }) {
+  const [hasImageError, setHasImageError] = useState(false);
+  const displayName = name || alt || 'User';
+  const resolvedSrc = hasImageError
+    ? createProfilePlaceholder(displayName)
+    : resolveAvatarImage(displayName, src);
+
+  useEffect(() => {
+    setHasImageError(false);
+  }, [src]);
+
+  const baseStyle = {
+    width: size,
+    height: size,
+    borderRadius: '50%',
+    overflow: 'hidden',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#ffffff',
+    border: '1px solid var(--border-soft, #dbe2f2)',
+    color: 'var(--accent-strong, #007AFB)',
+    fontWeight: 800,
+    letterSpacing: '0.04em',
+    userSelect: 'none',
+    ...style,
+  };
+
+  return (
+    <div style={baseStyle}>
+      <img
+        src={resolvedSrc}
+        alt={alt || name || 'User avatar'}
+        onError={(event) => {
+          const fallbackSrc = createProfilePlaceholder(displayName);
+          if (event.currentTarget.src !== fallbackSrc) {
+            event.currentTarget.src = fallbackSrc;
+          }
+          setHasImageError(true);
+        }}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', ...imageStyle }}
+      />
+    </div>
+  );
+}
+
+function LineChart({ data = [], width = 420, height = 120, color = '#4b6cb7' }) {
   if (!data.length) return null;
   const max = Math.max(...data);
   const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
@@ -333,8 +746,10 @@ function Sparkline({ data = [], color = 'var(--accent, #4b6cb7)', width = 100, h
     </svg>
   )
 }
-function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
+function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = 'bar' }) {
   if (!points || !points.length) return null;
+
+  const [hoveredIndex, setHoveredIndex] = useState(-1);
 
   const leftPad = 48;
   const rightPad = 36;
@@ -344,6 +759,7 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
   const chartHeight = height - topPad - bottomPad;
   const maxCount = Math.max(1, ...points.map((p) => Math.max(p.presentCount || 0, p.lateCount || 0, p.absentCount || 0)));
   const stepX = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
+  const xForIndex = (index) => (points.length === 1 ? leftPad + chartWidth / 2 : leftPad + index * stepX);
 
   const yForCount = (v) => topPad + (1 - (Math.max(0, v || 0) / maxCount)) * chartHeight;
   const yForRate = (r) => topPad + (1 - (Math.max(0, Math.min(100, r || 0)) / 100)) * chartHeight;
@@ -361,14 +777,16 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
     absent: 'var(--danger, #dc2626)',
   };
 
-  const xForIndex = (index) => (points.length > 1 ? leftPad + index * stepX : leftPad + chartWidth / 2);
-
   const ratePoints = points.map((p, i) => ({ x: xForIndex(i), y: yForRate(p.rate || 0) }));
   const rateLinePath = ratePoints.length ? `M ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')}` : '';
-  const rateAreaPath = ratePoints.length ? `M ${ratePoints[0].x},${chartBottom} L ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')} L ${ratePoints[ratePoints.length - 1].x},${chartBottom} Z` : '';
+  const firstRateX = ratePoints.length ? ratePoints[0].x : leftPad;
+  const lastRateX = ratePoints.length ? ratePoints[ratePoints.length - 1].x : leftPad;
+  const rateAreaPath = ratePoints.length ? `M ${firstRateX},${chartBottom} L ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')} L ${lastRateX},${chartBottom} Z` : '';
+  const hoveredPoint = hoveredIndex >= 0 ? points[hoveredIndex] : null;
+  const hoveredMeta = hoveredIndex >= 0 ? ratePoints[hoveredIndex] : null;
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend">
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend" style={{ display: 'block', width: '100%', minHeight: height }}>
       <defs>
         <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
           <stop offset="0%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.18" />
@@ -400,42 +818,43 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
         );
       })}
 
-      {/* bars */}
-      {points.map((point, index) => {
-        const xCenter = xForIndex(index);
-        const leftStart = xCenter - groupWidth / 2;
-        const presentValue = Number(point.presentCount) || 0;
-        const lateValue = Number(point.lateCount) || 0;
-        const absentValue = Number(point.absentCount) || 0;
+      {mode === 'bar'
+        ? points.map((point, index) => {
+            const xCenter = xForIndex(index);
+            const leftStart = xCenter - groupWidth / 2;
+            const presentValue = Number(point.presentCount) || 0;
+            const lateValue = Number(point.lateCount) || 0;
+            const absentValue = Number(point.absentCount) || 0;
 
-        const bars = [
-          { key: 'present', value: presentValue, x: leftStart },
-          { key: 'late', value: lateValue, x: leftStart + singleBarWidth + gapBetweenBars },
-          { key: 'absent', value: absentValue, x: leftStart + (singleBarWidth + gapBetweenBars) * 2 },
-        ];
+            const bars = [
+              { key: 'present', value: presentValue, x: leftStart },
+              { key: 'late', value: lateValue, x: leftStart + singleBarWidth + gapBetweenBars },
+              { key: 'absent', value: absentValue, x: leftStart + (singleBarWidth + gapBetweenBars) * 2 },
+            ];
 
-        return (
-          <g key={`bars-${point.date || index}-${index}`}>
-            {bars.map((bar) => {
-              const topY = yForCount(bar.value);
-              const barHeight = Math.max(0, chartBottom - topY);
-              return (
-                <rect key={`${bar.key}-${index}`} x={bar.x} y={topY} width={singleBarWidth} height={barHeight} rx="2" fill={barColors[bar.key]} opacity="0.92" />
-              );
-            })}
-          </g>
-        );
-      })}
+            return (
+              <g key={`bars-${point.date || index}-${index}`}>
+                {bars.map((bar) => {
+                  const topY = yForCount(bar.value);
+                  const barHeight = Math.max(0, chartBottom - topY);
+                  return (
+                    <rect key={`${bar.key}-${index}`} x={bar.x} y={topY} width={singleBarWidth} height={barHeight} rx="2" fill={barColors[bar.key]} opacity={hoveredIndex === index ? 1 : 0.92} />
+                  );
+                })}
+              </g>
+            );
+          })
+        : null}
 
-      {rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
-      {rateLinePath ? <path d={rateLinePath} fill="none" stroke="var(--accent-strong, #3157b7)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /> : null}
+      {mode === 'line' && rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
+      {mode === 'line' && rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" /> : null}
 
       {points.map((point, index) => {
         const x = xForIndex(index);
         const y = yForRate(point.rate);
         return (
           <g key={`rate-point-${index}`}>
-            <circle cx={x} cy={y} r="4" fill="var(--surface-panel, #fff)" stroke="var(--accent-strong, #3157b7)" strokeWidth="1.8" />
+            {mode === 'line' ? <circle cx={x} cy={y} r={hoveredIndex === index ? '5' : '4'} fill="#fff" stroke="#3157b7" strokeWidth="1.8" /> : null}
             {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
               <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{point.label}</text>
             ) : null}
@@ -443,18 +862,62 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260 }) {
         );
       })}
 
+      {points.map((point, index) => {
+        const xCenter = xForIndex(index);
+        return (
+          <rect
+            key={`hover-zone-${point.date || index}`}
+            x={xCenter - Math.max(22, stepX / 2)}
+            y={topPad}
+            width={Math.max(44, stepX)}
+            height={chartHeight}
+            fill="transparent"
+            onMouseEnter={() => setHoveredIndex(index)}
+            onMouseMove={() => setHoveredIndex(index)}
+            onMouseLeave={() => setHoveredIndex(-1)}
+          />
+        );
+      })}
+
+      {hoveredPoint && hoveredMeta ? (
+        <g pointerEvents="none">
+          <line x1={hoveredMeta.x} x2={hoveredMeta.x} y1={topPad} y2={chartBottom} stroke="#c7d2fe" strokeDasharray="4 5" />
+          <rect
+            x={Math.max(leftPad, Math.min(width - rightPad - 168, hoveredMeta.x - 84))}
+            y={topPad + 8}
+            width="168"
+            height="74"
+            rx="12"
+            fill="#ffffff"
+            stroke="#dbeafe"
+          />
+          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 28} fontSize="11" fill="#64748b" fontWeight="800">{hoveredPoint.label}</text>
+          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 46} fontSize="12" fill="#0f172a" fontWeight="700">Rate: {hoveredPoint.rate || 0}%</text>
+          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 62} fontSize="11" fill="#166534" fontWeight="700">Present: {hoveredPoint.presentCount || 0}</text>
+          <text x={Math.max(leftPad + 82, Math.min(width - rightPad - 86, hoveredMeta.x - 2))} y={topPad + 62} fontSize="11" fill="#92400e" fontWeight="700">Late: {hoveredPoint.lateCount || 0}</text>
+          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 76} fontSize="11" fill="#991b1b" fontWeight="700">Absent: {hoveredPoint.absentCount || 0}</text>
+        </g>
+      ) : null}
+
       <g>
-        <text x={leftPad} y={18} fontSize="11" fill="var(--text-secondary, #475569)" fontWeight="800">Attendance Records (count)</text>
+        <text x={leftPad} y={18} fontSize="11" fill="#475569" fontWeight="800">{mode === 'line' ? 'Attendance Rate Trend' : 'Attendance Records (count)'}</text>
         <g transform={`translate(${leftPad + 168}, 11)`}>
-          <rect x="0" y="0" width="10" height="10" fill="var(--success, #16a34a)" rx="2" />
-          <text x="14" y="9" fontSize="10" fill="var(--success, #166534)" fontWeight="700">Present</text>
-          <rect x="74" y="0" width="10" height="10" fill="var(--warning, #d97706)" rx="2" />
-          <text x="88" y="9" fontSize="10" fill="var(--warning, #92400e)" fontWeight="700">Late</text>
-          <rect x="130" y="0" width="10" height="10" fill="var(--danger, #dc2626)" rx="2" />
-          <text x="144" y="9" fontSize="10" fill="var(--danger, #991b1b)" fontWeight="700">Absent</text>
-          <line x1="200" y1="5" x2="226" y2="5" stroke="var(--accent-strong, #3157b7)" strokeWidth="2.2" />
-          <circle cx="213" cy="5" r="3" fill="var(--surface-panel, #fff)" stroke="var(--accent-strong, #3157b7)" strokeWidth="1.8" />
-          <text x="232" y="9" fontSize="10" fill="var(--accent-strong, #3157b7)" fontWeight="700">Rate %</text>
+          {mode === 'bar' ? (
+            <>
+              <rect x="0" y="0" width="10" height="10" fill="#16a34a" rx="2" />
+              <text x="14" y="9" fontSize="10" fill="#166534" fontWeight="700">Present</text>
+              <rect x="74" y="0" width="10" height="10" fill="#d97706" rx="2" />
+              <text x="88" y="9" fontSize="10" fill="#92400e" fontWeight="700">Late</text>
+              <rect x="130" y="0" width="10" height="10" fill="#dc2626" rx="2" />
+              <text x="144" y="9" fontSize="10" fill="#991b1b" fontWeight="700">Absent</text>
+            </>
+          ) : (
+            <>
+              <line x1="0" y1="5" x2="26" y2="5" stroke="#3157b7" strokeWidth="2.4" />
+              <circle cx="13" cy="5" r="3" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
+              <text x="32" y="9" fontSize="10" fill="#3157b7" fontWeight="700">Rate %</text>
+            </>
+          )}
         </g>
       </g>
     </svg>
@@ -687,19 +1150,27 @@ function formatActivityTime(value) {
 
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
-  const [users, setUsers] = useState([]);
   const [attendanceByDate, setAttendanceByDate] = useState({});
+  const [conversations, setConversations] = useState([]);
   const [posts, setPosts] = useState([]);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
+  const [calendarEvents, setCalendarEvents] = useState([]);
   const [postText, setPostText] = useState('');
   const [postMedia, setPostMedia] = useState(null);
-  const [postMediaPreviewUrl, setPostMediaPreviewUrl] = useState('');
-  const [editingPostId, setEditingPostId] = useState('');
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
+  const [isPostSubmitting, setIsPostSubmitting] = useState(false);
   const [targetRole, setTargetRole] = useState('all');
   const [targetOptions] = useState(['all', 'teacher', 'school_admins', 'finance', 'hr']);
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
-  const [activePostMenuId, setActivePostMenuId] = useState('');
+  const [editingPostId, setEditingPostId] = useState('');
+  const [existingPostMediaUrl, setExistingPostMediaUrl] = useState('');
+  const [existingPostMediaType, setExistingPostMediaType] = useState('');
+  const [showDeletePostModal, setShowDeletePostModal] = useState(false);
+  const [pendingDeletePost, setPendingDeletePost] = useState(null);
+  const [isDeletingPost, setIsDeletingPost] = useState(false);
+  const [pendingLikePostIds, setPendingLikePostIds] = useState({});
   const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
   const [admin, setAdmin] = useState(() => {
     try {
@@ -708,6 +1179,7 @@ export default function Dashboard() {
       return {};
     }
   });
+  const db = useMemo(() => getDatabase(app), []);
   const navigate = useNavigate();
   const location = useLocation();
   const db = getDatabase(app);
@@ -733,69 +1205,205 @@ export default function Dashboard() {
   const [chatSidebarData, setChatSidebarData] = useState({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
   const [calendarViewDate, setCalendarViewDate] = useState(() => {
     const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1);
+    const currentEthiopicDate = EthiopicCalendar.ge(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+    );
+
+    return {
+      year: currentEthiopicDate.year,
+      month: currentEthiopicDate.month,
+    };
   });
   const [dashboardView, setDashboardView] = useState(initialDashboardSelection.dashboardView);
   const [postFeedView, setPostFeedView] = useState(initialDashboardSelection.postFeedView);
   const [attendanceRecordView, setAttendanceRecordView] = useState('daily');
+  const [attendanceChartMode, setAttendanceChartMode] = useState('bar');
   const [growthTrendView, setGrowthTrendView] = useState('monthly');
   const [attendanceStatusFilter, setAttendanceStatusFilter] = useState('present');
   const [showAttendancePeopleList, setShowAttendancePeopleList] = useState(false);
   const [selectedCalendarIsoDate, setSelectedCalendarIsoDate] = useState('');
   const [hoveredCalendarIsoDate, setHoveredCalendarIsoDate] = useState('');
-  const [calendarDisplayMode, setCalendarDisplayMode] = useState('dual');
+  const [showAllUpcomingDeadlines, setShowAllUpcomingDeadlines] = useState(false);
+  const [calendarEventsLoading, setCalendarEventsLoading] = useState(false);
+  const [calendarEventForm, setCalendarEventForm] = useState({
+    title: '',
+    category: 'no-class',
+    subType: 'general',
+    notes: '',
+  });
+  const [calendarEventSaving, setCalendarEventSaving] = useState(false);
+  const [editingCalendarEventId, setEditingCalendarEventId] = useState('');
+  const [calendarActionMessage, setCalendarActionMessage] = useState('');
+  const [showCalendarEventModal, setShowCalendarEventModal] = useState(false);
+  const [calendarModalContext, setCalendarModalContext] = useState('calendar');
   const fileInputRef = useRef(null);
   const CALENDAR_WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const gregorianMonthYearFormatter = new Intl.DateTimeFormat('en-US', {
-    month: 'long',
-    year: 'numeric',
-  });
-  const gregorianLongFormatter = new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
+  const adminChatUserId = String(admin?.userId || admin?.id || '').trim();
+  const activeSchoolCode = String(admin?.activeSchoolCode || admin?.schoolCode || '').trim();
+  const schoolPath = (path) => `Platform1/Schools/${activeSchoolCode}/${String(path || '').replace(/^\/+/, '')}`;
+  const roleCandidates = [
+    admin?.role,
+    admin?.userType,
+    admin?.accountType,
+    admin?.userRole,
+    admin?.position,
+    admin?.staffType,
+  ]
+    .map((value) => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+    .filter(Boolean);
+  const canManageCalendar = roleCandidates.some((value) => CALENDAR_MANAGER_ROLES.has(value))
+    || Boolean(admin?.userId || admin?.id || admin?.hrId || admin?.adminId);
+  const calendarCacheKey = `${DASHBOARD_CALENDAR_CACHE_KEY}:${activeSchoolCode || 'global'}`;
+
+  const CALENDAR_EVENT_META = {
+    academic: {
+      label: 'Academic',
+      color: 'var(--accent)',
+      background: 'var(--accent-soft)',
+      border: 'rgba(0, 122, 251, 0.18)',
+    },
+    'no-class': {
+      label: 'No class',
+      color: 'var(--warning)',
+      background: 'var(--warning-soft)',
+      border: 'var(--warning-border)',
+    },
+  };
+
+  const getCalendarEventKey = (category) => {
+    if (category === 'academic') return 'academic';
+    return 'no-class';
+  };
+
+  const getCalendarEventMeta = (category) => {
+    if (category === 'academic') return CALENDAR_EVENT_META.academic;
+    return CALENDAR_EVENT_META['no-class'];
+  };
+
+  const normalizeCalendarEvent = (eventId, eventValue) => {
+    const legacyType = eventValue?.type || 'academic';
+    const category = eventValue?.category || (legacyType === 'academic' ? 'academic' : 'no-class');
+
+    return {
+      id: eventId,
+      title: eventValue?.title || getCalendarEventMeta(category).label,
+      type: getCalendarEventKey(category),
+      category,
+      subType: eventValue?.subType || 'general',
+      notes: eventValue?.notes || '',
+      gregorianDate: eventValue?.gregorianDate || '',
+      ethiopianDate: eventValue?.ethiopianDate || null,
+      createdAt: eventValue?.createdAt || '',
+      createdBy: eventValue?.createdBy || '',
+      showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
+      isDefault: false,
+    };
+  };
+
+  const sortCalendarEvents = (events) => [...events].sort((leftEvent, rightEvent) => {
+    const dateComparison = String(leftEvent.gregorianDate || '').localeCompare(String(rightEvent.gregorianDate || ''));
+    if (dateComparison !== 0) return dateComparison;
+    return String(leftEvent.createdAt || '').localeCompare(String(rightEvent.createdAt || ''));
   });
 
-  const ethiopicMonthYearAmharicFormatter = new Intl.DateTimeFormat('am-ET-u-ca-ethiopic', {
-    month: 'long',
-    year: 'numeric',
-  });
-  const ethiopicDayAmharicFormatter = new Intl.DateTimeFormat('am-ET-u-ca-ethiopic', {
-    day: 'numeric',
-  });
-  const ethiopicDayMonthFormatter = new Intl.DateTimeFormat('en-US-u-ca-ethiopic', {
-    day: 'numeric',
-    month: 'numeric',
-  });
-  const ethiopicLongFormatter = new Intl.DateTimeFormat('en-US-u-ca-ethiopic', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-  const ethiopicLongAmharicFormatter = new Intl.DateTimeFormat('am-ET-u-ca-ethiopic', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
+  const formatCalendarDeadlineDate = (isoDate) => {
+    if (!isoDate) return '';
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const res = await api.get('/employees_with_gender');
-        const items = res.data || [];
-        if (Array.isArray(items)) {
-          setEmployees(items);
-          return;
-        }
-        const normalized = Object.entries(items || {}).map(([id, payload]) => ({
-          ...(payload || {}),
-          id,
-        }));
-        setEmployees(normalized);
-      } catch (e) {
-        console.error(e);
+    const parsedDate = new Date(`${isoDate}T00:00:00`);
+    if (Number.isNaN(parsedDate.getTime())) return '';
+
+    return parsedDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
+  const resetPostComposerState = () => {
+    setEditingPostId('');
+    setPostText('');
+    setPostMedia(null);
+    setPostMediaMeta(null);
+    setExistingPostMediaUrl('');
+    setExistingPostMediaType('');
+    setTargetRole('all');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const openCreatePostModal = () => {
+    resetPostComposerState();
+    setShowCreatePostModal(true);
+  };
+
+  const closePostComposerModal = () => {
+    if (isPostSubmitting) return;
+    setShowCreatePostModal(false);
+    resetPostComposerState();
+  };
+
+  const handleStartEditPost = (post) => {
+    if (!post) return;
+
+    const nextTargetRole = String(post.targetRole || 'all').trim().toLowerCase();
+    setEditingPostId(String(post.postId || ''));
+    setPostText(String(post.message || ''));
+    setPostMedia(null);
+    setPostMediaMeta(null);
+    setExistingPostMediaUrl(String(post.postUrl || ''));
+    setExistingPostMediaType(String(post.mediaType || ''));
+    setTargetRole(targetOptions.includes(nextTargetRole) ? nextTargetRole : 'all');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    setShowCreatePostModal(true);
+  };
+
+  const handleCloseDeletePostModal = () => {
+    if (isDeletingPost) return;
+    setPendingDeletePost(null);
+    setShowDeletePostModal(false);
+  };
+
+  const handleRequestDeletePost = (post) => {
+    if (!post || !isPostOwnedByCurrentUser(post)) return;
+    setPendingDeletePost(post);
+    setShowDeletePostModal(true);
+  };
+
+  const loadCalendarEvents = async ({ forceRefresh = false } = {}) => {
+    if (!activeSchoolCode) {
+      setCalendarEvents([]);
+      setUpcomingCalendarEvents([]);
+      return;
+    }
+
+    setCalendarEventsLoading(true);
+
+    const fetchCalendarEvents = async () => {
+      const response = await api.get('/api/calendar_events');
+      const rawEvents = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.events)
+          ? response.data.events
+          : [];
+
+      return sortCalendarEvents(
+        rawEvents
+          .map((eventItem, index) => normalizeCalendarEvent(eventItem?.id || `event-${index}`, eventItem))
+          .filter((eventItem) => eventItem.gregorianDate),
+      );
+    };
+
+    try {
+      const normalizedEvents = forceRefresh
+        ? await fetchCalendarEvents()
+        : await getCachedDashboardResource(calendarCacheKey, fetchCalendarEvents, 5 * 60 * 1000);
+
+      if (forceRefresh) {
+        setCachedDashboardResource(calendarCacheKey, normalizedEvents);
       }
     }
     load();
@@ -821,61 +1429,66 @@ export default function Dashboard() {
       }
     }
 
-    loadUsers();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    async function loadAttendanceHistory() {
-      try {
-        const response = await api.get('/api/employee_attendance/history');
-        const map = response.data?.attendanceByDate;
-        setAttendanceByDate(map && typeof map === 'object' ? map : {});
-      } catch (error) {
+    let cancelled = false;
+
+    getCachedDashboardResource(DASHBOARD_ATTENDANCE_CACHE_KEY, async () => {
+      const response = await api.get('/api/employee_attendance/history', {
+        params: { days: 90 },
+      });
+      const map = response.data?.attendanceByDate;
+      return map && typeof map === 'object' ? map : {};
+    }, 45 * 1000)
+      .then((map) => {
+        if (!cancelled) {
+          setAttendanceByDate(map);
+        }
+      })
+      .catch((error) => {
         console.error(error);
-        setAttendanceByDate({});
-      }
-    }
+        if (!cancelled) {
+          setAttendanceByDate({});
+        }
+      });
 
-    loadAttendanceHistory();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    async function fetchPosts() {
-      try {
-        const response = await api.get('/api/get_posts');
-        const items = Array.isArray(response.data)
-          ? response.data
-          : Array.isArray(response.data?.posts)
-            ? response.data.posts
-            : [];
-        setPosts(items.map(normalizePostRecord));
-      } catch (error) {
+    let cancelled = false;
+
+    getCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, async () => {
+      const response = await api.get('/api/get_posts', {
+        params: { limit: 25 },
+      });
+      return Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.posts)
+          ? response.data.posts
+          : [];
+    }, 30 * 1000)
+      .then((items) => {
+        if (!cancelled) {
+          setPosts(items);
+        }
+      })
+      .catch((error) => {
         console.error('Failed to load posts:', error);
-        setPosts([]);
-      }
-    }
+        if (!cancelled) {
+          setPosts([]);
+        }
+      });
 
-    fetchPosts();
-  }, []);
-
-  useEffect(() => {
-    async function fetchCalendarEvents() {
-      try {
-        const response = await api.get('/api/calendar_events');
-        const events = Array.isArray(response.data)
-          ? response.data
-          : Array.isArray(response.data?.events)
-            ? response.data.events
-            : [];
-
-        setCalendarEvents(events);
-      } catch (error) {
-        console.error('Failed to load calendar events:', error);
-        setCalendarEvents([]);
-      }
-    }
-
-    fetchCalendarEvents();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -902,65 +1515,12 @@ export default function Dashboard() {
       }
     }
 
-    fetchCalendarDeadlines();
-  }, []);
+    loadConversations();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadChatContext() {
-      if (!hrUserId) {
-        setChatRoleLookup({});
-        return;
-      }
-
-      try {
-        const [contextRes, teachersRes, financeRes, schoolAdminsRes] = await Promise.all([
-          api.get('/school_context').catch(() => ({ data: {} })),
-          api.get('/teachers').catch(() => ({ data: {} })),
-          api.get('/finance').catch(() => ({ data: {} })),
-          api.get('/school_admins').catch(() => api.get('/management').catch(() => ({ data: {} }))),
-        ]);
-
-        if (cancelled) return;
-
-        const backendSchoolCode = String(contextRes?.data?.schoolCode || '').trim();
-        if (backendSchoolCode) {
-          setResolvedSchoolCode(backendSchoolCode);
-        }
-
-        const nextRoleLookup = {};
-        [
-          ['teacher', teachersRes.data],
-          ['finance', financeRes.data],
-          ['school_admins', schoolAdminsRes.data],
-        ].forEach(([roleKey, roleNodes]) => {
-          Object.values(roleNodes || {}).forEach((roleNode) => {
-            const userId = String(roleNode?.userId || '').trim();
-            if (!userId) return;
-
-            nextRoleLookup[userId] = {
-              roleKey,
-              roleLabel: getDashboardRoleLabel(roleKey),
-              name: roleNode?.name || roleNode?.username || '',
-              profileImage: roleNode?.profileImage || roleNode?.profile || roleNode?.avatar || CHAT_DEFAULT_PROFILE,
-            };
-          });
-        });
-
-        setChatRoleLookup(nextRoleLookup);
-      } catch (error) {
-        if (cancelled) return;
-        console.error('Failed to load dashboard chat context:', error);
-        setChatRoleLookup({});
-      }
-    }
-
-    loadChatContext();
     return () => {
       cancelled = true;
     };
-  }, [hrUserId]);
+  }, [activeSchoolCode, adminChatUserId, db, employeeContactByUserId]);
 
   const count = employees.length;
   const departments = Array.from(new Set(employees.map(e => e.department).filter(Boolean))).length || 3;
@@ -1015,14 +1575,16 @@ export default function Dashboard() {
       const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
       const todayRecord = source.find((item) => item.date === todayIso);
 
-      if (!todayRecord) {
+      const latestRecord = todayRecord || source[source.length - 1];
+
+      if (!latestRecord) {
         return [];
       }
 
       return [{
-        ...todayRecord,
-        bucketKey: todayRecord.date,
-        label: 'Today',
+        ...latestRecord,
+        bucketKey: latestRecord.date,
+        label: latestRecord.date === todayIso ? 'Today' : latestRecord.date,
       }];
     }
 
@@ -1108,7 +1670,9 @@ export default function Dashboard() {
     : null;
   const attendanceChartPoints = useMemo(() => {
     const map = attendanceByDate || {};
-    const todayIso = toIsoDateString(new Date());
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const availableDates = Object.keys(map).filter((dateKey) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey)).sort();
+    const latestAvailableDate = availableDates[availableDates.length - 1] || todayIso;
     const normalizeRecords = (recordMap) => {
       const records = Object.values(recordMap || {}).filter((r) => r && typeof r === 'object');
       const lateCount = records.filter((entry) => String(entry.status || '').toLowerCase() === 'late').length;
@@ -1126,8 +1690,9 @@ export default function Dashboard() {
 
     // DAILY: show that day's attendance as a single point (or empty)
     if (attendanceRecordView === 'daily') {
-      const p = normalizeRecords(map[todayIso]);
-      return [{ date: todayIso, label: 'Today', ...p }];
+      const targetDate = map[todayIso] ? todayIso : latestAvailableDate;
+      const p = normalizeRecords(map[targetDate]);
+      return [{ date: targetDate, label: targetDate === todayIso ? 'Today' : targetDate, ...p }];
     }
 
     // WEEKLY: show each day in the selected/most-recent week as its own point
@@ -1414,7 +1979,8 @@ export default function Dashboard() {
 
   const getEmployeeHireDate = (employee) => {
     const raw = employee || {};
-    const job = raw.job || raw.profileData?.job || {};
+    const employment = raw.employment || raw.profileData?.employment || {};
+    const job = { ...(raw.job || raw.profileData?.job || {}), ...employment };
     return (
       parseDateSafe(raw.hireDate) ||
       parseDateSafe(job.hireDate) ||
@@ -1551,59 +2117,13 @@ export default function Dashboard() {
     return unknownHireDateCount + hiredUpToMonthEnd;
   });
 
-  const [dataQuality, setDataQuality] = useState({ totalRaw: 0, totalWithGender: 0, missingInFrontend: 0, missingInRaw: 0, missingGender: 0, missingHireDate: 0 });
-
-  // verify frontend employee list matches raw Employees node and surface simple metrics
-  useEffect(() => {
-    async function verifyData() {
-      try {
-        const res = await api.get('/employees');
-        const raw = res.data || {};
-        const rawIds = Array.isArray(raw) ? (raw.map((r) => r.id).filter(Boolean)) : Object.keys(raw || {});
-        const frontendIds = employees.map((e) => String(e.id || e.employeeId || e.job?.employeeId || '')).filter(Boolean);
-
-        const missingInFrontend = rawIds.filter((id) => !frontendIds.includes(String(id)));
-        const missingInRaw = frontendIds.filter((id) => !rawIds.includes(String(id)));
-
-        const missingGender = employees.filter((e) => {
-          const g = e.gender || e.personal?.gender || e.profileData?.personal?.gender || (e.userId && usersById[e.userId]?.gender);
-          return !(g && String(g).trim());
-        }).length;
-
-        const missingHireDate = employees.filter((e) => !getEmployeeHireDate(e)).length;
-
-        setDataQuality({
-          totalRaw: rawIds.length,
-          totalWithGender: employees.length,
-          missingInFrontend: missingInFrontend.length,
-          missingInRaw: missingInRaw.length,
-          missingGender,
-          missingHireDate,
-        });
-        if (missingInFrontend.length || missingInRaw.length || missingGender || missingHireDate) {
-          console.warn('Data quality issues detected', { missingInFrontend, missingInRaw, missingGender, missingHireDate });
-        }
-      } catch (err) {
-        console.error('Failed to verify employees data with backend', err);
-      }
-    }
-
-    // only run verification once we have loaded employees
-    if (employees && employees.length >= 0) verifyData();
-  }, [employees, users]);
-
   // gender distribution for donut / cards
   function extractGender(e) {
     const raw = e || {};
-    const userId = raw.userId || raw.profileData?.userId || raw.account?.userId || raw.auth?.userId;
-    const linkedUser = userId ? usersById[userId] : null;
-
     const g = (
       raw.gender ||
       raw.personal?.gender ||
       raw.profileData?.personal?.gender ||
-      linkedUser?.gender ||
-      linkedUser?.personal?.gender ||
       ''
     )
       .toString()
@@ -1615,7 +2135,9 @@ export default function Dashboard() {
 
   const genderCounts = employees.reduce((acc, e) => {
     const g = extractGender(e);
-    acc[g] = (acc[g] || 0) + 1;
+    if (g) {
+      acc[g] = (acc[g] || 0) + 1;
+    }
     return acc;
   }, {});
   const maleCount = genderCounts.male || 0;
@@ -1625,250 +2147,161 @@ export default function Dashboard() {
   const femalePercentage = Math.round((femaleCount / knownGenderTotal) * 100);
   const genderLeadLabel = maleCount === femaleCount ? 'Balanced' : maleCount > femaleCount ? 'Male lead' : 'Female lead';
   const genderValues = [maleCount, femaleCount];
-  const qualificationCounts = employees.reduce((acc, employee) => {
-    const qualification = normalizeEducationQualification(employee);
-    if (!qualification) return acc;
 
-    acc[qualification] = (acc[qualification] || 0) + 1;
-    return acc;
-  }, { Diploma: 0, Degree: 0, Masters: 0, 'Prof.': 0, PhD: 0, Other: 0 });
-  const qualificationChartItems = QUALIFICATION_GRAPH_CONFIG.map((item) => ({
-    ...item,
-    count: qualificationCounts[item.key] || 0,
-  }));
-  const knownQualificationCount = qualificationChartItems.reduce((sum, item) => sum + Number(item.count || 0), 0);
-  const topQualification = qualificationChartItems.reduce(
-    (best, item) => (Number(item.count || 0) > Number(best?.count || 0) ? item : best),
-    qualificationChartItems[0] || null
-  );
-
-  const recentPostNotifications = useMemo(() => {
-    return (posts || [])
-      .map((post, index) => {
-        const parsedTime = new Date(post?.time || post?.createdAt || '');
-        if (Number.isNaN(parsedTime.getTime())) return null;
-
-        return {
-          ...(post || {}),
-          id: String(post?.postId || post?.id || `post-${index}`),
-          adminName: post?.adminName || 'HR Office',
-          message: String(post?.message || '').trim() || 'New post shared',
-          time: parsedTime.getTime(),
-        };
-      })
-      .filter(Boolean)
-      .sort((left, right) => Number(right.time || 0) - Number(left.time || 0));
-  }, [posts]);
-
-  const unreadMessageCount = chatSidebarData.unreadCount;
-  const todayMessageCount = chatSidebarData.todayMessageCount;
-  const postOwnerId = String(admin?.adminId || admin?.hrId || admin?.id || admin?.userId || 'hr-admin');
-  const currentLikeActorId = String(admin?.userId || admin?.id || admin?.adminId || admin?.hrId || 'hr-admin');
-  const unreadPostNotifications = useMemo(() => {
-    const actorIds = new Set(
-      [currentLikeActorId, postOwnerId, admin?.adminId, admin?.hrId, admin?.id, admin?.userId]
-        .filter(Boolean)
-        .map((value) => String(value))
-    );
-
-    return recentPostNotifications.filter((post) => {
-      const authorIds = [post?.userId, post?.adminId, post?.hrId].filter(Boolean).map((value) => String(value));
-      if (authorIds.some((authorId) => actorIds.has(authorId))) {
-        return false;
-      }
-
-      const seenBy = post?.seenBy && typeof post.seenBy === 'object' ? post.seenBy : {};
-      return !Array.from(actorIds).some((actorId) => Boolean(seenBy[actorId]));
-    });
-  }, [admin?.adminId, admin?.hrId, admin?.id, admin?.userId, currentLikeActorId, postOwnerId, recentPostNotifications]);
-  const postNotifications = unreadPostNotifications.slice(0, 4);
-  const unreadPostCount = unreadPostNotifications.length;
-  const todayPostCount = unreadPostNotifications.filter((post) => {
-    const postDate = new Date(Number(post.time || 0));
+  const notificationCount = upcomingBirthdays.length + upcomingContracts.length;
+  const totalUnreadMessages = conversations.reduce((sum, conversation) => sum + Number(conversation?.unreadForMe || 0), 0);
+  const messageCount = totalUnreadMessages;
+  const totalNotifications = notificationCount + totalUnreadMessages;
+  const todayPostCount = posts.filter((post) => {
+    if (!post?.time) return false;
+    const postDate = new Date(post.time);
     return !Number.isNaN(postDate.getTime()) && postDate.toDateString() === new Date().toDateString();
   }).length;
-  const messageNotifications = chatSidebarData.unreadContacts || [];
-  const reminderNotificationCount = upcomingBirthdays.length + upcomingContracts.length;
-  const notificationCount = unreadMessageCount + unreadPostCount + reminderNotificationCount;
-
-  useEffect(() => {
-    if (!showNotificationDropdown) {
-      return undefined;
-    }
-
-    const postIdsToMark = unreadPostNotifications.map((post) => String(post.id || '')).filter(Boolean);
-    const messageNotificationsToMark = messageNotifications.filter((contact) => Number(contact.unread || 0) > 0 && contact.chatKey);
-
-    if (!postIdsToMark.length && !messageNotificationsToMark.length) {
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    const markNotificationsSeen = async () => {
-      try {
-        if (postIdsToMark.length) {
-          await api.post('/api/posts/mark_seen', {
-            userId: currentLikeActorId,
-            postIds: postIdsToMark,
-          });
-
-          if (!cancelled) {
-            setPosts((currentPosts) => currentPosts.map((post) => {
-              const postId = String(post?.postId || post?.id || '');
-              if (!postIdsToMark.includes(postId)) {
-                return post;
-              }
-
-              return {
-                ...post,
-                seenBy: {
-                  ...(post?.seenBy && typeof post.seenBy === 'object' ? post.seenBy : {}),
-                  [currentLikeActorId]: new Date().toISOString(),
-                },
-              };
-            }));
-          }
-        }
-
-        await Promise.all(messageNotificationsToMark.map((contact) => {
-          const updates = {
-            [`${withSchoolPath(`Chats/${contact.chatKey}`)}/unread/${hrUserId}`]: 0,
-          };
-
-          (contact.unreadMessageIds || []).forEach((messageId) => {
-            updates[`${withSchoolPath(`Chats/${contact.chatKey}`)}/messages/${messageId}/seen`] = true;
-          });
-
-          return update(ref(db), updates);
-        }));
-      } catch (error) {
-        console.error('Failed to mark notifications as seen:', error);
-      }
-    };
-
-    markNotificationsSeen();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentLikeActorId, db, hrUserId, messageNotifications, showNotificationDropdown, unreadPostNotifications, withSchoolPath]);
-
-  const gregorianMonthLabel = gregorianMonthYearFormatter.format(calendarViewDate);
-  const ethiopianMonthAmharicLabel = ethiopicMonthYearAmharicFormatter.format(calendarViewDate);
-  const currentMonthLabel = calendarDisplayMode === 'gregorian'
-    ? gregorianMonthLabel
-    : calendarDisplayMode === 'ethiopian'
-      ? ethiopianMonthAmharicLabel
-      : `${ethiopianMonthAmharicLabel} / ${gregorianMonthLabel}`;
-  const calendarMonthStartGregorian = {
-    day: 1,
-    month: calendarViewDate.getMonth() + 1,
-    year: calendarViewDate.getFullYear(),
-  };
-  const calendarMonthEndGregorian = {
-    day: new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0).getDate(),
-    month: calendarViewDate.getMonth() + 1,
-    year: calendarViewDate.getFullYear(),
-  };
-  const calendarFirstWeekday = new Date(
-    calendarViewDate.getFullYear(),
-    calendarViewDate.getMonth(),
-    1,
-  ).getDay();
-  const calendarDaysInMonth = new Date(
-    calendarViewDate.getFullYear(),
-    calendarViewDate.getMonth() + 1,
-    0,
-  ).getDate();
-
-  const toIsoDate = (dateObj) => {
-    const year = dateObj.getFullYear();
-    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const day = String(dateObj.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const todayIsoDate = toIsoDate(new Date());
-
-  const builtInHolidayEvents = useMemo(() => {
-    const visibleYear = calendarViewDate.getFullYear();
-    return [visibleYear - 1, visibleYear, visibleYear + 1].flatMap((year) => getRecurringHolidayEvents(year));
-  }, [calendarViewDate]);
-
-  const displayCalendarEvents = useMemo(() => {
-    return mergeCalendarCollections(calendarEvents || [], builtInHolidayEvents);
-  }, [builtInHolidayEvents, calendarEvents]);
-
-  const calendarWeekDayLabels = calendarDisplayMode === 'ethiopian' ? ETHIOPIAN_WEEK_DAYS : CALENDAR_WEEK_DAYS;
-
-  const calendarEventsByDate = useMemo(() => {
-    return displayCalendarEvents.reduce((accumulator, eventItem, index) => {
-      const isoDate = (eventItem?.gregorianDate || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
-        return accumulator;
-      }
-
-      const normalizedEvent = {
-        ...(eventItem || {}),
-        id: String(eventItem?.id || `${isoDate}-${eventItem?.title || 'event'}-${index}`),
-        gregorianDate: isoDate,
-        eventKind: getCalendarEventKind(eventItem),
-      };
-
-      if (!accumulator[isoDate]) {
-        accumulator[isoDate] = [];
-      }
-
-      accumulator[isoDate].push(normalizedEvent);
-      return accumulator;
-    }, {});
-  }, [displayCalendarEvents]);
-
-  const calendarDays = Array.from({ length: calendarFirstWeekday + calendarDaysInMonth }, (_, index) => {
-    if (index < calendarFirstWeekday) return null;
-    const day = index - calendarFirstWeekday + 1;
-    const fullDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), day);
-    const isoDate = toIsoDate(fullDate);
-    const dayEvents = calendarEventsByDate[isoDate] || [];
-    const noClassEvents = dayEvents.filter((eventItem) => eventItem.eventKind === 'no-class');
-    const academicEvents = dayEvents.filter((eventItem) => eventItem.eventKind !== 'no-class');
-
-    return {
-      day,
-      date: fullDate,
-      isoDate,
-      events: dayEvents,
-      noClassEvents,
-      academicEvents,
-      eventCount: dayEvents.length,
-    };
-  });
-
-  const selectedCalendarDay = calendarDays.find((dayItem) => dayItem?.isoDate === selectedCalendarIsoDate) || null;
-  const selectedCalendarDayEvents = selectedCalendarDay?.events || [];
-  const monthEventCount = calendarDays.reduce((total, dayItem) => total + (dayItem?.eventCount || 0), 0);
-
-  useEffect(() => {
-    const availableDays = calendarDays.filter(Boolean);
-    if (!availableDays.length) {
-      return;
-    }
-
-    const availableDates = availableDays.map((dayItem) => dayItem.isoDate);
-    if (selectedCalendarIsoDate && availableDates.includes(selectedCalendarIsoDate)) {
-      return;
-    }
-
-    const todayInView = availableDates.includes(todayIsoDate) ? todayIsoDate : '';
-    const firstEventDate = availableDays.find((dayItem) => dayItem.eventCount > 0)?.isoDate || '';
-    setSelectedCalendarIsoDate(todayInView || firstEventDate || availableDates[0]);
-  }, [calendarDays, selectedCalendarIsoDate, todayIsoDate]);
 
   const handleCalendarMonthChange = (offset) => {
-    setCalendarViewDate((currentDate) => new Date(currentDate.getFullYear(), currentDate.getMonth() + offset, 1));
-    setSelectedCalendarIsoDate('');
+    setCalendarViewDate((currentDate) => {
+      let nextYear = currentDate.year;
+      let nextMonth = currentDate.month + offset;
+
+      while (nextMonth < 1) {
+        nextMonth += 13;
+        nextYear -= 1;
+      }
+
+      while (nextMonth > 13) {
+        nextMonth -= 13;
+        nextYear += 1;
+      }
+
+      return {
+        year: nextYear,
+        month: nextMonth,
+      };
+    });
   };
+
+  const calendarNow = new Date();
+  const currentEthiopicDate = EthiopicCalendar.ge(
+    calendarNow.getFullYear(),
+    calendarNow.getMonth() + 1,
+    calendarNow.getDate(),
+  );
+  const calendarDaysInMonth = calendarViewDate.month === 13
+    ? calendarViewDate.year % 4 === 3
+      ? 6
+      : 5
+    : 30;
+  const calendarMonthStartGregorian = EthiopicCalendar.eg(
+    calendarViewDate.year,
+    calendarViewDate.month,
+    1,
+  );
+  const calendarMonthEndGregorian = EthiopicCalendar.eg(
+    calendarViewDate.year,
+    calendarViewDate.month,
+    calendarDaysInMonth,
+  );
+  const calendarFirstWeekday = new Date(
+    calendarMonthStartGregorian.year,
+    calendarMonthStartGregorian.month - 1,
+    calendarMonthStartGregorian.day,
+  ).getDay();
+  const isCurrentCalendarMonth = calendarViewDate.year === currentEthiopicDate.year
+    && calendarViewDate.month === currentEthiopicDate.month;
+  const calendarHighlightedDay = isCurrentCalendarMonth ? currentEthiopicDate.day : null;
+  const calendarMonthLabel = `${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]} ${calendarViewDate.year}`;
+
+  const defaultCalendarEvents = buildDefaultCalendarEvents(calendarViewDate.year);
+  const mergedCalendarEvents = sortCalendarEvents([
+    ...defaultCalendarEvents,
+    ...calendarEvents,
+  ]);
+  const calendarEventsByDate = mergedCalendarEvents.reduce((eventsMap, eventItem) => {
+    const eventDate = String(eventItem.gregorianDate || '');
+    if (!eventDate) {
+      return eventsMap;
+    }
+
+    if (!eventsMap[eventDate]) {
+      eventsMap[eventDate] = [];
+    }
+
+    eventsMap[eventDate].push(eventItem);
+    return eventsMap;
+  }, {});
+
+  const calendarDays = Array.from(
+    { length: calendarFirstWeekday + calendarDaysInMonth },
+    (_, index) => {
+      const dayNumber = index - calendarFirstWeekday + 1;
+      if (dayNumber < 1 || dayNumber > calendarDaysInMonth) {
+        return null;
+      }
+
+      const gregorianDate = EthiopicCalendar.eg(
+        calendarViewDate.year,
+        calendarViewDate.month,
+        dayNumber,
+      );
+      const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, '0')}-${String(gregorianDate.day).padStart(2, '0')}`;
+
+      return {
+        ethDay: dayNumber,
+        isoDate,
+        gregorianDate,
+        events: calendarEventsByDate[isoDate] || [],
+      };
+    },
+  );
+
+  const monthlyCalendarEvents = sortCalendarEvents(
+    [...calendarDays]
+      .filter(Boolean)
+      .flatMap((dayItem) => dayItem.events.map((eventItem) => ({ ...eventItem, ethDay: dayItem.ethDay }))),
+  );
+
+  const selectedCalendarDay = calendarDays.find((dayItem) => dayItem?.isoDate === selectedCalendarIsoDate) || null;
+  const selectedCalendarEvents = selectedCalendarDay?.events || [];
+
+  const deadlineWindowEnd = new Date(calendarNow);
+  deadlineWindowEnd.setDate(deadlineWindowEnd.getDate() + 30);
+  const deadlineWindowEndIsoDate = `${deadlineWindowEnd.getFullYear()}-${String(deadlineWindowEnd.getMonth() + 1).padStart(2, '0')}-${String(deadlineWindowEnd.getDate()).padStart(2, '0')}`;
+  const calendarTodayIsoDate = `${calendarNow.getFullYear()}-${String(calendarNow.getMonth() + 1).padStart(2, '0')}-${String(calendarNow.getDate()).padStart(2, '0')}`;
+
+  const upcomingDeadlineEvents = calendarEvents
+    .filter((eventItem) => (
+      eventItem.showInUpcomingDeadlines
+      && eventItem.category === 'academic'
+      && String(eventItem.gregorianDate || '') >= calendarTodayIsoDate
+      && String(eventItem.gregorianDate || '') <= deadlineWindowEndIsoDate
+    ))
+    .sort((leftItem, rightItem) => String(leftItem.gregorianDate || '').localeCompare(String(rightItem.gregorianDate || '')));
+
+  const visibleUpcomingDeadlineEvents = showAllUpcomingDeadlines
+    ? upcomingDeadlineEvents
+    : upcomingDeadlineEvents.slice(0, 3);
+
+  useEffect(() => {
+    const preferredDay = calendarDays.find((dayItem) => dayItem?.ethDay === calendarHighlightedDay)
+      || calendarDays.find(Boolean)
+      || null;
+
+    if (!preferredDay) {
+      setSelectedCalendarIsoDate('');
+      return;
+    }
+
+    const stillVisible = calendarDays.some((dayItem) => dayItem?.isoDate === selectedCalendarIsoDate);
+    if (!stillVisible) {
+      setSelectedCalendarIsoDate(preferredDay.isoDate);
+    }
+  }, [
+    calendarViewDate.year,
+    calendarViewDate.month,
+    calendarHighlightedDay,
+    calendarDays.length,
+    selectedCalendarIsoDate,
+  ]);
 
   const todayHires = employees.filter((employee) => {
     const hireDate = getEmployeeHireDate(employee);
@@ -1876,9 +2309,22 @@ export default function Dashboard() {
     return hireDate.toDateString() === new Date().toDateString();
   }).length;
 
-  const recentContacts = chatSidebarData.recentContacts;
+  const recentConversations = conversations.slice(0, 5);
+  const recentContacts = recentConversations
+    .map((conversation) => ({
+      userId: conversation?.contact?.userId || conversation?.chatId,
+      chatId: conversation?.chatId,
+      conversation,
+      name: conversation?.displayName || conversation?.contact?.name || 'User',
+      profileImage: getSafeProfileImage(conversation?.profile || conversation?.contact?.profileImage),
+      role: conversation?.contact?.role || 'Staff',
+      unreadCount: Number(conversation?.unreadForMe || 0),
+      lastMessage: conversation?.lastMessageText || (Number(conversation?.unreadForMe || 0) > 0 ? `${Number(conversation?.unreadForMe || 0)} unread message${Number(conversation?.unreadForMe || 0) === 1 ? '' : 's'}` : 'Open chat'),
+    }))
+    .slice(0, 4);
   const normalizedEmployees = employees.map((employee) => {
-    const job = employee?.job || employee?.profileData?.job || {};
+    const employment = employee?.employment || employee?.profileData?.employment || {};
+    const job = { ...(employee?.job || employee?.profileData?.job || {}), ...employment };
     const personal = employee?.personal || employee?.profileData?.personal || {};
     return {
       ...employee,
@@ -1904,6 +2350,33 @@ export default function Dashboard() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 6);
 
+  const departmentCount = Object.keys(departmentCounts).length;
+  const positionCount = new Set(normalizedEmployees.map((employee) => employee._position).filter(Boolean)).size;
+
+  const recentTerminations = normalizedEmployees
+    .filter((employee) => employee.terminated || employee._status === 'terminated')
+    .map((employee) => {
+      const terminationDate = employee?.termination?.lastWorkingDate
+        || employee?.termination?.terminatedAt
+        || employee?.terminatedAt
+        || employee?._job?.lastWorkingDate
+        || '';
+
+      return {
+        name: employee._name,
+        position: employee._position,
+        department: employee._department,
+        reason: employee?.termination?.reason || employee?.termination?.note || 'Termination recorded',
+        date: terminationDate,
+      };
+    })
+    .sort((leftItem, rightItem) => {
+      const leftTime = leftItem.date ? new Date(leftItem.date).getTime() : 0;
+      const rightTime = rightItem.date ? new Date(rightItem.date).getTime() : 0;
+      return rightTime - leftTime;
+    })
+    .slice(0, 4);
+
   // employment type counts (Full-time, Part-time, Contract, Other)
   const employmentCounts = normalizedEmployees.reduce((acc, e) => {
     const job = e._job || {};
@@ -1926,11 +2399,49 @@ export default function Dashboard() {
   };
 
   const widgetCardStyle = {
-    background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-accent, #f8faff) 100%)',
+    background: 'var(--surface-panel, #fff)',
     borderRadius: 16,
-    boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))',
+    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.05)',
     padding: '11px',
     border: '1px solid var(--border-soft, #dbe2f2)',
+  };
+  const rightRailCardStyle = {
+    background: 'var(--surface-panel, #fff)',
+    borderRadius: 16,
+    border: '1px solid var(--border-soft, #dbe2f2)',
+    boxShadow: '0 10px 24px rgba(15, 23, 42, 0.05)',
+  };
+  const rightRailIconStyle = {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    background: '#F8FAFC',
+    color: 'var(--text-primary, #111827)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid rgba(15, 23, 42, 0.08)',
+    flexShrink: 0,
+  };
+  const rightRailIconButtonStyle = {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    border: '1px solid rgba(15, 23, 42, 0.08)',
+    background: '#F8FAFC',
+    color: 'var(--text-secondary, #475569)',
+    cursor: 'pointer',
+    fontSize: 16,
+    lineHeight: 1,
+  };
+  const rightRailPillStyle = {
+    padding: '4px 8px',
+    borderRadius: 999,
+    background: '#F8FAFC',
+    border: '1px solid rgba(15, 23, 42, 0.06)',
+    fontSize: 9,
+    color: 'var(--text-secondary, #475569)',
+    fontWeight: 800,
   };
   const softPanelStyle = {
     background: 'var(--surface-muted, #f8faff)',
@@ -1949,7 +2460,7 @@ export default function Dashboard() {
   };
   const FEED_SECTION_STYLE = {
     width: '100%',
-    maxWidth: '780px',
+    maxWidth: '680px',
     margin: '0 auto',
     boxSizing: 'border-box',
   };
@@ -1958,16 +2469,252 @@ export default function Dashboard() {
     color: 'var(--text-primary, #111827)',
     borderRadius: 16,
     border: '1px solid var(--border-soft, #dbe2f2)',
-    boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))',
+    boxShadow: 'none',
   };
-  const POST_CARD_MIN_HEIGHT = 520;
-  const POST_MEDIA_HEIGHT = 430;
-  const isEditingPost = Boolean(editingPostId);
-  const canSubmitPost = Boolean(postText.trim() || postMedia || postMediaPreviewUrl);
+  const postSurfaceStyle = {
+    background: '#ffffff',
+    color: 'var(--text-primary, #111827)',
+    borderRadius: 10,
+    border: '1px solid #dadde1',
+    boxShadow: 'none',
+  };
+  const sectionHeaderCardStyle = {
+    ...shellCardStyle,
+    padding: '12px 20px 18px',
+    background: '#ffffff',
+    border: '1px solid #dadde1',
+  };
+  const metricPillStyle = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 34,
+    padding: '0 12px',
+    borderRadius: 999,
+    background: 'var(--surface-panel, #fff)',
+    border: '1px solid var(--border-soft, #dbe2f2)',
+    color: 'var(--text-secondary, #334155)',
+    fontSize: 12,
+    fontWeight: 700,
+  };
+  const headerActionStyle = {
+    position: 'relative',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    height: 38,
+    padding: '0 14px',
+    borderRadius: 999,
+    border: '1px solid var(--border-soft, #dbe2f2)',
+    background: 'var(--surface-panel, #fff)',
+    color: 'var(--text-secondary, #334155)',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    textDecoration: 'none',
+    boxShadow: 'none',
+  };
+  const formatFileSize = (bytes) => {
+    const numericBytes = Number(bytes || 0);
+    if (!numericBytes) return '0 KB';
+    if (numericBytes >= 1024 * 1024) {
+      return `${(numericBytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+    return `${Math.max(1, Math.round(numericBytes / 1024))} KB`;
+  };
+  const compressImageToJpeg = async (file) => {
+    if (!file || !String(file.type || '').startsWith('image/') || file.type === 'image/svg+xml') {
+      return {
+        file,
+        originalSize: Number(file?.size || 0),
+        finalSize: Number(file?.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      };
+    }
+
+    const imageUrl = URL.createObjectURL(file);
+
+    try {
+      const imageElement = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Unable to process selected image.'));
+        image.src = imageUrl;
+      });
+
+      const maxDimension = 1600;
+      const originalWidth = imageElement.naturalWidth || imageElement.width;
+      const originalHeight = imageElement.naturalHeight || imageElement.height;
+      const scale = Math.min(1, maxDimension / Math.max(originalWidth, originalHeight));
+      let targetWidth = Math.max(1, Math.round(originalWidth * scale));
+      let targetHeight = Math.max(1, Math.round(originalHeight * scale));
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d', { alpha: false });
+
+      if (!context) {
+        return {
+          file,
+          originalSize: Number(file.size || 0),
+          finalSize: Number(file.size || 0),
+          wasCompressed: false,
+          wasConvertedToJpeg: false,
+        };
+      }
+
+      const renderImage = () => {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, targetWidth, targetHeight);
+        context.drawImage(imageElement, 0, 0, targetWidth, targetHeight);
+      };
+
+      const canvasToBlob = (quality) => new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+            return;
+          }
+
+          reject(new Error('Unable to optimize selected image.'));
+        }, 'image/jpeg', quality);
+      });
+
+      renderImage();
+
+      const qualitySteps = [0.82, 0.74, 0.66, 0.58, 0.5];
+      const maxBytes = 900 * 1024;
+      let bestBlob = null;
+
+      for (const quality of qualitySteps) {
+        const candidateBlob = await canvasToBlob(quality);
+        bestBlob = candidateBlob;
+        if (candidateBlob.size <= maxBytes) {
+          break;
+        }
+      }
+
+      if (bestBlob && bestBlob.size > maxBytes) {
+        targetWidth = Math.max(960, Math.round(targetWidth * 0.82));
+        targetHeight = Math.max(960, Math.round(targetHeight * 0.82 * (originalHeight / Math.max(originalWidth, 1))));
+        renderImage();
+        bestBlob = await canvasToBlob(0.5);
+      }
+
+      if (!bestBlob || bestBlob.size >= file.size) {
+        return {
+          file,
+          originalSize: Number(file.size || 0),
+          finalSize: Number(file.size || 0),
+          wasCompressed: false,
+          wasConvertedToJpeg: false,
+        };
+      }
+
+      const jpegFile = new File(
+        [bestBlob],
+        `${file.name.replace(/\.[^.]+$/, '') || 'post-image'}.jpg`,
+        { type: 'image/jpeg', lastModified: Date.now() },
+      );
+
+      return {
+        file: jpegFile,
+        originalSize: Number(file.size || 0),
+        finalSize: Number(jpegFile.size || 0),
+        wasCompressed: jpegFile.size < file.size,
+        wasConvertedToJpeg: file.type !== 'image/jpeg',
+      };
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+  };
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+
+    setIsOptimizingMedia(true);
+
+    try {
+      const optimizedResult = await compressImageToJpeg(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error('Failed to optimize media:', error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
+  const canSubmitPost = Boolean(postText.trim() || postMedia || existingPostMediaUrl) && !isOptimizingMedia;
+  const postOwnerId = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || 'hr-admin';
+  const currentLikeActorId = admin?.userId || admin?.id || admin?.adminId || admin?.hrId || 'hr-admin';
+  const isPostComposerEditing = Boolean(editingPostId);
   const handleSidebarViewSelection = (action) => {
     const nextSelection = resolveDashboardSelection(action);
     setDashboardView(nextSelection.dashboardView);
     setPostFeedView(nextSelection.postFeedView);
+  };
+
+  const upsertPostInState = (incomingPost) => {
+    if (!incomingPost?.postId) {
+      return;
+    }
+
+    setPosts((currentPosts) => {
+      const alreadyExists = currentPosts.some((post) => post.postId === incomingPost.postId);
+      const nextPosts = alreadyExists
+        ? currentPosts.map((post) => (post.postId === incomingPost.postId ? { ...post, ...incomingPost } : post))
+        : [incomingPost, ...currentPosts].slice(0, 25);
+
+      setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+      return nextPosts;
+    });
+  };
+
+  const handleOpenConversation = async (conversation) => {
+    if (!conversation?.contact?.userId) {
+      navigate('/all-chat');
+      return;
+    }
+
+    const nextChatId = String(conversation?.chatId || sortedChatId(adminChatUserId, conversation.contact.userId));
+
+    navigate('/all-chat', { state: { contact: conversation.contact, chatId: nextChatId } });
+
+    if (adminChatUserId && nextChatId) {
+      try {
+        await update(ref(db, schoolPath(`Chats/${nextChatId}/unread`)), { [adminChatUserId]: 0 });
+      } catch (error) {
+        console.error('Failed to clear dashboard unread count:', error);
+      }
+    }
+
+    setConversations((currentValue) => currentValue.map((item) => (
+      item.chatId === nextChatId
+        ? { ...item, unreadForMe: 0 }
+        : item
+    )));
   };
 
   useEffect(() => {
@@ -1988,6 +2735,14 @@ export default function Dashboard() {
 
     navigate(location.pathname, { replace: true, state: {} });
   }, [location.pathname, location.state, navigate]);
+
+  useEffect(() => {
+    localStorage.setItem('hr_dashboard_sidebar_view_state', JSON.stringify({
+      dashboardView,
+      postFeedView,
+    }));
+    window.dispatchEvent(new Event('hr-dashboard-view-updated'));
+  }, [dashboardView, postFeedView]);
   const isPostOwnedByCurrentUser = (post) => {
     if (!post) return false;
     const ownerCandidates = [post.adminId, post.userId, post.hrId, post.ownerId].filter(Boolean).map((value) => String(value));
@@ -2051,97 +2806,385 @@ export default function Dashboard() {
   });
 
   const handlePost = async () => {
-    if (!canSubmitPost) return;
+    if (!canSubmitPost || isPostSubmitting) return null;
 
     if (!postOwnerId) {
       alert('Session expired');
-      return;
+      return null;
     }
 
-    let postUrl = postMediaPreviewUrl || '';
-    if (postMedia) {
-      postUrl = await readPostMediaFile(postMedia);
-    }
+    setIsPostSubmitting(true);
 
     try {
-      const payload = {
-        message: postText,
-        postUrl,
-        adminId: postOwnerId,
-        hrId: postOwnerId,
-        userId: admin?.userId || admin?.id || postOwnerId,
-        adminName: admin?.name || 'HR Office',
-        adminProfile: admin?.profileImage || '/default-profile.png',
-        targetRole: targetRole || 'all',
-      };
+      const payload = new FormData();
+      payload.append('message', postText);
+      payload.append('adminId', postOwnerId);
+      payload.append('userId', admin?.userId || admin?.id || postOwnerId);
+      payload.append('adminName', admin?.name || 'HR Office');
+      payload.append('adminProfile', getSafeProfileImage(admin?.profileImage));
+      payload.append('targetRole', targetRole || 'all');
+
+      if (postMedia) {
+        payload.append('media', postMedia);
+      }
+
+      if (editingPostId) {
+        payload.append('removeMedia', !postMedia && !existingPostMediaUrl ? '1' : '0');
+
+        if (existingPostMediaUrl && !postMedia) {
+          payload.append('postUrl', existingPostMediaUrl);
+          payload.append('mediaType', existingPostMediaType || '');
+        }
+
+        const response = await api.patch(`/api/update_post/${editingPostId}`, payload);
+        const updatedPost = response?.data?.post;
+
+        if (updatedPost) {
+          upsertPostInState(updatedPost);
+        }
+
+        return updatedPost;
+      }
 
       const response = isEditingPost
         ? await api.put(`/api/update_post/${editingPostId}`, payload)
         : await api.post('/api/create_post', payload);
       const savedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
 
-      if (savedPost) {
-        setPosts((currentPosts) => {
-          const remainingPosts = currentPosts.filter((post) => getPostId(post) !== savedPost.postId);
-          return isEditingPost ? [savedPost, ...remainingPosts] : [savedPost, ...remainingPosts];
-        });
+      if (createdPost) {
+        upsertPostInState(createdPost);
       }
 
-      resetPostComposer();
-      return savedPost;
+      return createdPost;
     } catch (error) {
       console.error(`Failed to ${isEditingPost ? 'update' : 'create'} post:`, error?.response?.data || error);
       throw error;
+    } finally {
+      setIsPostSubmitting(false);
     }
   };
 
   const handleSubmitCreatePost = async () => {
-    if (!canSubmitPost) return;
+    if (!canSubmitPost || isPostSubmitting) return;
     try {
       await handlePost();
-      closeCreatePostModal();
+      setShowCreatePostModal(false);
+      resetPostComposerState();
     } catch (error) {
-      console.error(`${isEditingPost ? 'Update' : 'Create'} post failed:`, error?.response?.data || error);
-      alert(error?.response?.data?.message || `Unable to ${isEditingPost ? 'update' : 'create'} post. Please try again.`);
+      console.error('Post save failed:', error?.response?.data || error);
+      alert(error?.response?.data?.message || 'Unable to save post. Please try again.');
     }
   };
 
   const handleDeletePost = async (postId) => {
     try {
-      await api.delete(`/api/delete_post/${postId}`);
-      setPosts((currentPosts) => currentPosts.filter((post) => getPostId(post) !== String(postId)));
+      await api.delete(`/api/delete_post/${postId}`, {
+        params: {
+          adminId: postOwnerId,
+          userId: currentLikeActorId,
+        },
+      });
+      setPosts((currentPosts) => {
+        const nextPosts = currentPosts.filter((post) => post.postId !== postId);
+        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+        return nextPosts;
+      });
+
+      if (editingPostId === postId) {
+        setShowCreatePostModal(false);
+        resetPostComposerState();
+      }
+
+      return true;
     } catch (error) {
       console.error('Failed to delete post:', error);
       alert('Unable to delete post. Please try again.');
+      return false;
     }
   };
 
+  const handleConfirmDeletePost = async () => {
+    const postId = String(pendingDeletePost?.postId || '').trim();
+    if (!postId || isDeletingPost) {
+      return;
+    }
+
+    setIsDeletingPost(true);
+    try {
+      const wasDeleted = await handleDeletePost(postId);
+      if (wasDeleted) {
+        setPendingDeletePost(null);
+        setShowDeletePostModal(false);
+      }
+    } finally {
+      setIsDeletingPost(false);
+    }
+  };
+
+  const handleCreateCalendarEvent = async () => {
+    if (!canManageCalendar) {
+      alert('Only HR or admin users can manage school calendar events.');
+      return;
+    }
+
+    if (!selectedCalendarDay) {
+      alert('Select a calendar day first.');
+      return;
+    }
+
+    if (calendarModalContext === 'deadline' && !calendarEventForm.title.trim()) {
+      alert('Enter a deadline title.');
+      return;
+    }
+
+    setCalendarEventSaving(true);
+    try {
+      const normalizedCategory = calendarModalContext === 'deadline' ? 'academic' : calendarEventForm.category;
+      const selectedEventMeta = getCalendarEventMeta(normalizedCategory);
+      const payload = {
+        title: calendarEventForm.title.trim() || selectedEventMeta.label,
+        type: getCalendarEventKey(normalizedCategory),
+        category: normalizedCategory,
+        subType: 'general',
+        notes: calendarEventForm.notes.trim(),
+        showInUpcomingDeadlines: calendarModalContext === 'deadline'
+          || Boolean(calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId)?.showInUpcomingDeadlines),
+        gregorianDate: selectedCalendarDay.isoDate,
+        ethiopianDate: {
+          year: calendarViewDate.year,
+          month: calendarViewDate.month,
+          day: selectedCalendarDay.ethDay,
+        },
+        createdBy: currentLikeActorId || postOwnerId,
+        userId: currentLikeActorId || postOwnerId,
+      };
+
+      if (editingCalendarEventId) {
+        await api.patch(`/api/calendar_events/${editingCalendarEventId}`, payload);
+        setCalendarActionMessage('Calendar event updated successfully.');
+      } else {
+        await api.post('/api/calendar_events', payload);
+        setCalendarActionMessage('Calendar event saved successfully.');
+      }
+
+      setCalendarEventForm({ title: '', category: 'no-class', subType: 'general', notes: '' });
+      setEditingCalendarEventId('');
+      setShowCalendarEventModal(false);
+      setCalendarModalContext('calendar');
+      DASHBOARD_RESOURCE_CACHE.delete(calendarCacheKey);
+      await loadCalendarEvents({ forceRefresh: true });
+    } catch (error) {
+      console.error('Failed to save calendar event:', error?.response?.data || error);
+      alert(error?.response?.data?.message || 'Failed to save calendar event.');
+    } finally {
+      setCalendarEventSaving(false);
+    }
+  };
+
+  const handleEditCalendarEvent = (eventItem) => {
+    if (!canManageCalendar || eventItem.isDefault) return;
+
+    setCalendarModalContext(eventItem.showInUpcomingDeadlines ? 'deadline' : 'calendar');
+    setShowCalendarEventModal(true);
+
+    const ethiopianDate = eventItem.ethiopianDate || (() => {
+      const [year, month, day] = String(eventItem.gregorianDate || '').split('-').map(Number);
+      if (!year || !month || !day) {
+        return null;
+      }
+
+      return EthiopicCalendar.ge(year, month, day);
+    })();
+
+    if (ethiopianDate?.year && ethiopianDate?.month) {
+      setCalendarViewDate({
+        year: ethiopianDate.year,
+        month: ethiopianDate.month,
+      });
+    }
+
+    setSelectedCalendarIsoDate(eventItem.gregorianDate);
+    setCalendarEventForm({
+      title: eventItem.title || '',
+      category: eventItem.category || (eventItem.type === 'academic' ? 'academic' : 'no-class'),
+      subType: 'general',
+      notes: eventItem.notes || '',
+    });
+    setEditingCalendarEventId(eventItem.id);
+  };
+
+  const handleDeleteCalendarEvent = async (eventItem) => {
+    if (!canManageCalendar) {
+      alert('Only HR or admin users can manage school calendar events.');
+      return;
+    }
+
+    if (eventItem.isDefault) {
+      alert('Default Ethiopian special days cannot be deleted.');
+      return;
+    }
+
+    const selectedEventMeta = getCalendarEventMeta(eventItem.category);
+    const shouldDelete = window.confirm(`Delete ${selectedEventMeta.label} on ${eventItem.gregorianDate}?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setCalendarEventSaving(true);
+    try {
+      await api.delete(`/api/calendar_events/${eventItem.id}`, {
+        data: {
+          userId: currentLikeActorId || postOwnerId,
+        },
+      });
+
+      if (editingCalendarEventId === eventItem.id) {
+        setEditingCalendarEventId('');
+        setCalendarEventForm({ title: '', category: 'no-class', subType: 'general', notes: '' });
+      }
+
+      setCalendarActionMessage('Calendar event deleted successfully.');
+      DASHBOARD_RESOURCE_CACHE.delete(calendarCacheKey);
+      await loadCalendarEvents({ forceRefresh: true });
+    } catch (error) {
+      console.error('Failed to delete calendar event:', error?.response?.data || error);
+      alert(error?.response?.data?.message || 'Failed to delete calendar event.');
+    } finally {
+      setCalendarEventSaving(false);
+    }
+  };
+
+  const handleOpenCalendarEventModal = () => {
+    const selectableCalendarDays = calendarDays.filter(Boolean);
+    if (!selectedCalendarIsoDate && selectableCalendarDays.length > 0) {
+      setSelectedCalendarIsoDate(selectableCalendarDays[0].isoDate);
+    }
+
+    setEditingCalendarEventId('');
+    setCalendarEventForm({ title: '', category: 'no-class', subType: 'general', notes: '' });
+    setCalendarModalContext('calendar');
+    setShowCalendarEventModal(true);
+  };
+
+  const handleOpenDeadlineModal = () => {
+    const selectableCalendarDays = calendarDays.filter(Boolean);
+    if (!selectedCalendarIsoDate && selectableCalendarDays.length > 0) {
+      setSelectedCalendarIsoDate(selectableCalendarDays[0].isoDate);
+    }
+
+    setEditingCalendarEventId('');
+    setCalendarEventForm({ title: '', category: 'academic', subType: 'general', notes: '' });
+    setCalendarModalContext('deadline');
+    setShowCalendarEventModal(true);
+  };
+
+  const handleCloseCalendarEventModal = () => {
+    setEditingCalendarEventId('');
+    setCalendarEventForm({ title: '', category: 'no-class', subType: 'general', notes: '' });
+    setCalendarModalContext('calendar');
+    setShowCalendarEventModal(false);
+  };
+
+  useEffect(() => {
+    if (!calendarActionMessage) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      setCalendarActionMessage('');
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [calendarActionMessage]);
+
   const handleLikePost = async (postId) => {
+    const normalizedPostId = String(postId || '').trim();
+    if (!normalizedPostId || !currentLikeActorId || pendingLikePostIds[normalizedPostId]) {
+      return;
+    }
+
+    const currentPost = posts.find((post) => String(post?.postId || '') === normalizedPostId);
+    if (!currentPost) {
+      return;
+    }
+
+    const previousLikes = normalizePostLikes(currentPost.likes);
+    const wasLiked = Boolean(previousLikes[String(currentLikeActorId)]);
+    const nextLikes = { ...previousLikes };
+
+    if (wasLiked) {
+      delete nextLikes[String(currentLikeActorId)];
+    } else {
+      nextLikes[String(currentLikeActorId)] = true;
+    }
+
+    const optimisticLikeCount = Object.keys(nextLikes).length;
+
+    setPendingLikePostIds((currentValue) => ({
+      ...currentValue,
+      [normalizedPostId]: true,
+    }));
+
+    setPosts((currentPosts) => {
+      const nextPosts = currentPosts.map((post) => (
+        post.postId === normalizedPostId
+          ? {
+              ...post,
+              likeCount: optimisticLikeCount,
+              likes: nextLikes,
+            }
+          : post
+      ));
+
+      setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+      return nextPosts;
+    });
+
     try {
       const response = await api.post('/api/like_post', {
-        postId,
+        postId: normalizedPostId,
         userId: currentLikeActorId,
         adminId: postOwnerId,
       });
 
       const updatedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
       const likeCount = response?.data?.likeCount;
-      const likes = response?.data?.likes;
+      const likes = normalizePostLikes(response?.data?.likes);
 
-      setPosts((currentPosts) =>
-        currentPosts.map((post) =>
-          getPostId(post) === String(postId)
-            ? (updatedPost || {
+      setPosts((currentPosts) => {
+        const nextPosts = currentPosts.map((post) =>
+          post.postId === normalizedPostId
+            ? {
                 ...post,
-                likeCount: typeof likeCount === 'number' ? likeCount : post.likeCount,
-                likes: likes && typeof likes === 'object' ? likes : (post.likes || {}),
-              })
+                likeCount: typeof likeCount === 'number' ? likeCount : Object.keys(likes).length,
+                likes,
+              }
             : post,
-        ),
-      );
+        );
+        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+        return nextPosts;
+      });
     } catch (error) {
       console.error('Failed to like post:', error);
+      setPosts((currentPosts) => {
+        const nextPosts = currentPosts.map((post) => (
+          post.postId === normalizedPostId
+            ? {
+                ...post,
+                likeCount: Math.max(0, Object.keys(previousLikes).length),
+                likes: previousLikes,
+              }
+            : post
+        ));
+
+        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+        return nextPosts;
+      });
       alert('Unable to update like. Please try again.');
+    } finally {
+      setPendingLikePostIds((currentValue) => {
+        const nextValue = { ...currentValue };
+        delete nextValue[normalizedPostId];
+        return nextValue;
+      });
     }
   };
 
@@ -2156,140 +3199,165 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: 'var(--page-bg, #f4f6fb)', minHeight: '100vh' }}>
-      <TopNavbar
-        admin={admin}
-        notificationCount={notificationCount}
-        messageCount={unreadMessageCount}
-        onNotificationClick={() => setShowNotificationDropdown((prev) => !prev)}
-        notificationPanel={showNotificationDropdown ? (
-          <div style={{ position: 'absolute', top: 48, right: 96, width: 320, maxHeight: 320, overflowY: 'auto', borderRadius: 10, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', boxShadow: '0 16px 40px rgba(20,35,78,0.15)', zIndex: 1200 }}>
-            <div style={{ padding: '10px 12px', fontSize: 13, fontWeight: 800, borderBottom: '1px solid var(--border-soft, #dbe2f2)' }}>Notifications</div>
-            {notificationCount === 0 ? (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No new notifications</div>
-            ) : (
-              <>
-                <div style={{ padding: '8px 12px 6px', fontSize: 11, fontWeight: 900, color: 'var(--text-secondary, #475569)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Messages</div>
-                {messageNotifications.length === 0 ? (
-                  <div style={{ padding: '0 12px 10px', fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No message notifications</div>
-                ) : (
-                  messageNotifications.map((contact, index) => (
-                    <button
-                      key={`message-${contact.userId || index}`}
-                      type="button"
-                      onClick={() => {
-                        setShowNotificationDropdown(false);
-                        navigate('/all-chat', { state: { tab: contact.tab, contact: { userId: contact.userId, type: contact.tab } } });
-                      }}
-                      style={{ width: '100%', textAlign: 'left', padding: '9px 12px', border: 'none', borderBottom: '1px solid var(--border-soft, #eef2ff)', background: 'transparent', cursor: 'pointer' }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                        <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{contact.name}</span>
-                        <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-muted, #6b7280)' }}>{contact.unread ? `${contact.unread} new` : 'Open chat'}</span>
-                      </div>
-                      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #6b7280)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {contact.lastMsgText}
-                      </div>
-                    </button>
-                  ))
-                )}
+    <div
+      className="dashboard-page"
+      style={{
+        background: '#FFFFFF',
+        minHeight: '100vh',
+        color: 'var(--text-primary)',
+        '--surface-panel': '#FFFFFF',
+        '--surface-accent': '#F1F8FF',
+        '--surface-muted': '#F7FBFF',
+        '--surface-strong': '#DCEBFF',
+        '--page-bg': '#FFFFFF',
+        '--border-soft': '#D7E7FB',
+        '--border-strong': '#B5D2F8',
+        '--text-primary': '#0f172a',
+        '--text-secondary': '#334155',
+        '--text-muted': '#64748b',
+        '--accent': '#007AFB',
+        '--accent-soft': '#E7F2FF',
+        '--accent-strong': '#007AFB',
+        '--success': '#00B6A9',
+        '--success-soft': '#E9FBF9',
+        '--success-border': '#AAEDE7',
+        '--warning': '#DC2626',
+        '--warning-soft': '#FEE2E2',
+        '--warning-border': '#FCA5A5',
+        '--danger': '#b91c1c',
+        '--danger-border': '#fca5a5',
+        '--surface-overlay': '#F1F8FF',
+        '--input-bg': '#FFFFFF',
+        '--input-border': '#B5D2F8',
+        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
+        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
+        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
+        '--sidebar-width': 'clamp(230px, 16vw, 290px)',
+        '--topbar-height': '64px',
+      }}
+    >
+      <nav className="top-navbar" style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--topbar-height)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '0 18px 0 20px', borderBottom: '1px solid var(--border-soft)', background: 'var(--surface-panel)', zIndex: 60 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Gojo HR</h2>
+        </div>
 
-                <div style={{ padding: '8px 12px 6px', fontSize: 11, fontWeight: 900, color: 'var(--text-secondary, #475569)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Posts</div>
-                {postNotifications.length === 0 ? (
-                  <div style={{ padding: '0 12px 10px', fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No unseen posts</div>
-                ) : (
-                  postNotifications.map((post, index) => (
-                    <button
-                      key={`post-${post.id || index}`}
-                      type="button"
-                      onClick={() => {
-                        setShowNotificationDropdown(false);
-                        setDashboardView('home');
-                        setPostFeedView('all');
-                      }}
-                      style={{ width: '100%', textAlign: 'left', padding: '9px 12px', border: 'none', borderBottom: '1px solid var(--border-soft, #eef2ff)', background: 'transparent', cursor: 'pointer' }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                        <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{post.adminName}</span>
-                        <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-muted, #6b7280)' }}>{formatActivityTime(post.time)}</span>
-                      </div>
-                      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #6b7280)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {post.message}
-                      </div>
-                    </button>
-                  ))
-                )}
+        <div className="nav-right" style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+          <button type="button" title="Notifications" onClick={() => setShowNotificationDropdown((prev) => !prev)} style={headerActionStyle}>
+            <FaBell />
+            {notificationCount > 0 ? (
+              <span style={{ minWidth: 18, height: 18, borderRadius: 999, background: 'var(--warning)', color: '#fff', fontSize: 10, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px' }}>
+                {notificationCount}
+              </span>
+            ) : null}
+          </button>
+          {showNotificationDropdown ? (
+            <div style={{ position: 'absolute', top: 48, right: 146, width: 320, maxHeight: 320, overflowY: 'auto', borderRadius: 14, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', boxShadow: 'none', zIndex: 1200 }}>
+              <div style={{ padding: '12px 14px', fontSize: 13, fontWeight: 800, borderBottom: '1px solid var(--border-soft)' }}>Notifications</div>
+              {notificationCount === 0 ? (
+                <div style={{ padding: 14, fontSize: 12, color: 'var(--text-muted)' }}>No new notifications</div>
+              ) : (
+                <>
+                  {upcomingBirthdays.slice(0, 4).map((item, index) => (
+                    <div key={`bday-${index}`} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      Birthday reminder: {item.name || item.fullName || 'Employee'}
+                    </div>
+                  ))}
+                  {upcomingContracts.slice(0, 4).map((item, index) => (
+                    <div key={`contract-${index}`} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      Contract reminder: {item.name || item.fullName || 'Employee'}
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          ) : null}
+          <button type="button" title="Messages" onClick={() => navigate('/all-chat')} style={headerActionStyle}>
+            <FaFacebookMessenger />
+          </button>
+          <Link to="/settings" aria-label="Settings" style={headerActionStyle}>
+            <FaCog />
+          </Link>
+          <Avatar src={admin.profileImage} alt="admin" name={admin.name || 'HR Office'} size={40} style={{ border: '1px solid var(--border-soft)' }} textSize={14} />
+        </div>
+      </nav>
 
-                <div style={{ padding: '8px 12px 6px', fontSize: 11, fontWeight: 900, color: 'var(--text-secondary, #475569)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Reminders</div>
-                {upcomingBirthdays.slice(0, 4).map((item, index) => (
-                  <div key={`bday-${index}`} style={{ padding: '9px 12px', borderBottom: '1px solid var(--border-soft, #eef2ff)', fontSize: 12 }}>
-                    🎂 {item.name || item.fullName || 'Employee'} has a birthday soon
-                  </div>
-                ))}
-                {upcomingContracts.slice(0, 4).map((item, index) => (
-                  <div key={`contract-${index}`} style={{ padding: '9px 12px', borderBottom: '1px solid var(--border-soft, #eef2ff)', fontSize: 12 }}>
-                    📄 {item.name || item.fullName || 'Employee'} contract ends soon
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        ) : null}
-      />
-
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px', minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', width: '100%', boxSizing: 'border-box' }}>
-        <Sidebar
-          admin={admin}
-          fullHeight
-          top={4}
-          selectedDashboardView={dashboardView}
-          selectedPostFeedView={postFeedView}
-          onSelectDashboardView={handleSidebarViewSelection}
-          onLogout={() => {
-            localStorage.removeItem('admin');
-            navigate('/login', { replace: true });
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+        <div
+          className="teacher-sidebar-spacer"
+          style={{
+            width: 'var(--sidebar-width)',
+            minWidth: 'var(--sidebar-width)',
+            flex: '0 0 var(--sidebar-width)',
+            pointerEvents: 'none',
           }}
         />
 
-        <main className="google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height, 56px) - 36px)', overflowY: 'auto', position: 'relative', padding: '0 2px 18px' }}>
-          
+        <main className="main-content google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', top: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
+          <div style={{ width: '100%', maxWidth: dashboardView === 'home' ? FEED_SECTION_STYLE.maxWidth : 1180 }}>
+            {dashboardView === 'home' ? (
+              <div className="section-header-card" style={{ ...sectionHeaderCardStyle, ...FEED_SECTION_STYLE, margin: '0 auto 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--accent-soft)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                      Gojo HR Workspace
+                    </div>
+                    <div>
+                      <div className="section-header-card__title" style={{ fontSize: 22 }}>HR Updates Feed</div>
+                      <div className="section-header-card__subtitle" style={{ marginTop: 6 }}>Share announcements, attendance reminders, and team updates in the same clean shell used across the admin portal.</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={metricPillStyle}>Employees <strong style={{ color: 'var(--text-primary)' }}>{count}</strong></div>
+                      {/* <div style={metricPillStyle}>Attendance <strong style={{ color: 'var(--accent-strong)' }}>{attendanceRate}</strong></div> */}
+                      <div style={metricPillStyle}>Posts today <strong style={{ color: 'var(--text-primary)' }}>{todayPostCount}</strong></div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={metricPillStyle}>Unread <strong style={{ color: 'var(--text-primary)' }}>{messageCount}</strong></div>
+                    <div style={metricPillStyle}>Notifications <strong style={{ color: 'var(--text-primary)' }}>{totalNotifications}</strong></div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
           {dashboardView === 'home' ? (
             <>
               
 
-                <div className="post-box" style={{ ...FEED_SECTION_STYLE, ...shellCardStyle, margin: '0 auto 14px', borderRadius: 12, overflow: 'hidden', padding: '10px 12px' }}>
+                <div className="post-box" style={{ ...FEED_SECTION_STYLE, ...postSurfaceStyle, margin: '0 auto 14px', borderRadius: 10, overflow: 'hidden', padding: '10px 12px' }}>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--surface-panel, #fff)', border: 'none', boxShadow: 'none', padding: 0 }}>
-                  <img
-                    src={admin.profileImage || '/default-profile.png'}
-                    alt="me"
-                    style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border-soft, #dbe2f2)', flexShrink: 0 }}
-                  />
-                  <button
-                    type="button"
-                    onClick={openCreatePostModal}
-                    style={{ flex: 1, height: 42, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', borderRadius: 999, padding: '0 16px', fontSize: 14, textAlign: 'left', color: 'var(--text-muted, #6b7280)', cursor: 'pointer' }}
-                  >
-                    What's on your mind?
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openCreatePostModal}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--danger, #dc2626)', fontSize: 18, cursor: 'pointer', flexShrink: 0 }}
-                    title="Live video"
-                  >
-                    <AiFillVideoCamera />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={openCreatePostModal}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--success, #16a34a)', fontSize: 18, cursor: 'pointer', flexShrink: 0 }}
-                    title="Photo"
-                  >
-                    <AiFillPicture />
-                  </button>
+                    <Avatar
+                      src={admin.profileImage}
+                      alt="me"
+                      name={admin.name || 'HR Office'}
+                      size={38}
+                      style={{ border: '1px solid var(--border-soft, #dbe2f2)' }}
+                      textSize={13}
+                    />
+                    <button
+                      type="button"
+                      onClick={openCreatePostModal}
+                      style={{ flex: 1, height: 42, border: '1px solid #d9e2ef', background: '#f7faff', borderRadius: 999, padding: '0 16px', fontSize: 14, textAlign: 'left', color: 'var(--text-muted, #6b7280)', cursor: 'pointer' }}
+                    >
+                      What's on your mind?
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openCreatePostModal}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--danger, #dc2626)', fontSize: 18, cursor: 'pointer', flexShrink: 0 }}
+                      title="Live video"
+                    >
+                      <AiFillVideoCamera />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openCreatePostModal}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, border: 'none', borderRadius: 8, background: 'transparent', color: 'var(--success, #16a34a)', fontSize: 18, cursor: 'pointer', flexShrink: 0 }}
+                      title="Photo"
+                    >
+                      <AiFillPicture />
+                    </button>
+                  </div>
                 </div>
-              </div>
 
               <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {visiblePosts.length === 0 ? (
@@ -2298,40 +3366,54 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   visiblePosts.map((post) => {
-                    const postId = getPostId(post) || `${post.time || 'post'}-${post.adminId || post.userId || 'unknown'}`;
-                    const canExpandPost = shouldShowPostSeeMore(post.message);
-                    const isPostExpanded = !!expandedPostDescriptions[postId];
-                    const likedByCurrentUser = !!(post.likes && post.likes[currentLikeActorId]);
-                    const hasMedia = Boolean(post.postUrl);
-                    const isVideoPost = hasMedia && isVideoPostUrl(post.postUrl);
-                    const isOwnedPost = isPostOwnedByCurrentUser(post);
-                    const showOwnerActions = postFeedView === 'mine' && isOwnedPost;
+                    const isOwnedByCurrentUser = isPostOwnedByCurrentUser(post);
+                    const isLikedByCurrentUser = isPostLikedByActor(post, currentLikeActorId);
+                    const resolvedLikeCount = getResolvedLikeCount(post);
+                    const isLikePending = Boolean(pendingLikePostIds[post.postId]);
 
                     return (
-                    <div key={postId} className="post-card facebook-post-card" style={{ ...shellCardStyle, borderRadius: 10, overflow: 'hidden', width: '100%', minHeight: POST_CARD_MIN_HEIGHT, display: 'flex', flexDirection: 'column' }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '12px 16px 8px' }}>
+                    <div key={post.postId} className="post-card facebook-post-card" style={{ ...postSurfaceStyle, overflow: 'hidden' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '12px 16px 6px' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0, flex: 1 }}>
-                          <div style={{ width: 40, height: 40, borderRadius: '50%', overflow: 'hidden', flexShrink: 0 }}>
-                            <img src={post.adminProfile || '/default-profile.png'} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <div style={{ flexShrink: 0 }}>
+                            <Avatar src={post.adminProfile} alt="profile" name={post.adminName || 'HR Office'} size={40} textSize={14} />
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                             <h4 style={{ margin: 0, fontSize: 15, color: 'var(--text-primary, #111827)', fontWeight: 700, lineHeight: 1.2 }}>{post.adminName || 'HR Office'}</h4>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 2, fontSize: 13, color: 'var(--text-muted, #6b7280)', fontWeight: 500 }}>
-                              <span>{post.time ? new Date(post.time).toLocaleString() : 'Just now'}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 2, fontSize: 12, color: 'var(--text-muted, #6b7280)', fontWeight: 500 }}>
+                              <span>{formatFeedTimestamp(post.time)}</span>
                               <span>·</span>
                               <span>{post.targetRole && post.targetRole !== 'all' ? `Visible to ${getDashboardRoleLabel(post.targetRole)}` : 'Visible to everyone'}</span>
                             </div>
                           </div>
                         </div>
-                        {showOwnerActions ? (
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 36, height: 36, color: 'var(--accent-strong, #1d4ed8)', flexShrink: 0 }}>
-                            <FaEllipsisH style={{ width: 14, height: 14, opacity: 0.45 }} />
+                        {isOwnedByCurrentUser ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditPost(post)}
+                              style={{ height: 32, padding: '0 12px', borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #475569)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRequestDeletePost(post)}
+                              style={{ height: 32, padding: '0 12px', borderRadius: 999, border: '1px solid var(--danger-border, #fca5a5)', background: 'var(--surface-panel, #fff)', color: 'var(--danger, #b91c1c)', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                            >
+                              <FaTrashAlt style={{ width: 12, height: 12 }} />
+                              <span>Delete</span>
+                            </button>
                           </div>
                         ) : null}
                       </div>
 
-                      {post.message ? (
-                          <div style={{ padding: '0 16px 6px', color: 'var(--text-primary, #111827)', fontSize: 15, lineHeight: 1.3333, wordBreak: 'break-word', minHeight: 56 }}>
+                      {post.message ? (() => {
+                        const canExpandPost = shouldShowPostSeeMore(post.message);
+                        const isPostExpanded = !!expandedPostDescriptions[post.postId];
+
+                        return (
+                          <div style={{ padding: '0 16px 10px', color: 'var(--text-primary, #111827)', fontSize: 15, lineHeight: 1.3333, wordBreak: 'break-word' }}>
                             <div
                               style={{
                                 whiteSpace: 'pre-wrap',
@@ -2346,8 +3428,8 @@ export default function Dashboard() {
                             {canExpandPost ? (
                               <button
                                 type="button"
-                                onClick={() => togglePostDescription(postId)}
-                                style={{ border: 'none', background: 'transparent', padding: 0, marginTop: 4, color: 'var(--text-muted, #6b7280)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}
+                                onClick={() => togglePostDescription(post.postId)}
+                                style={{ border: 'none', background: 'transparent', padding: 0, marginTop: 6, color: 'var(--text-muted, #6b7280)', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
                               >
                                 {isPostExpanded ? 'See less' : 'See more'}
                               </button>
@@ -2358,393 +3440,107 @@ export default function Dashboard() {
                       )}
 
                       {post.postUrl ? (
-                        <div style={{ background: '#0f172a', borderTop: '1px solid var(--border-soft, #dbe2f2)', borderBottom: '1px solid var(--border-soft, #dbe2f2)', display: 'flex', alignItems: 'center', justifyContent: 'center', height: POST_MEDIA_HEIGHT, overflow: 'hidden' }}>
-                          {isVideoPost ? (
-                            <video src={post.postUrl} controls style={{ width: '100%', height: '500px', objectFit: 'cover', display: 'block' }} />
-                          ) : (
-                            <img src={post.postUrl} alt="post media" style={{ width: '100%', height: '500px', objectFit: 'cover', display: 'block', margin: '0 auto' }} />
-                          )}
+                        <div style={{ background: '#000', borderTop: '1px solid #dadde1', borderBottom: '1px solid #dadde1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <img src={post.postUrl} alt="post media" style={{ width: '100%', height: 'auto', maxHeight: 'min(78vh, 720px)', objectFit: 'contain', display: 'block', margin: '0 auto' }} />
                         </div>
-                      ) : (
-                        <div style={{ height: POST_MEDIA_HEIGHT, borderTop: '1px solid var(--border-soft, #dbe2f2)', borderBottom: '1px solid var(--border-soft, #dbe2f2)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #eef4ff 0%, #f8faff 100%)', color: 'var(--text-muted, #6b7280)', fontSize: 13, fontWeight: 700 }}>
-                          Text update
-                        </div>
-                      )}
+                      ) : null}
 
-                      <div style={{ padding: '8px 16px 10px', display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13, color: 'var(--text-muted, #6b7280)', marginTop: 'auto' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                          <button
-                            type="button"
-                            onClick={() => handleLikePost(postId)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', color: likedByCurrentUser ? 'var(--accent-strong, #1d4ed8)' : 'var(--text-muted, #6b7280)', fontSize: 13, fontWeight: 600 }}
-                          >
-                            <span style={{ width: 20, height: 20, borderRadius: '50%', background: likedByCurrentUser ? 'var(--accent-strong, #1d4ed8)' : 'var(--surface-strong, #e8ecf8)', color: likedByCurrentUser ? '#fff' : 'var(--text-muted, #6b7280)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                              <FaThumbsUp style={{ width: 10, height: 10 }} />
-                            </span>
-                            <span style={{ whiteSpace: 'nowrap' }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? '' : 's'}</span>
-                          </button>
-                          <div style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
-                            {post.targetRole && post.targetRole !== 'all' ? `Visible to ${getDashboardRoleLabel(post.targetRole)}` : 'Visible to everyone'}
-                          </div>
+                      <div style={{ padding: '8px 16px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          <span style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--accent-strong, #007afb)', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <FaThumbsUp style={{ width: 9, height: 9 }} />
+                          </span>
+                          <span style={{ whiteSpace: 'nowrap', fontSize: 13 }}>{resolvedLikeCount} like{resolvedLikeCount === 1 ? '' : 's'}</span>
                         </div>
-                        {showOwnerActions ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <button
-                              type="button"
-                              onClick={() => openEditPostModal(post)}
-                              style={{ flex: 1, height: 34, borderRadius: 8, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', color: 'var(--text-primary, #111827)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (window.confirm('Delete this post?')) {
-                                  handleDeletePost(postId);
-                                }
-                              }}
-                              style={{ flex: 1, height: 34, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--danger, #dc2626) 30%, white)', background: 'color-mix(in srgb, var(--danger, #dc2626) 10%, white)', color: 'var(--danger, #dc2626)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        ) : null}
+                        <div style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                          {post.targetRole && post.targetRole !== 'all' ? `Visible to ${post.targetRole}` : 'Visible to everyone'}
+                        </div>
+                      </div>
+                      <div style={{ margin: '0 16px', borderTop: '1px solid #e4e6eb' }} />
+                      <div style={{ padding: '4px 8px 8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleLikePost(post.postId)}
+                          disabled={isLikePending}
+                          style={{ width: '100%', minHeight: 36, border: 'none', borderRadius: 8, background: 'transparent', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, cursor: isLikePending ? 'progress' : 'pointer', color: isLikedByCurrentUser ? 'var(--accent-strong, #007afb)' : 'var(--text-secondary, #4b5563)', fontSize: 14, fontWeight: 700, opacity: isLikePending ? 0.82 : 1, transition: 'opacity 140ms ease, color 140ms ease' }}
+                        >
+                          <FaThumbsUp style={{ width: 14, height: 14 }} />
+                          <span>{isLikedByCurrentUser ? 'Liked' : 'Like'}</span>
+                        </button>
                       </div>
                     </div>
-                  )})
+                  );
+                  })
                 )}
               </div>
             </>
           ) : (
-            <div style={{ width: '100%', maxWidth: 1600, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                <StatCard title="Total Employees" value={count} icon={<FaUsers />} color="#4b6cb7" />
-                <StatCard title="Active" value={activeEmployeesCount} icon={<FaChartLine />} color="#059669" />
-                <StatCard title="On Leave" value={onLeaveEmployeesCount} icon={<FaClock />} color="#f59e0b" />
-                <StatCard title="Terminated" value={terminatedEmployeesCount} icon={<FaArrowDown />} color="#dc2626" />
-              </div>
-
-              <div style={{
-                ...overviewCardStyle,
-                padding: 14,
-                borderRadius: 18,
-                background: 'linear-gradient(165deg, var(--surface-panel, #f9fbff) 0%, var(--surface-accent, #eef4ff) 58%, var(--surface-muted, #ffffff) 100%)',
-                width: '100%',
-                maxWidth: '100%',
-                minWidth: 0,
-                margin: 0,
-              }}>
-                <div style={{ display: 'flex',  alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-                  <div>
-                    <div style={{ fontSize: 19, fontWeight: 900, color: 'var(--text-primary, #0f172a)', letterSpacing: '-0.01em' }}>Attendance Rate</div>
-                    <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Live analytics from Employees_Attendance records</div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    {['daily', 'weekly', 'monthly'].map((tab) => (
-                      <button
-                        key={tab}
-                        type="button"
-                        onClick={() => setAttendanceRecordView(tab)}
-                        style={{
-                          height: 30,
-                          padding: '0 12px',
-                          borderRadius: 999,
-                          border: attendanceRecordView === tab ? '1px solid var(--accent-strong, #3157b7)' : '1px solid var(--border-soft, #dbe2f2)',
-                          background: attendanceRecordView === tab ? 'var(--accent-soft, #e7eeff)' : 'var(--surface-panel, #fff)',
-                          color: attendanceRecordView === tab ? 'var(--accent-strong, #1e3a8a)' : 'var(--text-secondary, #475569)',
-                          fontSize: 12,
-                          fontWeight: 800,
-                          cursor: 'pointer',
-                          textTransform: 'capitalize',
-                        }}
-                      >
-                        {tab}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid var(--border-soft, #cfdcfa)', background: 'var(--surface-panel, #ffffff)', boxShadow: 'var(--shadow-soft, 0 8px 20px rgba(49,87,183,0.12))' }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Latest Rate</div>
-                    <div style={{ fontSize: 28, lineHeight: 1.1, fontWeight: 900, color: 'var(--accent-strong, #1e3a8a)', marginTop: 2 }}>{attendanceRate}</div>
-                  </div>
+            <DashboardOverview
+              count={count}
+              activeEmployeesCount={activeEmployeesCount}
+              onLeaveEmployeesCount={onLeaveEmployeesCount}
+              terminatedEmployeesCount={terminatedEmployeesCount}
+              attendanceRecordView={attendanceRecordView}
+              onChangeAttendanceRecordView={setAttendanceRecordView}
+              attendanceChartMode={attendanceChartMode}
+              onChangeAttendanceChartMode={setAttendanceChartMode}
+              attendanceRate={attendanceRate}
+              attendanceChartNode={attendanceChartPoints.length > 0 ? (
+                <AttendanceTrendChart points={attendanceChartPoints} mode={attendanceChartMode} height={320} width={820} />
+              ) : (
+                <div style={{ padding: '56px 16px', textAlign: 'center', fontSize: 13, color: '#64748b', fontWeight: 700 }}>
+                  Attendance graph will appear once attendance records are available.
                 </div>
-
-                <div style={{ marginTop: 12, borderRadius: 14, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', padding: 10, overflowX: 'auto' }}>
-                  {attendanceChartPoints.length > 0 ? (
-                    <AttendanceTrendChart points={attendanceChartPoints} />
-                  ) : (
-                    <div style={{ padding: '26px 10px', textAlign: 'center', fontSize: 13, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
-                      Attendance graph will appear once attendance records are available.
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => handleAttendanceStatusCardClick('present')}
-                    style={{
-                      borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'present' ? '1px solid var(--success, #16a34a)' : '1px solid var(--success-border, #d1fae5)',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'present' ? 'color-mix(in srgb, var(--success-soft, #f0fdf4) 72%, var(--surface-panel, #fff) 28%)' : 'var(--success-soft, #f0fdf4)',
-                      padding: '10px 12px',
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                    }}
-                    title={showAttendancePeopleList && attendanceStatusFilter === 'present' ? 'Hide Present People List' : 'Show Present People List'}
-                  >
-                    <div style={{ fontSize: 11, color: 'var(--success, #166534)', fontWeight: 800 }}>Present</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--success, #14532d)', marginTop: 2 }}>{latestAttendanceSnapshot?.presentCount ?? 0}</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleAttendanceStatusCardClick('late')}
-                    style={{
-                      borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'late' ? '1px solid var(--warning, #d97706)' : '1px solid var(--warning-border, #fde68a)',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'late' ? 'color-mix(in srgb, var(--warning-soft, #fffbeb) 72%, var(--surface-panel, #fff) 28%)' : 'var(--warning-soft, #fffbeb)',
-                      padding: '10px 12px',
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                    }}
-                    title={showAttendancePeopleList && attendanceStatusFilter === 'late' ? 'Hide Late People List' : 'Show Late People List'}
-                  >
-                    <div style={{ fontSize: 11, color: 'var(--warning, #92400e)', fontWeight: 800 }}>Late</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--warning, #78350f)', marginTop: 2 }}>{latestAttendanceSnapshot?.lateCount ?? 0}</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleAttendanceStatusCardClick('absent')}
-                    style={{
-                      borderRadius: 12,
-                      border: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? '1px solid var(--danger, #dc2626)' : '1px solid var(--danger-border, #fecaca)',
-                      background: showAttendancePeopleList && attendanceStatusFilter === 'absent' ? 'color-mix(in srgb, var(--danger-soft, #fef2f2) 72%, var(--surface-panel, #fff) 28%)' : 'var(--danger-soft, #fef2f2)',
-                      padding: '10px 12px',
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                    }}
-                    title={showAttendancePeopleList && attendanceStatusFilter === 'absent' ? 'Hide Absent People List' : 'Show Absent People List'}
-                  >
-                    <div style={{ fontSize: 11, color: 'var(--danger, #991b1b)', fontWeight: 800 }}>Absent</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--danger, #7f1d1d)', marginTop: 2 }}>{latestAttendanceSnapshot?.absentCount ?? 0}</div>
-                  </button>
-                  <div style={{ borderRadius: 12, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary, #475569)', fontWeight: 800 }}>Records</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--text-primary, #1e293b)', marginTop: 2 }}>{latestAttendanceSnapshot?.total ?? 0}</div>
-                  </div>
-                </div>
-
-                {showAttendancePeopleList ? (
-                <div style={{ marginTop: 10, border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 12, background: 'var(--surface-panel, #fff)', padding: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: 'var(--text-secondary, #334155)', textTransform: 'capitalize' }}>{attendanceStatusFilter} People List</div>
-                      <div style={{ marginTop: 2, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{attendancePeopleDateLabel}</div>
-                    </div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-secondary, #334155)', textTransform: 'capitalize' }}>Status: {attendanceStatusFilter}</div>
-                  </div>
-
-                  <div style={{ marginTop: 8, border: '1px solid var(--border-soft, #e2e8f0)', borderRadius: 10, overflow: 'hidden', maxHeight: 160, overflowY: 'auto' }}>
-                    {attendancePeopleList.length === 0 ? (
-                      <div style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
-                        No {attendanceStatusFilter} employees found for this selection.
-                      </div>
-                    ) : (
-                      attendancePeopleList.map((entry, index) => (
-                        <div key={`${entry.employeeId}-${entry.status}-${entry.sourceDate || 'na'}-${entry.bucketKey || 'na'}-${index}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 12px', borderTop: '1px solid var(--border-soft, #eef2ff)' }}>
-                          <div>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #0f172a)' }}>{entry.name}</div>
-                            {attendanceRecordView === 'daily' ? null : (
-                              <div style={{ marginTop: 1, fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{entry.bucketLabel} • {entry.sourceDate}</div>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted, #64748b)' }}>{entry.employeeId}</div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-                ) : null}
-
-                <div style={{ marginTop: 10, border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 12, overflowX: 'auto' }}>
-                  <div style={{ minWidth: 620 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', background: 'var(--surface-muted, #f8faff)', borderBottom: '1px solid var(--border-soft, #e2e8f0)', fontSize: 11, fontWeight: 900, color: 'var(--text-secondary, #334155)' }}>
-                      <div>{attendanceRecordView === 'monthly' ? 'Month' : 'Day'}</div>
-                      <div style={{ textAlign: 'right' }}>Rate</div>
-                      <div style={{ textAlign: 'right' }}>Present</div>
-                      <div style={{ textAlign: 'right' }}>Late</div>
-                      <div style={{ textAlign: 'right' }}>Absent</div>
-                    </div>
-                    {recentAttendanceRecords.length === 0 ? (
-                      <div style={{ padding: '12px', fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>No attendance records found.</div>
-                    ) : (
-                      recentAttendanceRecords.map((record) => (
-                        <div key={record.date} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', padding: '9px 12px', borderTop: '1px solid var(--border-soft, #eef2ff)', fontSize: 12, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>
-                          <div>{attendanceRecordView === 'monthly' ? (record.label || record.date) : (record.label || record.date)}</div>
-                          <div style={{ textAlign: 'right', color: 'var(--accent-strong, #1e3a8a)', fontWeight: 900 }}>{record.rate}%</div>
-                          <div style={{ textAlign: 'right', color: 'var(--success, #166534)' }}>{record.presentCount}</div>
-                          <div style={{ textAlign: 'right', color: 'var(--warning, #92400e)' }}>{record.lateCount}</div>
-                          <div style={{ textAlign: 'right', color: 'var(--danger, #991b1b)' }}>{record.absentCount}</div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-
-             
-
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 0.7fr', gap: 12 }}>
-                <div style={overviewCardStyle}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Employee Growth Trend</div>
-                      <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>Real registrations from employee hire dates</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {['monthly', 'annual'].map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setGrowthTrendView(mode)}
-                          style={{
-                            height: 30,
-                            borderRadius: 999,
-                            border: growthTrendView === mode ? '1px solid var(--accent-strong, #3157b7)' : '1px solid var(--border-soft, #dbe2f2)',
-                            background: growthTrendView === mode ? 'var(--accent-soft, #e7eeff)' : 'var(--surface-panel, #fff)',
-                            color: growthTrendView === mode ? 'var(--accent-strong, #1e3a8a)' : 'var(--text-secondary, #475569)',
-                            padding: '0 12px',
-                            fontSize: 12,
-                            fontWeight: 800,
-                            textTransform: 'capitalize',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {mode === 'annual' ? 'Yearly' : 'Monthly'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 8 }}>
-                    <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '8px 10px' }}>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>{growthTrendView === 'monthly' ? 'Last 12 Months' : 'Last 6 Years'}</div>
-                      <div style={{ marginTop: 2, fontSize: 20, color: 'var(--text-primary, #1e293b)', fontWeight: 900 }}>{currentGrowthTotal}</div>
-                    </div>
-                    <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 10, background: 'var(--surface-muted, #f8faff)', padding: '8px 10px' }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800 }}>Peak {growthTrendView === 'monthly' ? 'Month' : 'Year'}</div>
-                        <div style={{ marginTop: 2, fontSize: 14, color: 'var(--text-primary, #0f172a)', fontWeight: 900 }}>
-                          {peakGrowthPoint?.label || peakYear || '—'} — {Number(peakGrowthPoint?.totalCount || 0)} employees
-                        </div>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid var(--border-soft, #e2e8f0)', background: 'var(--surface-panel, #fff)', padding: 8 }}>
-                    <GrowthTrendChart points={growthTrendPoints} mode={growthTrendView} />
-                  </div>
-                </div>
-                <div style={overviewCardStyle}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Gender Distribution</div>
-                      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Known gender split across employees</div>
-                    </div>
-                    <div style={{ padding: '5px 9px', borderRadius: 999, background: 'linear-gradient(135deg, var(--surface-accent, #eef2ff) 0%, var(--surface-muted, #fdf2f8) 100%)', border: '1px solid var(--border-soft, #dbe2f2)', fontSize: 10, fontWeight: 800, color: 'var(--text-secondary, #475569)' }}>
-                      {genderLeadLabel}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 112 }}>
-                      <DonutChart values={genderValues} colors={['#4b6cb7', '#ec4899']} size={112} centerValue={maleCount + femaleCount} centerLabel="Known" />
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent-soft, #eef4ff) 84%, var(--surface-panel, #fff) 16%) 0%, var(--surface-panel, #f8fbff) 100%)', border: '1px solid var(--border-strong, #c7d2fe)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                          <span style={{ width: 28, height: 28, borderRadius: '50%', background: '#4b6cb7', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><FaMale /></span>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--accent-strong, #1e3a8a)' }}>Male</div>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{malePercentage}% of known data</div>
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #0f172a)', lineHeight: 1 }}>{maleCount}</div>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderRadius: 12, padding: '10px 12px', background: 'linear-gradient(135deg, color-mix(in srgb, #ec4899 16%, var(--surface-panel, #fff) 84%) 0%, var(--surface-panel, #fff8fb) 100%)', border: '1px solid color-mix(in srgb, #ec4899 36%, var(--border-soft, #fbcfe8) 64%)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                          <span style={{ width: 28, height: 28, borderRadius: '50%', background: '#ec4899', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><FaFemale /></span>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: '#ec4899' }}>Female</div>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>{femalePercentage}% of known data</div>
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-primary, #0f172a)', lineHeight: 1 }}>{femaleCount}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ marginTop: 10, borderRadius: 12, padding: '6px 10px', background: 'var(--surface-panel, #ffffff)', border: '1px solid var(--border-soft, #e5e7eb)' }}>
-                    <GenderBar male={maleCount} female={femaleCount} width={220} height={68} />
-                  </div>
-                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft, #e5e7eb)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Education Qualification</div>
-                        <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Diploma, Degree, Masters, Prof., PhD and Other from employee records</div>
-                      </div>
-                      <div style={{ padding: '5px 9px', borderRadius: 999, background: 'var(--surface-muted, #f8faff)', border: '1px solid var(--border-soft, #dbe2f2)', fontSize: 10, fontWeight: 800, color: 'var(--text-secondary, #475569)' }}>
-                        {knownQualificationCount > 0 ? `${topQualification?.label || 'Qualification'} lead` : 'No records'}
-                      </div>
-                    </div>
-                    <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
-                      <span>Recorded qualification data</span>
-                      <span>{knownQualificationCount} employees</span>
-                    </div>
-                    <QualificationChart items={qualificationChartItems} total={knownQualificationCount} />
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div style={overviewCardStyle}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)', marginBottom: 8 }}>Top Positions</div>
-                  <PositionChart employees={normalizedEmployees.map((employee) => ({ position: employee._position, role: employee._position }))} maxBars={7} />
-                </div>
-
-                <div style={overviewCardStyle}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)', marginBottom: 8 }}>Department Breakdown</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {normalizedEmployees.length === 0 ? (
-                      <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No employee data available.</div>
-                    ) : (
-                      employmentOrder.map((etype) => {
-                        const cnt = employmentCounts[etype] || 0;
-                        const pct = Math.round((cnt / Math.max(1, normalizedEmployees.length)) * 100);
-                        return (
-                          <div key={etype}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 12, color: 'var(--text-secondary, #334155)', fontWeight: 700 }}>
-                              <span>{etype}</span>
-                              <span>{cnt} ({pct}%)</span>
-                            </div>
-                            <div style={{ width: '100%', height: 8, borderRadius: 999, background: 'var(--surface-accent, #fff7ed)', overflow: 'hidden' }}>
-                              <div style={{ width: `${pct}%`, height: '100%', background: etype === 'Full-time' ? 'linear-gradient(90deg, #10b981, #34d399)' : etype === 'Part-time' ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : etype === 'Contract' ? 'linear-gradient(90deg, #ef4444, #f97316)' : 'linear-gradient(90deg, #9ca3af, #d1d5db)' }} />
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-            </div>
+              )}
+              latestAttendanceSnapshot={latestAttendanceSnapshot}
+              onAttendanceStatusCardClick={handleAttendanceStatusCardClick}
+              showAttendancePeopleList={showAttendancePeopleList}
+              attendanceStatusFilter={attendanceStatusFilter}
+              attendancePeopleDateLabel={attendancePeopleDateLabel}
+              attendancePeopleList={attendancePeopleList}
+              recentAttendanceRecords={recentAttendanceRecords}
+              growthTrendView={growthTrendView}
+              onChangeGrowthTrendView={setGrowthTrendView}
+              currentGrowthTotal={currentGrowthTotal}
+              peakGrowthPoint={peakGrowthPoint}
+              growthTrendChartNode={<GrowthTrendChart points={growthTrendPoints} mode={growthTrendView} />}
+              genderDonutNode={<DonutChart values={genderValues} colors={['#4b6cb7', '#ec4899', '#f59e0b']} size={130} />}
+              genderBarNode={<GenderBar male={maleCount} female={femaleCount} width={250} height={86} />}
+              maleCount={maleCount}
+              femaleCount={femaleCount}
+              positionChartNode={<PositionChart employees={normalizedEmployees.map((employee) => ({ position: employee._position, role: employee._position }))} maxBars={7} />}
+              normalizedEmployeesLength={normalizedEmployees.length}
+              employmentOrder={employmentOrder}
+              employmentCounts={employmentCounts}
+              topDepartments={topDepartments}
+              departmentCount={departmentCount}
+              positionCount={positionCount}
+              avgTenureFormatted={avgTenureFormatted}
+              turnoverRate={turnoverRate}
+              leavesToday={leavesToday}
+              todayHires={todayHires}
+              todayPostCount={todayPostCount}
+              notificationCount={notificationCount}
+              recentHires={recentHires}
+              upcomingCalendarEvents={upcomingCalendarEvents}
+              recentTerminations={recentTerminations}
+              upcomingBirthdays={upcomingBirthdays}
+              upcomingContracts={upcomingContracts}
+            />
           )}
+          </div>
         </main>
 
         {dashboardView === 'home' ? (
-        <div className="dashboard-widgets" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height, 56px))', maxHeight: 'calc(100vh - var(--topbar-height, 56px))', overflowY: 'auto', position: 'sticky', top: -15, paddingRight: 2, paddingBottom: 12, marginLeft: 'auto', marginRight: 0, marginTop: -18, opacity: 0.98 }}>
+        <>
+        <div className="right-widgets-spacer" style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, flex: '0 0 clamp(300px, 21vw, 360px)', marginLeft: 10, pointerEvents: 'none' }} />
+        <div className="dashboard-widgets" onWheel={(event) => event.stopPropagation()} style={{ width: 'clamp(300px, 21vw, 360px)', minWidth: 300, maxWidth: 360, flex: '0 0 clamp(300px, 21vw, 360px)', display: 'flex', flexDirection: 'column', gap: 12, alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'fixed', top: 'calc(var(--topbar-height) + 18px)', right: 14, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingLeft: 12, paddingRight: 2, paddingBottom: 12, marginLeft: 10, marginRight: 0, opacity: 0.98, borderLeft: 'none' }}>
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary, #111827)' }}>Quick Statistics</h4>
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <div style={smallStatStyle}>
-                <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Employees</div>
-                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{count}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Total Posts</div>
+                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{posts.length}</div>
               </div>
               <div style={smallStatStyle}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Unread</div>
@@ -2752,7 +3548,7 @@ export default function Dashboard() {
               </div>
               <div style={smallStatStyle}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Notifications</div>
-                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{notificationCount}</div>
+                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{totalNotifications}</div>
               </div>
             </div>
           </div>
@@ -2783,17 +3579,19 @@ export default function Dashboard() {
                       <button
                         key={contact.userId || index}
                         type="button"
-                        onClick={() => navigate('/all-chat', { state: { tab: contact.tab, contact: { userId: contact.userId, type: contact.tab } } })}
+                        onClick={() => handleOpenConversation(contact.conversation)}
                         style={{ ...softPanelStyle, display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', padding: '6px 7px', cursor: 'pointer' }}
                       >
-                        <img src={contact.avatar || CHAT_DEFAULT_PROFILE} alt={contact.name} style={{ width: 24, height: 24, borderRadius: '50%', objectFit: 'cover' }} />
+                        <Avatar src={contact.profileImage} alt={contact.name} name={contact.name || 'Employee'} size={24} textSize={10} />
                         <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary, #111827)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contact.name}</div>
-                            {contact.lastMsgTime ? <div style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, color: 'var(--text-muted, #6b7280)' }}>{formatActivityTime(contact.lastMsgTime)}</div> : null}
-                          </div>
-                          <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contact.lastMsgText}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary, #111827)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contact.name}</div>
+                          <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contact.lastMessage || contact.role}</div>
                         </div>
+                        {contact.unreadCount > 0 ? (
+                          <div style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 999, background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, flexShrink: 0 }}>
+                            {contact.unreadCount > 99 ? '99+' : contact.unreadCount}
+                          </div>
+                        ) : null}
                       </button>
                     ))
                   )}
@@ -2802,266 +3600,344 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div style={{ background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f6f8fc) 100%)', borderRadius: 20, boxShadow: 'var(--shadow-panel, 0 10px 28px rgba(17,24,39,0.1))', padding: '9px', minHeight: 520, border: '1px solid var(--border-soft, #dbe2f2)', overflow: 'hidden', position: 'relative' }}>
-            <div style={{ position: 'absolute', top: -40, right: -30, width: 120, height: 120, borderRadius: '50%', background: 'radial-gradient(circle, color-mix(in srgb, var(--accent, #4b6cb7) 16%, transparent) 0%, transparent 72%)', pointerEvents: 'none' }} />
-            <div style={{ margin: '-9px -9px 9px', padding: '11px 9px 9px', background: 'linear-gradient(135deg, var(--accent-soft, #eef2ff) 0%, var(--surface-muted, #f6f8fc) 55%, var(--surface-panel, #fff) 100%)', borderBottom: '1px solid var(--border-soft, #dbe2f2)', position: 'relative' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 12, background: 'linear-gradient(135deg, var(--accent-soft, #eef2ff) 0%, color-mix(in srgb, var(--accent, #4b6cb7) 20%, transparent) 100%)', color: 'var(--accent-strong, #1d4ed8)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 30%, transparent), var(--shadow-glow, 0 8px 20px rgba(29,78,216,0.18))' }}>
-                    <FaCalendarAlt style={{ width: 14, height: 14 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ ...rightRailCardStyle, overflow: 'hidden', position: 'relative' }}>
+              <div style={{ padding: '14px 14px 12px', background: 'var(--surface-panel, #fff)', borderBottom: '1px solid rgba(15, 23, 42, 0.08)', position: 'relative' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={rightRailIconStyle}>
+                      <FaCalendarAlt style={{ width: 14, height: 14 }} />
+                    </div>
+                    <div>
+                      <h4 style={{ fontSize: 14, fontWeight: 900, margin: 0, color: 'var(--text-primary, #111827)', letterSpacing: '-0.02em' }}>School Calendar</h4>
+                      <div style={{ fontSize: 10, color: 'var(--text-secondary, #475569)', marginTop: 3, fontWeight: 800 }}>{calendarMonthLabel}</div>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', marginTop: 2, fontWeight: 500 }}>
+                        {`${calendarMonthStartGregorian.day}/${calendarMonthStartGregorian.month}/${calendarMonthStartGregorian.year} - ${calendarMonthEndGregorian.day}/${calendarMonthEndGregorian.month}/${calendarMonthEndGregorian.year}`}
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h4 style={{ fontSize: 14, fontWeight: 900, margin: 0, color: 'var(--text-primary, #111827)', letterSpacing: '-0.02em' }}>School Calendar</h4>
-                    <div style={{ fontSize: 10, color: 'var(--text-secondary, #6b7280)', marginTop: 3, fontWeight: 800 }}>{currentMonthLabel}</div>
-                    <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', marginTop: 2, fontWeight: 500 }}>
-                      {`${calendarMonthStartGregorian.day}/${calendarMonthStartGregorian.month}/${calendarMonthStartGregorian.year} - ${calendarMonthEndGregorian.day}/${calendarMonthEndGregorian.month}/${calendarMonthEndGregorian.year}`}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(-1)}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
+                      aria-label="Previous month"
+                      title="Previous month"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(1)}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
+                      aria-label="Next month"
+                      title="Next month"
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <div style={{ ...rightRailPillStyle, color: 'var(--text-primary, #111827)' }}>
+                      {monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? '' : 's'}
+                    </div>
+                    <div style={{ ...rightRailPillStyle, color: canManageCalendar ? 'var(--text-primary, #111827)' : 'var(--text-secondary, #475569)' }}>
+                      {canManageCalendar ? 'Manage access' : 'View only'}
                     </div>
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button type="button" onClick={() => handleCalendarMonthChange(-1)} style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', fontSize: 17, lineHeight: 1, boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))' }} aria-label="Previous month" title="Previous month">‹</button>
-                  <button type="button" onClick={() => handleCalendarMonthChange(1)} style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', fontSize: 17, lineHeight: 1, boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))' }} aria-label="Next month" title="Next month">›</button>
-                </div>
               </div>
 
-              <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginRight: 'auto' }}>
-                  {[
-                    { value: 'gregorian', label: 'Gregorian' },
-                    { value: 'dual', label: 'Dual' },
-                    { value: 'ethiopian', label: 'Amharic' },
-                  ].map((mode) => (
-                    <button
-                      key={mode.value}
-                      type="button"
-                      onClick={() => setCalendarDisplayMode(mode.value)}
-                      style={{
-                        height: 24,
-                        padding: '0 9px',
-                        borderRadius: 999,
-                        border: calendarDisplayMode === mode.value ? '1px solid var(--accent, #4b6cb7)' : '1px solid var(--border-soft, #dbe2f2)',
-                        background: calendarDisplayMode === mode.value ? 'var(--accent-soft, #eef2ff)' : 'var(--surface-panel, #fff)',
-                        color: calendarDisplayMode === mode.value ? 'var(--accent-strong, #1d4ed8)' : 'var(--text-secondary, #6b7280)',
-                        fontSize: 9,
-                        fontWeight: 800,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {mode.label}
-                    </button>
+              <div style={{ margin: '12px', background: '#F8FAFC', border: '1px solid rgba(15, 23, 42, 0.06)', borderRadius: 12, padding: '10px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4, marginBottom: 6 }}>
+                  {CALENDAR_WEEK_DAYS.map((day) => (
+                    <div key={day} style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, color: 'var(--text-muted, #64748b)', letterSpacing: '0.03em', textTransform: 'uppercase' }}>
+                      {day}
+                    </div>
                   ))}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <div style={{ padding: '4px 8px', borderRadius: 999, background: 'var(--surface-panel, #fff)', border: '1px solid var(--border-soft, #dbe2f2)', fontSize: 9, color: 'var(--accent-strong, #1d4ed8)', fontWeight: 800 }}>
-                    {monthEventCount} event{monthEventCount === 1 ? '' : 's'}
-                  </div>
-                  <div style={{ padding: '4px 8px', borderRadius: 999, background: 'var(--warning-soft, #fff7ed)', border: '1px solid var(--warning-border, #fdba74)', fontSize: 9, color: 'var(--warning, #d97706)', fontWeight: 800 }}>
-                    View only
-                  </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4 }}>
+                  {calendarDays.map((day, index) => {
+                    const isToday = day?.ethDay === calendarHighlightedDay;
+                    const dayOfWeek = index % 7;
+                    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                    const primaryEvent = day?.events?.[0] || null;
+                    const isNoClassDay = primaryEvent?.category === 'no-class';
+                    const isAcademicDay = primaryEvent?.category === 'academic';
+                    const isSelected = day?.isoDate === selectedCalendarIsoDate;
+                    const isHovered = day?.isoDate === hoveredCalendarIsoDate;
+                    const dayBackground = day
+                      ? isToday
+                        ? 'var(--accent-soft, #E7F2FF)'
+                        : isSelected
+                          ? 'color-mix(in srgb, var(--accent-soft, #E7F2FF) 72%, white 28%)'
+                          : isNoClassDay
+                            ? 'color-mix(in srgb, var(--warning-soft, #FEE2E2) 58%, white 42%)'
+                            : isAcademicDay
+                              ? 'color-mix(in srgb, var(--accent-soft, #E7F2FF) 46%, white 54%)'
+                              : isWeekend
+                                ? 'color-mix(in srgb, var(--surface-muted, #F7FBFF) 82%, white 18%)'
+                                : 'var(--surface-panel, #fff)'
+                      : 'transparent';
+
+                    return (
+                      <button
+                        type="button"
+                        key={`${day?.ethDay || 'blank'}-${index}`}
+                        onClick={() => day && setSelectedCalendarIsoDate(day.isoDate)}
+                        onMouseEnter={() => day && setHoveredCalendarIsoDate(day.isoDate)}
+                        onMouseLeave={() => setHoveredCalendarIsoDate('')}
+                        onFocus={() => day && setHoveredCalendarIsoDate(day.isoDate)}
+                        onBlur={() => setHoveredCalendarIsoDate('')}
+                        title={day?.events?.length ? day.events.map((eventItem) => eventItem.title).join(', ') : ''}
+                        style={{
+                          minHeight: 0,
+                          aspectRatio: '1 / 1',
+                          borderRadius: 10,
+                          border: isToday
+                            ? '1px solid var(--accent, #007AFB)'
+                            : isSelected
+                              ? '1px solid var(--accent-strong, #007AFB)'
+                              : isHovered
+                                ? '1px solid var(--border-strong, #B5D2F8)'
+                                : isNoClassDay
+                                  ? '1px solid var(--warning-border, #FCA5A5)'
+                                  : '1px solid var(--border-soft, #D7E7FB)',
+                          background: dayBackground,
+                          color: isToday ? 'var(--accent-strong, #007AFB)' : day ? 'var(--text-secondary, #475569)' : 'transparent',
+                          fontSize: 10,
+                          fontWeight: isToday ? 800 : 700,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 1,
+                          padding: '5px 2px',
+                          boxShadow: day && isSelected ? '0 8px 18px rgba(0, 122, 251, 0.12)' : 'none',
+                          cursor: day ? 'pointer' : 'default',
+                          outline: 'none',
+                          transform: day && isSelected
+                            ? 'translateY(-2px) scale(1.03)'
+                            : day && isHovered
+                              ? 'translateY(-1px)'
+                              : 'translateY(0)',
+                          transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease',
+                          position: 'relative',
+                          overflow: 'hidden',
+                        }}
+                        disabled={!day}
+                      >
+                        {day ? (
+                          <>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: isToday || isSelected ? 'var(--accent-strong, #007AFB)' : 'var(--text-primary, #111827)', lineHeight: 1 }}>{day.ethDay}</div>
+                            <div style={{ fontSize: 8, color: isSelected ? 'var(--accent, #007AFB)' : 'var(--text-muted, #64748b)', lineHeight: 1 }}>{day.gregorianDate.day}/{day.gregorianDate.month}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 2, minHeight: 6 }}>
+                              {day.events.slice(0, 2).map((eventItem) => (
+                                <span
+                                  key={eventItem.id}
+                                  style={{
+                                    width: 5,
+                                    height: 5,
+                                    borderRadius: '50%',
+                                    background: getCalendarEventMeta(eventItem.category).color,
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        ) : ''}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
-            </div>
 
-            <div style={{ background: 'linear-gradient(180deg, var(--surface-muted, #f8faff) 0%, color-mix(in srgb, var(--surface-muted, #f8faff) 92%, var(--page-bg, #f4f6fb) 8%) 100%)', border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 16, padding: '8px', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 22%, transparent)' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 3, marginBottom: 5 }}>
-                {calendarWeekDayLabels.map((day) => (
-                  <div key={day} style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, color: 'var(--text-muted, #6b7280)', letterSpacing: '0.03em', textTransform: 'uppercase' }}>
-                    {day}
-                  </div>
-                ))}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '0 12px 0', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: '#F8FAFC', border: '1px solid rgba(220, 38, 38, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warning, #DC2626)' }} /> No class
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: '#F8FAFC', border: '1px solid rgba(0, 122, 251, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent, #007AFB)' }} /> Academic
+                </div>
+                {canManageCalendar ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenCalendarEventModal}
+                    style={{ ...rightRailIconButtonStyle, width: 30, height: 30, borderRadius: 999, color: 'var(--text-primary, #111827)' }}
+                    aria-label="Add school calendar event"
+                    title="Add school calendar event"
+                  >
+                    <FaPlus style={{ width: 12, height: 12 }} />
+                  </button>
+                ) : null}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 3 }}>
-                {calendarDays.map((dayItem, index) => {
-                  if (!dayItem) {
-                    return <button type="button" key={`empty-${index}`} style={{ minHeight: 0, aspectRatio: '1 / 0.86', border: 'none', background: 'transparent', padding: 0 }} disabled />;
-                  }
-                  const dayOfWeek = index % 7;
-                  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-                  const isSelected = dayItem.isoDate === selectedCalendarIsoDate;
-                  const isToday = dayItem.isoDate === todayIsoDate;
-                  const isHovered = dayItem.isoDate === hoveredCalendarIsoDate;
-                  const hasNoClassEvent = dayItem.noClassEvents.length > 0;
-                  const hasAcademicEvent = dayItem.academicEvents.length > 0;
-                  const primaryLabel = calendarDisplayMode === 'gregorian'
-                    ? dayItem.day
-                    : ethiopicDayAmharicFormatter.format(dayItem.date);
-                  const secondaryLabel = calendarDisplayMode === 'ethiopian'
-                    ? `${dayItem.day}/${dayItem.date.getMonth() + 1}`
-                    : calendarDisplayMode === 'gregorian'
-                      ? ethiopicDayMonthFormatter.format(dayItem.date)
-                      : `${dayItem.day}/${dayItem.date.getMonth() + 1}`;
-                  const dayBackground = isToday
-                    ? 'linear-gradient(145deg, var(--accent-soft, #eef2ff) 0%, color-mix(in srgb, var(--accent, #4b6cb7) 26%, transparent) 100%)'
-                    : isSelected
-                      ? 'linear-gradient(145deg, var(--surface-accent, #eef2ff) 0%, var(--accent-soft, #eef2ff) 55%, color-mix(in srgb, var(--accent, #4b6cb7) 26%, transparent) 100%)'
-                      : hasNoClassEvent
-                        ? 'linear-gradient(145deg, color-mix(in srgb, var(--warning-soft, #fff7ed) 78%, var(--surface-panel, #fff) 22%) 0%, var(--warning-soft, #fff7ed) 100%)'
-                        : hasAcademicEvent
-                          ? 'linear-gradient(145deg, color-mix(in srgb, var(--success-soft, #ecfeff) 78%, var(--surface-panel, #fff) 22%) 0%, var(--success-soft, #ecfeff) 100%)'
-                          : isWeekend
-                            ? 'linear-gradient(145deg, var(--surface-muted, #f8faff) 0%, color-mix(in srgb, var(--surface-muted, #f8faff) 84%, var(--page-bg, #f4f6fb) 16%) 100%)'
-                            : 'linear-gradient(145deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)';
-                  return (
-                    <button
-                      type="button"
-                      key={dayItem.isoDate}
-                      onClick={() => setSelectedCalendarIsoDate(dayItem.isoDate)}
-                      onMouseEnter={() => setHoveredCalendarIsoDate(dayItem.isoDate)}
-                      onMouseLeave={() => setHoveredCalendarIsoDate('')}
-                      onFocus={() => setHoveredCalendarIsoDate(dayItem.isoDate)}
-                      onBlur={() => setHoveredCalendarIsoDate('')}
-                      style={{
-                        minHeight: 0,
-                        aspectRatio: '1 / 0.86',
-                        borderRadius: 9,
-                        border: isToday
-                          ? '1px solid var(--accent, #4b6cb7)'
-                          : isSelected
-                            ? '1px solid var(--accent-strong, #1d4ed8)'
-                            : isHovered
-                              ? '1px solid var(--border-strong, #c7d2fe)'
-                              : hasNoClassEvent
-                                ? '1px solid var(--warning-border, #fdba74)'
-                                : hasAcademicEvent
-                                    ? '1px solid var(--success-border, #a5f3fc)'
-                                  : '1px solid transparent',
-                        background: dayBackground,
-                        color: isToday ? 'var(--accent-strong, #1d4ed8)' : 'var(--text-secondary, #475569)',
-                        fontSize: 10,
-                        fontWeight: isToday ? 800 : 700,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: 1,
-                        padding: '4px 2px',
-                        boxShadow: isSelected
-                          ? 'var(--shadow-glow, 0 8px 20px rgba(29,78,216,0.18))'
-                          : isHovered
-                            ? 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))'
-                            : 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))',
-                        cursor: 'pointer',
-                        outline: 'none',
-                        transform: isSelected ? 'translateY(-2px) scale(1.03)' : isHovered ? 'translateY(-1px) scale(1.015)' : 'translateY(0) scale(1)',
-                        transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease',
-                        position: 'relative',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <div style={{ fontSize: 11, fontWeight: 800, color: isToday || isSelected ? 'var(--accent-strong, #1d4ed8)' : 'var(--text-primary, #111827)', lineHeight: 1 }}>
-                        {primaryLabel}
-                      </div>
-                      <div style={{ fontSize: 8, color: isSelected ? 'var(--accent, #4b6cb7)' : 'var(--text-muted, #6b7280)', lineHeight: 1 }}>
-                        {secondaryLabel}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 2, minHeight: 6 }}>
-                        {dayItem.noClassEvents.length > 0 ? <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--warning, #d97706)', boxShadow: '0 0 0 2px color-mix(in srgb, var(--surface-panel, #fff) 84%, transparent)' }} /> : null}
-                        {dayItem.academicEvents.length > 0 ? <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--success, #0f766e)', boxShadow: '0 0 0 2px color-mix(in srgb, var(--surface-panel, #fff) 84%, transparent)' }} /> : null}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+              {calendarActionMessage ? (
+                <div style={{ margin: '10px 12px 0', borderRadius: 12, border: '1px solid rgba(0, 122, 251, 0.12)', background: '#F8FAFC', color: 'var(--text-primary, #111827)', fontSize: 10, fontWeight: 800, padding: '8px 10px' }}>
+                  {calendarActionMessage}
+                </div>
+              ) : null}
 
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: 'var(--warning-soft, #fff7ed)', border: '1px solid var(--warning-border, #fdba74)', borderRadius: 999, padding: '5px 8px' }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warning, #d97706)' }} /> No Class / Holiday
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: 'var(--success-soft, #ecfeff)', border: '1px solid var(--success-border, #a5f3fc)', borderRadius: 999, padding: '5px 8px' }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success, #0f766e)' }} /> Academic / School
-              </div>
-            </div>
-
-            <div style={{ marginTop: 10, background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f6f8fc) 100%)', border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 14, padding: '8px 9px', boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>
-                    {selectedCalendarDay
-                      ? (calendarDisplayMode === 'gregorian'
-                        ? gregorianLongFormatter.format(selectedCalendarDay.date)
-                        : ethiopicLongAmharicFormatter.format(selectedCalendarDay.date))
-                      : 'Select a date'}
-                  </div>
-                  <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', marginTop: 2 }}>
-                    {selectedCalendarDay
-                      ? (calendarDisplayMode === 'gregorian'
-                        ? `Ethiopian ${ethiopicLongFormatter.format(selectedCalendarDay.date)}`
-                        : `Gregorian ${gregorianLongFormatter.format(selectedCalendarDay.date)}`)
-                      : 'Choose a day to view school calendar events.'}
-                  </div>
-                  {selectedCalendarDay ? (
-                    <div style={{ fontSize: 9, color: 'var(--text-secondary, #475569)', marginTop: 4, fontWeight: 700 }}>
-                      {`Ethiopian ${ethiopicLongFormatter.format(selectedCalendarDay.date)}`}
+              <div style={{ margin: '12px', background: '#F8FAFC', border: '1px solid rgba(15, 23, 42, 0.06)', borderRadius: 12, padding: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>
+                      {selectedCalendarDay
+                        ? `${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]} ${selectedCalendarDay.ethDay}, ${calendarViewDate.year}`
+                        : 'Select a date'}
                     </div>
+                    <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', marginTop: 2 }}>
+                      {selectedCalendarDay
+                        ? `Gregorian ${selectedCalendarDay.gregorianDate.day}/${selectedCalendarDay.gregorianDate.month}/${selectedCalendarDay.gregorianDate.year}`
+                        : 'Choose a day to view or add calendar events.'}
+                    </div>
+                  </div>
+                  {calendarEventsLoading ? (
+                    <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>Loading...</div>
                   ) : null}
                 </div>
-              </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {!selectedCalendarDay ? (
-                  <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', background: 'var(--surface-muted, #f8faff)', borderRadius: 10, border: '1px solid var(--border-soft, #dbe2f2)', padding: '7px 9px' }}>
-                    No school events selected yet.
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {selectedCalendarEvents.length === 0 ? (
+                    <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', background: 'var(--surface-muted, #F7FBFF)', borderRadius: 10, border: '1px solid var(--border-soft, #D7E7FB)', padding: '7px 9px' }}>
+                      No school events on this day.
+                    </div>
+                  ) : (
+                    selectedCalendarEvents.map((eventItem) => {
+                      const eventMeta = getCalendarEventMeta(eventItem.category);
+
+                      return (
+                        <div
+                          key={eventItem.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: 7,
+                            background: 'var(--surface-panel, #fff)',
+                            border: `1px solid ${eventMeta.border}`,
+                            borderRadius: 10,
+                            padding: '7px 8px',
+                          }}
+                        >
+                          <span style={{ width: 8, height: 8, marginTop: 4, borderRadius: '50%', background: eventMeta.color, flexShrink: 0 }} />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{eventItem.title}</div>
+                              {eventItem.isDefault ? (
+                                <span style={{ padding: '2px 6px', borderRadius: 999, background: 'var(--accent-soft, #E7F2FF)', color: 'var(--accent-strong, #007AFB)', fontSize: 9, fontWeight: 800 }}>Default</span>
+                              ) : null}
+                            </div>
+                            <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', marginTop: 2 }}>{eventMeta.label}</div>
+                            {eventItem.notes ? (
+                              <div style={{ fontSize: 9, color: 'var(--text-secondary, #475569)', marginTop: 3 }}>{eventItem.notes}</div>
+                            ) : null}
+                          </div>
+                          {canManageCalendar && !eventItem.isDefault ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleEditCalendarEvent(eventItem)}
+                                style={{ height: 26, padding: '0 9px', borderRadius: 8, border: '1px solid var(--border-soft, #D7E7FB)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #475569)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCalendarEvent(eventItem)}
+                                style={{ height: 26, padding: '0 9px', borderRadius: 8, border: '1px solid var(--danger-border, #fca5a5)', background: 'var(--surface-panel, #fff)', color: 'var(--danger, #b91c1c)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ ...widgetCardStyle, padding: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary, #111827)' }}>Upcoming Deadlines</h4>
+                {canManageCalendar ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenDeadlineModal}
+                    style={{ ...rightRailIconButtonStyle, borderRadius: 999, color: 'var(--text-primary, #111827)' }}
+                    aria-label="Add upcoming deadline"
+                    title="Add upcoming deadline"
+                  >
+                    <FaPlus style={{ width: 11, height: 11 }} />
+                  </button>
+                ) : null}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {calendarEventsLoading ? (
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
+                    Loading deadlines...
                   </div>
-                ) : selectedCalendarDayEvents.length === 0 ? (
-                  <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', background: 'var(--surface-muted, #f8faff)', borderRadius: 10, border: '1px solid var(--border-soft, #dbe2f2)', padding: '7px 9px' }}>
-                    No calendar events on this day.
+                ) : upcomingDeadlineEvents.length === 0 ? (
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted, #64748b)' }}>
+                    No upcoming deadlines in the next 30 days.
+                    {canManageCalendar ? (
+                      <button
+                        type="button"
+                        onClick={handleOpenDeadlineModal}
+                        style={{ marginTop: 8, height: 28, padding: '0 10px', borderRadius: 999, border: '1px solid rgba(15, 23, 42, 0.08)', background: 'var(--surface-panel, #fff)', color: 'var(--text-primary, #111827)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}
+                      >
+                        Add deadline
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
-                  selectedCalendarDayEvents.map((eventItem) => {
-                    const eventTone = getCalendarEventTone(eventItem.eventKind);
+                  visibleUpcomingDeadlineEvents.map((eventItem) => {
+                    const eventMeta = getCalendarEventMeta(eventItem.category);
+
                     return (
-                      <div key={eventItem.id} style={{ borderRadius: 10, padding: '7px 9px', ...eventTone }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, fontWeight: 800 }}>
-                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: eventTone.dot, flexShrink: 0 }} />
-                          <span>{eventItem.title || eventTone.label}</span>
+                      <div
+                        key={`deadline-${eventItem.id}`}
+                        style={{
+                          padding: '8px 9px',
+                          borderRadius: 10,
+                          border: `1px solid ${eventMeta.border}`,
+                          background: '#F8FAFC',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-primary, #111827)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: eventMeta.color, flexShrink: 0 }} />
+                            <span>{eventItem.title?.trim() || eventItem.notes?.trim() || 'Academic deadline'}</span>
+                          </div>
+                          <div style={{ fontSize: 9, color: 'var(--text-muted, #64748b)', marginTop: 3 }}>
+                            {eventMeta.label}
+                          </div>
                         </div>
-                        <div style={{ marginTop: 3, fontSize: 9, color: 'var(--text-secondary, #475569)' }}>
-                          {eventItem.notes || eventItem.category || eventTone.label}
+                        <div style={{ fontSize: 9, fontWeight: 800, color: 'var(--text-secondary, #475569)', whiteSpace: 'nowrap' }}>
+                          {formatCalendarDeadlineDate(eventItem.gregorianDate)}
                         </div>
                       </div>
                     );
                   })
                 )}
+                {!calendarEventsLoading && upcomingDeadlineEvents.length > 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllUpcomingDeadlines((currentValue) => !currentValue)}
+                    style={{ alignSelf: 'flex-start', height: 28, padding: '0 10px', borderRadius: 999, border: '1px solid rgba(15, 23, 42, 0.08)', background: 'var(--surface-panel, #fff)', color: 'var(--text-primary, #111827)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}
+                  >
+                    {showAllUpcomingDeadlines ? 'See less' : `See more (${upcomingDeadlineEvents.length - 3})`}
+                  </button>
+                ) : null}
               </div>
-            </div>
-          </div>
-
-          <div style={widgetCardStyle}>
-            <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary, #111827)' }}>Upcoming Deadlines</h4>
-            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {upcomingCalendarEvents.length === 0 ? (
-                <div style={{ ...softPanelStyle, padding: '8px 9px', fontSize: 10, color: 'var(--text-muted, #6b7280)' }}>
-                  No upcoming calendar deadlines.
-                </div>
-              ) : (
-                upcomingCalendarEvents.slice(0, 5).map((eventItem, index) => (
-                  <div key={`deadline-${index}`} style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid #bae6fd', background: '#ecfeff', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-primary, #111827)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#06b6d4', flexShrink: 0 }} />
-                        <span>{eventItem.title || 'Calendar event'}</span>
-                      </div>
-                      <div style={{ fontSize: 9, color: 'var(--text-muted, #6b7280)', marginTop: 3 }}>
-                        {eventItem.notes || eventItem.category || 'Event'}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 9, fontWeight: 800, color: 'var(--text-secondary, #475569)', whiteSpace: 'nowrap' }}>
-                      {eventItem.gregorianDate
-                        ? (
-                          <>
-                            <div>{new Date(`${eventItem.gregorianDate}T00:00:00`).toLocaleDateString()}</div>
-                            <div style={{ marginTop: 2, fontSize: 8, fontWeight: 700, color: 'var(--text-muted, #6b7280)' }}>
-                              {ethiopicDayMonthFormatter.format(new Date(`${eventItem.gregorianDate}T00:00:00`))}
-                            </div>
-                          </>
-                        )
-                        : '—'}
-                    </div>
-                  </div>
-                ))
-              )}
             </div>
           </div>
 
@@ -3074,23 +3950,36 @@ export default function Dashboard() {
             </ul>
           </div>
         </div>
+        </>
         ) : null}
       </div>
 
       {showCreatePostModal ? (
         <>
           <div
-            onClick={closeCreatePostModal}
-            style={{ position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--surface-overlay, #ffffff) 84%, transparent)', backdropFilter: 'blur(6px)', zIndex: 1200 }}
+            onClick={closePostComposerModal}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.18)', backdropFilter: 'blur(10px)', zIndex: 1200 }}
           />
           <div style={{ position: 'fixed', inset: 0, zIndex: 1201, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, pointerEvents: 'none' }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(500px, 100%)', maxHeight: '90vh', overflowY: 'auto', background: 'var(--surface-panel, #fff)', borderRadius: 18, border: '1px solid var(--border-soft, #dbe2f2)', boxShadow: '0 24px 52px rgba(20,35,78,0.26)', pointerEvents: 'auto' }}>
-              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px 20px 13px', borderBottom: '1px solid var(--border-soft, #dbe2f2)' }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary, #111827)', lineHeight: 1.2, letterSpacing: '-0.01em' }}>{isEditingPost ? 'Edit post' : 'Create post'}</div>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(640px, 100%)', maxHeight: '90vh', overflowY: 'auto', background: 'var(--surface-panel, #fff)', borderRadius: 28, border: '1px solid var(--border-soft, #dbe2f2)', boxShadow: 'none', pointerEvents: 'auto', position: 'relative' }}>
+              <div style={{ position: 'relative', padding: '22px 24px 18px', borderBottom: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingRight: 52 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 28, padding: '0 12px', borderRadius: 999, background: 'var(--accent-soft, #E7F2FF)', border: '1px solid var(--border-strong, #B5D2F8)', color: 'var(--accent-strong, #007AFB)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                    {isPostComposerEditing ? 'Edit Announcement' : 'School Announcement'}
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary, #111827)', lineHeight: 1.1, letterSpacing: '-0.03em' }}>
+                    {isPostComposerEditing ? 'Edit your post' : 'Create a new post'}
+                  </div>
+                  <div style={{ fontSize: 14, color: 'var(--text-secondary, #334155)', lineHeight: 1.5, maxWidth: 420 }}>
+                    {isPostComposerEditing
+                      ? 'Update the message, audience, or media before publishing the revised version.'
+                      : 'Share polished announcements, reminders, and updates with the right audience.'}
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={closeCreatePostModal}
-                  style={{ position: 'absolute', right: 16, top: 10, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', width: 40, height: 40, borderRadius: '50%', fontSize: 22, color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', lineHeight: 1 }}
+                  onClick={closePostComposerModal}
+                  style={{ position: 'absolute', right: 18, top: 18, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', width: 40, height: 40, borderRadius: '50%', fontSize: 22, color: 'var(--text-secondary, #6b7280)', cursor: 'pointer', lineHeight: 1 }}
                   aria-label="Close create post modal"
                   title="Close"
                 >
@@ -3098,15 +3987,24 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              <div style={{ padding: '16px 16px 18px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <img src={admin.profileImage || '/default-profile.png'} alt="me" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary, #111827)', lineHeight: 1.2 }}>{admin.name || 'HR Office'}</div>
+              <div style={{ padding: '22px 24px 24px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', padding: '14px 16px', borderRadius: 20, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                    <Avatar src={admin.profileImage} alt="me" name={admin.name || 'HR Office'} size={48} style={{ border: '2px solid var(--border-strong, #B5D2F8)', boxShadow: 'var(--shadow-glow, 0 0 0 2px rgba(0, 122, 251, 0.18))' }} textSize={16} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary, #111827)', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{admin.name || 'HR Office'}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 600 }}>{isPostComposerEditing ? 'Editing from the HR dashboard' : 'Posting from the HR dashboard'}</div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 170 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                      Audience
+                    </div>
                     <select
                       value={targetRole}
                       onChange={(e) => setTargetRole(e.target.value)}
-                      style={{ height: 28, borderRadius: 6, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #f8faff)', fontSize: 12, fontWeight: 700, color: 'var(--text-primary, #111827)', padding: '0 28px 0 10px', width: 'fit-content', minWidth: 118 }}
+                      style={{ height: 40, borderRadius: 12, border: '1px solid var(--input-border, #B5D2F8)', background: 'var(--input-bg, #fff)', fontSize: 13, fontWeight: 700, color: 'var(--text-primary, #111827)', padding: '0 36px 0 12px', minWidth: 170, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.45)' }}
                       title="Post target role"
                     >
                       {targetOptions.map((role) => {
@@ -3117,49 +4015,125 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <textarea
-                  placeholder={isEditingPost ? 'Update your post' : "What's on your mind?"}
-                  value={postText}
-                  onChange={(event) => setPostText(event.target.value)}
-                  style={{ minHeight: 210, resize: 'vertical', border: 'none', background: 'transparent', borderRadius: 0, padding: 0, fontSize: 28, lineHeight: 1.3333, outline: 'none', color: 'var(--text-primary, #111827)' }}
-                />
+                <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 24, background: 'var(--surface-panel, #fff)', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '14px 16px 12px', borderBottom: '1px solid color-mix(in srgb, var(--border-soft, #dbe2f2) 80%, transparent 20%)' }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Post message</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)', fontWeight: 600 }}>{postText.trim().length} characters</div>
+                  </div>
 
-                <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 12, padding: '8px 12px', boxShadow: 'var(--shadow-soft, 0 8px 22px rgba(17,24,39,0.08))', background: 'var(--surface-overlay, #fcfdff)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <div style={{ marginRight: 'auto', fontSize: 15, fontWeight: 600, color: 'var(--text-primary, #111827)' }}>Add media</div>
-                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: '50%', background: 'transparent', cursor: 'pointer', color: 'var(--success, #16a34a)', fontSize: 24 }} title="Upload media">
-                      <AiFillPicture />
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        onChange={(event) => {
-                          const file = event.target.files && event.target.files[0];
-                          setPostMedia(file || null);
-                          if (file) {
-                            setPostMediaPreviewUrl('');
-                          }
-                        }}
-                        accept="image/*,video/*"
-                        style={{ display: 'none' }}
-                      />
-                    </label>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: '50%', color: 'var(--danger, #dc2626)', fontSize: 22, background: 'transparent', opacity: 0.9 }}>
-                      <AiFillVideoCamera />
+                  <textarea
+                    placeholder={isPostComposerEditing ? 'Update your announcement...' : 'Write a clear announcement for your school community...'}
+                    value={postText}
+                    onChange={(event) => setPostText(event.target.value)}
+                    style={{ minHeight: 220, resize: 'vertical', border: 'none', background: 'transparent', borderRadius: 0, padding: '18px 18px 16px', fontSize: 19, lineHeight: 1.6, outline: 'none', color: 'var(--text-primary, #111827)', width: '100%', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 20, padding: '14px 16px', background: 'var(--surface-panel, #fff)' }}>
+                  <div className="fb-post-bottom" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ marginRight: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary, #111827)' }}>Media and attachments</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)' }}>Add a photo or video to make the update stand out.</div>
                     </div>
 
-                    {postMedia || postMediaPreviewUrl ? (
-                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface-muted, #f8faff)', borderRadius: 10, boxSizing: 'border-box' }}>
-                        <AiFillPicture style={{ color: 'var(--success, #16a34a)', fontSize: 18, flexShrink: 0 }} />
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--text-primary, #111827)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {postMedia ? postMedia.name : (isVideoPostUrl(postMediaPreviewUrl) ? 'Current video attached' : 'Current image attached')}
-                        </span>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handlePostMediaSelection}
+                      accept="image/*,video/*"
+                      style={{ display: 'none' }}
+                    />
+
+                    <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, padding: '16px 18px', background: 'linear-gradient(180deg, var(--surface-muted, #f8faff) 0%, #ffffff 100%)', borderRadius: 18, border: '1px dashed var(--border-strong, #B5D2F8)', boxSizing: 'border-box', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: '1 1 260px' }}>
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: 'var(--accent-soft, #E7F2FF)', border: '1px solid var(--border-strong, #B5D2F8)', color: 'var(--accent-strong, #007AFB)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>
+                          {(postMedia && String(postMedia.type || '').startsWith('video/')) || (!postMedia && isLikelyVideoMedia(existingPostMediaType, existingPostMediaUrl)) ? <AiFillVideoCamera /> : <AiFillPicture />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>
+                            {postMedia
+                              ? 'Media ready to attach'
+                              : existingPostMediaUrl
+                                ? 'Current media will stay attached'
+                                : 'Choose a photo or video'}
+                          </div>
+                          <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text-muted, #64748b)', lineHeight: 1.45 }}>
+                            {isOptimizingMedia
+                              ? 'Optimizing your image before upload.'
+                              : existingPostMediaUrl && !postMedia
+                                ? 'Replace it with a new file or remove it below.'
+                                : 'Images are automatically compressed and converted to JPEG when that reduces size.'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginLeft: 'auto' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 34, padding: '0 12px', borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #334155)', fontSize: 11, fontWeight: 800, letterSpacing: '0.02em' }}>
+                          <AiFillVideoCamera style={{ color: 'var(--danger, #dc2626)', fontSize: 15 }} />
+                          Photos and videos
+                        </div>
                         <button
+                          type="button"
+                          onClick={handleOpenPostMediaPicker}
+                          disabled={isOptimizingMedia}
+                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 42, padding: '0 18px', borderRadius: 999, background: isOptimizingMedia ? 'var(--surface-strong, #DCEBFF)' : 'var(--accent, #007AFB)', border: 'none', cursor: isOptimizingMedia ? 'progress' : 'pointer', color: '#fff', fontSize: 13, fontWeight: 800, opacity: isOptimizingMedia ? 0.86 : 1, minWidth: 138 }}
+                        >
+                          <AiFillPicture style={{ fontSize: 17 }} />
+                          <span>{isOptimizingMedia ? 'Optimizing...' : postMedia ? 'Change file' : 'Choose file'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {existingPostMediaUrl && !postMedia ? (
+                      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px', background: 'var(--surface-muted, #f8faff)', borderRadius: 16, border: '1px solid var(--border-soft, #dbe2f2)', boxSizing: 'border-box' }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Current attachment</div>
+                        <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--border-soft, #dbe2f2)', background: '#ffffff' }}>
+                          {isLikelyVideoMedia(existingPostMediaType, existingPostMediaUrl) ? (
+                            <video src={existingPostMediaUrl} controls style={{ width: '100%', maxHeight: 260, display: 'block', background: '#000' }} />
+                          ) : (
+                            <img src={existingPostMediaUrl} alt="Current attachment" style={{ width: '100%', maxHeight: 260, objectFit: 'contain', display: 'block', background: '#ffffff' }} />
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)' }}>
+                            Save to keep this attachment, or remove it before publishing.
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExistingPostMediaUrl('');
+                              setExistingPostMediaType('');
+                              if (fileInputRef.current) fileInputRef.current.value = '';
+                            }}
+                            style={{ height: 34, padding: '0 14px', borderRadius: 999, border: '1px solid var(--danger-border, #fca5a5)', background: 'var(--surface-panel, #fff)', color: 'var(--danger, #b91c1c)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                          >
+                            Remove current media
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {postMedia ? (
+                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: 'var(--surface-muted, #f8faff)', borderRadius: 16, border: '1px solid var(--border-soft, #dbe2f2)', boxSizing: 'border-box' }}>
+                        <div style={{ width: 42, height: 42, borderRadius: 12, background: String(postMedia.type || '').startsWith('video/') ? 'var(--warning-soft, #fff7ed)' : 'var(--success-soft, #E9FBF9)', color: String(postMedia.type || '').startsWith('video/') ? 'var(--danger, #dc2626)' : 'var(--success, #00B6A9)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          {String(postMedia.type || '').startsWith('video/') ? <AiFillVideoCamera style={{ fontSize: 20 }} /> : <AiFillPicture style={{ fontSize: 20 }} />}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, color: 'var(--text-primary, #111827)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{postMedia.name}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)', marginTop: 2 }}>
+                            {postMediaMeta?.wasCompressed
+                              ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? ' as JPEG' : ''}`
+                              : `Ready to attach to this post${postMediaMeta?.wasConvertedToJpeg ? ' as JPEG' : ''}`}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
                           onClick={() => {
                             setPostMedia(null);
-                            setPostMediaPreviewUrl('');
+                            setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = '';
                           }}
-                          style={{ background: 'var(--surface-strong, #e8ecf8)', border: '1px solid var(--border-soft, #dbe2f2)', color: 'var(--text-secondary, #6b7280)', width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+                          style={{ background: 'var(--surface-panel, #fff)', border: '1px solid var(--border-soft, #dbe2f2)', color: 'var(--text-secondary, #6b7280)', width: 30, height: 30, borderRadius: '50%', cursor: 'pointer', fontSize: 18, lineHeight: 1, flexShrink: 0 }}
                           aria-label="Remove selected media"
                           title="Remove"
                         >
@@ -3170,17 +4144,329 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <button
-                  onClick={handleSubmitCreatePost}
-                  disabled={!canSubmitPost}
-                  style={{ width: '100%', border: 'none', background: canSubmitPost ? 'linear-gradient(135deg, #4b6cb7 0%, #182848 100%)' : 'var(--surface-strong, #e8ecf8)', borderRadius: 6, height: 36, color: canSubmitPost ? '#fff' : 'var(--text-muted, #6b7280)', fontSize: 15, fontWeight: 700, cursor: canSubmitPost ? 'pointer' : 'not-allowed' }}
-                >
-                  {isEditingPost ? 'Save changes' : 'Post'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', paddingTop: 2 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted, #64748b)', lineHeight: 1.5 }}>
+                    {isPostComposerEditing
+                      ? 'Your updated post will replace the current version in the HR feed as soon as you save.'
+                      : 'Your post will appear in the HR feed immediately after publishing.'}
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
+                    <button
+                      type="button"
+                      onClick={closePostComposerModal}
+                      style={{ height: 44, padding: '0 18px', borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #334155)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSubmitCreatePost}
+                      disabled={!canSubmitPost || isPostSubmitting}
+                      style={{ minWidth: 160, height: 46, border: 'none', background: canSubmitPost && !isPostSubmitting ? 'var(--accent, #007AFB)' : 'var(--surface-strong, #DCEBFF)', borderRadius: 999, color: canSubmitPost && !isPostSubmitting ? '#fff' : 'var(--text-muted, #64748b)', fontSize: 14, fontWeight: 800, letterSpacing: '0.01em', cursor: canSubmitPost && !isPostSubmitting ? 'pointer' : 'not-allowed', boxShadow: canSubmitPost && !isPostSubmitting ? '0 8px 18px rgba(0, 122, 251, 0.14)' : 'none' }}
+                    >
+                      {isOptimizingMedia
+                        ? 'Optimizing...'
+                        : isPostSubmitting
+                          ? (isPostComposerEditing ? 'Saving...' : 'Publishing...')
+                          : (isPostComposerEditing ? 'Save changes' : 'Publish post')}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </>
+      ) : null}
+
+      {showDeletePostModal ? (
+        <>
+          <div
+            onClick={handleCloseDeletePostModal}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.24)', backdropFilter: 'blur(8px)', zIndex: 1210 }}
+          />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1211, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, pointerEvents: 'none' }}>
+            <div onClick={(event) => event.stopPropagation()} style={{ width: 'min(460px, 100%)', background: 'var(--surface-panel, #fff)', borderRadius: 24, border: '1px solid var(--border-soft, #dbe2f2)', overflow: 'hidden', pointerEvents: 'auto' }}>
+              <div style={{ padding: '22px 24px 14px', borderBottom: '1px solid var(--border-soft, #dbe2f2)' }}>
+                <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 28, padding: '0 12px', borderRadius: 999, background: 'var(--warning-soft, #FEE2E2)', border: '1px solid var(--warning-border, #FCA5A5)', color: 'var(--danger, #b91c1c)', fontSize: 11, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Delete post
+                </div>
+                <div style={{ marginTop: 12, fontSize: 24, fontWeight: 800, color: 'var(--text-primary, #111827)', lineHeight: 1.15 }}>Delete this post?</div>
+                <div style={{ marginTop: 8, fontSize: 14, color: 'var(--text-secondary, #334155)', lineHeight: 1.6 }}>
+                  This will permanently remove the post from the HR feed for everyone in the school.
+                </div>
+              </div>
+
+              <div style={{ padding: '18px 24px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {pendingDeletePost?.message ? (
+                  <div style={{ borderRadius: 18, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-muted, #F7FBFF)', padding: '14px 16px', fontSize: 14, lineHeight: 1.55, color: 'var(--text-primary, #111827)', whiteSpace: 'pre-wrap' }}>
+                    {pendingDeletePost.message}
+                  </div>
+                ) : null}
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={handleCloseDeletePostModal}
+                    disabled={isDeletingPost}
+                    style={{ height: 44, padding: '0 18px', borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #334155)', fontSize: 13, fontWeight: 700, cursor: isDeletingPost ? 'not-allowed' : 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeletePost}
+                    disabled={isDeletingPost}
+                    style={{ minWidth: 150, height: 46, border: 'none', borderRadius: 999, background: isDeletingPost ? 'var(--warning-border, #FCA5A5)' : 'var(--danger, #b91c1c)', color: '#fff', fontSize: 14, fontWeight: 800, cursor: isDeletingPost ? 'not-allowed' : 'pointer' }}
+                  >
+                    {isDeletingPost ? 'Deleting...' : 'Delete post'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {showCalendarEventModal ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'color-mix(in srgb, var(--text-primary, #111827) 26%, transparent)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+            zIndex: 1220,
+          }}
+          onClick={handleCloseCalendarEventModal}
+        >
+          <div
+            style={{
+              width: 'min(470px, 100%)',
+              background: 'var(--surface-panel, #fff)',
+              borderRadius: 20,
+              border: '1px solid var(--border-soft, #dbe2f2)',
+              boxShadow: 'var(--shadow-panel, 0 14px 30px rgba(0, 122, 251, 0.14))',
+              overflow: 'hidden',
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={{ padding: '16px 16px 12px', background: 'linear-gradient(180deg, var(--surface-overlay, #F1F8FF) 0%, var(--surface-panel, #fff) 100%)', borderBottom: '1px solid var(--border-soft, #dbe2f2)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>
+                  {editingCalendarEventId
+                    ? 'Edit school calendar event'
+                    : calendarModalContext === 'deadline'
+                      ? 'Add upcoming deadline'
+                      : 'Add school calendar event'}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary, #334155)', marginTop: 4 }}>
+                  {selectedCalendarDay
+                    ? calendarModalContext === 'deadline'
+                      ? `Choose the date for this upcoming deadline in ${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]}`
+                      : `For Ethiopic day ${selectedCalendarDay.ethDay} in ${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]}`
+                    : 'Select a day in the calendar first.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseCalendarEventModal}
+                style={{ width: 34, height: 34, borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-overlay, #F1F8FF)', color: 'var(--text-secondary, #334155)', fontSize: 20, lineHeight: 1, cursor: 'pointer' }}
+                aria-label="Close calendar event modal"
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {!canManageCalendar ? (
+                <div style={{ fontSize: 10, color: 'var(--warning, #DC2626)', background: 'var(--warning-soft, #FEE2E2)', border: '1px solid var(--warning-border, #FCA5A5)', borderRadius: 10, padding: '8px 10px' }}>
+                  View only. HR or admin access is required to add, edit, or delete school calendar events.
+                </div>
+              ) : null}
+
+              <div style={{ border: '1px solid var(--border-soft, #dbe2f2)', borderRadius: 16, padding: 10, background: 'linear-gradient(180deg, var(--surface-overlay, #F1F8FF) 0%, var(--surface-panel, #fff) 100%)', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 45%, transparent), var(--shadow-soft, 0 10px 24px rgba(0, 122, 251, 0.10))' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>Choose day from calendar</div>
+                    <div style={{ fontSize: 9, color: 'var(--text-secondary, #334155)', marginTop: 2, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{calendarMonthLabel}</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(-1)}
+                      style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-overlay, #F1F8FF)', color: 'var(--text-primary, #111827)', cursor: 'pointer', fontSize: 16, lineHeight: 1, boxShadow: 'var(--shadow-soft, 0 10px 24px rgba(0, 122, 251, 0.10))' }}
+                      aria-label="Previous Ethiopian month"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(1)}
+                      style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-overlay, #F1F8FF)', color: 'var(--text-primary, #111827)', cursor: 'pointer', fontSize: 16, lineHeight: 1, boxShadow: 'var(--shadow-soft, 0 10px 24px rgba(0, 122, 251, 0.10))' }}
+                      aria-label="Next Ethiopian month"
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4, marginBottom: 5 }}>
+                  {CALENDAR_WEEK_DAYS.map((dayLabel) => (
+                    <div key={dayLabel} style={{ textAlign: 'center', fontSize: 8, fontWeight: 800, color: 'var(--text-secondary, #334155)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      {dayLabel}
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4 }}>
+                  {calendarDays.map((dayItem, index) => {
+                    const isSelectedDay = dayItem?.isoDate === selectedCalendarIsoDate;
+                    const hasEvents = (dayItem?.events?.length || 0) > 0;
+                    const isTodayDay = dayItem?.ethDay === calendarHighlightedDay;
+                    const cellBackground = !dayItem
+                      ? 'transparent'
+                      : isTodayDay
+                        ? 'linear-gradient(145deg, var(--accent-soft, #E7F2FF) 0%, color-mix(in srgb, var(--accent, #007AFB) 22%, var(--surface-overlay, #F1F8FF)) 100%)'
+                        : isSelectedDay
+                          ? 'linear-gradient(145deg, var(--surface-overlay, #F1F8FF) 0%, var(--accent-soft, #E7F2FF) 55%, color-mix(in srgb, var(--accent, #007AFB) 22%, var(--surface-overlay, #F1F8FF)) 100%)'
+                          : hasEvents
+                            ? 'linear-gradient(145deg, color-mix(in srgb, var(--warning-soft, #FEE2E2) 72%, var(--surface-panel, #fff)) 0%, var(--warning-soft, #FEE2E2) 100%)'
+                            : 'linear-gradient(145deg, var(--surface-panel, #fff) 0%, var(--surface-overlay, #F1F8FF) 100%)';
+
+                    return (
+                      <button
+                        key={`${dayItem?.isoDate || 'blank'}-${index}`}
+                        type="button"
+                        onClick={() => dayItem && setSelectedCalendarIsoDate(dayItem.isoDate)}
+                        disabled={!dayItem || !canManageCalendar}
+                        style={{
+                          minHeight: 0,
+                          aspectRatio: '1 / 1',
+                          borderRadius: 10,
+                          border: isTodayDay
+                            ? '1px solid var(--accent, #007AFB)'
+                            : isSelectedDay
+                              ? '1px solid var(--accent-strong, #007AFB)'
+                              : hasEvents
+                                ? '1px solid var(--warning-border, #FCA5A5)'
+                                : '1px solid transparent',
+                          background: cellBackground,
+                          color: !dayItem ? 'transparent' : isSelectedDay || isTodayDay ? 'var(--accent-strong, #007AFB)' : 'var(--text-primary, #111827)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 1,
+                          cursor: dayItem && canManageCalendar ? 'pointer' : 'default',
+                          boxShadow: isSelectedDay
+                            ? '0 0 0 1px color-mix(in srgb, var(--accent, #007AFB) 24%, transparent), 0 12px 22px color-mix(in srgb, var(--accent-strong, #007AFB) 18%, transparent)'
+                            : isTodayDay
+                              ? '0 10px 18px color-mix(in srgb, var(--accent-strong, #007AFB) 14%, transparent)'
+                              : 'var(--shadow-soft, 0 10px 24px rgba(0, 122, 251, 0.10))',
+                          padding: '4px 2px',
+                          overflow: 'hidden',
+                          position: 'relative',
+                          transform: isSelectedDay ? 'translateY(-1px) scale(1.02)' : 'translateY(0) scale(1)',
+                          transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease',
+                        }}
+                      >
+                        {dayItem ? (
+                          <>
+                            <div style={{ fontSize: 11, fontWeight: 800, lineHeight: 1 }}>{dayItem.ethDay}</div>
+                            <div style={{ fontSize: 8, color: isSelectedDay ? 'var(--accent-strong, #007AFB)' : 'var(--text-secondary, #334155)', lineHeight: 1 }}>{dayItem.gregorianDate.day}/{dayItem.gregorianDate.month}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 2, minHeight: 6 }}>
+                              {dayItem.events.slice(0, 2).map((eventItem) => (
+                                <span
+                                  key={eventItem.id}
+                                  style={{
+                                    width: 5,
+                                    height: 5,
+                                    borderRadius: '50%',
+                                    background: getCalendarEventMeta(eventItem.category).color,
+                                    boxShadow: '0 0 0 2px color-mix(in srgb, var(--surface-panel, #fff) 82%, transparent)',
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        ) : ''}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {calendarModalContext === 'deadline' ? (
+                <div style={{ height: 42, borderRadius: 12, border: '1px solid var(--accent, #007AFB)', padding: '0 12px', fontSize: 12, color: 'var(--accent, #007AFB)', background: 'var(--accent-soft, #E7F2FF)', display: 'flex', alignItems: 'center', fontWeight: 800 }}>
+                  Academic deadline
+                </div>
+              ) : (
+                <select
+                  value={calendarEventForm.category}
+                  onChange={(event) => setCalendarEventForm((prev) => ({ ...prev, category: event.target.value, subType: 'general' }))}
+                  disabled={!canManageCalendar}
+                  style={{ height: 42, borderRadius: 12, border: '1px solid var(--input-border, #B5D2F8)', padding: '0 12px', fontSize: 12, color: 'var(--text-primary, #111827)', background: 'var(--input-bg, #fff)' }}
+                >
+                  <option value="no-class">No class day</option>
+                  <option value="academic">Academic day</option>
+                </select>
+              )}
+
+              {calendarModalContext === 'deadline' ? (
+                <input
+                  type="text"
+                  value={calendarEventForm.title}
+                  onChange={(event) => setCalendarEventForm((prev) => ({ ...prev, title: event.target.value }))}
+                  disabled={!canManageCalendar}
+                  placeholder="Deadline title"
+                  style={{ height: 42, borderRadius: 12, border: '1px solid var(--input-border, #B5D2F8)', padding: '0 12px', fontSize: 12, color: 'var(--text-primary, #111827)', background: 'var(--input-bg, #fff)' }}
+                />
+              ) : null}
+
+              <textarea
+                value={calendarEventForm.notes}
+                onChange={(event) => setCalendarEventForm((prev) => ({ ...prev, notes: event.target.value }))}
+                disabled={!canManageCalendar}
+                placeholder={calendarModalContext === 'deadline' ? 'Optional deadline note' : 'Optional note'}
+                rows={3}
+                style={{ borderRadius: 12, border: '1px solid var(--input-border, #B5D2F8)', padding: '12px', fontSize: 12, color: 'var(--text-primary, #111827)', background: 'var(--input-bg, #fff)', resize: 'vertical' }}
+              />
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
+                <button
+                  type="button"
+                  onClick={handleCreateCalendarEvent}
+                  disabled={calendarEventSaving || !selectedCalendarDay || !canManageCalendar}
+                  style={{
+                    flex: '1 1 180px',
+                    height: 42,
+                    borderRadius: 12,
+                    border: 'none',
+                    background: calendarEventSaving || !selectedCalendarDay || !canManageCalendar ? 'var(--surface-strong, #DCEBFF)' : 'linear-gradient(135deg, var(--accent, #007AFB) 0%, var(--accent-strong, #007AFB) 100%)',
+                    color: '#fff',
+                    fontSize: 12,
+                    fontWeight: 900,
+                    cursor: calendarEventSaving || !selectedCalendarDay || !canManageCalendar ? 'not-allowed' : 'pointer',
+                    boxShadow: calendarEventSaving || !selectedCalendarDay || !canManageCalendar ? 'none' : '0 12px 18px color-mix(in srgb, var(--accent-strong, #007AFB) 18%, transparent)',
+                  }}
+                >
+                  {calendarEventSaving ? 'Saving...' : editingCalendarEventId ? 'Update calendar event' : 'Save calendar event'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCloseCalendarEventModal}
+                  style={{ height: 42, padding: '0 14px', borderRadius: 12, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-overlay, #F1F8FF)', color: 'var(--text-primary, #111827)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

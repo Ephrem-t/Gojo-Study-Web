@@ -20,7 +20,8 @@ import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
-import Sidebar from "../components/Sidebar";
+import { fetchJson, getSafeProfileImage, mapInBatches, parseChatParticipantIds } from "../utils/chatRtdb";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 /* ================= CONSTANTS ================= */
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -38,6 +39,7 @@ const PERIODS = [
 
 const FREE_ID = "__FREE__";
 const FREE_SUBJECT = "Free Period";
+const NOTIFICATION_REFRESH_MS = 60000;
 
 const sanitizeForFirebase = (value) => {
   if (value === undefined) return null;
@@ -55,10 +57,8 @@ export default function SchedulePage() {
   const admin = JSON.parse(localStorage.getItem("admin")) || {};
   const API_BASE = `${BACKEND_BASE}/api`;
   const [schoolCode, setSchoolCode] = useState(() => String(admin.schoolCode || "").trim());
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const RTDB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
   const getSchoolNodePath = (nodeName) =>
@@ -164,58 +164,41 @@ const adminUserId = admin.userId;
 const MAX_TEACHER_PERIODS_PER_DAY = 4;
 
 const fetchPostNotifications = async () => {
-  if (!adminId) return;
+  if (!adminId || !schoolCode) {
+    setPostNotifications([]);
+    return;
+  }
 
   try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
+    const postsNode = await fetchJson(
+      `${SCHOOL_DB_ROOT}/Posts.json?orderBy=%22%24key%22&limitToLast=25`,
+      {}
+    );
 
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
-
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
-
-    // 2️⃣ Fetch Users & School_Admins
-    const [usersRaw, adminsRaw] = await Promise.all([
-      readSchoolNode("Users"),
-      readSchoolNode("School_Admins"),
-    ]);
-
-    const users = usersRaw && typeof usersRaw === "object" ? usersRaw : {};
-    const admins = adminsRaw && typeof adminsRaw === "object" ? adminsRaw : {};
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
+    const notifications = Object.entries(postsNode || {})
+      .map(([postId, postValue]) => ({ postId, ...postValue }))
+      .filter((postValue) => postValue && typeof postValue === "object")
+      .filter((postValue) => !postValue?.seenBy || !postValue.seenBy[admin.userId])
+      .sort(
+        (leftPost, rightPost) =>
+          new Date(rightPost.time || rightPost.createdAt || 0).getTime() -
+          new Date(leftPost.time || leftPost.createdAt || 0).getTime()
+      )
+      .slice(0, 25)
+      .map((postValue) => ({
+        ...postValue,
         notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
+          postValue?.notificationId ||
+          postValue?.id ||
+          `${postValue.postId}_${postValue.adminId || postValue.userId || "admin"}`,
+        adminName: postValue?.adminName || "Admin",
+        adminProfile: getSafeProfileImage(
+          postValue?.adminProfile || postValue?.adminProfileImage || postValue?.profileImage,
+          "/default-profile.png"
+        ),
+      }));
 
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
-      };
-    });
-
-    setPostNotifications(enriched);
+    setPostNotifications(notifications);
   } catch (err) {
     console.error("Post notification fetch failed", err);
     setPostNotifications([]);
@@ -224,23 +207,37 @@ const fetchPostNotifications = async () => {
 
 
 useEffect(() => {
-  if (!adminId) return;
+  if (!adminId || !schoolCode) return undefined;
 
-  fetchPostNotifications();
-  const interval = setInterval(fetchPostNotifications, 5000);
+  const runRefresh = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
 
-  return () => clearInterval(interval);
-}, [adminId]);
+    fetchPostNotifications();
+  };
+
+  runRefresh();
+  const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
+  window.addEventListener("focus", runRefresh);
+  document.addEventListener("visibilitychange", runRefresh);
+
+  return () => {
+    window.clearInterval(interval);
+    window.removeEventListener("focus", runRefresh);
+    document.removeEventListener("visibilitychange", runRefresh);
+  };
+}, [adminId, schoolCode]);
 
 
 const handleNotificationClick = async (notification) => {
   try {
-    await axios.post(`${API_BASE}/mark_post_notification_read`, {
-      notificationId: notification.notificationId,
-      adminId: admin.userId,
-    });
+    await axios.put(
+      `${SCHOOL_DB_ROOT}/Posts/${encodeURIComponent(notification.postId)}/seenBy/${encodeURIComponent(admin.userId)}.json`,
+      true
+    );
   } catch (err) {
-    console.warn("Failed to delete notification:", err);
+    console.warn("Failed to mark post as seen:", err);
   }
 
   // 🔥 REMOVE FROM UI IMMEDIATELY
@@ -738,51 +735,72 @@ const getTeachersForCourse = (courseId) => {
   const fetchUnreadMessages = async () => {
     if (!admin.userId) return;
 
-    const senders = {};
-
     try {
-      // USERS (names & images)
-      const usersRaw = await readSchoolNode("Users");
+      const [usersRaw, teachersRaw, chatIndex] = await Promise.all([
+        readSchoolNode("Users"),
+        readSchoolNode("Teachers"),
+        fetchJson(`${RTDB_BASE}/Chats.json?shallow=true`, {}),
+      ]);
+
       const usersData = usersRaw && typeof usersRaw === "object" ? usersRaw : {};
+      const teachersData = teachersRaw && typeof teachersRaw === "object" ? teachersRaw : {};
+      const usersById = Object.values(usersData || {}).reduce((acc, userRecord) => {
+        const userId = String(userRecord?.userId || "").trim();
+        if (userId) acc[userId] = userRecord;
+        return acc;
+      }, {});
+      const teachersByUserId = Object.values(teachersData || {}).reduce((acc, teacherRecord) => {
+        const userId = String(teacherRecord?.userId || "").trim();
+        if (userId) acc[userId] = teacherRecord;
+        return acc;
+      }, {});
 
-      const findUserByUserId = (userId) => {
-        return Object.values(usersData).find((u) => u.userId === userId);
-      };
+      const candidateChatKeys = Object.keys(chatIndex || {}).filter((chatKey) =>
+        parseChatParticipantIds(chatKey).includes(String(admin.userId || ""))
+      );
 
-      // helper to read messages from BOTH chat keys
-      const getUnreadCount = async (userId) => {
-        const key1 = `${admin.userId}_${userId}`;
-        const key2 = `${userId}_${admin.userId}`;
+      const unreadEntries = await mapInBatches(candidateChatKeys, 20, async (chatKey) => {
+        const participantIds = parseChatParticipantIds(chatKey);
+        const otherUserId = participantIds.find((participantId) => String(participantId || "") !== String(admin.userId || ""));
+        if (!otherUserId || !teachersByUserId[otherUserId]) {
+          return null;
+        }
 
-        const [m1, m2] = await Promise.all([
-          fetchChatMessages(key1),
-          fetchChatMessages(key2),
+        const encodedChatKey = encodeURIComponent(chatKey);
+        const [unreadValue, lastMessage] = await Promise.all([
+          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/unread/${encodeURIComponent(admin.userId)}.json`, 0),
+          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/lastMessage.json`, null),
         ]);
 
-        const msgs = [...Object.values(m1 || {}), ...Object.values(m2 || {})];
+        const unreadCount = Number(unreadValue || 0);
+        if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
+          return null;
+        }
 
-        return msgs.filter((m) => m.receiverId === admin.userId && !m.seen).length;
-      };
-
-      // TEACHERS
-      const teachersRaw = await readSchoolNode("Teachers");
-      const teachersData =
-        teachersRaw && typeof teachersRaw === "object" ? teachersRaw : {};
-
-      for (const k in teachersData) {
-        const t = teachersData[k];
-        if (!t?.userId) continue;
-        const unread = await getUnreadCount(t.userId);
-        if (unread <= 0) continue;
-
-        const user = findUserByUserId(t.userId);
-        senders[t.userId] = {
-          type: "teacher",
-          name: user?.name || t.name || "Teacher",
-          profileImage: user?.profileImage || t.profileImage || "/default-profile.png",
-          count: unread,
+        return {
+          otherUserId,
+          unreadCount,
+          lastMessageTime: Number(lastMessage?.timeStamp || 0),
         };
-      }
+      });
+
+      const senders = {};
+      unreadEntries
+        .filter(Boolean)
+        .sort((leftEntry, rightEntry) => Number(rightEntry.lastMessageTime || 0) - Number(leftEntry.lastMessageTime || 0))
+        .forEach((entry) => {
+          const teacherRecord = teachersByUserId[entry.otherUserId] || {};
+          const userRecord = usersById[entry.otherUserId] || {};
+          senders[entry.otherUserId] = {
+            type: "teacher",
+            name: userRecord?.name || teacherRecord?.name || entry.otherUserId,
+            profileImage: getSafeProfileImage(
+              userRecord?.profileImage || teacherRecord?.profileImage,
+              "/default-profile.png"
+            ),
+            count: entry.unreadCount,
+          };
+        });
 
       setUnreadSenders(senders);
     } catch (err) {
@@ -803,12 +821,26 @@ const getTeachersForCourse = (courseId) => {
   }, []);
 
   useEffect(() => {
-    if (!admin.userId) return;
+    if (!admin.userId) return undefined;
 
-    fetchUnreadMessages();
-    const interval = setInterval(fetchUnreadMessages, 5000);
+    const runRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
 
-    return () => clearInterval(interval);
+      fetchUnreadMessages();
+    };
+
+    runRefresh();
+    const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runRefresh);
+    document.addEventListener("visibilitychange", runRefresh);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", runRefresh);
+      document.removeEventListener("visibilitychange", runRefresh);
+    };
   }, [admin.userId]);
 
 
@@ -2688,12 +2720,15 @@ const autoGenerate = (opts = {}) => {
   },
 
   main: {
-    marginTop: 0,
-    marginLeft: 0,
-    flex: 1,
-    padding: "10px 20px 20px",
-    overflowY: "auto",
-    minHeight: "100%",
+    width: "100%",
+    maxWidth: "min(1320px, 100%)",
+    margin: "0 auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    paddingBottom: 56,
+    overflowY: "visible",
+    minHeight: "calc(100vh - 24px)",
     boxSizing: "border-box"
   },
 
@@ -3037,14 +3072,105 @@ const autoGenerate = (opts = {}) => {
       )
     );
 
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
+  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const headerCardStyle = {
+    ...shellCardStyle,
+    width: "100%",
+    maxWidth: FEED_MAX_WIDTH,
+    margin: "0 auto 14px",
+    alignSelf: "stretch",
+    color: "var(--text-primary)",
+    padding: "18px 20px",
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
+  };
+
 
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-<div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-  <Sidebar admin={admin} />
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
+<div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+  <div
+    className="admin-sidebar-spacer"
+    style={{
+      width: "var(--sidebar-width)",
+      minWidth: "var(--sidebar-width)",
+      flex: "0 0 var(--sidebar-width)",
+      pointerEvents: "none",
+    }}
+  />
 
         {/* MAIN */}
+        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 12px 0 2px", display: "flex", justifyContent: "center" }}>
         <div style={styles.main}>
+          <div style={headerCardStyle}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+              <div>
+                <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em" }}>Schedule</div>
+                <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-secondary)", maxWidth: 620, lineHeight: 1.5 }}>
+                  Manage class timetables, weekly subject loads, generation, and exports from the same premium admin workspace used across the rest of the platform.
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, position: "relative", zIndex: 1 }}>
+              <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                Classes Added: {classesToGenerateUnique.length}
+              </div>
+              <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                Grades: {gradeOptions.length}
+              </div>
+              <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                {selectedClassKey ? `Selected: ${selectedClassKey}` : "Selected: None"}
+              </div>
+            </div>
+          </div>
+
           {/* SELECTOR */}
           <div style={styles.selectorCard}>
             <div style={styles.selectorLeft}>
@@ -3327,6 +3453,8 @@ const autoGenerate = (opts = {}) => {
               </div>
             ) : null}
           </div>
+
+        </div>
 
         </div>
 

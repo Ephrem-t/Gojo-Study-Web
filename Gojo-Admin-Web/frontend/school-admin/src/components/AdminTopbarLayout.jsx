@@ -1,10 +1,10 @@
 import React from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import Navbar from "./Navbar";
+import Sidebar from "./Sidebar";
 import TopbarActions from "./TopbarActions";
-import useTopbarNotifications from "../hooks/useTopbarNotifications";
-
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import useTopbarNotifications, { NOTIFICATION_POLL_MS } from "../hooks/useTopbarNotifications";
+import { FIREBASE_DATABASE_URL } from "../config.js";
 
 const PAGE_TITLES = {
   "/dashboard": "Dashboard",
@@ -31,6 +31,28 @@ const PAGE_TITLES = {
   "/student-register": "Student Register",
   "/parent-register": "Parent Register",
 };
+
+const ROUTES_WITH_PERSISTENT_SIDEBAR = new Set([
+  "/dashboard",
+  "/my-posts",
+  "/overview",
+  "/teachers",
+  "/students",
+  "/parents",
+  "/schedule",
+  "/assign-teacher",
+  "/academic-year",
+  "/subject-management",
+  "/assessment",
+  "/grade-and-section",
+  "/grades",
+  "/sections",
+  "/exams",
+  "/results",
+  "/report-cards",
+  "/settings",
+  "/message-control",
+]);
 
 const readStoredAdmin = () => {
   try {
@@ -59,38 +81,87 @@ export default function AdminTopbarLayout() {
   const navigate = useNavigate();
   const admin = readStoredAdmin();
   const schoolCode = String(admin?.schoolCode || "").trim();
+  const disabledSharedNotificationRoutes = new Set([
+    "/all-chat",
+    "/message-control",
+    "/teachers",
+    "/students",
+    "/schedule",
+    "/parents",
+  ]);
+  const sharedNotificationsEnabled = !disabledSharedNotificationRoutes.has(location.pathname);
   const dbRoot = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+    ? `${FIREBASE_DATABASE_URL}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
+    : FIREBASE_DATABASE_URL;
   const currentUserId = admin?.userId || "";
   const title = PAGE_TITLES[location.pathname] || "Dashboard";
+  const sidebarEnabled = ROUTES_WITH_PERSISTENT_SIDEBAR.has(location.pathname);
+  const sidebarAdmin = {
+    ...admin,
+    adminId: admin?.adminId || admin?.username || "",
+    profileImage: getSafeImageUrl(admin?.profileImage, "/default-profile.png"),
+  };
   const {
     unreadSenders,
     setUnreadSenders,
     unreadPosts,
     messageCount,
     totalNotifications,
+    refreshNotifications,
     markMessagesAsSeen,
     markPostAsSeen,
   } = useTopbarNotifications({
     dbRoot,
     currentUserId,
+    enabled: sharedNotificationsEnabled,
+    pollMs: NOTIFICATION_POLL_MS,
   });
 
   return (
-    <>
+    <div
+      style={{
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--page-bg": "#ffffff",
+        "--page-bg-secondary": "#f7fbff",
+        "--surface-panel": "#ffffff",
+        "--surface-muted": "#F7FBFF",
+        "--surface-accent": "#F1F8FF",
+        "--surface-overlay": "#F1F8FF",
+        "--surface-strong": "#DCEBFF",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": "#007afb",
+        "--accent-strong": "#007afb",
+        "--accent-soft": "#E7F2FF",
+        "--success": "#00B6A9",
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-soft": "#fff1f2",
+        "--danger-border": "#fca5a5",
+        "--input-bg": "#ffffff",
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
       <Navbar
         title={title}
-        admin={{
-          ...admin,
-          profileImage: getSafeImageUrl(admin?.profileImage, "/default-profile.png"),
-        }}
+        admin={sidebarAdmin}
       >
         <TopbarActions
           unreadPosts={unreadPosts}
           unreadSenders={unreadSenders}
           totalNotifications={totalNotifications}
           messageCount={messageCount}
+          onOpenNotifications={refreshNotifications}
           onPostClick={async (notification) => {
             await markPostAsSeen(notification?.postId);
             navigate("/dashboard", {
@@ -118,7 +189,28 @@ export default function AdminTopbarLayout() {
         />
       </Navbar>
 
+      {sidebarEnabled ? (
+        <Sidebar
+          admin={sidebarAdmin}
+          style={{
+            position: "fixed",
+            top: "calc(var(--topbar-height) + 18px)",
+            left: 14,
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            maxWidth: "var(--sidebar-width)",
+            height: "calc(100vh - var(--topbar-height) - 36px)",
+            maxHeight: "calc(100vh - var(--topbar-height) - 36px)",
+            marginLeft: 0,
+            marginRight: 0,
+            zIndex: 30,
+          }}
+          top={4}
+          fullHeight
+        />
+      ) : null}
+
       <Outlet />
-    </>
+    </div>
   );
 }

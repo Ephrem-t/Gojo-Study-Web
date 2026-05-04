@@ -1,7 +1,7 @@
 import axios from "axios";
 import { API_BASE } from "./apiConfig";
+import { RTDB_BASE_RAW } from "../config/firebaseClientConfig";
 
-const RTDB_BASE_RAW = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const API_ROOT = API_BASE.replace(/\/api\/?$/, "");
 
 const SCOPED_ROOTS = new Set([
@@ -90,6 +90,8 @@ function isBackendApiUrl(url) {
   return typeof url === "string" && url.startsWith(API_ROOT);
 }
 
+export { RTDB_BASE_RAW };
+
 function withSchoolCodeHeader(headersLike, schoolCode = getSchoolCode()) {
   if (!schoolCode) return headersLike;
 
@@ -146,5 +148,3 @@ export function installRtdbInterceptors() {
     window.__gojoAxiosScoped = true;
   }
 }
-
-export { RTDB_BASE_RAW };

@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
 import Login from "../pages/Login";
+import FinanceLayout from "../components/FinanceLayout";
 
 import Dashboard from "../pages/Dashboard";
 import MyPosts from "../pages/MyPosts";
@@ -20,16 +21,17 @@ export default function AppRoutes() {
         {/* Auth */}
         <Route path="/" element={<Login />} />
         <Route path="/login" element={<Login />} />
-        
 
-        {/* Admin Pages */}
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/my-posts" element={<MyPosts />} />
-        <Route path="/students" element={<Students />} />
-        <Route path="/parents" element={<Parents />} />
-        <Route path="/analytics" element={<Analatics />} />
-        <Route path="/analatics" element={<Analatics />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route element={<FinanceLayout />}>
+          {/* Finance Pages */}
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/my-posts" element={<MyPosts />} />
+          <Route path="/students" element={<Students />} />
+          <Route path="/parents" element={<Parents />} />
+          <Route path="/analytics" element={<Analatics />} />
+          <Route path="/analatics" element={<Analatics />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
 
         {/* Chat */}
         <Route path="/all-chat" element={<AllChat />} />

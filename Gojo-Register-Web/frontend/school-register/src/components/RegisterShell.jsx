@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { FaBell, FaFacebookMessenger } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 import RegisterSidebar from "./RegisterSidebar";
-import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import useTopbarNotifications, { RegisterNotificationsContext } from "../hooks/useTopbarNotifications";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -47,7 +48,7 @@ export default function RegisterShell() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const user = useMemo(() => {
+  const [user, setUser] = useState(() => {
     const stored = readStoredRegistrar();
 
     return {
@@ -58,9 +59,40 @@ export default function RegisterShell() {
       userId: stored.userId || "",
       schoolCode: stored.schoolCode || "",
     };
-  }, [location.pathname]);
+  });
+
+  useEffect(() => {
+    const refreshUser = () => {
+      const stored = readStoredRegistrar();
+      setUser({
+        name: stored.name || stored.username || "Register Office",
+        username: stored.username || "",
+        profileImage: stored.profileImage || "/default-profile.png",
+        adminId: stored.registrarId || stored.financeId || stored.adminId || stored.userId || "",
+        userId: stored.userId || "",
+        schoolCode: stored.schoolCode || "",
+      });
+    };
+
+    window.addEventListener("storage", refreshUser);
+    window.addEventListener("registrar-profile-updated", refreshUser);
+    return () => {
+      window.removeEventListener("storage", refreshUser);
+      window.removeEventListener("registrar-profile-updated", refreshUser);
+    };
+  }, []);
+
+  const sidebarStyle = useMemo(
+    () => (isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { width: "100%", height: "100%", minWidth: 0 }),
+    [isNarrow]
+  );
 
   const dbRoot = useMemo(() => (user.schoolCode ? `${DB_BASE}/Platform1/Schools/${user.schoolCode}` : DB_BASE), [user.schoolCode]);
+
+  const notifications = useTopbarNotifications({
+    dbRoot,
+    currentUserId: user.userId,
+  });
 
   const {
     unreadSenders,
@@ -70,10 +102,7 @@ export default function RegisterShell() {
     messageCount,
     markMessagesAsSeen,
     markPostAsSeen,
-  } = useTopbarNotifications({
-    dbRoot,
-    currentUserId: user.userId,
-  });
+  } = notifications;
 
   const pageTitle = PAGE_TITLES[location.pathname] || "Gojo Register Portal";
 
@@ -112,7 +141,8 @@ export default function RegisterShell() {
   };
 
   return (
-    <div className="register-shell">
+    <RegisterNotificationsContext.Provider value={notifications}>
+      <div className="register-shell">
       <nav
         className="top-navbar register-shell__topbar"
         style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)", backdropFilter: "blur(10px)" }}
@@ -162,7 +192,7 @@ export default function RegisterShell() {
                             onMouseLeave={(event) => (event.currentTarget.style.background = "")}
                             onClick={() => handleNotificationClick(notification)}
                           >
-                            <img src={notification.adminProfile || "/default-profile.png"} alt={notification.adminName} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={notification.adminProfile} name={notification.adminName} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{notification.adminName}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{notification.message}</p>
@@ -193,7 +223,7 @@ export default function RegisterShell() {
                               navigate("/all-chat", { state: { user: { userId, name: sender.name, profileImage: sender.profileImage, type: sender.type } } });
                             }}
                           >
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={sender.profileImage} name={sender.name} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4 }}>{sender.name}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>{sender.count} new message{sender.count > 1 ? "s" : ""}</p>
@@ -211,7 +241,7 @@ export default function RegisterShell() {
             <FaFacebookMessenger />
             {messageCount > 0 ? <span className="badge">{messageCount}</span> : null}
           </Link>
-          <img src={user.profileImage} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={user.profileImage} name={user.name} size={38} className="profile-img" />
         </div>
       </nav>
 
@@ -219,9 +249,10 @@ export default function RegisterShell() {
         <div className="register-shell__sidebar">
           <RegisterSidebar
             user={user}
-            sticky={!isNarrow}
+            sticky={false}
             fullHeight={!isNarrow}
-            style={isNarrow ? { width: "100%", minWidth: 0, flex: "0 0 auto" } : { flex: "0 0 auto" }}
+            top={0}
+            style={sidebarStyle}
             onLogout={handleLogout}
           />
         </div>
@@ -231,5 +262,6 @@ export default function RegisterShell() {
         </main>
       </div>
     </div>
+    </RegisterNotificationsContext.Provider>
   );
 }

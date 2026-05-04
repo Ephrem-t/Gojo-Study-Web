@@ -2,13 +2,14 @@ import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import "../styles/global.css";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
-import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaCalendarAlt, FaPlus, FaEllipsisH, FaThumbsUp } from "react-icons/fa";
+import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaCalendarAlt, FaPlus, FaThumbsUp, FaHeart, FaRegHeart } from "react-icons/fa";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
-import { BACKEND_BASE } from "../config.js";
+import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import EthiopicCalendar from "ethiopic-calendar";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -27,6 +28,13 @@ const ETHIOPIAN_MONTHS = [
 ];
 
 const CALENDAR_WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const DEFAULT_TARGET_ROLE_OPTIONS = ["all", "student", "parent", "teacher", "registerer", "finance", "hr", "admin"];
+const SCHOOL_SCOPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const CALENDAR_EVENTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const POSTS_CACHE_TTL_MS = 10 * 60 * 1000;
+const DASHBOARD_POST_FETCH_LIMIT = 60;
+const DASHBOARD_POST_CACHE_LIMIT = 60;
 
 const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
   { month: 1, day: 1, title: "Enkutatash", notes: "Ethiopian New Year." },
@@ -92,8 +100,10 @@ function buildYearSpecificGovernmentClosures(ethiopianYear) {
   return gregorianEvents.map((eventItem) => {
     const [year, month, day] = eventItem.date.split("-").map(Number);
     if (!year || !month || !day) return null;
-    // Convert Gregorian to Ethiopic
+
     const ethDate = EthiopicCalendar.ge(year, month, day);
+    if (ethDate.year !== ethiopianYear) return null;
+
     return {
       month: ethDate.month,
       day: ethDate.day,
@@ -119,25 +129,37 @@ function getOrthodoxEasterDate(gregorianYear) {
 function buildMovableOrthodoxClosures(ethiopianYear) {
   const movableEvents = [];
   const seenEventKeys = new Set();
+
   [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
-    // Easter (Fasika)
-    const easter = getOrthodoxEasterDate(gregorianYear);
-    const ethEaster = EthiopicCalendar.ge(easter.getFullYear(), easter.getMonth() + 1, easter.getDate());
-    const key = `${ethEaster.year}-${ethEaster.month}-${ethEaster.day}`;
-    if (!seenEventKeys.has(key)) {
-      movableEvents.push({ month: ethEaster.month, day: ethEaster.day, title: "Fasika (Easter)", notes: "Orthodox movable feast." });
-      seenEventKeys.add(key);
-    }
-    // Good Friday (2 days before Easter)
-    const goodFriday = new Date(easter);
-    goodFriday.setDate(goodFriday.getDate() - 2);
-    const ethGoodFriday = EthiopicCalendar.ge(goodFriday.getFullYear(), goodFriday.getMonth() + 1, goodFriday.getDate());
-    const key2 = `${ethGoodFriday.year}-${ethGoodFriday.month}-${ethGoodFriday.day}`;
-    if (!seenEventKeys.has(key2)) {
-      movableEvents.push({ month: ethGoodFriday.month, day: ethGoodFriday.day, title: "Siklet (Good Friday)", notes: "Orthodox movable feast." });
-      seenEventKeys.add(key2);
-    }
+    const easterDate = getOrthodoxEasterDate(gregorianYear);
+    const goodFridayDate = new Date(easterDate);
+    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
+
+    [
+      { title: "Siklet (Good Friday)", notes: "Orthodox movable feast.", date: goodFridayDate },
+      { title: "Fasika (Easter)", notes: "Orthodox movable feast.", date: easterDate },
+    ].forEach((eventItem) => {
+      const ethDate = EthiopicCalendar.ge(
+        eventItem.date.getFullYear(),
+        eventItem.date.getMonth() + 1,
+        eventItem.date.getDate()
+      );
+
+      if (ethDate.year !== ethiopianYear) return;
+
+      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
+      if (seenEventKeys.has(eventKey)) return;
+
+      seenEventKeys.add(eventKey);
+      movableEvents.push({
+        month: ethDate.month,
+        day: ethDate.day,
+        title: eventItem.title,
+        notes: eventItem.notes,
+      });
+    });
   });
+
   return movableEvents;
 }
 
@@ -202,6 +224,162 @@ const buildDefaultCalendarEvents = (ethiopianYear) => {
   });
 };
 
+const normalizePostLikes = (likes) => {
+  if (Array.isArray(likes)) {
+    return likes.reduce((accumulator, value) => {
+      const normalizedValue = String(value || "").trim();
+      if (normalizedValue) {
+        accumulator[normalizedValue] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  if (likes && typeof likes === "object") {
+    return Object.entries(likes).reduce((accumulator, [key, value]) => {
+      const normalizedKey = String(key || "").trim();
+      if (normalizedKey && value) {
+        accumulator[normalizedKey] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  return {};
+};
+
+const isPostLikedByActor = (post, actorId) => {
+  const normalizedActorId = String(actorId || "").trim();
+  if (!normalizedActorId) {
+    return false;
+  }
+
+  return Boolean(normalizePostLikes(post?.likes)[normalizedActorId]);
+};
+
+const getResolvedLikeCount = (post) => {
+  const explicitCount = Number(post?.likeCount);
+  if (Number.isFinite(explicitCount) && explicitCount >= 0) {
+    return explicitCount;
+  }
+
+  return Object.keys(normalizePostLikes(post?.likes)).length;
+};
+
+const getConversationSortTime = (rawValue) => {
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue === "string") {
+    const trimmedValue = rawValue.trim();
+    if (!trimmedValue) {
+      return 0;
+    }
+
+    const numericValue = Number(trimmedValue);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+
+    const parsedTime = new Date(trimmedValue).getTime();
+    if (!Number.isNaN(parsedTime)) {
+      return parsedTime;
+    }
+  }
+
+  return 0;
+};
+
+const formatPostTimestamp = (timestamp) => {
+  if (!timestamp) return "Recent update";
+
+  const parsedDate = new Date(timestamp);
+  if (Number.isNaN(parsedDate.getTime())) return "Recent update";
+
+  const diffInMinutes = Math.max(0, Math.floor((Date.now() - parsedDate.getTime()) / 60000));
+  if (diffInMinutes < 1) return "Just now";
+  if (diffInMinutes < 60) return `${diffInMinutes}m`;
+
+  const diffInHours = Math.floor(diffInMinutes / 60);
+  if (diffInHours < 24) return `${diffInHours}h`;
+
+  const diffInDays = Math.floor(diffInHours / 24);
+  if (diffInDays < 7) return `${diffInDays}d`;
+
+  const dateOptions = parsedDate.getFullYear() === new Date().getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" };
+
+  return parsedDate.toLocaleDateString("en-US", dateOptions);
+};
+
+const hasConversationUserSentMessage = (chatValue, userId) => {
+  const normalizedUserId = String(userId || "").trim();
+  if (!chatValue || !normalizedUserId) {
+    return false;
+  }
+
+  if (String(chatValue?.lastMessage?.senderId || "").trim() === normalizedUserId) {
+    return true;
+  }
+
+  const messages = chatValue?.messages;
+  if (!messages || typeof messages !== "object") {
+    return false;
+  }
+
+  return Object.values(messages).some(
+    (messageValue) => String(messageValue?.senderId || "").trim() === normalizedUserId
+  );
+};
+
+const normalizeConversationContactType = (value) => {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  if (normalizedValue === "teacher" || normalizedValue === "teachers") {
+    return "teacher";
+  }
+
+  if (normalizedValue === "student" || normalizedValue === "students") {
+    return "student";
+  }
+
+  if (normalizedValue === "parent" || normalizedValue === "parents") {
+    return "parent";
+  }
+
+  if (
+    normalizedValue === "management" ||
+    normalizedValue === "managements" ||
+    normalizedValue === "office" ||
+    normalizedValue === "offices" ||
+    normalizedValue === "hr" ||
+    normalizedValue === "finance" ||
+    normalizedValue === "registerer" ||
+    normalizedValue === "registerers" ||
+    normalizedValue === "registrar"
+  ) {
+    return "management";
+  }
+
+  return "";
+};
+
+const formatAudienceLabel = (value) =>
+  String(value || "")
+    .split(/[\s,|]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) =>
+      part
+        .replace(/_/g, " ")
+        .split(" ")
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ")
+    )
+    .join(", ");
+
 const normalizeCalendarEvent = (eventId, eventValue) => {
   const legacyType = eventValue?.type || "academic";
   const category = eventValue?.category || (legacyType === "academic" ? "academic" : "no-class");
@@ -223,7 +401,7 @@ const normalizeCalendarEvent = (eventId, eventValue) => {
   };
 };
 
-const CALENDAR_MANAGER_ROLES = new Set(["registrar", "registerer", "admin", "school_admin", "school-admin", "finance"]);
+const CALENDAR_MANAGER_ROLES = new Set(["registrar", "registerer", "admin", "admins", "school_admin", "school_admins", "finance"]);
 
 const sortCalendarEvents = (events) => [...events].sort((leftEvent, rightEvent) => {
   const dateComparison = String(leftEvent.gregorianDate || "").localeCompare(String(rightEvent.gregorianDate || ""));
@@ -250,9 +428,204 @@ const formatCalendarDeadlineDate = (isoDate) => {
   });
 };
 
+const uniqueNonEmptyValues = (values) => {
+  const seen = new Set();
+  const normalizedValues = [];
+
+  values.forEach((value) => {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue || seen.has(normalizedValue)) {
+      return;
+    }
+
+    seen.add(normalizedValue);
+    normalizedValues.push(normalizedValue);
+  });
+
+  return normalizedValues;
+};
+
+const getSchoolScopeAliasCodes = (values) =>
+  uniqueNonEmptyValues(
+    values.flatMap((value) => {
+      const normalizedValue = String(value || "").trim();
+      if (!normalizedValue) {
+        return [];
+      }
+
+      const segments = normalizedValue.split("-").filter(Boolean);
+      const lastSegment = segments.length > 1 ? segments[segments.length - 1] : "";
+      return uniqueNonEmptyValues([normalizedValue, lastSegment]);
+    })
+  );
+
+const getSchoolScopeStorageKey = (seedCode) =>
+  `dashboard_school_scope_cache_${String(seedCode || "").trim().toLowerCase()}`;
+
+const readCachedSchoolScopeCandidates = (seedCodes) => {
+  const now = Date.now();
+
+  return uniqueNonEmptyValues(
+    getSchoolScopeAliasCodes(seedCodes).flatMap((seedCode) => {
+      try {
+        const rawCache = localStorage.getItem(getSchoolScopeStorageKey(seedCode));
+        if (!rawCache) {
+          return [];
+        }
+
+        const parsedCache = JSON.parse(rawCache);
+        if (
+          !parsedCache ||
+          !Array.isArray(parsedCache.candidates) ||
+          Number(parsedCache.expiresAt || 0) <= now
+        ) {
+          localStorage.removeItem(getSchoolScopeStorageKey(seedCode));
+          return [];
+        }
+
+        return parsedCache.candidates;
+      } catch (error) {
+        return [];
+      }
+    })
+  );
+};
+
+const writeCachedSchoolScopeCandidates = (seedCodes, candidates) => {
+  const payload = JSON.stringify({
+    candidates: uniqueNonEmptyValues(candidates),
+    expiresAt: Date.now() + SCHOOL_SCOPE_CACHE_TTL_MS,
+  });
+
+  getSchoolScopeAliasCodes([...seedCodes, ...candidates]).forEach((seedCode) => {
+    try {
+      localStorage.setItem(getSchoolScopeStorageKey(seedCode), payload);
+    } catch (error) {
+      // Ignore localStorage write issues.
+    }
+  });
+};
+
+const getCalendarEventsStorageKey = (schoolScopeCode) =>
+  `dashboard_calendar_events_cache_${String(schoolScopeCode || "").trim().toLowerCase()}`;
+
+const readCachedCalendarEvents = (schoolScopeCode) => {
+  const normalizedSchoolScopeCode = String(schoolScopeCode || "").trim();
+  if (!normalizedSchoolScopeCode) {
+    return { events: [], isFresh: false };
+  }
+
+  try {
+    const rawCache = localStorage.getItem(getCalendarEventsStorageKey(normalizedSchoolScopeCode));
+    if (!rawCache) {
+      return { events: [], isFresh: false };
+    }
+
+    const parsedCache = JSON.parse(rawCache);
+    if (!parsedCache || !Array.isArray(parsedCache.events)) {
+      return { events: [], isFresh: false };
+    }
+
+    const isFresh = Number(parsedCache.expiresAt || 0) > Date.now();
+    return {
+      events: parsedCache.events,
+      isFresh,
+    };
+  } catch (error) {
+    return { events: [], isFresh: false };
+  }
+};
+
+const writeCachedCalendarEvents = (schoolScopeCode, events) => {
+  const normalizedSchoolScopeCode = String(schoolScopeCode || "").trim();
+  if (!normalizedSchoolScopeCode) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      getCalendarEventsStorageKey(normalizedSchoolScopeCode),
+      JSON.stringify({
+        events,
+        expiresAt: Date.now() + CALENDAR_EVENTS_CACHE_TTL_MS,
+      })
+    );
+  } catch (error) {
+    // Ignore localStorage write issues.
+  }
+};
+
+const pickFirstNonEmpty = (...values) => {
+  for (const value of values) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    const normalizedValue = String(value).trim();
+    if (normalizedValue) {
+      return normalizedValue;
+    }
+  }
+
+  return "";
+};
+
+const isActiveEntity = (record) => {
+  if (!record || typeof record !== "object") {
+    return false;
+  }
+
+  if (record.isActive === false || record.deactivated || record.terminated) {
+    return false;
+  }
+
+  const status = String(
+    record.status ||
+    record.employment?.status ||
+    record.job?.status ||
+    ""
+  ).trim().toLowerCase();
+
+  return status !== "inactive" && status !== "terminated";
+};
+
+const mergeUniquePosts = (...collections) => {
+  const seenPostKeys = new Set();
+  const mergedPosts = [];
+
+  collections.flat().forEach((postItem, index) => {
+    if (!postItem || typeof postItem !== "object") {
+      return;
+    }
+
+    const postId = String(postItem.postId || postItem.id || "").trim();
+    const fallbackKey = [
+      postItem.userId || postItem.adminId || "anonymous",
+      postItem.time || postItem.createdAt || `index-${index}`,
+      postItem.message || postItem.postUrl || "",
+    ].join("|");
+    const uniqueKey = postId || fallbackKey;
+
+    if (seenPostKeys.has(uniqueKey)) {
+      return;
+    }
+
+    seenPostKeys.add(uniqueKey);
+    mergedPosts.push({
+      ...postItem,
+      postId: postId || uniqueKey,
+    });
+  });
+
+  return mergedPosts;
+};
+
 function Dashboard() {
+  const PRIMARY = "#007AFB";
+  const BACKGROUND = "#FFFFFF";
+  const ACCENT = "#00B6A9";
   const API_BASE = `${BACKEND_BASE}/api`;
-  const DB_URL = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const DB_URL = FIREBASE_DATABASE_URL;
   // ---------------- STATE ----------------
   const _storedAdmin = (() => {
     try {
@@ -274,11 +647,15 @@ function Dashboard() {
       }
 
       const parsedCache = JSON.parse(rawCache);
-      if (!Array.isArray(parsedCache)) {
+      if (Array.isArray(parsedCache)) {
+        return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+      }
+
+      if (!parsedCache || !Array.isArray(parsedCache.posts)) {
         return [];
       }
 
-      return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+      return parsedCache.posts.filter((postItem) => postItem && typeof postItem === "object");
     } catch (error) {
       return [];
     }
@@ -297,16 +674,25 @@ function Dashboard() {
     isActive: _storedAdmin.isActive || false,
   });
 
+  const [resolvedSchoolScopeCode, setResolvedSchoolScopeCode] = useState(() =>
+    String(_storedAdmin.schoolCode || "").trim()
+  );
   const schoolCode = admin.schoolCode || _storedAdmin.schoolCode || "";
-  const DB_ROOT = schoolCode ? `${DB_URL}/Platform1/Schools/${schoolCode}` : DB_URL;
-  const getSafeImageUrl = (value, fallback = "/default-profile.png") => {
+  const schoolScopeCode = resolvedSchoolScopeCode || schoolCode;
+  const DB_ROOT = schoolScopeCode ? `${DB_URL}/Platform1/Schools/${encodeURIComponent(schoolScopeCode)}` : DB_URL;
+  const getSafeImageUrl = (value, fallback = DEFAULT_PROFILE_IMAGE) => {
     const normalizedValue = String(value || "").trim();
     if (!normalizedValue) {
       return fallback;
     }
 
     const lowerValue = normalizedValue.toLowerCase();
-    if (lowerValue.startsWith("file://") || lowerValue.startsWith("content://")) {
+    if (
+      lowerValue === "null" ||
+      lowerValue === "undefined" ||
+      lowerValue.startsWith("file://") ||
+      lowerValue.startsWith("content://")
+    ) {
       return fallback;
     }
 
@@ -320,11 +706,191 @@ function Dashboard() {
     }
 
     const lowerValue = normalizedValue.toLowerCase();
-    if (lowerValue.startsWith("file://") || lowerValue.startsWith("content://")) {
+    if (
+      lowerValue === "null" ||
+      lowerValue === "undefined" ||
+      lowerValue.startsWith("file://") ||
+      lowerValue.startsWith("content://")
+    ) {
       return "";
     }
 
     return normalizedValue;
+  };
+
+  const resolveSchoolScopeCandidates = async (preferredCode) => {
+    const seedCodes = getSchoolScopeAliasCodes([
+      preferredCode,
+      admin.schoolCode,
+      _storedAdmin.schoolCode,
+    ]);
+    const cacheKey = seedCodes.join("|") || "__default__";
+    const cachedCandidates = schoolScopeCacheRef.current.get(cacheKey);
+    if (cachedCandidates) {
+      return cachedCandidates;
+    }
+
+    const persistedCandidates = readCachedSchoolScopeCandidates(seedCodes);
+    if (persistedCandidates.length > 0) {
+      schoolScopeCacheRef.current.set(cacheKey, persistedCandidates);
+      return persistedCandidates;
+    }
+
+    const fullSchoolCodeCandidates = seedCodes.filter((value) => String(value || "").includes("-"));
+    if (fullSchoolCodeCandidates.length > 0) {
+      const directCandidates = getSchoolScopeAliasCodes(fullSchoolCodeCandidates);
+      schoolScopeCacheRef.current.set(cacheKey, directCandidates);
+      writeCachedSchoolScopeCandidates(seedCodes, directCandidates);
+      return directCandidates;
+    }
+
+    const pendingLookup = schoolScopePromiseCacheRef.current.get(cacheKey);
+    if (pendingLookup) {
+      return pendingLookup;
+    }
+
+    const lookupPromise = (async () => {
+      const resolvedCandidates = [...seedCodes];
+      const seedSet = new Set(seedCodes.map((value) => value.toLowerCase()));
+
+      try {
+        const schoolsRes = await axios.get(`${API_BASE}/schools`, { timeout: 3500 });
+        const schools = Array.isArray(schoolsRes.data?.schools) ? schoolsRes.data.schools : [];
+
+        schools.forEach((school) => {
+          const code = String(school?.code || "").trim();
+          const shortName = String(school?.shortName || "").trim();
+
+          if (
+            (code && seedSet.has(code.toLowerCase())) ||
+            (shortName && seedSet.has(shortName.toLowerCase()))
+          ) {
+            resolvedCandidates.push(code, shortName);
+          }
+        });
+      } catch (error) {
+        // Ignore school-option lookup failures and continue with stored values.
+      }
+
+      try {
+        const schoolIndexRes = await axios.get(`${DB_URL}/Platform1/Schools.json`, {
+          params: { shallow: true },
+          timeout: 3500,
+        });
+        const schoolKeys = Object.keys(schoolIndexRes.data || {});
+        const normalizedSeedValues = Array.from(seedSet);
+
+        schoolKeys.forEach((schoolKey) => {
+          const normalizedKey = String(schoolKey || "").trim().toLowerCase();
+          if (!normalizedKey) {
+            return;
+          }
+
+          const matchesSeed = normalizedSeedValues.some(
+            (seedValue) =>
+              normalizedKey === seedValue ||
+              normalizedKey.endsWith(`-${seedValue}`) ||
+              normalizedKey.startsWith(`${seedValue}-`) ||
+              normalizedKey.includes(`-${seedValue}-`)
+          );
+
+          if (matchesSeed) {
+            resolvedCandidates.push(schoolKey);
+          }
+        });
+
+        if (schoolKeys.length > 0 && schoolKeys.length <= 60) {
+          const schoolInfoResponses = await Promise.all(
+            schoolKeys.map((schoolKey) =>
+              axios
+                .get(`${DB_URL}/Platform1/Schools/${encodeURIComponent(schoolKey)}/schoolInfo.json`, {
+                  timeout: 3500,
+                })
+                .then((response) => ({ schoolKey, schoolInfo: response.data }))
+                .catch(() => ({ schoolKey, schoolInfo: null }))
+            )
+          );
+
+          schoolInfoResponses.forEach(({ schoolKey, schoolInfo }) => {
+            const aliases = uniqueNonEmptyValues([
+              schoolKey,
+              schoolInfo?.schoolCode,
+              schoolInfo?.shortName,
+            ]);
+
+            if (
+              aliases.some((alias) => seedSet.has(String(alias || "").trim().toLowerCase()))
+            ) {
+              resolvedCandidates.push(...aliases);
+            }
+          });
+        }
+      } catch (error) {
+        // Ignore direct Firebase school-index lookup failures and continue with stored values.
+      }
+
+      const finalCandidates = uniqueNonEmptyValues(resolvedCandidates);
+      schoolScopeCacheRef.current.set(cacheKey, finalCandidates);
+      writeCachedSchoolScopeCandidates(seedCodes, finalCandidates);
+      return finalCandidates;
+    })();
+
+    schoolScopePromiseCacheRef.current.set(cacheKey, lookupPromise);
+
+    try {
+      return await lookupPromise;
+    } finally {
+      schoolScopePromiseCacheRef.current.delete(cacheKey);
+    }
+  };
+
+  const pickPreferredSchoolScopeCode = (candidateCodes) => {
+    const normalizedCandidates = uniqueNonEmptyValues(candidateCodes);
+    return (
+      normalizedCandidates.find((candidateCode) => String(candidateCode || "").toUpperCase().startsWith("ET-")) ||
+      normalizedCandidates.find((candidateCode) => String(candidateCode || "").includes("-")) ||
+      normalizedCandidates[0] ||
+      ""
+    );
+  };
+
+  const buildSchoolDbRoots = (candidateCodes) =>
+    uniqueNonEmptyValues(candidateCodes).map(
+      (candidateCode) => `${DB_URL}/Platform1/Schools/${candidateCode}`
+    );
+
+  const readMergedSchoolNode = async (candidateCodes, nodeName, fallbackValue = {}) => {
+    const schoolDbRoots = buildSchoolDbRoots(candidateCodes);
+    const candidateResponses = await Promise.all(
+      schoolDbRoots.map((schoolDbRoot) =>
+        axios
+          .get(`${schoolDbRoot}/${nodeName}.json`, { timeout: 3500 })
+          .then((response) => response.data)
+          .catch(() => fallbackValue)
+      )
+    );
+
+    const mergedCandidateNode = candidateResponses.reduce((accumulator, nodeValue) => {
+      if (nodeValue && typeof nodeValue === "object" && !Array.isArray(nodeValue)) {
+        Object.assign(accumulator, nodeValue);
+      }
+      return accumulator;
+    }, {});
+
+    if (Object.keys(mergedCandidateNode).length > 0) {
+      return mergedCandidateNode;
+    }
+
+    const legacyNode = await axios
+      .get(`${DB_URL}/${nodeName}.json`, { timeout: 3500 })
+      .then((response) => response.data)
+      .catch(() => fallbackValue);
+
+    if (legacyNode && typeof legacyNode === "object" && !Array.isArray(legacyNode)) {
+      return legacyNode;
+    }
+
+    return fallbackValue;
   };
 
   const [posts, setPosts] = useState(initialCachedPosts);
@@ -332,10 +898,15 @@ function Dashboard() {
   const [postsInitialized, setPostsInitialized] = useState(initialCachedPosts.length > 0);
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const [targetRole, setTargetRole] = useState("all");
-  const [targetOptions, setTargetOptions] = useState(["all"]);
+  const [targetOptions, setTargetOptions] = useState(DEFAULT_TARGET_ROLE_OPTIONS);
+  const [likePendingPostIds, setLikePendingPostIds] = useState({});
   const fileInputRef = useRef(null);
   const postsFetchRequestIdRef = useRef(0);
+  const schoolScopeCacheRef = useRef(new Map());
+  const schoolScopePromiseCacheRef = useRef(new Map());
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -347,7 +918,7 @@ function Dashboard() {
   const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
   const [selectedTeacher, setSelectedTeacher] = useState(null);
   const [teacherChatOpen, setTeacherChatOpen] = useState(false);
-  const [unreadSenders, setUnreadSenders] = useState({}); 
+  const [conversations, setConversations] = useState([]);
   // All unread messages from any sender type
   // Correct order
   const location = useLocation();
@@ -384,15 +955,44 @@ function Dashboard() {
   const [showAllUpcomingDeadlines, setShowAllUpcomingDeadlines] = useState(false);
 
   const adminUserId = admin.userId;
-  const currentCalendarRole = String(admin.role || _storedAdmin.role || _storedAdmin.userType || "admin").trim().toLowerCase();
+  const currentCalendarRole = String(admin.role || _storedAdmin.role || _storedAdmin.userType || "admin").trim().toLowerCase().replace(/-/g, "_");
   const canManageCalendar = CALENDAR_MANAGER_ROLES.has(currentCalendarRole);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [unreadPostList, setUnreadPostList] = useState([]);
+  const [postSubmitting, setPostSubmitting] = useState(false);
+  const [postSubmitError, setPostSubmitError] = useState("");
   const currentLikeActorId = admin.userId || admin.adminId || "";
 
   const navigate = useNavigate();
   const shouldShowPostsLoadingState = (postsLoading || !postsInitialized) && posts.length === 0;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const syncResolvedSchoolScopeCode = async () => {
+      const seedCode = schoolCode || admin.schoolCode || _storedAdmin.schoolCode || "";
+      if (!seedCode) {
+        if (!isCancelled) {
+          setResolvedSchoolScopeCode("");
+        }
+        return;
+      }
+
+      const candidateCodes = await resolveSchoolScopeCandidates(seedCode);
+      const preferredSchoolScopeCode = pickPreferredSchoolScopeCode(candidateCodes) || seedCode;
+
+      if (!isCancelled) {
+        setResolvedSchoolScopeCode(preferredSchoolScopeCode);
+      }
+    };
+
+    syncResolvedSchoolScopeCode();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [schoolCode]);
 
   const shouldShowPostSeeMore = (message = "") => {
     const normalizedMessage = String(message || "").trim();
@@ -408,6 +1008,48 @@ function Dashboard() {
     const lineCount = normalizedMessage.split(/\r?\n/).filter(Boolean).length;
 
     return normalizedMessage.length > 180 || sentenceCount > 2 || lineCount > 2;
+  };
+
+  const updateCachedPostEntries = (postIdValue, updater) => {
+    uniqueNonEmptyValues([
+      resolvedSchoolScopeCode,
+      schoolScopeCode,
+      schoolCode,
+      admin.schoolCode,
+      _storedAdmin.schoolCode,
+    ]).forEach((schoolCodeValue) => {
+      try {
+        const cacheKey = `dashboard_posts_cache_${schoolCodeValue}`;
+        const rawCache = localStorage.getItem(cacheKey);
+        if (!rawCache) {
+          return;
+        }
+
+        const parsedCache = JSON.parse(rawCache);
+        const cachedPosts = Array.isArray(parsedCache)
+          ? parsedCache
+          : Array.isArray(parsedCache?.posts)
+            ? parsedCache.posts
+            : [];
+
+        if (cachedPosts.length === 0) {
+          return;
+        }
+
+        const nextCachedPosts = cachedPosts.map((postItem) =>
+          String(postItem?.postId || "") === String(postIdValue || "")
+            ? updater(postItem)
+            : postItem
+        );
+
+        localStorage.setItem(cacheKey, JSON.stringify({
+          posts: nextCachedPosts.slice(0, DASHBOARD_POST_CACHE_LIMIT),
+          expiresAt: Date.now() + POSTS_CACHE_TTL_MS,
+        }));
+      } catch (error) {
+        // Ignore cache sync issues.
+      }
+    });
   };
 
   const togglePostDescription = (postIdValue) => {
@@ -497,6 +1139,7 @@ function Dashboard() {
     postsFetchRequestIdRef.current = requestId;
 
     const effectiveSchoolCode =
+      schoolScopeCode ||
       schoolCode ||
       admin.schoolCode ||
       _storedAdmin.schoolCode ||
@@ -508,14 +1151,31 @@ function Dashboard() {
         }
       })();
 
-    const effectiveDbRoot = effectiveSchoolCode
-      ? `${DB_URL}/Platform1/Schools/${effectiveSchoolCode}`
-      : DB_URL;
-
-    const cacheKey = `dashboard_posts_cache_${effectiveSchoolCode || "global"}`;
+    const initialCacheCodes = uniqueNonEmptyValues([
+      schoolScopeCode,
+      effectiveSchoolCode,
+      admin.schoolCode,
+      _storedAdmin.schoolCode,
+    ]);
     const isCurrentRequest = () => postsFetchRequestIdRef.current === requestId;
+    const getPostCacheKeys = (schoolCodeValues) =>
+      uniqueNonEmptyValues(schoolCodeValues).map(
+        (schoolCodeValue) => `dashboard_posts_cache_${schoolCodeValue}`
+      );
+
+    const clearCachedPosts = (schoolCodeValues = initialCacheCodes) => {
+      try {
+        getPostCacheKeys(schoolCodeValues).forEach((cacheKey) => {
+          localStorage.removeItem(cacheKey);
+        });
+      } catch (error) {
+        // Ignore localStorage delete issues.
+      }
+    };
 
     if (!effectiveSchoolCode) {
+      clearCachedPosts();
+      setPosts([]);
       setPostsLoading(false);
       setPostsInitialized(true);
       return;
@@ -604,27 +1264,55 @@ function Dashboard() {
         return uniquePosts;
       };
 
-      const readCachedPosts = () => {
+      const readCachedPosts = (schoolCodeValues = initialCacheCodes) => {
         try {
-          const rawCache = localStorage.getItem(cacheKey);
-          if (!rawCache) {
-            return [];
-          }
+          const now = Date.now();
+          let hasFreshCache = false;
+          const cachedPosts = mergeUniquePosts(
+            getPostCacheKeys(schoolCodeValues).flatMap((cacheKey) => {
+              const rawCache = localStorage.getItem(cacheKey);
+              if (!rawCache) {
+                return [];
+              }
 
-          const parsedCache = JSON.parse(rawCache);
-          if (!Array.isArray(parsedCache)) {
-            return [];
-          }
+              const parsedCache = JSON.parse(rawCache);
+              if (Array.isArray(parsedCache)) {
+                return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+              }
 
-          return parsedCache.filter((postItem) => postItem && typeof postItem === "object");
+              if (!parsedCache || !Array.isArray(parsedCache.posts)) {
+                return [];
+              }
+
+              if (Number(parsedCache.expiresAt || 0) > now) {
+                hasFreshCache = true;
+              }
+
+              return parsedCache.posts.filter((postItem) => postItem && typeof postItem === "object");
+            })
+          );
+
+          return {
+            posts: cachedPosts,
+            isFresh: hasFreshCache,
+          };
         } catch (error) {
-          return [];
+          return {
+            posts: [],
+            isFresh: false,
+          };
         }
       };
 
-      const writeCachedPosts = (postItems) => {
+      const writeCachedPosts = (postItems, schoolCodeValues = initialCacheCodes) => {
         try {
-          localStorage.setItem(cacheKey, JSON.stringify(postItems.slice(0, 120)));
+          const serializedPosts = JSON.stringify({
+            posts: postItems.slice(0, DASHBOARD_POST_CACHE_LIMIT),
+            expiresAt: Date.now() + POSTS_CACHE_TTL_MS,
+          });
+          getPostCacheKeys(schoolCodeValues).forEach((cacheKey) => {
+            localStorage.setItem(cacheKey, serializedPosts);
+          });
         } catch (error) {
           // Ignore localStorage write issues.
         }
@@ -637,16 +1325,10 @@ function Dashboard() {
 
           return {
             ...postItem,
-            adminProfile: getSafeImageUrl(profile, "/default-profile.png"),
-            schoolCode: postItem.schoolCode || effectiveSchoolCode,
+            adminProfile: getSafeImageUrl(profile, DEFAULT_PROFILE_IMAGE),
+            schoolCode: postItem.schoolCode || schoolScopeCode || effectiveSchoolCode,
           };
         });
-
-      const cachedPosts = readCachedPosts();
-      if (cachedPosts.length > 0 && isCurrentRequest()) {
-        setPosts(cachedPosts);
-        setPostsLoading(false);
-      }
 
       const safeGet = async (url, config = {}, fallbackData = null) => {
         try {
@@ -657,36 +1339,120 @@ function Dashboard() {
         }
       };
 
-      const [apiPostsRes, firebasePostsRes] = await Promise.all([
-        safeGet(
-          `${API_BASE}/get_posts`,
-          {
-            params: effectiveSchoolCode ? { schoolCode: effectiveSchoolCode } : {},
-            timeout: 4500,
-          },
-          []
-        ),
-        safeGet(
-          `${effectiveDbRoot}/Posts.json`,
-          {
-            params: { orderBy: '"$key"', limitToLast: 120 },
-            timeout: 4500,
-          },
-          {}
-        ),
-      ]);
+      const fetchPostsForSchoolCodes = async (candidateCodes) => {
+        const normalizedCandidateCodes = uniqueNonEmptyValues(candidateCodes);
+        if (normalizedCandidateCodes.length === 0) {
+          return [];
+        }
 
-      const apiPosts = normalizePostsResponse(apiPostsRes.data);
-      const firebasePosts = normalizePostsNode(firebasePostsRes.data || {});
-      const sourcePosts = apiPosts.length > 0 ? apiPosts : firebasePosts;
+        const apiPostsResponses = await Promise.all(
+          normalizedCandidateCodes.map((candidateCode) =>
+            safeGet(
+              `${API_BASE}/get_posts`,
+              {
+                params: { schoolCode: candidateCode, limit: DASHBOARD_POST_FETCH_LIMIT },
+                timeout: 4500,
+              },
+              []
+            )
+          )
+        );
+
+        const apiPosts = mergeUniquePosts(
+          apiPostsResponses.flatMap((response) => normalizePostsResponse(response?.data))
+        );
+
+        if (apiPosts.length > 0) {
+          return apiPosts;
+        }
+
+        const schoolDbRoots = buildSchoolDbRoots(normalizedCandidateCodes);
+        const firebasePostsResponses = await Promise.all(
+          schoolDbRoots.map((schoolDbRoot) =>
+            safeGet(
+              `${schoolDbRoot}/Posts.json`,
+              {
+                params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
+                timeout: 4500,
+              },
+              {}
+            )
+          )
+        );
+
+        return mergeUniquePosts(
+          firebasePostsResponses.flatMap((response) => normalizePostsNode(response?.data || {}))
+        );
+      };
+
+      const cachedPostsResult = readCachedPosts();
+      const cachedPosts = cachedPostsResult.posts || [];
+      if (cachedPosts.length > 0 && isCurrentRequest()) {
+        setPosts(cachedPosts);
+        setPostsLoading(false);
+      }
+
+      const directSchoolCodes = uniqueNonEmptyValues([
+        schoolScopeCode,
+        effectiveSchoolCode,
+      ]);
+      let sourcePosts = await fetchPostsForSchoolCodes(directSchoolCodes);
+
+      if (sourcePosts.length > 0 && isCurrentRequest()) {
+        const fastDirectPosts = toFastRenderablePosts(sourcePosts);
+        setPosts(fastDirectPosts);
+        setPostsLoading(false);
+        setPostsInitialized(true);
+        writeCachedPosts(fastDirectPosts, directSchoolCodes);
+      }
+
+      const schoolCodeCandidates = await resolveSchoolScopeCandidates(schoolScopeCode || effectiveSchoolCode);
+      const additionalSchoolCodeCandidates = uniqueNonEmptyValues(schoolCodeCandidates).filter(
+        (candidateCode) => !directSchoolCodes.some(
+          (directCode) => String(directCode || "").toLowerCase() === String(candidateCode || "").toLowerCase()
+        )
+      );
+
+      if (additionalSchoolCodeCandidates.length > 0) {
+        sourcePosts = mergeUniquePosts(
+          sourcePosts,
+          await fetchPostsForSchoolCodes(additionalSchoolCodeCandidates)
+        );
+      }
+
+      if (sourcePosts.length === 0) {
+        const [legacyApiPostsRes, legacyFirebasePostsRes] = await Promise.all([
+          safeGet(`${API_BASE}/get_posts`, { timeout: 4500 }, []),
+          safeGet(
+            `${DB_URL}/Posts.json`,
+            {
+              params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
+              timeout: 4500,
+            },
+            {}
+          ),
+        ]);
+
+        sourcePosts = mergeUniquePosts(
+          normalizePostsResponse(legacyApiPostsRes.data),
+          normalizePostsNode(legacyFirebasePostsRes.data || {})
+        );
+      }
 
       const fastPosts = toFastRenderablePosts(sourcePosts);
+      const cacheCodesToUpdate = uniqueNonEmptyValues([
+        ...initialCacheCodes,
+        ...schoolCodeCandidates,
+      ]);
+
       if (fastPosts.length > 0) {
-        writeCachedPosts(fastPosts);
+        writeCachedPosts(fastPosts, cacheCodesToUpdate);
+      } else {
+        clearCachedPosts(cacheCodesToUpdate);
       }
 
       if (isCurrentRequest()) {
-        setPosts((previousPosts) => (fastPosts.length > 0 ? fastPosts : previousPosts));
+        setPosts(fastPosts);
       }
     } catch (err) {
       if (postsFetchRequestIdRef.current === requestId) {
@@ -700,109 +1466,171 @@ function Dashboard() {
     }
   };
 
-  // ---------------- FETCH UNREAD MESSAGES ----------------
-  const fetchUnreadMessages = async () => {
-    if (!admin.adminId) return;
-
-    const senders = {};
+  // ---------------- FETCH CONVERSATIONS ----------------
+  const fetchConversations = async () => {
+    if (!adminUserId) {
+      setConversations([]);
+      return;
+    }
 
     try {
-      // 1️⃣ USERS (names & images)
-      const usersRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Users.json"
-      );
-      const usersData = usersRes.data || {};
-
-      const findUserByUserId = (userId) => {
-        return Object.values(usersData).find(u => u.userId === userId);
-      };
-
-      // helper to read messages from BOTH chat keys
-      const getUnreadCount = async (userId) => {
-        const key1 = `${admin.userId}_${userId}`;
-        const key2 = `${userId}_${admin.userId}`;
-
-        const [r1, r2] = await Promise.all([
-          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-          axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
-        ]);
-
-        const msgs = [
-          ...Object.values(r1.data || {}),
-          ...Object.values(r2.data || {})
-        ];
-
-        return msgs.filter(
-          m => m.receiverId === admin.userId && !m.seen
-        ).length;
-      };
-
-      // 2️⃣ TEACHERS
-      const teachersRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"
+      const schoolCodeCandidates = await resolveSchoolScopeCandidates(
+        schoolScopeCode || schoolCode || admin.schoolCode || _storedAdmin.schoolCode || ""
       );
 
-      for (const k in teachersRes.data || {}) {
-        const t = teachersRes.data[k];
-        const unread = await getUnreadCount(t.userId);
+      const [usersData, chatsData] = await Promise.all([
+        readMergedSchoolNode(schoolCodeCandidates, "Users", {}),
+        readMergedSchoolNode(schoolCodeCandidates, "Chats", {}),
+      ]);
 
-        if (unread > 0) {
-         const user = findUserByUserId(t.userId);
+      const usersByKey = usersData && typeof usersData === "object" ? usersData : {};
+      const chatsMap = chatsData && typeof chatsData === "object" ? chatsData : {};
+      const usersByUserId = {};
+      const userKeyByUserId = {};
 
-          senders[t.userId] = {
-            type: "teacher",
-            name: user?.name || "Teacher",
-            profileImage: getSafeImageUrl(user?.profileImage, "/default-profile.png"),
-            count: unread
-          };
+      Object.entries(usersByKey).forEach(([userKey, userNode]) => {
+        const normalizedUserId = String(userNode?.userId || userKey || "").trim();
+        if (!normalizedUserId) {
+          return;
         }
-      }
 
-      // 3️⃣ STUDENTS
-      const studentsRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Students.json"
-      );
+        usersByUserId[normalizedUserId] = userNode;
+        userKeyByUserId[normalizedUserId] = userKey;
+      });
 
-      for (const k in studentsRes.data || {}) {
-        const s = studentsRes.data[k];
-        const unread = await getUnreadCount(s.userId);
+      const nextConversations = Object.entries(chatsMap)
+        .map(([chatId, chatValue]) => {
+          const chat = chatValue && typeof chatValue === "object" ? chatValue : null;
+          if (!chat) {
+            return null;
+          }
 
-        if (unread > 0) {
-          const user = findUserByUserId(s.userId);
+          const participants = chat.participants || {};
+          const participantKeys = Object.keys(participants || {});
+          if (!participantKeys.includes(adminUserId)) {
+            return null;
+          }
 
-          senders[s.userId] = {
-            type: "student",
-            name: user?.name || s.name || "Student",
-            profileImage: getSafeImageUrl(user?.profileImage || s.profileImage, "/default-profile.png"),
-            count: unread
+          if (!hasConversationUserSentMessage(chat, adminUserId)) {
+            return null;
+          }
+
+          const otherParticipantKey = participantKeys.find(
+            (participantKey) => String(participantKey || "").trim() !== String(adminUserId).trim()
+          );
+          if (!otherParticipantKey) {
+            return null;
+          }
+
+          const userPushKey = userKeyByUserId[otherParticipantKey];
+          const fallbackUserRecord = usersByUserId[otherParticipantKey] || usersByKey[otherParticipantKey] || usersByKey[userPushKey] || {};
+          const otherUserId = String(fallbackUserRecord?.userId || otherParticipantKey || "").trim();
+          if (!otherUserId) {
+            return null;
+          }
+
+          if (Object.keys(fallbackUserRecord).length > 0 && !isActiveEntity(fallbackUserRecord)) {
+            return null;
+          }
+
+          const normalizedRole = String(
+            fallbackUserRecord?.role || fallbackUserRecord?.userType || ""
+          ).trim().toLowerCase();
+          const inferredType = normalizeConversationContactType(
+            normalizedRole
+          ) || "teacher";
+          const officeRole = ["hr", "finance", "registerer", "registerers", "registrar"].includes(normalizedRole)
+            ? normalizeConversationContactType(normalizedRole) === "management"
+              ? normalizedRole === "registerers" || normalizedRole === "registrar"
+                ? "registerer"
+                : normalizedRole
+              : undefined
+            : undefined;
+          const profileImage = getSafeImageUrl(
+            fallbackUserRecord?.profileImage || fallbackUserRecord?.profile,
+            DEFAULT_PROFILE_IMAGE
+          );
+          const displayName = pickFirstNonEmpty(
+            fallbackUserRecord?.name,
+            fallbackUserRecord?.username,
+            otherUserId,
+            "User"
+          );
+          const lastMessage = chat.lastMessage || {};
+          const lastMessageText = pickFirstNonEmpty(
+            lastMessage?.text,
+            String(lastMessage?.type || "").toLowerCase() === "image" ? "Image" : ""
+          );
+          const unreadForMe = Number(chat?.unread?.[adminUserId] || 0);
+          const lastMessageTime = getConversationSortTime(
+            lastMessage?.timeStamp || lastMessage?.time || chat?.updatedAt || chat?.createdAt || 0
+          );
+
+          return {
+            chatId,
+            contact: {
+              id: otherUserId,
+              userId: otherUserId,
+              name: displayName,
+              profileImage,
+              type: inferredType,
+              officeRole,
+            },
+            displayName,
+            profile: profileImage,
+            lastMessageText,
+            lastMessageTime,
+            unreadForMe,
           };
-        }
-      }
+        })
+        .filter(Boolean)
+        .sort((leftConversation, rightConversation) => {
+          if ((rightConversation?.lastMessageTime || 0) !== (leftConversation?.lastMessageTime || 0)) {
+            return (rightConversation?.lastMessageTime || 0) - (leftConversation?.lastMessageTime || 0);
+          }
 
-      // 4️⃣ PARENTS
-      const parentsRes = await axios.get(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/Parents.json"
-      );
+          if ((rightConversation?.unreadForMe || 0) !== (leftConversation?.unreadForMe || 0)) {
+            return (rightConversation?.unreadForMe || 0) - (leftConversation?.unreadForMe || 0);
+          }
 
-      for (const k in parentsRes.data || {}) {
-        const p = parentsRes.data[k];
-        const unread = await getUnreadCount(p.userId);
+          return String(leftConversation?.displayName || "").localeCompare(String(rightConversation?.displayName || ""));
+        });
 
-        if (unread > 0) {
-         const user = findUserByUserId(p.userId);
-
-          senders[p.userId] = {
-            type: "parent",
-            name: user?.name || p.name || "Parent",
-            profileImage: getSafeImageUrl(user?.profileImage || p.profileImage, "/default-profile.png"),
-            count: unread
-          };
-        }
-      }
-
-      setUnreadSenders(senders);
+      setConversations(nextConversations);
     } catch (err) {
-      console.error("Unread fetch failed:", err);
+      console.error("Conversation fetch failed:", err);
+      setConversations([]);
+    }
+  };
+
+  const handleOpenConversation = async (conversation) => {
+    if (!conversation) {
+      return;
+    }
+
+    const contact = conversation.contact || {};
+
+    navigate("/all-chat", {
+      state: {
+        contact,
+        chatId: conversation.chatId,
+        tab: contact.type || "teacher",
+        userType: contact.type || "teacher",
+      },
+    });
+
+    setConversations((prevConversations) =>
+      prevConversations.map((conversationItem) =>
+        conversationItem.chatId === conversation.chatId
+          ? { ...conversationItem, unreadForMe: 0 }
+          : conversationItem
+      )
+    );
+
+    try {
+      await axios.put(`${DB_ROOT}/Chats/${conversation.chatId}/unread/${adminUserId}.json`, null);
+    } catch (err) {
+      console.error("Failed to clear admin unread state:", err);
     }
   };
 
@@ -821,161 +1649,31 @@ function Dashboard() {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    if (!admin.adminId) return;
-
-    fetchUnreadMessages();
-    const interval = setInterval(fetchUnreadMessages, 5000);
-
-    return () => clearInterval(interval);
-  }, [admin.adminId]);
-
   /// ---------------- FETCH POST NOTIFICATIONS ----------------
   useEffect(() => {
-    if (!admin.userId || !schoolCode) return;
+    if (!admin.userId) {
+      setUnreadPostList([]);
+      return;
+    }
 
-    const fetchUnreadPosts = async () => {
-      try {
-        const normalizePostsNode = (postsNode) => {
-          if (!postsNode || typeof postsNode !== "object") {
-            return [];
-          }
+    const unreadPosts = posts
+      .filter((postValue) => !postValue?.seenBy || !postValue.seenBy[admin.userId])
+      .slice(0, 5)
+      .map((postItem) => ({
+        ...postItem,
+        adminName: postItem.adminName || "Admin",
+        adminProfile: getSafeImageUrl(postItem.adminProfile, DEFAULT_PROFILE_IMAGE),
+      }));
 
-          if (postsNode.postId && (postsNode.message || postsNode.postUrl)) {
-            return [{ postId: postsNode.postId, ...postsNode }];
-          }
-
-          return Object.entries(postsNode)
-            .filter(([, value]) => value && typeof value === "object")
-            .filter(([, value]) => value.postId || value.message || value.postUrl)
-            .map(([key, value]) => ({
-              postId: value.postId || key,
-              ...value,
-            }));
-        };
-
-        const postsRes = await axios.get(`${DB_ROOT}/Posts.json`).catch(() => ({ data: {} }));
-        const allPosts = normalizePostsNode(postsRes.data || {});
-
-        const unread = allPosts.filter(
-          (postValue) => !postValue?.seenBy || !postValue.seenBy[admin.userId]
-        );
-
-        if (unread.length === 0) {
-          setUnreadPostList([]);
-          return;
-        }
-
-        const usersRes = await axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
-
-        const findUserByUserId = (userId) =>
-          Object.values(usersData).find((userNode) => String(userNode?.userId) === String(userId));
-
-        const enriched = await Promise.all(
-          unread.map(async (postItem) => {
-            let profile = postItem.adminProfile || "/default-profile.png";
-            let ownerName = postItem.adminName || "Admin";
-
-            try {
-              if (postItem.userId) {
-                const ownerUser = findUserByUserId(postItem.userId) || usersData[postItem.userId] || {};
-                profile = ownerUser.profileImage || profile;
-                ownerName = ownerUser.name || ownerName;
-              }
-
-              if ((!postItem.userId || ownerName === "Admin") && postItem.adminId) {
-                const schoolAdminRes = await axios.get(`${DB_ROOT}/School_Admins/${postItem.adminId}.json`).catch(() => ({ data: null }));
-                const schoolAdminNode = schoolAdminRes.data || {};
-                if (schoolAdminNode.userId) {
-                  const ownerUser = findUserByUserId(schoolAdminNode.userId) || usersData[schoolAdminNode.userId] || {};
-                  profile = ownerUser.profileImage || profile;
-                  ownerName = ownerUser.name || ownerName;
-                }
-              }
-            } catch (err) {
-              // Keep fallback name/profile when enrichment fails.
-            }
-
-            return {
-              ...postItem,
-              adminName: ownerName,
-              adminProfile: getSafeImageUrl(profile, "/default-profile.png"),
-            };
-          })
-        );
-
-        setUnreadPostList(enriched);
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchUnreadPosts();
-  }, [admin.userId, schoolCode]);
+    setUnreadPostList(unreadPosts);
+  }, [admin.userId, posts]);
 
   useEffect(() => {
-    const fetchTeachersAndUnread = async () => {
-      try {
-        const [teachersRes, usersRes] = await Promise.all([
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Teachers.json"),
-          axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json")
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: getSafeImageUrl(user.profileImage, "/default-profile.png")
-          };
-        });
-
-        const roleSet = new Set(
-          Object.values(usersData || {})
-            .map((u) => String(u?.role || u?.userType || "").trim().toLowerCase())
-            .filter(Boolean)
-        );
-        const orderedRoles = ["student", "parent", "teacher", "registerer", "finance", "admin"].filter((r) => roleSet.has(r));
-        const extraRoles = Array.from(roleSet).filter((r) => !orderedRoles.includes(r)).sort();
-        const nextRoles = ["all", ...orderedRoles, ...extraRoles];
-        setTargetOptions(nextRoles);
-        setTargetRole((prev) => (nextRoles.includes(prev) ? prev : "all"));
-
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        for (const t of teacherList) {
-          const chatKey = `${adminUserId}_${t.userId}`;
-          const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${chatKey}/messages.json`);
-          const msgs = Object.values(res.data || {}).map(m => ({
-            ...m,
-            sender: m.senderId === adminUserId ? "admin" : "teacher"
-          }));
-          allMessages.push(...msgs);
-
-          const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
-        }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchTeachersAndUnread();
-  }, [adminUserId]);
+    setTargetOptions(DEFAULT_TARGET_ROLE_OPTIONS);
+    setTargetRole((prev) =>
+      DEFAULT_TARGET_ROLE_OPTIONS.includes(prev) ? prev : "all"
+    );
+  }, []);
 
   const openChatWithUser = async (userId) => {
     setShowMessengerDropdown(false);
@@ -1104,37 +1802,95 @@ function Dashboard() {
     }
   }, [loadingAdmin, admin.userId]);
 
-  const handlePost = async () => {
-    if (!postText && !postMedia) return;
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
 
-    if (!admin.adminId || !admin.userId) {
-      alert("Session expired");
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
       return;
     }
 
-    const formData = new FormData();
-    formData.append("message", postText);
+    setIsOptimizingMedia(true);
 
-    // ✅ CORRECT
-    formData.append("adminId", admin.adminId); // ownership
-    formData.append("userId", admin.userId);   // display & likes
-    formData.append("adminName", admin.name);
-    formData.append("adminProfile", admin.profileImage);
-    formData.append("schoolCode", schoolCode || "");
-    formData.append("targetRole", targetRole || "all");
+    try {
+      const optimizedResult = await optimizePostMedia(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
 
-    if (postMedia) formData.append("post_media", postMedia);
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
 
-    await axios.post(`${API_BASE}/create_post`, formData);
+  const handlePost = async () => {
+    if (!postText && !postMedia) return;
+    if (isOptimizingMedia || postSubmitting) return;
 
-    setPostText("");
-    setPostMedia(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    fetchPosts();
+    if (!admin.adminId || !admin.userId) {
+      setPostSubmitError("Session expired. Please log in again.");
+      return;
+    }
+
+    setPostSubmitting(true);
+    setPostSubmitError("");
+
+    try {
+      const formData = new FormData();
+      formData.append("message", postText);
+      formData.append("adminId", admin.adminId);
+      formData.append("userId", admin.userId);
+      formData.append("adminName", admin.name || admin.username || "Admin");
+      formData.append("adminProfile", admin.profileImage || DEFAULT_PROFILE_IMAGE);
+      formData.append("schoolCode", schoolScopeCode || schoolCode || "");
+      formData.append("targetRole", targetRole || "all");
+
+      if (postMedia) {
+        formData.append("post_media", postMedia);
+      }
+
+      const response = await axios.post(`${API_BASE}/create_post`, formData);
+      if (response.data && response.data.success === false) {
+        throw new Error(response.data.message || "Post could not be published.");
+      }
+
+      setPostText("");
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      await fetchPosts();
+    } catch (error) {
+      const message = error?.response?.data?.message || error?.message || "Post could not be published.";
+      setPostSubmitError(message);
+      throw error;
+    } finally {
+      setPostSubmitting(false);
+    }
   };
 
   const handleSubmitCreatePost = async () => {
     if (!postText && !postMedia) return;
+
     try {
       await handlePost();
       setShowCreatePostModal(false);
@@ -1145,38 +1901,131 @@ function Dashboard() {
 
   // ---------------- HANDLE LIKE ----------------
   const handleLike = async (postId) => {
-    if (!currentLikeActorId) return;
+    const normalizedPostId = String(postId || "").trim();
+    if (!currentLikeActorId || !normalizedPostId || likePendingPostIds[normalizedPostId]) return;
+
+    const currentPost = posts.find(
+      (postItem) => String(postItem?.postId || "") === normalizedPostId
+    );
+
+    if (!currentPost) {
+      return;
+    }
+
+    const previousLikes = normalizePostLikes(currentPost.likes);
+    const wasLiked = Boolean(previousLikes[String(currentLikeActorId)]);
+    const nextLikes = { ...previousLikes };
+
+    if (wasLiked) {
+      delete nextLikes[String(currentLikeActorId)];
+    } else {
+      nextLikes[String(currentLikeActorId)] = true;
+    }
+
+    const optimisticLikeCount = Object.keys(nextLikes).length;
+
+    setLikePendingPostIds((prevState) => ({
+      ...prevState,
+      [normalizedPostId]: true,
+    }));
+
+    setPosts((prevPosts) => {
+      const nextPosts = prevPosts.map((postItem) =>
+        String(postItem?.postId || "") === normalizedPostId
+          ? {
+              ...postItem,
+              likeCount: optimisticLikeCount,
+              likes: nextLikes,
+            }
+          : postItem
+      );
+
+      return nextPosts;
+    });
+
+    updateCachedPostEntries(normalizedPostId, (postItem) => ({
+      ...postItem,
+      likeCount: optimisticLikeCount,
+      likes: nextLikes,
+    }));
 
     try {
-      // ✅ Use full backend URL
       const res = await axios.post(`${API_BASE}/like_post`, {
-        postId,
+        postId: normalizedPostId,
         adminId: admin.userId || admin.adminId,
         userId: admin.userId,
         schoolCode,
       });
 
-      if (res.data.success) {
-        const liked = res.data.liked; // boolean returned by backend
-        const likeCount = res.data.likeCount; // number returned by backend
-
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.postId === postId
-              ? {
-                  ...post,
-                  likeCount,
-                  likes: {
-                    ...post.likes,
-                    [currentLikeActorId]: liked ? true : undefined,
-                  },
-                }
-              : post
-          )
-        );
+      if (!res.data?.success) {
+        throw new Error("Like request failed.");
       }
+
+      const liked = Boolean(res.data.liked);
+      const likeCount = Number(res.data.likeCount);
+      const syncedLikes = { ...nextLikes };
+
+      if (liked) {
+        syncedLikes[String(currentLikeActorId)] = true;
+      } else {
+        delete syncedLikes[String(currentLikeActorId)];
+      }
+
+      setPosts((prevPosts) => {
+        const nextPosts = prevPosts.map((postItem) =>
+          String(postItem?.postId || "") === normalizedPostId
+            ? {
+                ...postItem,
+                likeCount:
+                  Number.isFinite(likeCount) && likeCount >= 0
+                    ? likeCount
+                    : Object.keys(syncedLikes).length,
+                likes: syncedLikes,
+              }
+            : postItem
+        );
+
+        return nextPosts;
+      });
+
+      updateCachedPostEntries(normalizedPostId, (postItem) => ({
+        ...postItem,
+        likeCount:
+          Number.isFinite(likeCount) && likeCount >= 0
+            ? likeCount
+            : Object.keys(syncedLikes).length,
+        likes: syncedLikes,
+      }));
     } catch (err) {
+      const previousLikeCount = Object.keys(previousLikes).length;
+
+      setPosts((prevPosts) => {
+        const nextPosts = prevPosts.map((postItem) =>
+          String(postItem?.postId || "") === normalizedPostId
+            ? {
+                ...postItem,
+                likeCount: previousLikeCount,
+                likes: previousLikes,
+              }
+            : postItem
+        );
+
+        return nextPosts;
+      });
+
+      updateCachedPostEntries(normalizedPostId, (postItem) => ({
+        ...postItem,
+        likeCount: previousLikeCount,
+        likes: previousLikes,
+      }));
+
       console.error("Error liking post:", err);
+    } finally {
+      setLikePendingPostIds((prevState) => {
+        const nextState = { ...prevState };
+        delete nextState[normalizedPostId];
+        return nextState;
+      });
     }
   };
 
@@ -1212,8 +2061,8 @@ function Dashboard() {
     const key2 = `${userId}_${admin.userId}`;
 
     const [r1, r2] = await Promise.all([
-      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key1}/messages.json`),
-      axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/Chats/${key2}/messages.json`)
+      axios.get(`${DB_URL}/Chats/${key1}/messages.json`),
+      axios.get(`${DB_URL}/Chats/${key2}/messages.json`)
     ]);
 
     const updates = {};
@@ -1231,18 +2080,20 @@ function Dashboard() {
 
     if (Object.keys(updates).length > 0) {
       await axios.patch(
-        "https://bale-house-rental-default-rtdb.firebaseio.com/.json",
+        `${DB_URL}/.json`,
         updates
       );
     }
   };
 
   // counts for badges
-  const messageCount = Object.values(unreadSenders || {}).reduce((acc, s) => acc + (s.count || 0), 0);
+  const totalUnreadMessages = 0;
+  const messageCount = totalUnreadMessages;
   const totalNotifications = (unreadPostList?.length || 0) + messageCount;
-  const isOverlayModalOpen = showCalendarEventModal;
-  const canSubmitPost = Boolean(postText.trim() || postMedia);
-  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const isOverlayModalOpen = showCalendarEventModal || showCreatePostModal;
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
+  const FEED_MAX_WIDTH = 760;
+  const MESSAGE_PREVIEW_LIMIT = 220;
   const FEED_SECTION_STYLE = {
     width: "100%",
     maxWidth: FEED_MAX_WIDTH,
@@ -1256,39 +2107,85 @@ function Dashboard() {
     border: "1px solid var(--border-soft)",
     boxShadow: "var(--shadow-soft)",
   };
+  const rightRailCardStyle = {
+    background: "var(--surface-panel)",
+    borderRadius: 12,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+  };
   const widgetCardStyle = {
-    background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-accent) 100%)",
-    borderRadius: 16,
-    boxShadow: "var(--shadow-soft)",
-    padding: "11px",
-    border: "1px solid var(--border-soft)",
+    ...rightRailCardStyle,
+    padding: "12px",
   };
   const softPanelStyle = {
-    background: "var(--surface-muted)",
-    border: "1px solid var(--border-soft)",
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
     borderRadius: 10,
   };
   const smallStatStyle = {
-    padding: "5px 8px",
-    borderRadius: 12,
-    background: "var(--surface-panel)",
-    border: "1px solid var(--border-soft)",
+    padding: "10px 12px",
+    borderRadius: 10,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    minWidth: 72,
+    gap: 2,
+    minWidth: 84,
   };
-  const recentContacts = Object.entries(unreadSenders || {})
-    .map(([userId, sender]) => ({
-      userId,
-      name: sender?.name || "User",
-      profileImage: sender?.profileImage || "/default-profile.png",
-      type: sender?.type || "user",
-      count: Number(sender?.count || 0),
-      lastMessage: `${Number(sender?.count || 0)} unread message${Number(sender?.count || 0) === 1 ? "" : "s"}`,
-    }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6);
+  const rightRailIconStyle = {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    background: "#F8FAFC",
+    color: "var(--text-primary)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+  };
+  const rightRailIconButtonStyle = {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "#F8FAFC",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    lineHeight: 1,
+  };
+  const rightRailPillStyle = {
+    padding: "4px 8px",
+    borderRadius: 999,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
+    fontSize: 9,
+    color: "var(--text-secondary)",
+    fontWeight: 800,
+  };
+  const rightRailActionButtonStyle = {
+    height: 34,
+    padding: "0 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(0, 122, 251, 0.18)",
+    background: "#007AFB",
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: "pointer",
+  };
+  const rightRailSecondaryButtonStyle = {
+    height: 34,
+    padding: "0 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "var(--surface-panel)",
+    color: "var(--text-primary)",
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: "pointer",
+  };
   const adminRightSidebarLinks = [
     { to: "/dashboard", label: "Dashboard", icon: FaHome },
     { to: "/overview", label: "Overview", icon: FaFileAlt },
@@ -1408,10 +2305,22 @@ function Dashboard() {
     });
   };
 
-  const loadCalendarEvents = async () => {
-    if (!schoolCode) {
+  const loadCalendarEvents = async ({ forceRefresh = false } = {}) => {
+    if (!schoolScopeCode) {
       setCalendarEvents([]);
       return;
+    }
+
+    if (!forceRefresh) {
+      const cachedCalendar = readCachedCalendarEvents(schoolScopeCode);
+      if (cachedCalendar.events.length > 0) {
+        setCalendarEvents(sortCalendarEvents(cachedCalendar.events));
+      }
+
+      if (cachedCalendar.isFresh) {
+        setCalendarEventsLoading(false);
+        return;
+      }
     }
 
     setCalendarEventsLoading(true);
@@ -1423,9 +2332,11 @@ function Dashboard() {
         .filter((eventItem) => eventItem.gregorianDate);
 
       setCalendarEvents(sortCalendarEvents(normalizedEvents));
+      writeCachedCalendarEvents(schoolScopeCode, normalizedEvents);
     } catch (err) {
       console.error("Failed to load calendar events:", err);
-      setCalendarEvents([]);
+      const cachedCalendar = readCachedCalendarEvents(schoolScopeCode);
+      setCalendarEvents(sortCalendarEvents(cachedCalendar.events || []));
     } finally {
       setCalendarEventsLoading(false);
     }
@@ -1480,7 +2391,7 @@ function Dashboard() {
       setEditingCalendarEventId("");
       setShowCalendarEventModal(false);
       setCalendarModalContext("calendar");
-      await loadCalendarEvents();
+      await loadCalendarEvents({ forceRefresh: true });
     } catch (err) {
       console.error("Failed to save calendar event:", err);
       alert("Failed to save calendar event.");
@@ -1545,7 +2456,7 @@ function Dashboard() {
         setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
       }
       setCalendarActionMessage("Calendar event deleted successfully.");
-      await loadCalendarEvents();
+      await loadCalendarEvents({ forceRefresh: true });
     } catch (err) {
       console.error("Failed to delete calendar event:", err);
       alert("Failed to delete calendar event.");
@@ -1595,11 +2506,11 @@ function Dashboard() {
 
   useEffect(() => {
     setShowAllUpcomingDeadlines(false);
-  }, [schoolCode]);
+  }, [schoolScopeCode]);
 
   useEffect(() => {
     loadCalendarEvents();
-  }, [schoolCode]);
+  }, [DB_ROOT, schoolScopeCode]);
 
   useEffect(() => {
     const preferredDay = calendarDays.find((dayItem) => dayItem?.ethDay === calendarHighlightedDay) || calendarDays.find(Boolean) || null;
@@ -1617,22 +2528,60 @@ function Dashboard() {
 
   // ---------------- RENDER ----------------
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        height: "auto",
+        overflowX: "hidden",
+        overflowY: "auto",
+        color: "var(--text-primary)",
+        "--surface-panel": BACKGROUND,
+        "--surface-accent": "#F1F8FF",
+        "--surface-muted": "#F7FBFF",
+        "--surface-strong": "#DCEBFF",
+        "--page-bg": BACKGROUND,
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": "#007afb",
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", minHeight: 0, overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        <Sidebar
-          admin={{
-            ...admin,
-            adminId: admin?.adminId || admin?.username || "",
-            profileImage: getSafeImageUrl(admin?.profileImage, "/default-profile.png"),
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
           }}
-          top={4}
-          fullHeight
-          dimmed={isOverlayModalOpen}
         />
 
         {/* MIDDLE FEED COLUMN */}
-        <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'stretch', height: '100%', overflowY: 'auto', overflowX: 'hidden', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', paddingBottom: 140, WebkitOverflowScrolling: 'touch', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", top: "auto", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 12px 0 2px", display: "flex", justifyContent: "center", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
+          <div style={{ width: "100%", maxWidth: FEED_SECTION_STYLE.maxWidth }}>
           {/* Feed header */}
           <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
@@ -1640,7 +2589,7 @@ function Dashboard() {
           </div>
 
           {/* Post input box */}
-          <div className="post-box" style={{ ...FEED_SECTION_STYLE, ...shellCardStyle, margin: "0 auto 14px", borderRadius: 12, overflow: "hidden", padding: "10px 12px" }}>
+          <div className="post-box" style={{ ...FEED_SECTION_STYLE, ...shellCardStyle, margin: "0 auto 14px", borderRadius: 12, overflow: "hidden", padding: "12px 14px" }}>
             <div
               className="fb-post-top"
               style={{
@@ -1653,9 +2602,10 @@ function Dashboard() {
                 padding: 0,
               }}
             >
-              <img
-                src={getSafeImageUrl(admin.profileImage, "/default-profile.png")}
-                alt="me"
+              <ProfileAvatar
+                src={admin.profileImage}
+                name={admin?.name || "Admin"}
+                alt={admin?.name || "Admin"}
                 style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-soft)", flexShrink: 0 }}
               />
               <button
@@ -1665,7 +2615,7 @@ function Dashboard() {
                   flex: 1,
                   height: 42,
                   border: "1px solid var(--border-soft)",
-                  background: "var(--surface-muted)",
+                  background: "#f8fafc",
                   borderRadius: 999,
                   padding: "0 16px",
                   fontSize: 14,
@@ -1685,9 +2635,9 @@ function Dashboard() {
                   justifyContent: "center",
                   width: 34,
                   height: 34,
-                  border: "none",
-                  borderRadius: 8,
-                  background: "transparent",
+                  border: "1px solid rgba(15, 23, 42, 0.08)",
+                  borderRadius: 10,
+                  background: "#f8fafc",
                   color: "var(--danger)",
                   fontSize: 18,
                   cursor: "pointer",
@@ -1706,9 +2656,9 @@ function Dashboard() {
                   justifyContent: "center",
                   width: 34,
                   height: 34,
-                  border: "none",
-                  borderRadius: 8,
-                  background: "transparent",
+                  border: "1px solid rgba(15, 23, 42, 0.08)",
+                  borderRadius: 10,
+                  background: "#f8fafc",
                   color: "var(--success)",
                   fontSize: 18,
                   cursor: "pointer",
@@ -1722,7 +2672,7 @@ function Dashboard() {
           </div>
 
           {/* Posts container */}
-          <div className="posts-container" style={{ ...FEED_SECTION_STYLE, maxWidth: "760px", margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="posts-container" style={{ ...FEED_SECTION_STYLE, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             {shouldShowPostsLoadingState ? (
               <div style={{ ...shellCardStyle, borderRadius: 10, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
                 Loading posts...
@@ -1731,128 +2681,119 @@ function Dashboard() {
               <div style={{ ...shellCardStyle, borderRadius: 10, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
                 No posts available right now.
               </div>
-            ) : posts.map((post) => (
-              <div className="post-card facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden" }}>
-                <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                    <div className="img-circle" style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                      <img
-                        src={post.adminProfile || "/default-profile.png"}
-                        alt="profile"
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
-                    </div>
-                    <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                      <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName}</h4>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2, fontSize: 13, color: "var(--text-muted)", fontWeight: 500 }}>
-                        <span>{post.time}</span>
-                        <span>·</span>
-                        <span>{post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}</span>
+            ) : posts.map((post) => {
+              const messageText = String(post.message || "");
+              const canExpandPost = shouldShowPostSeeMore(messageText);
+              const isPostExpanded = !!expandedPostDescriptions[post.postId];
+              const normalizedTargetRole = String(post.targetRole || "").trim().toLowerCase();
+              const audienceLabel = formatAudienceLabel(normalizedTargetRole) || "Selected audience";
+              const isPublicPost = !normalizedTargetRole || normalizedTargetRole === "all";
+              const targetRoleLabel = isPublicPost ? "Visible to everyone" : `Visible to ${audienceLabel}`;
+              const audienceBadgeLabel = isPublicPost ? "Public update" : `${audienceLabel} update`;
+              const likeCount = getResolvedLikeCount(post);
+              const isLikedByAdmin = isPostLikedByActor(post, currentLikeActorId);
+              const isLikePending = Boolean(likePendingPostIds[post.postId]);
+              const mediaUrl = getSafeMediaUrl(post.postUrl);
+              const postTimestamp = post.time || post.createdAt || "";
+              const postTimeLabel = formatPostTimestamp(postTimestamp);
+              const postTimestampTitle = postTimestamp ? new Date(postTimestamp).toLocaleString() : "";
+
+              return (
+                <div className="facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(15, 23, 42, 0.08)", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)", transition: "background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease" }}>
+                  <div className="facebook-post-card__header" style={{ padding: "12px 14px 10px" }}>
+                    <div className="facebook-post-card__header-main">
+                      <div className="facebook-post-card__avatar">
+                        <ProfileAvatar src={post.adminProfile} name={post.adminName || "Admin"} alt={post.adminName || "Admin"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      </div>
+                      <div className="facebook-post-card__identity">
+                        <div className="facebook-post-card__identity-row">
+                          <h4>{post.adminName || "Admin"}</h4>
+                          <span className="facebook-post-card__page-badge">School Page</span>
+                        </div>
+                        <div className="facebook-post-card__meta" title={postTimestampTitle || undefined}>
+                          <span>{postTimeLabel}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{targetRoleLabel}</span>
+                        </div>
                       </div>
                     </div>
+                    <div className="facebook-post-card__type-chip">Announcement</div>
                   </div>
-                  <button
-                    type="button"
-                    style={{ width: 36, height: 36, border: "none", borderRadius: "50%", background: "transparent", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                    aria-label="Post options"
-                    title="Post options"
-                  >
-                    <FaEllipsisH style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
 
-                {post.message ? (() => {
-                  const canExpandPost = shouldShowPostSeeMore(post.message);
-                  const isPostExpanded = !!expandedPostDescriptions[post.postId];
-
-                  return (
-                    <div style={{ padding: "0 16px 12px", color: "var(--text-primary)", fontSize: 15, lineHeight: 1.3333, wordBreak: "break-word" }}>
-                      <div
-                        style={{
-                          whiteSpace: "pre-wrap",
-                          overflow: canExpandPost && !isPostExpanded ? "hidden" : "visible",
-                          display: canExpandPost && !isPostExpanded ? "-webkit-box" : "block",
-                          WebkitBoxOrient: canExpandPost && !isPostExpanded ? "vertical" : "initial",
-                          WebkitLineClamp: canExpandPost && !isPostExpanded ? 3 : "unset",
-                        }}
-                      >
-                        {post.message}
+                  {messageText ? (
+                    <div className="facebook-post-card__body" style={{ padding: "0 14px 12px" }}>
+                      <div className="facebook-post-card__message">
+                        {canExpandPost && !isPostExpanded
+                          ? `${messageText.slice(0, MESSAGE_PREVIEW_LIMIT).trimEnd()}...`
+                          : messageText}
                       </div>
                       {canExpandPost ? (
-                        <button
-                          type="button"
-                          onClick={() => togglePostDescription(post.postId)}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            padding: 0,
-                            marginTop: 4,
-                            color: "var(--text-muted)",
-                            fontSize: 15,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          {isPostExpanded ? "See less" : "See more"}
+                        <button type="button" className="facebook-post-card__read-more" onClick={() => togglePostDescription(post.postId)}>
+                          {isPostExpanded ? "See less" : "Read more"}
                         </button>
                       ) : null}
                     </div>
-                  );
-                })() : null}
+                  ) : null}
 
-                {getSafeMediaUrl(post.postUrl) && (
-                  <div className="facebook-post-media-wrap" style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <img
-                      className="facebook-post-media"
-                      src={getSafeMediaUrl(post.postUrl)}
-                      alt="post media"
-                      style={{ width: "100%", height: "auto", maxHeight: "min(78vh, 720px)", objectFit: "contain", display: "block", margin: "0 auto" }}
-                    />
+                  {mediaUrl ? (
+                    <div className="facebook-post-card__media-shell">
+                      <img className="facebook-post-card__media" src={mediaUrl} alt="post media" />
+                    </div>
+                  ) : null}
+
+                  <div className="facebook-post-card__stats" style={{ padding: "10px 14px 8px" }}>
+                    <div className="facebook-post-card__stats-left">
+                      {likeCount > 0 ? (
+                        <>
+                          <span className="facebook-post-card__reaction-bubble">
+                            <FaThumbsUp style={{ width: 10, height: 10 }} />
+                          </span>
+                          <span>{`${likeCount} ${likeCount === 1 ? "like" : "likes"}`}</span>
+                        </>
+                      ) : (
+                        <span>Be the first to react</span>
+                      )}
+                    </div>
+                    <div className="facebook-post-card__stats-right" title={targetRoleLabel}>
+                      <span>{audienceBadgeLabel}</span>
+                    </div>
                   </div>
-                )}
 
-                <div style={{ padding: "10px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  <button
-                    type="button"
-                    onClick={() => handleLike(post.postId)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      minWidth: 0,
-                      border: "none",
-                      background: "transparent",
-                      padding: 0,
-                      cursor: "pointer",
-                      color: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--text-muted)",
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
-                    <span style={{ width: 20, height: 20, borderRadius: "50%", background: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--surface-strong)", color: post.likes && post.likes[currentLikeActorId] ? "#fff" : "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <FaThumbsUp style={{ width: 10, height: 10 }} />
-                    </span>
-                    <span style={{ whiteSpace: "nowrap" }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? "" : "s"}</span>
-                  </button>
-                  <div style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                    {post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}
+                  <div className="facebook-post-card__actions" style={{ padding: "4px 10px 10px" }}>
+                    <button type="button" aria-pressed={isLikedByAdmin} onClick={() => handleLike(post.postId)} disabled={isLikePending} className={`facebook-post-card__action-button${isLikedByAdmin ? " is-active" : ""}`} style={{ opacity: isLikePending ? 0.78 : 1, cursor: isLikePending ? "progress" : "pointer" }}>
+                      {isLikedByAdmin ? <FaHeart style={{ width: 14, height: 14 }} /> : <FaRegHeart style={{ width: 14, height: 14 }} />}
+                      <span>{isLikedByAdmin ? "Liked" : "Like"}</span>
+                    </button>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
+          </div>
           </div>
         </div>
 
         {/* RIGHT WIDGETS COLUMN */}
-        <div className="dashboard-widgets" style={{ flex: '0 0 clamp(300px, 21vw, 360px)', minHeight: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', paddingRight: 2, marginLeft: 'auto', marginRight: 0, opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div
+          className="right-widgets-spacer"
+          style={{
+            width: "clamp(300px, 21vw, 360px)",
+            minWidth: 300,
+            maxWidth: 360,
+            flex: "0 0 clamp(300px, 21vw, 360px)",
+            marginLeft: 10,
+            pointerEvents: "none",
+          }}
+        />
+
+        <div className="dashboard-widgets" onWheel={(event) => event.stopPropagation()} style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, flex: "0 0 clamp(300px, 21vw, 360px)", display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh - 88px)", maxHeight: "calc(100vh - 88px)", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "fixed", top: 74, right: 14, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, paddingLeft: 14, paddingBottom: 14, marginLeft: 10, marginRight: 0, borderLeft: "none", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease", zIndex: 20 }}>
           {/* Quick Statistics */}
           <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Quick Statistics</h4>
             <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <div style={smallStatStyle}>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 }}>My Posts</div>
-                  <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary)' }}>{myPostsCount}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 }}>Total Posts</div>
+                  <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary)' }}>{posts.length}</div>
                 </div>
 
                 <div style={smallStatStyle}>
@@ -1886,53 +2827,26 @@ function Dashboard() {
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>Recent Contacts</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {recentContacts.length === 0 ? (
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)', ...softPanelStyle, padding: '7px 8px' }}>
-                      No recent chats yet
-                    </div>
-                  ) : (
-                    recentContacts.map((contact) => (
-                      <button
-                        key={contact.userId}
-                        type="button"
-                        onClick={() => navigate('/all-chat', {
-                          state: {
-                            user: {
-                              userId: contact.userId,
-                              name: contact.name,
-                              profileImage: contact.profileImage,
-                              type: contact.type || 'user',
-                            },
-                          },
-                        })}
-                        style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', ...softPanelStyle, padding: '5px 6px', cursor: 'pointer' }}
-                      >
-                        <img
-                          src={contact.profileImage || '/default-profile.png'}
-                          alt={contact.name}
-                          style={{ width: 24, height: 24, borderRadius: '50%', objectFit: 'cover' }}
-                        />
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {contact.name}
-                          </div>
-                          <div style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {contact.lastMessage || 'Open chat'}
-                          </div>
-                        </div>
-                      </button>
-                    ))
-                  )}
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', ...softPanelStyle, padding: '7px 8px', lineHeight: 1.45 }}>
+                    Disabled on the dashboard to reduce Firebase background downloads.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/all-chat')}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', textAlign: 'center', ...softPanelStyle, padding: '8px 10px', cursor: 'pointer', color: 'var(--text-primary)', fontSize: 10, fontWeight: 800 }}
+                  >
+                    Open Messages
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', borderRadius: 20, boxShadow: 'var(--shadow-panel)', padding: '10px', border: '1px solid var(--border-soft)', overflow: 'hidden', position: 'relative' }}>
-              <div style={{ position: 'absolute', top: -40, right: -30, width: 120, height: 120, borderRadius: '50%', background: 'radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 72%)', pointerEvents: 'none' }} />
-              <div style={{ margin: '-10px -10px 10px', padding: '12px 10px 10px', background: 'linear-gradient(135deg, var(--accent-soft) 0%, var(--surface-muted) 55%, var(--surface-panel) 100%)', borderBottom: '1px solid var(--border-soft)', position: 'relative' }}>
+            <div style={{ ...rightRailCardStyle, overflow: 'hidden', position: 'relative' }}>
+              <div style={{ position: 'absolute', top: -34, right: -24, width: 104, height: 104, borderRadius: '50%', background: 'radial-gradient(circle, color-mix(in srgb, var(--accent) 10%, transparent) 0%, transparent 74%)', pointerEvents: 'none' }} />
+              <div style={{ padding: '14px 14px 12px', background: 'var(--surface-panel)', borderBottom: '1px solid rgba(15, 23, 42, 0.08)', position: 'relative' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 12, background: 'linear-gradient(135deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 20%, transparent) 100%)', color: 'var(--accent-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 30%, transparent), var(--shadow-glow)' }}>
+                    <div style={rightRailIconStyle}>
                       <FaCalendarAlt style={{ width: 14, height: 14 }} />
                     </div>
                     <div>
@@ -1944,19 +2858,19 @@ function Dashboard() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <button type="button" onClick={() => handleCalendarMonthChange(-1)} style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 17, lineHeight: 1, boxShadow: 'var(--shadow-soft)' }} aria-label="Previous month" title="Previous month">‹</button>
-                    <button type="button" onClick={() => handleCalendarMonthChange(1)} style={{ width: 28, height: 28, borderRadius: 9, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 17, lineHeight: 1, boxShadow: 'var(--shadow-soft)' }} aria-label="Next month" title="Next month">›</button>
+                    <button type="button" onClick={() => handleCalendarMonthChange(-1)} style={{ ...rightRailIconButtonStyle, fontSize: 17 }} aria-label="Previous month" title="Previous month">‹</button>
+                    <button type="button" onClick={() => handleCalendarMonthChange(1)} style={{ ...rightRailIconButtonStyle, fontSize: 17 }} aria-label="Next month" title="Next month">›</button>
                   </div>
                 </div>
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <div style={{ padding: '4px 8px', borderRadius: 999, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', fontSize: 9, color: 'var(--accent-strong)', fontWeight: 800 }}>{monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? '' : 's'}</div>
-                    <div style={{ padding: '4px 8px', borderRadius: 999, background: canManageCalendar ? 'var(--success-soft)' : 'var(--warning-soft)', border: canManageCalendar ? '1px solid var(--success-border)' : '1px solid var(--warning-border)', fontSize: 9, color: canManageCalendar ? 'var(--success)' : 'var(--warning)', fontWeight: 800 }}>{canManageCalendar ? 'Manage access' : 'View only'}</div>
+                    <div style={{ ...rightRailPillStyle, color: 'var(--text-primary)' }}>{monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? '' : 's'}</div>
+                    <div style={{ ...rightRailPillStyle, color: canManageCalendar ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{canManageCalendar ? 'Manage access' : 'View only'}</div>
                   </div>
                 </div>
               </div>
 
-              <div style={{ background: 'linear-gradient(180deg, var(--surface-muted) 0%, color-mix(in srgb, var(--surface-muted) 92%, var(--page-bg) 8%) 100%)', border: '1px solid var(--border-soft)', borderRadius: 16, padding: '10px', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 22%, transparent)' }}>
+              <div style={{ background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', borderRadius: 16, padding: '10px' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4, marginBottom: 6 }}>
                   {CALENDAR_WEEK_DAYS.map((day) => (
                     <div key={day} style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, color: 'var(--text-muted)', letterSpacing: '0.03em', textTransform: 'uppercase' }}>{day}</div>
@@ -1975,16 +2889,16 @@ function Dashboard() {
                     const isHovered = day?.isoDate === hoveredCalendarIsoDate;
                     const dayBackground = day
                       ? isToday
-                        ? 'linear-gradient(145deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 26%, transparent) 100%)'
+                        ? 'var(--accent-soft)'
                         : isSelected
-                          ? 'linear-gradient(145deg, var(--surface-accent) 0%, var(--accent-soft) 55%, color-mix(in srgb, var(--accent) 26%, transparent) 100%)'
+                          ? 'color-mix(in srgb, var(--accent-soft) 72%, white 28%)'
                           : isNoClassDay
-                            ? 'linear-gradient(145deg, color-mix(in srgb, var(--warning-soft) 78%, var(--surface-panel) 22%) 0%, var(--warning-soft) 100%)'
+                            ? 'color-mix(in srgb, var(--warning-soft) 58%, white 42%)'
                             : isAcademicDay
-                              ? 'linear-gradient(145deg, color-mix(in srgb, var(--success-soft) 78%, var(--surface-panel) 22%) 0%, var(--success-soft) 100%)'
+                              ? 'color-mix(in srgb, var(--accent-soft) 46%, white 54%)'
                               : isWeekend
-                                ? 'linear-gradient(145deg, var(--surface-muted) 0%, color-mix(in srgb, var(--surface-muted) 84%, var(--page-bg) 16%) 100%)'
-                                : 'linear-gradient(145deg, var(--surface-panel) 0%, var(--surface-muted) 100%)'
+                                ? 'color-mix(in srgb, var(--surface-muted) 82%, white 18%)'
+                                : 'var(--surface-panel)'
                       : 'transparent';
 
                     return (
@@ -1997,7 +2911,7 @@ function Dashboard() {
                         onFocus={() => day && setHoveredCalendarIsoDate(day.isoDate)}
                         onBlur={() => setHoveredCalendarIsoDate("")}
                         title={day?.events?.length ? day.events.map((eventItem) => eventItem.title).join(', ') : ''}
-                        style={{ minHeight: 0, aspectRatio: '1 / 1', borderRadius: 10, border: isToday ? '1px solid var(--accent)' : isSelected ? '1px solid var(--accent-strong)' : isHovered ? '1px solid var(--border-strong)' : isNoClassDay ? '1px solid var(--warning-border)' : '1px solid transparent', background: dayBackground, color: isToday ? 'var(--accent-strong)' : day ? 'var(--text-secondary)' : 'transparent', fontSize: 10, fontWeight: isToday ? 800 : 700, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, padding: '5px 2px', boxShadow: day && !isToday ? (isSelected ? 'var(--shadow-glow)' : 'var(--shadow-soft)') : 'none', cursor: day ? 'pointer' : 'default', outline: 'none', transform: day && isSelected ? 'translateY(-2px) scale(1.03)' : day && isHovered ? 'translateY(-1px) scale(1.015)' : 'translateY(0) scale(1)', transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease', position: 'relative', overflow: 'hidden' }}
+                        style={{ minHeight: 0, aspectRatio: '1 / 1', borderRadius: 10, border: isToday ? '1px solid var(--accent)' : isSelected ? '1px solid var(--accent-strong)' : isHovered ? '1px solid var(--border-strong)' : isNoClassDay ? '1px solid var(--warning-border)' : '1px solid var(--border-soft)', background: dayBackground, color: isToday ? 'var(--accent-strong)' : day ? 'var(--text-secondary)' : 'transparent', fontSize: 10, fontWeight: isToday ? 800 : 700, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, padding: '5px 2px', boxShadow: day && isSelected ? '0 8px 18px rgba(0, 122, 251, 0.12)' : 'none', cursor: day ? 'pointer' : 'default', outline: 'none', transform: day && isSelected ? 'translateY(-2px) scale(1.03)' : day && isHovered ? 'translateY(-1px)' : 'translateY(0)', transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease', position: 'relative', overflow: 'hidden' }}
                         disabled={!day}
                       >
                         {day ? (
@@ -2006,7 +2920,7 @@ function Dashboard() {
                             <div style={{ fontSize: 8, color: isSelected ? 'var(--accent)' : 'var(--text-muted)', lineHeight: 1 }}>{day.gregorianDate.day}/{day.gregorianDate.month}</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 2, minHeight: 6 }}>
                               {day.events.slice(0, 2).map((eventItem) => (
-                                <span key={eventItem.id} style={{ width: 5, height: 5, borderRadius: '50%', background: getCalendarEventMeta(eventItem.category).color, boxShadow: '0 0 0 2px color-mix(in srgb, var(--surface-panel) 84%, transparent)' }} />
+                                <span key={eventItem.id} style={{ width: 5, height: 5, borderRadius: '50%', background: getCalendarEventMeta(eventItem.category).color }} />
                               ))}
                             </div>
                           </>
@@ -2017,19 +2931,19 @@ function Dashboard() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary)', fontWeight: 800, background: 'var(--warning-soft)', border: '1px solid var(--warning-border)', borderRadius: 999, padding: '5px 8px' }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warning)' }} /> No class</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary)', fontWeight: 800, background: 'var(--success-soft)', border: '1px solid var(--success-border)', borderRadius: 999, padding: '5px 8px' }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)' }} /> Academic</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10,marginLeft: 10, alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary)', fontWeight: 800, background: 'var(--surface-panel)', border: '1px solid var(--warning-border)', borderRadius: 999, padding: '5px 8px' }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warning)' }} /> No class</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary)', fontWeight: 800, background: 'var(--surface-panel)', border: '1px solid var(--border-strong)', borderRadius: 999, padding: '5px 8px' }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)' }} /> Academic</div>
                 {canManageCalendar ? (
-                  <button type="button" onClick={handleOpenCalendarEventModal} style={{ width: 30, height: 30, borderRadius: 999, border: '1px solid var(--border-strong)', background: 'linear-gradient(135deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 20%, transparent) 100%)', color: 'var(--accent-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: 'var(--shadow-glow)' }} aria-label="Add school calendar event" title="Add school calendar event"><FaPlus style={{ width: 12, height: 12 }} /></button>
+                  <button type="button" onClick={handleOpenCalendarEventModal} style={{ ...rightRailIconButtonStyle, width: 30, height: 30, borderRadius: 999, color: 'var(--text-primary)' }} aria-label="Add school calendar event" title="Add school calendar event"><FaPlus style={{ width: 12, height: 12 }} /></button>
                 ) : null}
               </div>
 
               {calendarActionMessage ? (
-                <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid var(--success-border)', background: 'linear-gradient(180deg, color-mix(in srgb, var(--success-soft) 76%, var(--surface-panel) 24%) 0%, var(--success-soft) 100%)', color: 'var(--success)', fontSize: 10, fontWeight: 800, padding: '8px 10px', boxShadow: 'var(--shadow-soft)' }}>{calendarActionMessage}</div>
+                <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid var(--border-strong)', background: 'var(--accent-soft)', color: 'var(--accent-strong)', fontSize: 10, fontWeight: 800, padding: '8px 10px' }}>{calendarActionMessage}</div>
               ) : null}
 
-              <div style={{ marginTop: 12, background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', border: '1px solid var(--border-soft)', borderRadius: 14, padding: '10px', boxShadow: 'var(--shadow-soft)' }}>
+              <div style={{ marginTop: 12, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 14, padding: '10px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
                   <div>
                     <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--text-primary)' }}>{selectedCalendarDay ? `${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]} ${selectedCalendarDay.ethDay}, ${calendarViewDate.year}` : 'Select a date'}</div>
@@ -2044,7 +2958,7 @@ function Dashboard() {
                     selectedCalendarEvents.map((eventItem) => {
                       const eventMeta = getCalendarEventMeta(eventItem.category);
                       return (
-                        <div key={eventItem.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, background: eventMeta.background, border: `1px solid ${eventMeta.border}`, borderRadius: 10, padding: '7px 8px' }}>
+                        <div key={eventItem.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, background: 'var(--surface-panel)', border: `1px solid ${eventMeta.border}`, borderRadius: 10, padding: '7px 8px' }}>
                           <span style={{ width: 8, height: 8, marginTop: 4, borderRadius: '50%', background: eventMeta.color, flexShrink: 0 }} />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -2068,24 +2982,24 @@ function Dashboard() {
               </div>
             </div>
 
-            <div style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', borderRadius: 16, boxShadow: 'var(--shadow-soft)', padding: '11px', border: '1px solid var(--border-soft)' }}>
+            <div style={widgetCardStyle}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Upcoming Deadlines</h4>
-                {canManageCalendar ? <button type="button" onClick={handleOpenDeadlineModal} style={{ width: 28, height: 28, borderRadius: 999, border: '1px solid var(--success-border)', background: 'linear-gradient(135deg, color-mix(in srgb, var(--success-soft) 72%, var(--surface-panel) 28%) 0%, var(--success-soft) 100%)', color: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: 'var(--shadow-soft)' }} aria-label="Add upcoming deadline" title="Add upcoming deadline"><FaPlus style={{ width: 11, height: 11 }} /></button> : null}
+                {canManageCalendar ? <button type="button" onClick={handleOpenDeadlineModal} style={{ ...rightRailIconButtonStyle, borderRadius: 999, color: 'var(--text-primary)' }} aria-label="Add upcoming deadline" title="Add upcoming deadline"><FaPlus style={{ width: 11, height: 11 }} /></button> : null}
               </div>
               <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {calendarEventsLoading ? (
-                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', fontSize: 10, color: 'var(--text-muted)', fontWeight: 700 }}>Loading deadlines...</div>
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted)', fontWeight: 700 }}>Loading deadlines...</div>
                 ) : upcomingDeadlineEvents.length === 0 ? (
-                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', fontSize: 10, color: 'var(--text-muted)' }}>
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted)' }}>
                     No upcoming deadlines in the next 30 days.
-                    {canManageCalendar ? <button type="button" onClick={handleOpenDeadlineModal} style={{ marginTop: 8, height: 28, padding: '0 10px', borderRadius: 999, border: '1px solid var(--success-border)', background: 'var(--surface-panel)', color: 'var(--success)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}>Add deadline</button> : null}
+                    {canManageCalendar ? <button type="button" onClick={handleOpenDeadlineModal} style={{ marginTop: 8, height: 28, padding: '0 10px', borderRadius: 999, border: '1px solid rgba(15, 23, 42, 0.08)', background: 'var(--surface-panel)', color: 'var(--text-primary)', fontSize: 9, fontWeight: 800, cursor: 'pointer' }}>Add deadline</button> : null}
                   </div>
                 ) : (
                   visibleUpcomingDeadlineEvents.map((eventItem) => {
                     const eventMeta = getCalendarEventMeta(eventItem.category);
                     return (
-                      <div key={`deadline-${eventItem.id}`} style={{ padding: '8px 9px', borderRadius: 10, border: `1px solid ${eventMeta.border}`, background: eventMeta.background, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                      <div key={`deadline-${eventItem.id}`} style={{ padding: '8px 9px', borderRadius: 10, border: `1px solid ${eventMeta.border}`, background: 'var(--surface-muted)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: eventMeta.color, flexShrink: 0 }} /><span>{eventItem.title?.trim() || eventItem.notes?.trim() || 'Academic deadline'}</span></div>
                           <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 3 }}>{eventMeta.label}{eventItem.ethiopianDate?.month && eventItem.ethiopianDate?.day ? ` • ${ETHIOPIAN_MONTHS[eventItem.ethiopianDate.month - 1]} ${eventItem.ethiopianDate.day}` : ''}</div>
@@ -2101,12 +3015,12 @@ function Dashboard() {
           </div>
 
           {/* Quick Links */}
-          <div style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', borderRadius: 16, boxShadow: 'var(--shadow-soft)', padding: '13px', border: '1px solid var(--border-soft)' }}>
+          <div style={widgetCardStyle}>
             <h4 style={{ fontSize: 14, fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>Sponsored Links</h4>
             <ul style={{ margin: '10px 0 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 7, fontSize: 13 }}>
-              <li style={{ color: 'var(--accent-strong)', fontWeight: 600 }}>Gojo Study App</li>
-              <li style={{ color: 'var(--accent-strong)', fontWeight: 600 }}>Finance Portal</li>
-              <li style={{ color: 'var(--accent-strong)', fontWeight: 600 }}>HR Management</li>
+              <li style={{ ...softPanelStyle, color: 'var(--text-primary)', fontWeight: 700, padding: '8px 10px' }}>Gojo Study App</li>
+              <li style={{ ...softPanelStyle, color: 'var(--text-primary)', fontWeight: 700, padding: '8px 10px' }}>Finance Portal</li>
+              <li style={{ ...softPanelStyle, color: 'var(--text-primary)', fontWeight: 700, padding: '8px 10px' }}>HR Management</li>
             </ul>
           </div>
         </div>
@@ -2119,8 +3033,8 @@ function Dashboard() {
             style={{
               position: "fixed",
               inset: 0,
-              background: "color-mix(in srgb, var(--surface-overlay) 84%, transparent)",
-              backdropFilter: "blur(6px)",
+              background: "rgba(15, 23, 42, 0.18)",
+              backdropFilter: "blur(10px)",
               zIndex: 1200,
             }}
           />
@@ -2139,22 +3053,40 @@ function Dashboard() {
             <div
               onClick={(e) => e.stopPropagation()}
               style={{
-                width: "min(500px, 100%)",
+                width: "min(640px, 100%)",
                 maxHeight: "90vh",
                 overflowY: "auto",
                 background: "var(--surface-panel)",
-                borderRadius: 18,
+                borderRadius: 28,
                 border: "1px solid var(--border-soft)",
-                boxShadow: "var(--shadow-panel)",
+                boxShadow: "0 16px 36px rgba(15, 23, 42, 0.10)",
                 pointerEvents: "auto",
+                position: "relative",
               }}
             >
-              <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px 20px 13px", borderBottom: "1px solid var(--border-soft)" }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2, letterSpacing: "-0.01em" }}>Create post</div>
+              <div
+                style={{
+                  position: "relative",
+                  padding: "22px 24px 18px",
+                  borderBottom: "1px solid var(--border-soft)",
+                  background: "var(--surface-panel)",
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingRight: 52 }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", width: "fit-content", height: 28, padding: "0 12px", borderRadius: 999, background: "var(--accent-soft)", border: "1px solid var(--border-strong)", color: "var(--accent-strong)", fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    School Announcement
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: "var(--text-primary)", lineHeight: 1.1, letterSpacing: "-0.03em" }}>
+                    Create a new post
+                  </div>
+                  <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5, maxWidth: 420 }}>
+                    Share polished announcements, reminders, and updates with the right audience.
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() => setShowCreatePostModal(false)}
-                  style={{ position: "absolute", right: 16, top: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", width: 40, height: 40, borderRadius: "50%", fontSize: 22, color: "var(--text-secondary)", cursor: "pointer", lineHeight: 1 }}
+                  style={{ position: "absolute", right: 18, top: 18, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", width: 40, height: 40, borderRadius: "50%", fontSize: 22, color: "var(--text-secondary)", cursor: "pointer", lineHeight: 1 }}
                   aria-label="Close create post modal"
                   title="Close"
                 >
@@ -2162,19 +3094,35 @@ function Dashboard() {
                 </button>
               </div>
 
-              <div style={{ padding: "16px 16px 18px", display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <img
-                    src={getSafeImageUrl(admin.profileImage, "/default-profile.png")}
-                    alt="me"
-                    style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-                  />
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>{admin.name || "Admin"}</div>
+              <div style={{ padding: "22px 24px 24px", display: "flex", flexDirection: "column", gap: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", padding: "14px 16px", borderRadius: 20, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                    <div style={{ width: 48, height: 48, borderRadius: "50%", overflow: "hidden", border: "2px solid var(--border-strong)", boxShadow: "var(--shadow-glow)", flexShrink: 0 }}>
+                      <ProfileAvatar
+                        src={admin?.profileImage}
+                        name={admin?.name || "Admin"}
+                        alt={admin?.name || "Admin"}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {admin?.name || "Admin"}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+                        Posting from the admin dashboard
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                      Audience
+                    </div>
                     <select
                       value={targetRole}
                       onChange={(e) => setTargetRole(e.target.value)}
-                      style={{ height: 28, borderRadius: 6, border: "1px solid var(--input-border)", background: "var(--input-bg)", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", padding: "0 28px 0 10px", width: "fit-content", minWidth: 118 }}
+                      style={{ height: 40, borderRadius: 12, border: "1px solid var(--input-border)", background: "var(--input-bg)", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", padding: "0 36px 0 12px", minWidth: 170, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.45)" }}
                       title="Post target role"
                     >
                       {targetOptions.map((role) => {
@@ -2189,55 +3137,107 @@ function Dashboard() {
                   </div>
                 </div>
 
-                <textarea
-                  placeholder="What's on your mind?"
-                  value={postText}
-                  onChange={(e) => setPostText(e.target.value)}
-                  style={{
-                    minHeight: 210,
-                    resize: "vertical",
-                    border: "none",
-                    background: "transparent",
-                    borderRadius: 0,
-                    padding: 0,
-                    fontSize: 28,
-                    lineHeight: 1.3333,
-                    outline: "none",
-                    color: "var(--text-primary)",
-                  }}
-                />
+                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 24, background: "var(--surface-panel)", overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px 12px", borderBottom: "1px solid color-mix(in srgb, var(--border-soft) 80%, transparent 20%)" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Post message</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+                      {postText.trim().length} characters
+                    </div>
+                  </div>
 
-                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 12, padding: "8px 12px", boxShadow: "var(--shadow-soft)", background: "var(--surface-overlay)" }}>
-                  <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ marginRight: "auto", fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Add to your post</div>
-                    <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "50%", background: "transparent", cursor: "pointer", color: "var(--success)", fontSize: 24 }}>
-                      <AiFillPicture className="fb-icon" />
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        onChange={(e) => {
-                          const file = e.target.files && e.target.files[0];
-                          setPostMedia(file || null);
-                        }}
-                        accept="image/*,video/*"
-                      />
-                    </label>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "50%", color: "var(--danger)", fontSize: 22, background: "transparent", opacity: 0.9 }}>
-                      <AiFillVideoCamera />
+                  <textarea
+                    placeholder="Write a clear announcement for your school community..."
+                    value={postText}
+                    onChange={(e) => setPostText(e.target.value)}
+                    style={{
+                      minHeight: 220,
+                      resize: "vertical",
+                      border: "none",
+                      background: "transparent",
+                      borderRadius: 0,
+                      padding: "18px 18px 16px",
+                      fontSize: 19,
+                      lineHeight: 1.6,
+                      outline: "none",
+                      color: "var(--text-primary)",
+                      width: "100%",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 20, padding: "14px 16px", background: "var(--surface-panel)" }}>
+                  <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ marginRight: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>Media and attachments</div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Add a photo or video to make the update stand out.</div>
+                    </div>
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handlePostMediaSelection}
+                      accept="image/*,video/*"
+                      style={{ display: "none" }}
+                    />
+
+                    <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "16px 18px", background: "linear-gradient(180deg, var(--surface-muted) 0%, #ffffff 100%)", borderRadius: 18, border: "1px dashed var(--border-strong)", boxSizing: "border-box", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 260px" }}>
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: "var(--accent-soft)", border: "1px solid var(--border-strong)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
+                          {postMedia && String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera /> : <AiFillPicture />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>
+                            {postMedia ? "Media ready to attach" : "Choose a photo or video"}
+                          </div>
+                          <div style={{ marginTop: 3, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.45 }}>
+                            {isOptimizingMedia
+                              ? "Optimizing your image before upload."
+                              : "Images are automatically compressed and converted to JPEG when that reduces size."}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 34, padding: "0 12px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontSize: 11, fontWeight: 800, letterSpacing: "0.02em" }}>
+                          <AiFillVideoCamera style={{ color: "var(--danger)", fontSize: 15 }} />
+                          Photos and videos
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleOpenPostMediaPicker}
+                          disabled={isOptimizingMedia}
+                          style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, height: 42, padding: "0 18px", borderRadius: 999, background: isOptimizingMedia ? "var(--surface-strong)" : "var(--accent)", border: "none", cursor: isOptimizingMedia ? "progress" : "pointer", color: "#fff", fontSize: 13, fontWeight: 800, opacity: isOptimizingMedia ? 0.86 : 1, minWidth: 138 }}
+                        >
+                          <AiFillPicture style={{ fontSize: 17 }} />
+                          <span>{isOptimizingMedia ? "Optimizing..." : postMedia ? "Change file" : "Choose file"}</span>
+                        </button>
+                      </div>
                     </div>
 
                     {postMedia && (
-                      <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--surface-muted)", borderRadius: 10, boxSizing: "border-box" }}>
-                        <AiFillPicture style={{ color: "var(--success)", fontSize: 18, flexShrink: 0 }} />
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {postMedia.name}
-                        </span>
+                      <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "var(--surface-muted)", borderRadius: 16, border: "1px solid var(--border-soft)", boxSizing: "border-box" }}>
+                        <div style={{ width: 42, height: 42, borderRadius: 12, background: String(postMedia.type || "").startsWith("video/") ? "var(--warning-soft)" : "var(--success-soft)", color: String(postMedia.type || "").startsWith("video/") ? "var(--danger)" : "var(--success)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          {String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera style={{ fontSize: 20 }} /> : <AiFillPicture style={{ fontSize: 20 }} />}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {postMedia.name}
+                          </div>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                            {postMediaMeta?.wasCompressed
+                              ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? " as JPEG" : ""}`
+                              : `Ready to attach to this post${postMediaMeta?.wasConvertedToJpeg ? " as JPEG" : ""}`}
+                          </div>
+                        </div>
                         <button
+                          type="button"
                           onClick={() => {
                             setPostMedia(null);
+                            setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          style={{ background: "var(--surface-strong)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", width: 26, height: 26, borderRadius: "50%", cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+                          style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", width: 30, height: 30, borderRadius: "50%", cursor: "pointer", fontSize: 18, lineHeight: 1, flexShrink: 0 }}
                           aria-label="Remove selected media"
                           title="Remove"
                         >
@@ -2248,24 +3248,58 @@ function Dashboard() {
                   </div>
                 </div>
 
-                <button
-                  className="telegram-send-icon"
-                  onClick={handleSubmitCreatePost}
-                  disabled={!canSubmitPost}
-                  style={{
-                    width: "100%",
-                    border: "none",
-                    background: canSubmitPost ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)" : "var(--surface-strong)",
-                    borderRadius: 6,
-                    height: 36,
-                    color: canSubmitPost ? "#fff" : "var(--text-muted)",
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: canSubmitPost ? "pointer" : "not-allowed",
-                  }}
-                >
-                  Post
-                </button>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", paddingTop: 2 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    Your post will appear in the school feed immediately after publishing.
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreatePostModal(false)}
+                      style={{
+                        height: 44,
+                        padding: "0 18px",
+                        borderRadius: 999,
+                        border: "1px solid var(--border-soft)",
+                        background: "var(--surface-panel)",
+                        color: "var(--text-secondary)",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+
+                    {postSubmitError ? (
+                      <div style={{ color: "var(--danger)", fontSize: 12, fontWeight: 700, marginRight: "auto" }}>
+                        {postSubmitError}
+                      </div>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      onClick={handleSubmitCreatePost}
+                      disabled={!canSubmitPost || postSubmitting}
+                      style={{
+                        minWidth: 160,
+                        height: 46,
+                        border: "none",
+                        background: canSubmitPost && !postSubmitting ? "var(--accent)" : "var(--surface-strong)",
+                        borderRadius: 999,
+                        color: canSubmitPost && !postSubmitting ? "#fff" : "var(--text-muted)",
+                        fontSize: 14,
+                        fontWeight: 800,
+                        letterSpacing: "0.01em",
+                        cursor: canSubmitPost && !postSubmitting ? "pointer" : "not-allowed",
+                        boxShadow: canSubmitPost && !postSubmitting ? "0 8px 18px rgba(0, 122, 251, 0.14)" : "none",
+                      }}
+                    >
+                      {postSubmitting ? "Publishing..." : isOptimizingMedia ? "Optimizing..." : "Publish post"}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2416,6 +3450,265 @@ function Dashboard() {
           </div>
         </div>
       ) : null}
+
+      <style>{`
+        .posts-container {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: flex-start;
+          margin-left: 0;
+        }
+        .post-box {
+          width: 100%;
+          margin-left: auto;
+          margin-right: auto;
+          margin-top: 12px;
+        }
+        .facebook-post-card {
+          width: 100%;
+          max-width: 680px;
+          margin: 0 auto;
+          position: relative;
+          isolation: isolate;
+        }
+        .facebook-post-card:hover {
+          transform: translateY(-2px);
+        }
+        .facebook-post-card__header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .facebook-post-card__header-main {
+          min-width: 0;
+          flex: 1;
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+        }
+        .facebook-post-card__avatar {
+          width: 42px;
+          height: 42px;
+          border-radius: 50%;
+          overflow: hidden;
+          flex-shrink: 0;
+          border: 1px solid rgba(15, 23, 42, 0.08);
+          box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+          background: #fff;
+        }
+        .facebook-post-card__identity {
+          min-width: 0;
+          flex: 1;
+        }
+        .facebook-post-card__identity-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .facebook-post-card__identity-row h4 {
+          margin: 0;
+          font-size: 14px;
+          line-height: 1.25;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+        .facebook-post-card__page-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 8px;
+          border-radius: 999px;
+          background: #e7f3ff;
+          color: #0866ff;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+        }
+        .facebook-post-card__meta {
+          margin-top: 4px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+          font-size: 11px;
+          font-weight: 600;
+          color: #65676b;
+        }
+        .facebook-post-card__type-chip {
+          flex-shrink: 0;
+          display: inline-flex;
+          align-items: center;
+          padding: 5px 9px;
+          border-radius: 999px;
+          background: linear-gradient(135deg, #f0f6ff 0%, #e7f3ff 100%);
+          border: 1px solid #bfdcff;
+          color: #0866ff;
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
+        .facebook-post-card__body {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .facebook-post-card__message {
+          color: var(--text-primary);
+          font-size: 14px;
+          line-height: 1.45;
+          word-break: break-word;
+          white-space: pre-wrap;
+        }
+        .facebook-post-card__read-more {
+          align-self: flex-start;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: #0866ff;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 800;
+        }
+        .facebook-post-card__media-shell {
+          background: #eff2f5;
+          border-top: 1px solid rgba(15, 23, 42, 0.08);
+          border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .facebook-post-card__media {
+          width: 100%;
+          height: auto;
+          max-height: min(68vh, 540px);
+          object-fit: contain;
+          display: block;
+          background: #eff2f5;
+        }
+        .facebook-post-card__stats {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+        }
+        .facebook-post-card__stats-left,
+        .facebook-post-card__stats-right {
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          font-weight: 600;
+          color: #65676b;
+        }
+        .facebook-post-card__stats-right {
+          justify-content: flex-end;
+          text-align: right;
+        }
+        .facebook-post-card__reaction-bubble {
+          width: 22px;
+          height: 22px;
+          border-radius: 50%;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          background: #0866ff;
+          color: #fff;
+          box-shadow: 0 6px 16px rgba(8, 102, 255, 0.22);
+        }
+        .facebook-post-card__actions {
+          display: flex;
+        }
+        .facebook-post-card__action-button {
+          width: 100%;
+          min-height: 36px;
+          border: none;
+          border-radius: 8px;
+          background: transparent;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          cursor: pointer;
+          color: #65676b;
+          font-size: 13px;
+          font-weight: 800;
+          transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+        }
+        .facebook-post-card__action-button:hover {
+          background: #f2f4f7;
+        }
+        .facebook-post-card__action-button.is-active {
+          background: #e7f3ff;
+          color: #0866ff;
+        }
+        .facebook-post-card__action-button:active {
+          transform: translateY(1px);
+        }
+        @media (max-width: 720px) {
+          .facebook-post-card__header {
+            flex-wrap: wrap;
+          }
+          .facebook-post-card__type-chip {
+            order: 3;
+          }
+          .facebook-post-card__stats {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .facebook-post-card__stats-right {
+            justify-content: flex-start;
+            text-align: left;
+          }
+        }
+        @media (max-width: 600px) {
+          .posts-container {
+            margin-left: 0 !important;
+          }
+          .post-box {
+            margin-top: 0 !important;
+          }
+        }
+        @media (max-width: 600px) {
+          .posts-full-mobile,
+          .posts-container,
+          .post-box {
+            width: 100vw !important;
+            max-width: 100vw !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+          .posts-container {
+            align-items: stretch;
+          }
+        }
+        @media (max-width: 1100px) {
+          .admin-sidebar-spacer,
+          .right-widgets-spacer,
+          .dashboard-widgets {
+            display: none !important;
+          }
+
+          .dashboard-page .google-sidebar {
+            position: static !important;
+            top: auto !important;
+            left: auto !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            height: auto !important;
+            max-height: none !important;
+            margin: 0 0 12px 0 !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

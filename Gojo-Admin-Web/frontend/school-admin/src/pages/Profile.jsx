@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar.jsx";
 import Navbar from "../components/Navbar.jsx";
+import ProfileAvatar from "../components/ProfileAvatar.jsx";
 import { getAdminProfile, getAllPosts } from "../api.js";
 import PostCard from "../components/PostCard.jsx";
 
@@ -50,7 +51,7 @@ export default function Profile(){
           <div className="card">
             <h2>{admin.name}</h2>
             <p className="small-muted">@{admin.username}</p>
-            {admin.profileImage && <img src={admin.profileImage} width={140} style={{borderRadius:10, marginTop:8}} alt="profile" />}
+            <ProfileAvatar src={admin.profileImage} name={admin.name || admin.username || "Admin"} alt="profile" style={{ width: 140, height: 140, borderRadius: 10, marginTop: 8, objectFit: "cover" }} />
           </div>
 
           <div style={{marginTop:12}}>

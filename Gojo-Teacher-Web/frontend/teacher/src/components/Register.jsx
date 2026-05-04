@@ -337,7 +337,7 @@ export default function Register() {
     } catch (err) {
       console.error("Registration error:", err);
       if (err instanceof TypeError && /Failed to fetch/i.test(err.message || "")) {
-        setMessage("Backend is not running on 127.0.0.1:5000. Start app.py and try again.");
+        setMessage("Teacher backend is not reachable on 127.0.0.1:5001. Start app.py and try again.");
       } else {
         setMessage("Server error. Check console.");
       }

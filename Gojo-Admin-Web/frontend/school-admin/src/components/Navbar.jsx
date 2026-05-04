@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { FaCog } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 export default function Navbar({
   title = "Dashboard",
@@ -20,7 +21,7 @@ export default function Navbar({
       className="top-navbar register-shell__topbar"
       style={{
         borderBottom: "1px solid var(--border-soft)",
-        background: "var(--surface-overlay)",
+        background: "#ffffff",
         backdropFilter: "blur(10px)",
         ...style,
       }}
@@ -37,7 +38,7 @@ export default function Navbar({
             <FaCog />
           </Link>
         ) : null}
-        {!hideProfile ? <img src={profileImage} alt="admin" className="profile-img" /> : null}
+        {!hideProfile ? <ProfileAvatar src={profileImage} name={admin?.name || admin?.username || "Admin"} alt="admin" className="profile-img" /> : null}
       </div>
     </nav>
   );

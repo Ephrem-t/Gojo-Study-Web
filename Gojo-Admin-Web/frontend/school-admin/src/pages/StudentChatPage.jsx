@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 function StudentChatPage() {
   const location = useLocation();
@@ -117,7 +118,7 @@ function StudentChatPage() {
               borderBottom: "1px solid var(--border-soft)",
             }}
           >
-            <img src={student.profileImage} alt={student.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+            <ProfileAvatar src={student.profileImage} name={student.name} alt={student.name} loading="lazy" style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
             <span>{student.name}</span>
           </div>
         ))}
@@ -128,7 +129,7 @@ function StudentChatPage() {
         {selectedStudent ? (
           <>
             <div style={{ padding: "15px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: "15px", background: "var(--surface-panel)" }}>
-              <img src={selectedStudent.profileImage} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
+              <ProfileAvatar src={selectedStudent.profileImage} name={selectedStudent.name} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
               <strong>{selectedStudent.name}</strong>
             </div>
 

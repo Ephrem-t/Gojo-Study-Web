@@ -439,6 +439,12 @@ html[data-theme="dark"] {
 	justify-content: flex-start;
 }
 
+.sidebar-menu::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
+}
+
 .sidebar-btn {
 	display: flex;
 	align-items: center;
