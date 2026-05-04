@@ -325,12 +325,44 @@ html[data-theme="dark"] {
 }
 
 /* ---------------- DASHBOARD LAYOUT ---------------- */
+.dashboard-page {
+	min-height: 100vh;
+	height: 100vh;
+	overflow: hidden;
+	background: var(--page-bg);
+}
+
 .google-dashboard {
 	display: flex;
 	min-height: 100vh;
+	height: calc(100vh - var(--topbar-height));
 	background: var(--page-bg);
 	gap: 20px;
 	margin-top: var(--topbar-height);
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+.google-main {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.google-main::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
+}
+
+.dashboard-widgets {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.dashboard-widgets::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
 }
 
 /* ---------------- LEFT SIDEBAR ---------------- */
@@ -349,6 +381,14 @@ html[data-theme="dark"] {
 	left: 20px;
 	z-index: 40;
 	border-radius: 10px;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.google-sidebar::-webkit-scrollbar {
+	width: 0;
+	height: 0;
+	display: none;
 }
 
 /* Sidebar profile */
@@ -504,4 +544,245 @@ html[data-theme="dark"] {
 	.main-inner {
 		width: 75%;
 	}
+}
+
+html,
+body,
+#root {
+	min-height: 100%;
+	background: var(--page-bg);
+	color: var(--text-primary);
+}
+
+body {
+	transition: background 180ms ease, color 180ms ease;
+}
+
+input,
+select,
+textarea {
+	background: var(--input-bg);
+	color: var(--text-primary);
+	border-color: var(--input-border);
+}
+
+input::placeholder,
+textarea::placeholder {
+	color: var(--text-muted);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+	border-color: var(--input-focus);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--input-focus) 18%, transparent);
+	outline: none;
+}
+
+button,
+a {
+	color: inherit;
+}
+
+html[data-theme="dark"] .top-navbar {
+	background-image: linear-gradient(90deg, #08111f 0%, #13233e 52%, #1f3b67 100%);
+	box-shadow: 0 10px 28px rgba(2, 6, 23, 0.34);
+}
+
+html[data-theme="dark"] .muted,
+html[data-theme="dark"] .small-muted {
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] .login-page {
+	background:
+		radial-gradient(circle at top left, rgba(59, 130, 246, 0.16), transparent 28%),
+		radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.12), transparent 26%),
+		linear-gradient(180deg, #07111f 0%, #0d1728 100%);
+}
+
+html[data-theme="dark"] .login-card {
+	background: linear-gradient(180deg, #0f172a 0%, #111c31 100%);
+	border-color: var(--border-soft);
+	box-shadow: 0 30px 70px rgba(2, 6, 23, 0.46);
+}
+
+html[data-theme="dark"] .brand,
+html[data-theme="dark"] .login-form h2,
+html[data-theme="dark"] .input-group label {
+	color: var(--text-primary);
+}
+
+html[data-theme="dark"] .brand-sub,
+html[data-theme="dark"] .login-form p.leadin,
+html[data-theme="dark"] .helper,
+html[data-theme="dark"] .remember-row {
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] .helper-note {
+	color: var(--success);
+}
+
+html[data-theme="dark"] .text-input,
+html[data-theme="dark"] .btn-ghost {
+	background: var(--input-bg);
+	color: var(--text-primary);
+	border-color: var(--input-border);
+}
+
+html[data-theme="dark"] .error {
+	background: var(--danger-soft);
+	border-color: var(--danger-border);
+	color: var(--danger);
+}
+
+html[data-theme="dark"] :is(.register-hero, .employee-head, .emp-hero, .hr-chat-hero) {
+	background: linear-gradient(135deg, #12203a 0%, #172740 52%, #102033 100%);
+	border-color: var(--border-strong);
+	box-shadow: 0 20px 46px rgba(2, 6, 23, 0.36);
+}
+
+html[data-theme="dark"] :is(.register-title, .employee-head h1, .emp-title, .hr-chat-hero h1) {
+	color: var(--text-primary);
+}
+
+html[data-theme="dark"] :is(.register-subtitle, .employee-sub, .emp-subtitle, .hr-chat-hero p) {
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] :is(.register-left, .form-card, .employee-nav, .ed-card, .emp-card, .hr-chat-panel, .hr-chat-thread) {
+	background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%);
+	border-color: var(--border-soft);
+	box-shadow: var(--shadow-panel);
+}
+
+html[data-theme="dark"] :is(.section-title, .employee-nav-title, .file-label, .progress-meta, .ed-field span, .hr-chat-panel-copy, .hr-chat-contact-time, .hr-chat-contact-preview) {
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] :is(.form-card h3, .ed-card h3, .hr-chat-panel-title, .hr-chat-thread-name) {
+	color: var(--text-primary);
+}
+
+html[data-theme="dark"] :is(.role-pill, .section-btn, .employee-nav-link, .hr-chat-tab, .hr-chat-page-back, .hr-chat-contact) {
+	background: var(--surface-muted);
+	border-color: var(--border-soft);
+	color: var(--text-secondary);
+}
+
+html[data-theme="dark"] :is(.role-pill:hover, .section-btn:hover, .employee-nav-link:hover, .hr-chat-tab:hover, .hr-chat-contact:hover) {
+	background: var(--surface-accent);
+	border-color: var(--border-strong);
+}
+
+html[data-theme="dark"] :is(.role-pill.active, .section-btn.active, .hr-chat-tab.active, .hr-chat-contact.active) {
+	background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+	border-color: var(--accent-strong);
+	color: #ffffff;
+	box-shadow: var(--shadow-glow);
+}
+
+html[data-theme="dark"] .role-reset {
+	color: var(--text-secondary);
+}
+
+html[data-theme="dark"] :is(.section-index, .employee-nav-index, .chip, .meta-chip) {
+	background: var(--surface-accent);
+	border-color: var(--border-strong);
+	color: var(--accent);
+}
+
+html[data-theme="dark"] .progress-track {
+	background: #1a2942;
+}
+
+html[data-theme="dark"] :is(.form-input, .ed-input, .emp-search, .hr-chat-search input) {
+	background: var(--input-bg);
+	border-color: var(--input-border);
+	color: var(--text-primary);
+	box-shadow: none;
+}
+
+html[data-theme="dark"] .ed-input[readonly] {
+	background: #101a2d;
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] :is(.emp-filter-btn, .emp-table tbody tr, .emp-avatar-fallback) {
+	background: var(--surface-panel);
+	border-color: var(--border-soft);
+	color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .emp-filter-btn.active {
+	background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+	border-color: var(--accent-strong);
+	color: #ffffff;
+}
+
+html[data-theme="dark"] .emp-table thead th {
+	background: linear-gradient(180deg, #101a2d 0%, #16233a 100%);
+	color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .emp-table tbody td,
+html[data-theme="dark"] .emp-name,
+html[data-theme="dark"] .hr-chat-contact-name,
+html[data-theme="dark"] .hr-chat-contact-main,
+html[data-theme="dark"] .main-header {
+	color: var(--text-primary);
+}
+
+html[data-theme="dark"] .emp-role,
+html[data-theme="dark"] .emp-empty,
+html[data-theme="dark"] .hr-chat-contact-role {
+	color: var(--text-muted);
+}
+
+html[data-theme="dark"] .emp-status {
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+
+html[data-theme="dark"] .emp-action-btn.view {
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+
+html[data-theme="dark"] .emp-action-btn.terminate {
+	background: var(--warning-soft);
+	color: var(--warning);
+}
+
+html[data-theme="dark"] .hr-chat-thread-head {
+	background: linear-gradient(180deg, rgba(15, 23, 42, 0.96) 0%, rgba(17, 28, 49, 0.96) 100%);
+	border-bottom-color: var(--border-soft);
+}
+
+html[data-theme="dark"] .hr-chat-avatar,
+html[data-theme="dark"] .hr-chat-thread-avatar {
+	background: var(--surface-accent);
+	border-color: var(--border-strong);
+}
+
+html[data-theme="dark"] .ed-actions {
+	background: rgba(15, 23, 42, 0.92);
+	border-color: var(--border-soft);
+	box-shadow: 0 12px 28px rgba(2, 6, 23, 0.3);
+}
+
+html[data-theme="dark"] .ed-btn.secondary {
+	background: var(--surface-accent);
+	color: var(--text-primary);
+}
+
+html[data-theme="dark"] .ed-error {
+	background: var(--danger-soft);
+	border-color: var(--danger-border);
+	color: var(--danger);
+}
+
+html[data-theme="dark"] .ed-loading {
+	color: var(--text-muted);
 }

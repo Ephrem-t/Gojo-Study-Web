@@ -956,7 +956,13 @@ export default function Register() {
     }
   }
 
-  const roleOptions = ['Teacher', 'Management', 'Finance', 'HR']
+  const roleOptions = [
+    { label: 'Teacher', value: 'teacher' },
+    { label: 'School Admins', value: 'school_admins' },
+    { label: 'Finance', value: 'finance' },
+    { label: 'HR', value: 'hr' },
+    { label: 'Other', value: 'other' }
+  ]
   const activeSectionLabel = sections.find(section => section.key === activeSection)?.label || 'Section'
   const selectedRoleLabel = roleOptions.find((role) => role.toLowerCase() === selectedRole) || 'Employee'
   const headerActionStyle = {
@@ -1887,15 +1893,14 @@ export default function Register() {
               {referenceError ? <div className="register-alert">{referenceError}</div> : null}
               <div className="role-pill-wrap">
                 {roleOptions.map((role) => {
-                  const roleValue = role.toLowerCase()
-                  const isSelected = selectedRole === roleValue
+                  const isSelected = selectedRole === role.value
                   return (
                     <button
-                      key={role}
-                      onClick={() => setSelectedRole(roleValue)}
+                      key={role.value}
+                      onClick={() => setSelectedRole(role.value)}
                       className={`role-pill ${isSelected ? 'active' : ''}`}
                     >
-                      {role}
+                      {role.label}
                     </button>
                   )
                 })}
@@ -2046,7 +2051,7 @@ export default function Register() {
                 <div className="form-card">
                   <div className="form-card-header">
                     <h3>{activeSectionLabel} Details</h3>
-                    <span className="chip">{selectedRole.toUpperCase()}</span>
+                    <span className="chip">{activeRoleLabel}</span>
                   </div>
 
                   <div className="progress-wrap">

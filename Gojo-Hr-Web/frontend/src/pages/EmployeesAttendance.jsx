@@ -315,60 +315,10 @@ export default function EmployeesAttendance() {
     return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
   };
 
-  const attendanceStats = useMemo(() => {
-    const summary = { total: normalizedEmployees.length, present: 0, late: 0, absent: 0, unset: 0 };
-
-    normalizedEmployees.forEach((employee) => {
-      const record = attendance?.[employee.id] || {};
-      const rawStatus = (record.status || '').toString().toLowerCase();
-      const finalStatus = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
-      if (finalStatus === 'present') summary.present += 1;
-      else if (finalStatus === 'late') summary.late += 1;
-      else if (finalStatus === 'absent') summary.absent += 1;
-      else summary.unset += 1;
-    });
-
-    return summary;
-  }, [attendance, normalizedEmployees]);
-
-  const headerActionStyle = {
-    position: 'relative',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    height: 38,
-    padding: '0 14px',
-    borderRadius: 999,
-    border: '1px solid var(--border-soft, #dbe2f2)',
-    background: 'var(--surface-panel, #fff)',
-    color: 'var(--text-secondary, #334155)',
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: 'pointer',
-    textDecoration: 'none',
-  };
-
-  const presentColors = { background: '#f0fdf4', border: '#bbf7d0', color: '#166534' };
-  const lateColors = { background: '#fffbeb', border: '#fde68a', color: '#92400e' };
-  const absentColors = { background: '#fef2f2', border: '#fecaca', color: '#991b1b' };
-
-  const handleSave = useCallback(async ({ silent = false } = {}) => {
-    const nextSignature = createAttendanceSignature(selectedDate, attendance);
-    if (silent && nextSignature === lastSavedSignatureRef.current) {
-      userEditedAttendanceRef.current = false;
-      setAutoSaveState('saved');
-      return true;
-    }
-
-    if (silent) {
-      setIsAutoSaving(true);
-      setAutoSaveState('saving');
-      setErrorMessage('');
-    } else {
-      setIsSaving(true);
-      setErrorMessage('');
-      setSuccessMessage('');
-    }
+  const handleSave = async () => {
+    setIsSaving(true);
+    setErrorMessage('');
+    setSuccessMessage('');
 
     try {
       const payload = {
@@ -398,7 +348,7 @@ export default function EmployeesAttendance() {
         setIsSaving(false);
       }
     }
-  }, [attendance, markedBy, selectedDate]);
+  }, [attendance, markedBy, selectedDate];
 
   useEffect(() => {
     if (!autoSaveEnabled || !selectedDate || isLoading || isSaving || isAutoSaving) {

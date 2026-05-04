@@ -42,7 +42,7 @@ def upload_profile_image_to_storage(file_storage, user_id):
 
     base_name = None
     # prefer role id fields or username/employeeId
-    for key in ('hrId', 'teacherId', 'managementId', 'financeId', 'username', 'employeeId'):
+    for key in ('hrId', 'teacherId', 'schoolAdminId', 'managementId', 'financeId', 'username', 'employeeId'):
         v = user_data.get(key) if isinstance(user_data, dict) else None
         if v:
             base_name = str(v)
@@ -347,8 +347,16 @@ def employees_ref():
     return school_root().child('Employees')
 
 
+def school_admins_ref():
+    return school_root().child(SCHOOL_ADMINS_NODE)
+
+
+def legacy_managements_ref():
+    return school_root().child(LEGACY_MANAGEMENT_NODE)
+
+
 def managements_ref():
-    return school_root().child('Management')
+    return school_admins_ref()
 
 
 def finances_ref():
@@ -396,41 +404,38 @@ def _remove_role_nodes_for_employee(emp_id, employee_data=None, user_data=None):
     user_data = user_data or {}
 
     role_specs = [
-        ('teacherId', teachers_ref),
-        ('managementId', managements_ref),
-        ('financeId', finances_ref),
-        ('hrId', hrs_ref),
+        (('teacherId',), (teachers_ref,)),
+        (SCHOOL_ADMIN_ID_KEYS, (school_admins_ref, legacy_managements_ref)),
+        (('financeId',), (finances_ref,)),
+        (('hrId',), (hrs_ref,)),
     ]
 
     removed_nodes = []
 
-    for role_key, ref_factory in role_specs:
-        role_ref = ref_factory()
-        role_nodes = role_ref.get() or {}
-        if not isinstance(role_nodes, dict):
-            continue
+    for role_keys, ref_factories in role_specs:
+        target_role_code = _get_first_nonempty(employee_data, *role_keys) or _get_first_nonempty(user_data, *role_keys)
 
-        target_role_code = (
-            employee_data.get(role_key)
-            or (employee_data.get('profileData') or {}).get(role_key)
-            or user_data.get(role_key)
-        )
-
-        for node_key, node_value in role_nodes.items():
-            node_payload = node_value or {}
-            if not isinstance(node_payload, dict):
+        for ref_factory in ref_factories:
+            role_ref = ref_factory()
+            role_nodes = role_ref.get() or {}
+            if not isinstance(role_nodes, dict):
                 continue
 
-            node_employee_id = str(node_payload.get('employeeId') or '')
-            node_role_code = str(node_payload.get(role_key) or '')
-            should_remove = node_employee_id == str(emp_id)
+            for node_key, node_value in role_nodes.items():
+                node_payload = node_value or {}
+                if not isinstance(node_payload, dict):
+                    continue
 
-            if not should_remove and target_role_code:
-                should_remove = node_role_code == str(target_role_code)
+                node_employee_id = str(node_payload.get('employeeId') or '')
+                node_role_code = str(_get_first_nonempty(node_payload, *role_keys) or node_key or '')
+                should_remove = node_employee_id == str(emp_id)
 
-            if should_remove:
-                role_ref.child(node_key).delete()
-                removed_nodes.append({'role': role_key, 'nodeKey': node_key})
+                if not should_remove and target_role_code:
+                    should_remove = node_role_code == str(target_role_code) or str(node_key) == str(target_role_code)
+
+                if should_remove:
+                    role_ref.child(node_key).delete()
+                    removed_nodes.append({'role': role_keys[0], 'nodeKey': node_key})
 
     return removed_nodes
 
@@ -666,11 +671,15 @@ def generate_teacher_code():
     return f"{short}T_{teacher_seq:04d}_{year_suffix:02d}"
 
 
-def generate_management_code():
+def generate_school_admin_code():
     year_suffix = datetime.now().year % 100
     mgmt_seq = _next_counter_value('management', managements_ref)
     short = get_school_shortname()
     return f"{short}A_{mgmt_seq:04d}_{year_suffix:02d}"
+
+
+def generate_management_code():
+    return generate_school_admin_code()
 
 
 def generate_finance_code():
@@ -1577,26 +1586,27 @@ def register_teacher():
     return jsonify({'userId': user_id, 'teacherId': teacher_code, 'employeeId': emp_key}), 201
 
 
+@app.route('/register-school_admins', methods=['POST'])
 @app.route('/register-management', methods=['POST'])
-def register_management():
+def register_school_admin():
     payload = request.get_json() or {}
 
     # generate formatted codes
     emp_code = generate_employee_code()
-    management_code = generate_management_code()
+    school_admin_code = generate_school_admin_code()
 
-    # Create user (username will be updated to management_code)
+    # Create user (username will be updated to school_admin_code)
     user_payload = {
-        'username': management_code,  # username is always the role id
+        'username': school_admin_code,  # username is always the role id
         'name': payload.get('name'),
         'password': payload.get('password'),
-        'role': 'management',
+        'role': SCHOOL_ADMIN_ROLE,
         'isActive': payload.get('isActive', True),
         'profileImage': payload.get('profileImage') or (payload.get('personal') or {}).get('profileImageName') or '',
         'email': payload.get('email') or (payload.get('contact') or {}).get('email'),
         'phone': (payload.get('contact') or {}).get('phone') or (payload.get('contact') or {}).get('phone1') or (payload.get('contact') or {}).get('phone2'),
         'gender': (payload.get('personal') or {}).get('gender') or payload.get('gender'),
-        'managementId': management_code  # ensure role id is present
+        'schoolAdminId': school_admin_code,
     }
     user_node = users_ref().push(user_payload)
     user_id = user_node.key
@@ -1614,25 +1624,26 @@ def register_management():
     employees_ref().child(emp_key).set(employee_payload)
     sync_employee_summary(emp_key, employee_payload, user_payload)
 
-    # create management record now that employee exists; use role id as key for management
-    management_payload = {
+    # create school admin record now that employee exists; use role id as key for School_Admins
+    school_admin_payload = {
         'userId': user_id,
         'employeeId': emp_key,  # employeeId is EMP_xxx
         'status': payload.get('status', 'active'),
         'profileImage': payload.get('profileImage', ''),
+        'schoolAdminId': school_admin_code,
     }
-    managements_ref().child(management_code).set(management_payload)
+    school_admins_ref().child(school_admin_code).set(school_admin_payload)
 
-    # update user to use management code as username and record employeeId (use code-based key)
+    # update user to use school admin code as username and record employeeId (use code-based key)
     users_ref().child(user_id).update({
-        'managementId': management_code,
+        'schoolAdminId': school_admin_code,
         'employeeId': emp_key,
-        'username': management_code,
+        'username': school_admin_code,
         # store the school's short name instead of the internal school code
         'schoolCode': get_school_shortname()
     })
 
-    return jsonify({'userId': user_id, 'managementId': management_code, 'employeeId': emp_key}), 201
+    return jsonify({'userId': user_id, 'schoolAdminId': school_admin_code, 'employeeId': emp_key}), 201
 
 
 
@@ -1644,6 +1655,100 @@ def _file_to_dataurl(fstorage):
     import base64
     b64 = base64.b64encode(data).decode('utf-8')
     return f"data:{fstorage.mimetype};base64,{b64}"
+
+
+def _normalize_post_target_role(value):
+    allowed_roles = {'all', 'teacher', SCHOOL_ADMIN_ROLE, 'finance', 'hr'}
+    normalized = _normalize_role(value or 'all')
+    return normalized if normalized in allowed_roles else 'all'
+
+
+def _lookup_user_for_post(user_id=None, admin_id=None):
+    users_map = users_ref().get() or {}
+    if not isinstance(users_map, dict):
+        return None, {}
+
+    candidate_ids = [str(value) for value in (user_id, admin_id) if value]
+
+    for candidate in candidate_ids:
+        payload = users_map.get(candidate)
+        if isinstance(payload, dict):
+            return candidate, payload
+
+    for uid, payload in users_map.items():
+        if not isinstance(payload, dict):
+            continue
+
+        linked_codes = {
+            str(payload.get('hrId') or ''),
+            str(payload.get('schoolAdminId') or ''),
+            str(payload.get('managementId') or ''),
+            str(payload.get('employeeId') or ''),
+            str(payload.get('username') or ''),
+        }
+        linked_codes.discard('')
+
+        if any(candidate in linked_codes for candidate in candidate_ids):
+            return str(uid), payload
+
+    return None, {}
+
+
+def _resolve_post_author(user_id=None, admin_id=None, fallback_name='', fallback_profile=''):
+    resolved_user_id, user_payload = _lookup_user_for_post(user_id=user_id, admin_id=admin_id)
+    if not isinstance(user_payload, dict):
+        user_payload = {}
+
+    resolved_admin_id = (
+        admin_id
+        or user_payload.get('hrId')
+        or user_payload.get('employeeId')
+        or user_payload.get('username')
+        or resolved_user_id
+        or ''
+    )
+
+    resolved_name = user_payload.get('name') or fallback_name or 'HR Office'
+    resolved_profile = user_payload.get('profileImage') or fallback_profile or ''
+
+    return {
+        'userId': str(resolved_user_id or user_id or ''),
+        'adminId': str(resolved_admin_id or ''),
+        'hrId': str(resolved_admin_id or ''),
+        'adminName': resolved_name,
+        'adminProfile': resolved_profile,
+    }
+
+
+def _normalize_post_record(post_id, payload):
+    item = dict(payload or {})
+    normalized_post_id = str(item.get('postId') or item.get('id') or post_id or '')
+    author_meta = _resolve_post_author(
+        user_id=item.get('userId'),
+        admin_id=item.get('adminId') or item.get('hrId'),
+        fallback_name=item.get('adminName') or item.get('name') or '',
+        fallback_profile=item.get('adminProfile') or item.get('profileImage') or '',
+    )
+
+    likes = item.get('likes') if isinstance(item.get('likes'), dict) else {}
+    like_count_raw = item.get('likeCount')
+    try:
+        like_count = int(like_count_raw)
+    except Exception:
+        like_count = len(likes)
+
+    return {
+        **item,
+        **author_meta,
+        'postId': normalized_post_id,
+        'id': normalized_post_id,
+        'targetRole': _normalize_post_target_role(item.get('targetRole')),
+        'likes': likes,
+        'likeCount': max(like_count, len(likes)),
+        'message': item.get('message') or '',
+        'postUrl': item.get('postUrl') or '',
+        'time': item.get('time') or item.get('createdAt') or datetime.utcnow().isoformat() + 'Z',
+    }
 
 
 @app.route('/api/create_post', methods=['POST'])
@@ -1695,7 +1800,7 @@ def create_post():
             'postUrl': post_url,
             'mediaType': media_type,
             'message': message,
-            'targetRole': target_role or 'all',
+            'targetRole': target_role,
             'likeCount': 0,
             'likes': {},
             'seenBy': {owner_key: True} if owner_key else {},
@@ -2069,9 +2174,7 @@ def get_posts():
         posts = []
         if isinstance(raw, dict):
             for pid, val in raw.items():
-                item = val or {}
-                item['id'] = item.get('id') or pid
-                posts.append(item)
+                posts.append(_normalize_post_record(pid, val))
 
         try:
             posts.sort(key=lambda p: p.get('time') or '', reverse=True)
@@ -2189,6 +2292,7 @@ def delete_post(post_id):
 @app.route('/register/<role>', methods=['POST'])
 def register_role(role):
     import time
+    role = _normalize_role(role)
     form = request.form.to_dict()
     files = request.files
 
@@ -2208,19 +2312,19 @@ def register_role(role):
     timestamp = str(int(time.time()))
     emp_code = generate_employee_code()
     teacher_code = generate_teacher_code() if role == 'teacher' else None
-    management_code = generate_management_code() if role == 'management' else None
+    school_admin_code = generate_school_admin_code() if role == SCHOOL_ADMIN_ROLE else None
     finance_code = generate_finance_code() if role == 'finance' else None
     hr_code = generate_hr_code() if role == 'hr' else None
     role_code = (
         teacher_code if role == 'teacher' else
-        management_code if role == 'management' else
+        school_admin_code if role == SCHOOL_ADMIN_ROLE else
         finance_code if role == 'finance' else
         hr_code if role == 'hr' else
         emp_code
     )
     role_folder = (
         'Teacher' if role == 'teacher' else
-        'Management' if role == 'management' else
+        SCHOOL_ADMINS_NODE if role == SCHOOL_ADMIN_ROLE else
         'Finance' if role == 'finance' else
         'HR' if role == 'hr' else
         'Other'
@@ -2275,8 +2379,8 @@ def register_role(role):
     # Add the correct role id field
     if role == 'teacher':
         user_payload['teacherId'] = role_code
-    elif role == 'management':
-        user_payload['managementId'] = role_code
+    elif role == SCHOOL_ADMIN_ROLE:
+        user_payload['schoolAdminId'] = role_code
     elif role == 'finance':
         user_payload['financeId'] = role_code
     elif role == 'hr':
@@ -2311,8 +2415,11 @@ def register_role(role):
         teachers_ref().child(teacher_code).set(role_payload)
     elif role == 'finance':
         finances_ref().child(finance_code).set(role_payload)
-    elif role == 'management':
-        managements_ref().child(management_code).set(role_payload)
+    elif role == SCHOOL_ADMIN_ROLE:
+        school_admins_ref().child(school_admin_code).set({
+            **role_payload,
+            'schoolAdminId': school_admin_code,
+        })
     elif role == 'hr':
         hrs_ref().child(hr_code).set(role_payload)
     else:
@@ -2352,6 +2459,8 @@ def get_employee(emp_id):
 
 @app.route('/employees/<emp_id>', methods=['PUT'])
 def update_employee(emp_id):
+    employee_ref = ref().child(emp_id)
+    existing = employee_ref.get() or {}
     payload = request.get_json() or {}
     payload = normalize_clean_employee_document(payload, emp_id, payload.get('userId'))
 

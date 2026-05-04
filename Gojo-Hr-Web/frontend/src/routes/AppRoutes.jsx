@@ -108,8 +108,7 @@ export default function AppRoutes() {
     >
       {!isLoginRoute ? <PersistentSidebarShell /> : null}
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/register" element={<Register />} />
+        <Route path="/" element={<RootRedirect />} />
         <Route path="/login" element={<Login />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />

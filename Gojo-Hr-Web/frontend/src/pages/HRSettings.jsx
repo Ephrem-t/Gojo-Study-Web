@@ -222,62 +222,21 @@ export default function HRSettings() {
   const [profileImageMeta, setProfileImageMeta] = useState(null)
 
   useEffect(() => {
-    setDisplayName(admin?.displayName || admin?.name || '')
-    setUsername(admin?.username || admin?.userName || admin?.hrId || '')
-    setProfileImage(admin?.profileImage || admin?.photoURL || '')
-    setPreview(admin?.profileImage || admin?.photoURL || '')
-  }, [admin])
+    setDisplayName(admin?.displayName || admin?.name || '');
+    setUsername(admin?.username || admin?.userName || admin?.hrId || '');
+    setProfileImage(admin?.profileImage || admin?.photoURL || '');
+    setPreview(admin?.profileImage || admin?.photoURL || '');
+  }, [admin]);
 
-  const passwordChecks = useMemo(() => {
-    const value = String(password || '')
-    return [
-      { label: 'At least 8 characters', ok: value.length >= 8 },
-      { label: 'Contains uppercase letter', ok: /[A-Z]/.test(value) },
-      { label: 'Contains lowercase letter', ok: /[a-z]/.test(value) },
-      { label: 'Contains a number', ok: /\d/.test(value) },
-    ]
-  }, [password])
-
-  const resolvedPreviewImage = useMemo(() => sanitizeProfileImage(preview), [preview])
-
-  function resetFormToStoredAdmin() {
-    setPreview(admin?.profileImage || admin?.photoURL || '')
-    setProfileImage(admin?.profileImage || admin?.photoURL || '')
-    setCurrentPassword('')
-    setPassword('')
-    setConfirmPassword('')
-    setProfileImageMeta(null)
-    setFieldErrors({})
-    setMessage('')
-  }
-
-  async function handleFileChange(event) {
-    const file = event.target.files && event.target.files[0]
-    if (!file) return
-
-    setIsOptimizingImage(true)
-    setMessage('')
-
-    try {
-      const optimizedResult = await compressImageToJpeg(file)
-      const optimizedFile = optimizedResult.file
-      const reader = new FileReader()
-
-      reader.onload = () => {
-        setPreview(String(reader.result || ''))
-      }
-      reader.readAsDataURL(optimizedFile)
-
-      setProfileImage(optimizedFile)
-      setProfileImageMeta(optimizedResult)
-    } catch (error) {
-      console.error('HRSettings image optimization error:', error)
-      setMessageType('error')
-      setMessage(error?.message || 'Unable to process the selected profile image.')
-    } finally {
-      setIsOptimizingImage(false)
-      event.target.value = ''
-    }
+  function handleFileChange(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPreview(reader.result);
+    };
+    reader.readAsDataURL(f);
+    setProfileImage(f);
   }
 
   async function handleSave() {

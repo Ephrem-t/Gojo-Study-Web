@@ -491,7 +491,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
       </defs>
 
       {/* background panel */}
-      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="#fff" stroke="#eef3ff" />
+      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
 
       {/* y grid */}
       {Array.from({ length: 4 }).map((_, i) => {
@@ -499,8 +499,8 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
         const y = yFor(val);
         return (
           <g key={`tick-${i}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#f0f6ff" />
-            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="#64748b" textAnchor="end" fontWeight="700">{val}</text>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #f0f6ff)" />
+            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="var(--text-muted, #64748b)" textAnchor="end" fontWeight="700">{val}</text>
           </g>
         );
       })}
@@ -524,7 +524,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
             <rect x={femaleX} y={topPad + (chartHeight - femaleH)} width={barWidth} height={femaleH} rx={4} fill={colors.female} opacity={0.98} />
 
             {(idx % Math.max(1, Math.ceil(points.length / 6)) === 0 || idx === points.length - 1) ? (
-              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="#64748b" fontWeight="800">{pt.label}</text>
+              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="var(--text-muted, #64748b)" fontWeight="800">{pt.label}</text>
             ) : null}
           </g>
         );
@@ -532,25 +532,25 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
 
       {/* legend */}
       <g>
-        <rect x={width - rightPad - 220} y={14} width={208} height={44} rx={12} fill="#fff" stroke="#eef3ff" />
-        <g transform={`translate(${width - rightPad - 200}, 34)`}> 
+        <rect x={width - rightPad - 248} y={14} width={236} height={44} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
+        <g transform={`translate(${width - rightPad - 228}, 34)`}>
           <g>
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.total} />
-            <text x={22} y={4} fontSize="12" fill={colors.total} fontWeight="800">Total</text>
+            <text x={20} y={4} fontSize="11" fill={colors.total} fontWeight="800">Total</text>
           </g>
-          <g transform="translate(86,0)">
+          <g transform="translate(74,0)">
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.male} />
-            <text x={22} y={4} fontSize="12" fill={colors.male} fontWeight="800">Male</text>
+            <text x={20} y={4} fontSize="11" fill={colors.male} fontWeight="800">Male</text>
           </g>
-          <g transform="translate(150,0)">
+          <g transform="translate(136,0)">
             <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.female} />
-            <text x={22} y={4} fontSize="12" fill={colors.female} fontWeight="800">Female</text>
+            <text x={20} y={4} fontSize="11" fill={colors.female} fontWeight="800">Female</text>
           </g>
         </g>
       </g>
 
       {/* title */}
-      <text x={leftPad} y={28} fontSize="15" fill="#07104a" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
+      <text x={leftPad} y={28} fontSize="15" fill="var(--text-primary, #07104a)" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
 
       {/* hover tooltip */}
       {hoverIdx >= 0 ? (() => {
@@ -560,7 +560,7 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
         const tx = Math.min(width - rightPad - boxW - 8, Math.max(leftPad + 8, cx - boxW / 2));
         return (
           <g transform={`translate(${tx}, ${topPad + 8})`}>
-            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="#07104a" opacity="0.96" />
+            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="var(--surface-strong, #07104a)" opacity="0.96" />
             <text x="12" y="18" fontSize="12" fill="#fff" fontWeight="800">{p.label}</text>
             <text x="12" y="36" fontSize="12" fill="#a7f3d0">Total: {p.totalCount || 0}</text>
             <text x="12" y="54" fontSize="12" fill="#bfdbfe">Male: {p.maleCount || 0}</text>
@@ -572,55 +572,140 @@ function GrowthTrendChart({ points = [], mode = 'monthly' }) {
   );
 }
 
-function DonutChart({ values = [], colors = [], size = 120 }) {
-  const total = values.reduce((s, v) => s + v, 0) || 1;
-  let angle = -90;
-  const cx = size / 2, cy = size / 2, r = size / 2 - 10;
-  const segments = values.map((v) => {
-    const a = (v / total) * 360;
-    const start = angle;
-    const end = angle + a;
-    angle = end;
-    const large = a > 180 ? 1 : 0;
-    const x1 = cx + r * Math.cos((Math.PI * start) / 180);
-    const y1 = cy + r * Math.sin((Math.PI * start) / 180);
-    const x2 = cx + r * Math.cos((Math.PI * end) / 180);
-    const y2 = cy + r * Math.sin((Math.PI * end) / 180);
-    const d = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
-    return d;
-  });
+function DonutChart({ values = [], colors = [], size = 120, centerValue = '', centerLabel = '' }) {
+  const total = values.reduce((sum, value) => sum + value, 0) || 1;
+  const strokeWidth = 18;
+  const radius = (size - strokeWidth) / 2 - 2;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      {segments.map((d, i) => (
-        <path key={i} d={d} fill={colors[i] || ['#4b6cb7', '#e0245e', '#f59e0b'][i % 3]} opacity={0.95} />
-      ))}
-      <circle cx={cx} cy={cy} r={r - 22} fill="#fff" />
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Gender distribution chart">
+      <defs>
+        <filter id="genderDonutGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#0f172a" floodOpacity="0.1" />
+        </filter>
+      </defs>
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="var(--border-soft, #e8eefc)"
+        strokeWidth={strokeWidth}
+      />
+      <g transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ filter: 'url(#genderDonutGlow)' }}>
+        {values.map((value, index) => {
+          const dashLength = (value / total) * circumference;
+          const dashOffset = -offset;
+          offset += dashLength;
+          return (
+            <circle
+              key={index}
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke={colors[index] || ['#4b6cb7', '#e0245e'][index % 2]}
+              strokeWidth={strokeWidth}
+              strokeDasharray={`${dashLength} ${circumference - dashLength}`}
+              strokeDashoffset={dashOffset}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </g>
+      <circle cx={size / 2} cy={size / 2} r={radius - strokeWidth / 2 + 1} fill="var(--surface-panel, #fff)" />
+      {centerValue ? <text x="50%" y="48%" textAnchor="middle" fontSize="22" fontWeight="900" fill="var(--text-primary, #111827)">{centerValue}</text> : null}
+      {centerLabel ? <text x="50%" y="61%" textAnchor="middle" fontSize="10" fontWeight="800" fill="var(--text-muted, #64748b)">{centerLabel}</text> : null}
     </svg>
-  )
+  );
 }
 
-function GenderBar({ male = 0, female = 0, width = 220, height = 80 }) {
-  const total = Math.max(1, male + female );
-  const max = Math.max(male, female, 1);
-  const barW = 40;
-  const gap = 16;
-  const startX = 10;
+function GenderBar({ male = 0, female = 0, width = 250, height = 86 }) {
+  const total = Math.max(1, male + female);
+  const barX = 8;
+  const barY = 16;
+  const barWidth = width - 16;
+  const barHeight = 16;
+  const maleWidth = (male / total) * barWidth;
+  const femaleWidth = (female / total) * barWidth;
+
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      {[{k:'Male',v:male,color:'#4b6cb7'},{k:'Female',v:female,color:'#e0245e'}].map((b,i)=>{
-        const h = Math.round((b.v / max) * (height - 30));
-        const x = startX + i * (barW + gap);
-        const y = height - h - 18;
-        return (
-          <g key={i}>
-            <rect x={x} y={y} width={barW} height={h} rx={6} fill={b.color} />
-            <text x={x + barW/2} y={height - 4} fontSize={11} textAnchor="middle" fill="#374151">{b.k}</text>
-            <text x={x + barW/2} y={y - 4} fontSize={12} textAnchor="middle" fill="#111827" fontWeight={700}>{b.v}</text>
-          </g>
-        )
-      })}
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gender comparison bar">
+      <rect x={barX} y={barY} width={barWidth} height={barHeight} rx={8} fill="var(--surface-accent, #edf2ff)" />
+      <rect x={barX} y={barY} width={maleWidth} height={barHeight} rx={8} fill="#4b6cb7" />
+      <rect x={barX + maleWidth} y={barY} width={femaleWidth} height={barHeight} rx={8} fill="#ec4899" />
+      <g transform={`translate(${barX}, 52)`}>
+        <circle cx="5" cy="0" r="5" fill="#4b6cb7" />
+        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Male {male}</text>
+      </g>
+      <g transform={`translate(${width / 2 + 6}, 52)`}>
+        <circle cx="5" cy="0" r="5" fill="#ec4899" />
+        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Female {female}</text>
+      </g>
+      <text x={barX} y={78} fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((male / total) * 100)}%</text>
+      <text x={width - barX} y={78} textAnchor="end" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((female / total) * 100)}%</text>
     </svg>
+  );
+}
+
+const QUALIFICATION_GRAPH_CONFIG = [
+  { key: 'Diploma', label: 'Diploma', color: '#0ea5e9' },
+  { key: 'Degree', label: 'Degree', color: '#4b6cb7' },
+  { key: 'Masters', label: 'Masters', color: '#8b5cf6' },
+  { key: 'PhD', label: 'PhD', color: '#ec4899' },
+  { key: 'Prof.', label: 'Prof.', color: '#f59e0b' },
+  { key: 'Other', label: 'Other', color: '#64748b' },
+];
+
+function normalizeEducationQualification(employee = {}) {
+  const degreeType = String(
+    employee?.education?.degreeType || employee?.profileData?.education?.degreeType || ''
   )
+    .trim()
+    .toLowerCase();
+  const highestQualification = String(
+    employee?.education?.highestQualification || employee?.profileData?.education?.highestQualification || ''
+  )
+    .trim()
+    .toLowerCase();
+  const combined = `${degreeType} ${highestQualification}`.trim();
+
+  if (!combined) return '';
+  if (combined.includes('prof')) return 'Prof.';
+  if (combined.includes('phd') || combined.includes('doctor')) return 'PhD';
+  if (combined.includes('msc') || combined.includes('master') || combined.includes('mba')) return 'Masters';
+  if (combined.includes('bsc') || combined.includes('bachelor') || combined.includes('degree')) return 'Degree';
+  if (combined.includes('diploma')) return 'Diploma';
+  return 'Other';
+}
+
+function QualificationChart({ items = [], total = 0 }) {
+  if (!items.some((item) => Number(item.count || 0) > 0)) {
+    return <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No qualification data available yet.</div>;
+  }
+
+  const safeTotal = Math.max(1, total);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((item) => {
+        const count = Number(item.count || 0);
+        const percentage = Math.round((count / safeTotal) * 100);
+
+        return (
+          <div key={item.key} style={{ display: 'grid', gridTemplateColumns: '84px 1fr 62px', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary, #334155)' }}>{item.label}</div>
+            <div style={{ height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--surface-accent, #eef2ff)', border: '1px solid var(--border-soft, #dbe2f2)' }}>
+              <div style={{ width: `${percentage}%`, height: '100%', background: item.color, borderRadius: 999 }} />
+            </div>
+            <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 800, color: 'var(--text-muted, #64748b)' }}>{count} ({percentage}%)</div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function PositionChart({ employees = [], maxBars = 6 }) {
@@ -637,11 +722,11 @@ function PositionChart({ employees = [], maxBars = 6 }) {
         const pct = Math.round((cnt/total)*100);
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-            <div style={{ width: 120, fontSize: 13, color: '#374151' }}>{pos}</div>
-            <div style={{ flex: 1, background: '#eef2ff', height: 10, borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ width: 120, fontSize: 13, color: 'var(--text-secondary, #374151)' }}>{pos}</div>
+            <div style={{ flex: 1, background: 'var(--surface-accent, #eef2ff)', height: 10, borderRadius: 6, overflow: 'hidden' }}>
               <div style={{ width: `${pct}%`, height: '100%', background: '#4b6cb7' }}></div>
             </div>
-            <div style={{ width: 46, textAlign: 'right', fontSize: 13, color: '#6b7280' }}>{cnt} ({pct}%)</div>
+            <div style={{ width: 46, textAlign: 'right', fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>{cnt} ({pct}%)</div>
           </div>
         )
       })}
@@ -650,7 +735,7 @@ function PositionChart({ employees = [], maxBars = 6 }) {
   )
 }
 
-function Sparkline({ data = [], color = '#4b6cb7', width = 100, height = 28 }) {
+function Sparkline({ data = [], color = 'var(--accent, #4b6cb7)', width = 100, height = 28 }) {
   if (!data.length) return null;
   const max = Math.max(...data);
   const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
@@ -686,7 +771,11 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
 
   const countTicks = Array.from({ length: 4 }, (_, i) => Math.round((maxCount * i) / 3));
   const rateTicks = [0, 25, 50, 75, 100];
-  const barColors = { present: '#16a34a', late: '#d97706', absent: '#dc2626' };
+  const barColors = {
+    present: 'var(--success, #16a34a)',
+    late: 'var(--warning, #d97706)',
+    absent: 'var(--danger, #dc2626)',
+  };
 
   const ratePoints = points.map((p, i) => ({ x: xForIndex(i), y: yForRate(p.rate || 0) }));
   const rateLinePath = ratePoints.length ? `M ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')}` : '';
@@ -700,22 +789,22 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
     <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend" style={{ display: 'block', width: '100%', minHeight: height }}>
       <defs>
         <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#bfdbf7" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="#bfdbf7" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.02" />
         </linearGradient>
       </defs>
 
       {/* background grid */}
       <g>
-        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="#fcfdff" stroke="#e2e8f0" rx={8} />
+        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="var(--surface-panel, #fcfdff)" stroke="var(--border-soft, #e2e8f0)" rx={8} />
       </g>
 
       {countTicks.map((tickValue) => {
         const y = yForCount(tickValue);
         return (
           <g key={`count-tick-${tickValue}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="#eef2ff" strokeDasharray="4 6" />
-            <text x={leftPad - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#64748b" fontWeight="700">{tickValue}</text>
+            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #eef2ff)" strokeDasharray="4 6" />
+            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{tickValue}</text>
           </g>
         );
       })}
@@ -724,7 +813,7 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
         const y = yForRate(tickValue);
         return (
           <g key={`rate-tick-${tickValue}`}> 
-            <text x={width - rightPad + 8} y={y + 4} textAnchor="start" fontSize="10" fill="#3157b7" fontWeight="700">{tickValue}%</text>
+            <text x={width - rightPad - 10} y={y + 4} textAnchor="end" fontSize="10" fill="var(--accent-strong, #3157b7)" fontWeight="700">{tickValue}%</text>
           </g>
         );
       })}
@@ -767,7 +856,7 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
           <g key={`rate-point-${index}`}>
             {mode === 'line' ? <circle cx={x} cy={y} r={hoveredIndex === index ? '5' : '4'} fill="#fff" stroke="#3157b7" strokeWidth="1.8" /> : null}
             {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
-              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="700">{point.label}</text>
+              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{point.label}</text>
             ) : null}
           </g>
         );
@@ -847,11 +936,224 @@ function resolveDashboardSelection(action) {
   return { dashboardView: 'home', postFeedView: 'all' };
 }
 
+function getPostId(post) {
+  return String(post?.postId || post?.id || '');
+}
+
+function normalizePostRecord(post) {
+  const likes = post?.likes && typeof post.likes === 'object' ? post.likes : {};
+  const postId = getPostId(post);
+  const parsedLikeCount = Number(post?.likeCount);
+
+  return {
+    ...(post || {}),
+    postId,
+    id: postId,
+    adminId: String(post?.adminId || post?.hrId || post?.userId || ''),
+    hrId: String(post?.hrId || post?.adminId || ''),
+    userId: String(post?.userId || ''),
+    adminName: post?.adminName || post?.name || 'HR Office',
+    adminProfile: post?.adminProfile || post?.profileImage || '/default-profile.png',
+    postUrl: post?.postUrl || '',
+    message: post?.message || '',
+    targetRole: (post?.targetRole || 'all').toString().toLowerCase(),
+    likes,
+    likeCount: Number.isFinite(parsedLikeCount) ? parsedLikeCount : Object.keys(likes).length,
+    time: post?.time || post?.createdAt || '',
+  };
+}
+
+function isVideoPostUrl(url = '') {
+  return /^data:video\//i.test(url) || /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(url);
+}
+
+const ETHIOPIAN_WEEK_DAYS = ['እሑ', 'ሰኞ', 'ማክ', 'ረቡ', 'ሐሙ', 'ዓር', 'ቅዳ'];
+
+function getCalendarEventKind(eventItem = {}) {
+  const haystack = `${eventItem?.category || ''} ${eventItem?.title || ''} ${eventItem?.notes || ''}`.toLowerCase();
+  if (/(no class|holiday|break|vacation|closure|closed|off day|public holiday)/.test(haystack)) {
+    return 'no-class';
+  }
+  return 'academic';
+}
+
+function getCalendarEventTone(eventKind = 'academic') {
+  if (eventKind === 'no-class') {
+    return {
+      border: '1px solid var(--warning-border, #fdba74)',
+      background: 'var(--warning-soft, #fff7ed)',
+      color: 'var(--warning, #d97706)',
+      dot: 'var(--warning, #d97706)',
+      label: 'No Class',
+    };
+  }
+
+  return {
+    border: '1px solid var(--success-border, #a5f3fc)',
+    background: 'var(--success-soft, #ecfeff)',
+    color: 'var(--success, #0f766e)',
+    dot: 'var(--success, #0f766e)',
+    label: 'Academic',
+  };
+}
+
+function isGregorianLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function toIsoDateString(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getOrthodoxEasterDate(year) {
+  const a = year % 4;
+  const b = year % 7;
+  const c = year % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const month = Math.floor((d + e + 114) / 31);
+  const day = ((d + e + 114) % 31) + 1;
+  const julianDate = new Date(Date.UTC(year, month - 1, day));
+  julianDate.setUTCDate(julianDate.getUTCDate() + 13);
+  return new Date(julianDate.getUTCFullYear(), julianDate.getUTCMonth(), julianDate.getUTCDate());
+}
+
+function getRecurringHolidayEvents(year) {
+  const orthodoxEaster = getOrthodoxEasterDate(year);
+  const orthodoxGoodFriday = new Date(orthodoxEaster);
+  orthodoxGoodFriday.setDate(orthodoxGoodFriday.getDate() - 2);
+  const ethiopianNewYearDay = isGregorianLeapYear(year + 1) ? 12 : 11;
+
+  return [
+    { slug: 'gregorian-new-year', title: 'New Year', date: new Date(year, 0, 1), notes: 'Gregorian New Year public holiday' },
+    { slug: 'ethiopian-christmas', title: 'Christmas (Genna)', date: new Date(year, 0, 7), notes: 'Ethiopian Christmas public holiday' },
+    { slug: 'timkat', title: 'Timkat', date: new Date(year, 0, 19), notes: 'Epiphany public holiday' },
+    { slug: 'adwa-victory', title: 'Adwa Victory Day', date: new Date(year, 2, 2), notes: 'Public holiday commemorating the Battle of Adwa' },
+    { slug: 'good-friday', title: 'Siklet (Good Friday)', date: orthodoxGoodFriday, notes: 'Orthodox Good Friday holiday' },
+    { slug: 'easter', title: 'Fasika (Easter)', date: orthodoxEaster, notes: 'Orthodox Easter holiday' },
+    { slug: 'labour-day', title: 'Labour Day', date: new Date(year, 4, 1), notes: 'International Workers Day public holiday' },
+    { slug: 'patriots-day', title: 'Patriots Victory Day', date: new Date(year, 4, 5), notes: 'Patriots Victory Day public holiday' },
+    { slug: 'derg-downfall', title: 'Downfall of the Derg', date: new Date(year, 4, 28), notes: 'National public holiday' },
+    { slug: 'ethiopian-new-year', title: 'Enkutatash (Ethiopian New Year)', date: new Date(year, 8, ethiopianNewYearDay), notes: 'Ethiopian New Year public holiday' },
+    { slug: 'meskel', title: 'Meskel', date: new Date(year, 8, 27), notes: 'Finding of the True Cross public holiday' },
+  ].map((eventItem) => ({
+    id: `builtin-holiday-${year}-${eventItem.slug}`,
+    title: eventItem.title,
+    category: 'Holiday',
+    notes: eventItem.notes,
+    gregorianDate: toIsoDateString(eventItem.date),
+    showInUpcomingDeadlines: false,
+    source: 'builtin-holiday',
+  }));
+}
+
+function mergeCalendarCollections(primaryEvents = [], secondaryEvents = []) {
+  const seenKeys = new Set();
+  const merged = [];
+
+  [...primaryEvents, ...secondaryEvents].forEach((eventItem, index) => {
+    const isoDate = String(eventItem?.gregorianDate || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+      return;
+    }
+
+    const titleKey = String(eventItem?.title || eventItem?.category || `event-${index}`).trim().toLowerCase();
+    const dedupeKey = `${isoDate}::${titleKey}`;
+    if (seenKeys.has(dedupeKey)) {
+      return;
+    }
+
+    seenKeys.add(dedupeKey);
+    merged.push({
+      ...(eventItem || {}),
+      id: String(eventItem?.id || dedupeKey),
+      gregorianDate: isoDate,
+    });
+  });
+
+  return merged.sort((leftEvent, rightEvent) => {
+    const dateCompare = String(leftEvent.gregorianDate || '').localeCompare(String(rightEvent.gregorianDate || ''));
+    if (dateCompare !== 0) return dateCompare;
+    return String(leftEvent.title || '').localeCompare(String(rightEvent.title || ''));
+  });
+}
+
+const CHAT_DEFAULT_PROFILE = '/default-profile.png';
+
+function getDashboardRoleLabel(value = '') {
+  const role = String(value || '').trim().toLowerCase();
+  if (role === 'teacher' || role === 'teachers') return 'Teacher';
+  if (role === 'finance') return 'Finance';
+  if (['school_admins', 'school_admin', 'management', 'admin', 'admins'].includes(role)) return 'School Admins';
+  if (role === 'hr') return 'HR';
+  return 'Staff';
+}
+
+function getChatParticipantIds(chatKey = '', chatNode = {}) {
+  const participantIds = Object.keys(chatNode?.participants || {})
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+
+  if (participantIds.length) {
+    return Array.from(new Set(participantIds));
+  }
+
+  return String(chatKey || '')
+    .split('_')
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+}
+
+function getLatestChatMessage(chatNode = {}) {
+  if (chatNode?.lastMessage?.timeStamp) {
+    return chatNode.lastMessage;
+  }
+
+  return Object.values(chatNode?.messages || {}).reduce((latestMessage, message) => {
+    if (!message || message.deleted) return latestMessage;
+    if (Number(message?.timeStamp || 0) > Number(latestMessage?.timeStamp || 0)) {
+      return message;
+    }
+    return latestMessage;
+  }, null);
+}
+
+function getUnreadReceivedMessages(chatNode = {}, receiverId = '') {
+  const resolvedReceiverId = String(receiverId || '').trim();
+  if (!resolvedReceiverId) return [];
+
+  return Object.entries(chatNode?.messages || {})
+    .filter(([, message]) => {
+      if (!message || message.deleted || message.seen) return false;
+      return String(message.receiverId || '').trim() === resolvedReceiverId;
+    })
+    .map(([id, message]) => ({
+      id,
+      ...(message || {}),
+    }));
+}
+
+function formatActivityTime(value) {
+  const stamp = Number(value || 0);
+  if (!stamp) return '';
+  const date = new Date(stamp);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
   const [attendanceByDate, setAttendanceByDate] = useState({});
   const [conversations, setConversations] = useState([]);
   const [posts, setPosts] = useState([]);
+  const [calendarEvents, setCalendarEvents] = useState([]);
   const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [postText, setPostText] = useState('');
@@ -860,7 +1162,7 @@ export default function Dashboard() {
   const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const [isPostSubmitting, setIsPostSubmitting] = useState(false);
   const [targetRole, setTargetRole] = useState('all');
-  const [targetOptions] = useState(['all', 'teacher', 'management', 'finance', 'hr']);
+  const [targetOptions] = useState(['all', 'teacher', 'school_admins', 'finance', 'hr']);
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [editingPostId, setEditingPostId] = useState('');
   const [existingPostMediaUrl, setExistingPostMediaUrl] = useState('');
@@ -880,9 +1182,27 @@ export default function Dashboard() {
   const db = useMemo(() => getDatabase(app), []);
   const navigate = useNavigate();
   const location = useLocation();
+  const db = getDatabase(app);
+  const hrUserId = String(admin?.userId || admin?.id || admin?.uid || admin?.user_id || admin?.hrId || '').trim();
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(() => {
+    const directSchoolCode = String(admin?.schoolCode || '').trim();
+    if (directSchoolCode) return directSchoolCode;
+
+    try {
+      return String(JSON.parse(localStorage.getItem('gojo_admin') || '{}')?.schoolCode || '').trim();
+    } catch (error) {
+      return '';
+    }
+  });
+  const activeSchoolCode = String(resolvedSchoolCode || admin?.schoolCode || '').trim();
+  const schoolNodePrefix = activeSchoolCode ? `Platform1/Schools/${activeSchoolCode}` : '';
+  const withSchoolPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
   const initialSidebarAction = location.state?.dashboardAction;
+  const initialOpenNotifications = Boolean(location.state?.openNotifications);
   const initialDashboardSelection = resolveDashboardSelection(initialSidebarAction);
-  const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
+  const [showNotificationDropdown, setShowNotificationDropdown] = useState(initialOpenNotifications);
+  const [chatRoleLookup, setChatRoleLookup] = useState({});
+  const [chatSidebarData, setChatSidebarData] = useState({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
   const [calendarViewDate, setCalendarViewDate] = useState(() => {
     const now = new Date();
     const currentEthiopicDate = EthiopicCalendar.ge(
@@ -1085,48 +1405,29 @@ export default function Dashboard() {
       if (forceRefresh) {
         setCachedDashboardResource(calendarCacheKey, normalizedEvents);
       }
-
-      const now = new Date();
-      const todayIsoDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const overviewWindowEnd = new Date(now);
-      overviewWindowEnd.setDate(overviewWindowEnd.getDate() + 120);
-      const overviewWindowEndIsoDate = `${overviewWindowEnd.getFullYear()}-${String(overviewWindowEnd.getMonth() + 1).padStart(2, '0')}-${String(overviewWindowEnd.getDate()).padStart(2, '0')}`;
-
-      setCalendarEvents(normalizedEvents);
-      setUpcomingCalendarEvents(
-        normalizedEvents.filter((eventItem) => (
-          eventItem.showInUpcomingDeadlines
-          && String(eventItem.gregorianDate || '') >= todayIsoDate
-          && String(eventItem.gregorianDate || '') <= overviewWindowEndIsoDate
-        )),
-      );
-    } catch (error) {
-      console.error('Failed to load calendar events:', error);
-      setCalendarEvents([]);
-      setUpcomingCalendarEvents([]);
-    } finally {
-      setCalendarEventsLoading(false);
     }
-  };
+    load();
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    getCachedDashboardResource(DASHBOARD_EMPLOYEES_CACHE_KEY, async () => {
-      const res = await api.get('/employees/summary');
-      return normalizeDashboardCollection(res.data || []);
-    })
-      .then((items) => {
-        if (!cancelled) {
-          setEmployees(items);
+    async function loadUsers() {
+      try {
+        const res = await api.get('/users');
+        const items = res.data || [];
+        if (Array.isArray(items)) {
+          setUsers(items);
+          return;
         }
-      })
-      .catch((error) => {
-        console.error(error);
-        if (!cancelled) {
-          setEmployees([]);
-        }
-      });
+        const normalized = Object.entries(items || {}).map(([id, payload]) => ({
+          ...(payload || {}),
+          id,
+        }));
+        setUsers(normalized);
+      } catch (e) {
+        console.error(e);
+        setUsers([]);
+      }
+    }
 
     return () => {
       cancelled = true;
@@ -1191,92 +1492,26 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    setShowAllUpcomingDeadlines(false);
-    loadCalendarEvents();
-  }, [activeSchoolCode]);
-
-  const employeeContactByUserId = useMemo(() => {
-    return (employees || []).reduce((accumulator, employee) => {
-      const job = getEmployeeJob(employee);
-      const meta = getEmployeeMeta(employee);
-      const userId = String(employee?.userId || meta?.userId || '').trim();
-
-      if (!userId) {
-        return accumulator;
-      }
-
-      accumulator[userId] = {
-        userId,
-        name: getEmployeeName(employee),
-        profileImage: getSafeProfileImage(getEmployeeProfileImage(employee)),
-        role: job?.employeeCategory || job?.category || job?.position || employee?.role || employee?.position || 'Staff',
-        department: job?.department || employee?.department || 'Unassigned',
-      };
-
-      return accumulator;
-    }, {});
-  }, [employees]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadConversations() {
-      if (!adminChatUserId || !activeSchoolCode) {
-        setConversations([]);
-        return;
-      }
-
+    async function fetchCalendarDeadlines() {
       try {
-        const chatsSnapshot = await get(ref(db, schoolPath('Chats')));
-        const chats = chatsSnapshot.val() || {};
+        const response = await api.get('/api/calendar_events', {
+          params: {
+            deadlinesOnly: 1,
+            upcoming: 1,
+            days: 120,
+          },
+        });
 
-        const nextConversations = Object.entries(chats)
-          .map(([chatId, chat]) => {
-            const participants = Object.keys(chat?.participants || {}).map((value) => String(value || '').trim());
+        const events = Array.isArray(response.data)
+          ? response.data
+          : Array.isArray(response.data?.events)
+            ? response.data.events
+            : [];
 
-            if (!participants.includes(adminChatUserId)) {
-              return null;
-            }
-
-            const otherUserId = participants.find((value) => value && value !== adminChatUserId);
-            if (!otherUserId) {
-              return null;
-            }
-
-            const contactMeta = employeeContactByUserId[otherUserId] || {};
-            const lastMessage = chat?.lastMessage || {};
-            const lastMessageText = String(lastMessage?.text || '').trim()
-              || (String(lastMessage?.type || '').toLowerCase() === 'image' ? 'Image' : 'Open chat');
-
-            return {
-              chatId: String(chatId || sortedChatId(adminChatUserId, otherUserId)),
-              contact: {
-                userId: otherUserId,
-                name: contactMeta.name || otherUserId,
-                profileImage: getSafeProfileImage(contactMeta.profileImage),
-                role: contactMeta.role || 'Staff',
-                department: contactMeta.department || 'Unassigned',
-              },
-              displayName: contactMeta.name || otherUserId,
-              profile: getSafeProfileImage(contactMeta.profileImage),
-              lastMessageText,
-              lastMessageTime: getConversationSortTime(
-                lastMessage?.timeStamp || lastMessage?.time || chat?.updatedAt || chat?.createdAt || 0,
-              ),
-              unreadForMe: Number(chat?.unread?.[adminChatUserId] || 0),
-            };
-          })
-          .filter(Boolean)
-          .sort((left, right) => (right?.lastMessageTime || 0) - (left?.lastMessageTime || 0));
-
-        if (!cancelled) {
-          setConversations(nextConversations);
-        }
+        setUpcomingCalendarEvents(events);
       } catch (error) {
-        console.error('Error loading dashboard conversations:', error);
-        if (!cancelled) {
-          setConversations([]);
-        }
+        console.error('Failed to load calendar deadlines:', error);
+        setUpcomingCalendarEvents([]);
       }
     }
 
@@ -1469,10 +1704,10 @@ export default function Dashboard() {
       const mondayOffset = day === 0 ? -6 : 1 - day; // Monday as first day
       const weekStart = new Date(d);
       weekStart.setDate(d.getDate() + mondayOffset);
-      const days = Array.from({ length: 7 }, (_, i) => {
+      const days = Array.from({ length: 5 }, (_, i) => {
         const dt = new Date(weekStart);
         dt.setDate(weekStart.getDate() + i);
-        const iso = dt.toISOString().slice(0, 10);
+        const iso = toIsoDateString(dt);
         const meta = normalizeRecords(map[iso]);
         const label = dt.toLocaleDateString('en-US', { weekday: 'short' });
         return { date: iso, label, ...meta };
@@ -1506,13 +1741,13 @@ export default function Dashboard() {
         // accumulate days within this week
         let total = 0, presentCount = 0, lateCount = 0, absentCount = 0;
         for (let dt = new Date(startClamp); dt <= endClamp; dt.setDate(dt.getDate() + 1)) {
-          const iso = dt.toISOString().slice(0, 10);
+          const iso = toIsoDateString(dt);
           const meta = normalizeRecords(map[iso]);
           total += meta.total; presentCount += meta.presentCount; lateCount += meta.lateCount; absentCount += meta.absentCount;
         }
         const rate = total > 0 ? Math.round(((presentCount + lateCount) / total) * 100) : 0;
         const label = `${startClamp.getMonth() + 1}/${startClamp.getDate()}`;
-        weeks.push({ date: `${startClamp.toISOString().slice(0,10)}_${endClamp.toISOString().slice(0,10)}`, label, total, presentCount, lateCount, absentCount, rate });
+        weeks.push({ date: `${toIsoDateString(startClamp)}_${toIsoDateString(endClamp)}`, label, total, presentCount, lateCount, absentCount, rate });
         weekStart.setDate(weekStart.getDate() + 7);
       }
       return weeks;
@@ -1520,7 +1755,17 @@ export default function Dashboard() {
 
     return [];
   }, [attendanceByDate, attendanceRecordView, attendanceDisplaySeries]);
-  const recentAttendanceRecords = attendanceDisplaySeries.slice(-4).reverse();
+  const recentAttendanceRecords = useMemo(() => {
+    if (attendanceRecordView === 'daily') {
+      return attendanceChartPoints.slice(0, 1);
+    }
+
+    if (attendanceRecordView === 'weekly') {
+      return attendanceChartPoints;
+    }
+
+    return attendanceDisplaySeries.slice(-4).reverse();
+  }, [attendanceChartPoints, attendanceDisplaySeries, attendanceRecordView]);
 
   const getAttendanceBucketMeta = (dateString, viewMode) => {
     const dateValue = new Date(`${dateString}T00:00:00`);
@@ -1557,7 +1802,7 @@ export default function Dashboard() {
     };
   };
 
-  const todayIsoAttendanceDate = new Date().toISOString().slice(0, 10);
+  const todayIsoAttendanceDate = toIsoDateString(new Date());
   const attendancePeopleDateLabel = attendanceRecordView === 'daily'
     ? `Today (${todayIsoAttendanceDate})`
     : attendanceRecordView === 'weekly'
@@ -1577,6 +1822,14 @@ export default function Dashboard() {
       return accumulator;
     }, {});
   }, [employees]);
+  const usersById = useMemo(() => {
+    return (users || []).reduce((accumulator, user) => {
+      const userId = String(user?.userId || user?.id || user?.uid || '').trim();
+      if (!userId) return accumulator;
+      accumulator[userId] = user;
+      return accumulator;
+    }, {});
+  }, [users]);
   const attendancePeopleList = useMemo(() => {
     const visibleBucketKeys = new Set((attendanceDisplaySeries || []).map((entry) => entry?.date).filter(Boolean));
     if (!visibleBucketKeys.size) return [];
@@ -1613,10 +1866,14 @@ export default function Dashboard() {
       .filter((entry) => entry.status === attendanceStatusFilter)
       .sort((leftEntry, rightEntry) => {
         if (leftEntry.bucketKey !== rightEntry.bucketKey) {
-          return String(rightEntry.bucketKey).localeCompare(String(leftEntry.bucketKey));
+          return attendanceRecordView === 'weekly'
+            ? String(leftEntry.bucketKey).localeCompare(String(rightEntry.bucketKey))
+            : String(rightEntry.bucketKey).localeCompare(String(leftEntry.bucketKey));
         }
         if (leftEntry.sourceDate !== rightEntry.sourceDate) {
-          return String(rightEntry.sourceDate).localeCompare(String(leftEntry.sourceDate));
+          return attendanceRecordView === 'weekly'
+            ? String(leftEntry.sourceDate).localeCompare(String(rightEntry.sourceDate))
+            : String(rightEntry.sourceDate).localeCompare(String(leftEntry.sourceDate));
         }
         return leftEntry.name.localeCompare(rightEntry.name);
       });
@@ -1627,6 +1884,76 @@ export default function Dashboard() {
   const avgTenure = employees.length ? (employees.reduce((s,e)=>{ if(e.hireDate){ const yrs = (Date.now() - new Date(e.hireDate).getTime())/(1000*60*60*24*365); return s + yrs } return s },0)/employees.length) : 0;
   const avgTenureFormatted = avgTenure ? `${avgTenure.toFixed(1)} yrs` : '—';
   const turnoverRate =  employees.length ? `${Math.round((employees.filter(e=>e.terminated === true).length / employees.length) * 100)}%` : '—';
+
+  useEffect(() => {
+    if (!hrUserId || !activeSchoolCode) {
+      setChatSidebarData({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
+      return undefined;
+    }
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = startOfToday.getTime() + 86400000;
+    const chatsRef = ref(db, withSchoolPath('Chats'));
+
+    const unsubscribe = onValue(chatsRef, (snapshot) => {
+      const chats = snapshot.val() || {};
+      let unreadCount = 0;
+      let todayMessageCount = 0;
+
+      const contactEntries = Object.entries(chats)
+        .map(([chatKey, chatNode]) => {
+          if (!chatNode || typeof chatNode !== 'object') return null;
+
+          const participantIds = getChatParticipantIds(chatKey, chatNode);
+          if (!participantIds.includes(hrUserId)) return null;
+
+          const otherUserId = participantIds.find((participantId) => participantId !== hrUserId) || '';
+          if (!otherUserId) return null;
+
+          const messageEntries = Object.values(chatNode?.messages || {}).filter((message) => message && typeof message === 'object' && !message.deleted);
+          const unreadMessages = getUnreadReceivedMessages(chatNode, hrUserId);
+          const unread = unreadMessages.length;
+          unreadCount += unread;
+
+          todayMessageCount += messageEntries.filter((message) => {
+            const stamp = Number(message?.timeStamp || 0);
+            return stamp >= startOfToday.getTime() && stamp < endOfToday;
+          }).length;
+
+          const latestMessage = getLatestChatMessage(chatNode);
+          const userNode = usersById[otherUserId] || {};
+          const roleNode = chatRoleLookup[otherUserId] || {};
+          const roleKey = String(roleNode.roleKey || userNode?.role || userNode?.userType || '').trim().toLowerCase();
+
+          return {
+            userId: otherUserId,
+            tab: roleNode.roleKey || roleKey || 'teacher',
+            name: userNode?.name || userNode?.displayName || userNode?.username || roleNode?.name || `User ${otherUserId}`,
+            role: roleNode?.roleLabel || getDashboardRoleLabel(roleKey),
+            avatar: userNode?.profileImage || userNode?.profile || userNode?.avatar || roleNode?.profileImage || CHAT_DEFAULT_PROFILE,
+            lastMsgText: String(latestMessage?.text || '').trim() || 'No recent message',
+            lastMsgTime: Number(latestMessage?.timeStamp || 0),
+            chatKey,
+            unread,
+            unreadMessageIds: unreadMessages.map((message) => message.id),
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => {
+          const timeDiff = Number(right.lastMsgTime || 0) - Number(left.lastMsgTime || 0);
+          if (timeDiff !== 0) return timeDiff;
+          return left.name.localeCompare(right.name);
+        });
+
+      const recentContacts = contactEntries.slice(0, 4);
+      const unreadContacts = contactEntries.filter((contact) => Number(contact.unread || 0) > 0).slice(0, 4);
+
+      setChatSidebarData({ unreadCount, todayMessageCount, recentContacts, unreadContacts });
+    });
+
+    return () => unsubscribe();
+  }, [activeSchoolCode, chatRoleLookup, db, hrUserId, usersById, schoolNodePrefix]);
 
   // upcoming birthdays within 30 days
   const upcomingBirthdays = employees.filter(e => e.birthDate).map(e => ({...e, birthDateObj: new Date(e.birthDate)})).filter(e=>{
@@ -1662,24 +1989,6 @@ export default function Dashboard() {
       parseDateSafe(raw.createdAt)
     );
   };
-
-  const recentHires = employees
-    .slice()
-    .sort((a, b) => {
-      const da = getEmployeeHireDate(a);
-      const db = getEmployeeHireDate(b);
-      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
-    })
-    .slice(0, 5)
-    .map((e) => {
-      const hireDate = getEmployeeHireDate(e);
-      return {
-        name: e.name || e.fullName || 'Unnamed',
-        role: e.role || e.position || e.job?.position || e.profileData?.job?.position || 'Staff',
-        date: hireDate ? hireDate.toLocaleDateString() : '—',
-        avatar: e.profileImage || '/default-profile.png',
-      };
-    });
 
   const monthlyGrowthSeries = useMemo(() => {
     const monthCount = 12;
@@ -1821,7 +2130,7 @@ export default function Dashboard() {
       .toLowerCase();
     if (g.includes('f')) return 'female';
     if (g.includes('m')) return 'male';
-    return ;
+    return 'unknown';
   }
 
   const genderCounts = employees.reduce((acc, e) => {
@@ -1833,7 +2142,10 @@ export default function Dashboard() {
   }, {});
   const maleCount = genderCounts.male || 0;
   const femaleCount = genderCounts.female || 0;
-  
+  const knownGenderTotal = Math.max(1, maleCount + femaleCount);
+  const malePercentage = Math.round((maleCount / knownGenderTotal) * 100);
+  const femalePercentage = Math.round((femaleCount / knownGenderTotal) * 100);
+  const genderLeadLabel = maleCount === femaleCount ? 'Balanced' : maleCount > femaleCount ? 'Male lead' : 'Female lead';
   const genderValues = [maleCount, femaleCount];
 
   const notificationCount = upcomingBirthdays.length + upcomingContracts.length;
@@ -2076,7 +2388,7 @@ export default function Dashboard() {
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
-  const employmentOrder = ['Full-time', 'Part-time', 'Contract', 'Other'];
+  const employmentOrder = ['Full-time', 'Part-time', 'Contract'];
 
   const overviewCardStyle = {
     background: 'linear-gradient(180deg, var(--surface-panel, #fff) 0%, var(--surface-muted, #f8faff) 100%)',
@@ -2407,11 +2719,20 @@ export default function Dashboard() {
 
   useEffect(() => {
     const actionFromNavigation = location.state?.dashboardAction;
-    if (!actionFromNavigation) {
+    const shouldOpenNotifications = Boolean(location.state?.openNotifications);
+
+    if (!actionFromNavigation && !shouldOpenNotifications) {
       return;
     }
 
-    handleSidebarViewSelection(actionFromNavigation);
+    if (actionFromNavigation) {
+      handleSidebarViewSelection(actionFromNavigation);
+    }
+
+    if (shouldOpenNotifications) {
+      setShowNotificationDropdown(true);
+    }
+
     navigate(location.pathname, { replace: true, state: {} });
   }, [location.pathname, location.state, navigate]);
 
@@ -2441,6 +2762,48 @@ export default function Dashboard() {
       [postId]: !currentValue[postId],
     }));
   };
+
+  const resetPostComposer = () => {
+    setPostText('');
+    setPostMedia(null);
+    setPostMediaPreviewUrl('');
+    setTargetRole('all');
+    setEditingPostId('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const closeCreatePostModal = () => {
+    setShowCreatePostModal(false);
+    setActivePostMenuId('');
+    resetPostComposer();
+  };
+
+  const openCreatePostModal = () => {
+    resetPostComposer();
+    setShowCreatePostModal(true);
+  };
+
+  const openEditPostModal = (post) => {
+    setEditingPostId(getPostId(post));
+    setPostText(post?.message || '');
+    setPostMedia(null);
+    setPostMediaPreviewUrl(post?.postUrl || '');
+    setTargetRole((post?.targetRole || 'all').toString().toLowerCase());
+    setActivePostMenuId('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    setShowCreatePostModal(true);
+  };
+
+  const readPostMediaFile = (file) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (event) => resolve(event?.target?.result || '');
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
 
   const handlePost = async () => {
     if (!canSubmitPost || isPostSubmitting) return null;
@@ -2483,8 +2846,10 @@ export default function Dashboard() {
         return updatedPost;
       }
 
-      const response = await api.post('/api/create_post', payload);
-      const createdPost = response?.data?.post;
+      const response = isEditingPost
+        ? await api.put(`/api/update_post/${editingPostId}`, payload)
+        : await api.post('/api/create_post', payload);
+      const savedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
 
       if (createdPost) {
         upsertPostInState(createdPost);
@@ -2492,7 +2857,7 @@ export default function Dashboard() {
 
       return createdPost;
     } catch (error) {
-      console.error('Failed to create post:', error?.response?.data || error);
+      console.error(`Failed to ${isEditingPost ? 'update' : 'create'} post:`, error?.response?.data || error);
       throw error;
     } finally {
       setIsPostSubmitting(false);
@@ -2780,6 +3145,7 @@ export default function Dashboard() {
         adminId: postOwnerId,
       });
 
+      const updatedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
       const likeCount = response?.data?.likeCount;
       const likes = normalizePostLikes(response?.data?.likes);
 
@@ -3017,7 +3383,7 @@ export default function Dashboard() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 2, fontSize: 12, color: 'var(--text-muted, #6b7280)', fontWeight: 500 }}>
                               <span>{formatFeedTimestamp(post.time)}</span>
                               <span>·</span>
-                              <span>{post.targetRole && post.targetRole !== 'all' ? `Visible to ${post.targetRole}` : 'Visible to everyone'}</span>
+                              <span>{post.targetRole && post.targetRole !== 'all' ? `Visible to ${getDashboardRoleLabel(post.targetRole)}` : 'Visible to everyone'}</span>
                             </div>
                           </div>
                         </div>
@@ -3054,7 +3420,7 @@ export default function Dashboard() {
                                 overflow: canExpandPost && !isPostExpanded ? 'hidden' : 'visible',
                                 display: canExpandPost && !isPostExpanded ? '-webkit-box' : 'block',
                                 WebkitBoxOrient: canExpandPost && !isPostExpanded ? 'vertical' : 'initial',
-                                WebkitLineClamp: canExpandPost && !isPostExpanded ? 3 : 'unset',
+                                WebkitLineClamp: canExpandPost && !isPostExpanded ? 4 : 'unset',
                               }}
                             >
                               {post.message}
@@ -3069,8 +3435,9 @@ export default function Dashboard() {
                               </button>
                             ) : null}
                           </div>
-                        );
-                      })() : null}
+                      ) : (
+                        <div style={{ padding: '0 16px 6px', minHeight: 56 }} />
+                      )}
 
                       {post.postUrl ? (
                         <div style={{ background: '#000', borderTop: '1px solid #dadde1', borderBottom: '1px solid #dadde1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -3177,7 +3544,7 @@ export default function Dashboard() {
               </div>
               <div style={smallStatStyle}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Unread</div>
-                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{messageCount}</div>
+                <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>{unreadMessageCount}</div>
               </div>
               <div style={smallStatStyle}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted, #6b7280)', fontWeight: 600 }}>Notifications</div>
@@ -3195,8 +3562,8 @@ export default function Dashboard() {
                   <strong style={{ color: 'var(--text-primary, #111827)' }}>{todayPostCount}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', ...softPanelStyle, padding: '7px 8px', fontSize: 10 }}>
-                  <span style={{ color: 'var(--text-secondary, #6b7280)', fontWeight: 600 }}>Messages</span>
-                  <strong style={{ color: 'var(--text-primary, #111827)' }}>{messageCount}</strong>
+                  <span style={{ color: 'var(--text-secondary, #6b7280)', fontWeight: 600 }}>Messages Today</span>
+                  <strong style={{ color: 'var(--text-primary, #111827)' }}>{todayMessageCount}</strong>
                 </div>
               </div>
 
@@ -3641,7 +4008,7 @@ export default function Dashboard() {
                       title="Post target role"
                     >
                       {targetOptions.map((role) => {
-                        const label = role === 'all' ? 'All Users' : `${role.charAt(0).toUpperCase()}${role.slice(1)}s`;
+                        const label = role === 'all' ? 'All Users' : getDashboardRoleLabel(role);
                         return <option key={role} value={role}>{label}</option>;
                       })}
                     </select>

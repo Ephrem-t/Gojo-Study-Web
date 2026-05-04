@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import AppRoutes from './routes/AppRoutes'
 import './index.css'
+import { ThemeProvider, applyTheme, getStoredTheme } from './theme/ThemeContext'
+
+applyTheme(getStoredTheme())
 
 createRoot(document.getElementById('root')).render(
   <BrowserRouter>
