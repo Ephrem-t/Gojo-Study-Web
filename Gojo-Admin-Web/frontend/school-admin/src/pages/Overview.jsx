@@ -2,22 +2,23 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 export default function OverviewPage() {
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
 
   const stored = (() => {
     try {
-      return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
+      return JSON.parse(localStorage.getItem("admin") || "{}") || {};
     } catch (e) {
       return {};
     }
   })();
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB_URL = schoolNodeBase(schoolCode);
   const OVERVIEW_CACHE_KEY = schoolCode ? `overview-cache:${schoolCode}` : "";
+  const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
   const readOverviewCache = () => {
     if (!OVERVIEW_CACHE_KEY || typeof window === "undefined") {
@@ -87,31 +88,54 @@ export default function OverviewPage() {
           setLoading(true);
         }
 
-        const [studentsObj, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
+        const [studentDirectoryObj, studentsObj, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
+          fetchCachedJson(STUDENT_DIRECTORY_URL, {
+            ttlMs: NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          }),
           fetchCachedJson(`${DB_URL}/Students.json`, {
             ttlMs: NODE_CACHE_TTL_MS,
             fallbackValue: {},
           }),
           fetchNodeCount("Parents"),
-          fetchNodeCount("posts"),
+          fetchNodeCount("Posts"),
         ]);
 
-        const studentRows = Object.entries(studentsObj).map(([studentId, studentNode]) => {
-          const basicStudentInfo = studentNode?. basicStudentInformation || {};
+        const rawStudentSource =
+          studentDirectoryObj && Object.keys(studentDirectoryObj || {}).length > 0
+            ? studentDirectoryObj
+            : studentsObj;
+
+        const studentRows = Object.entries(rawStudentSource || {}).map(([studentId, studentNode]) => {
+          const basicStudentInfo = studentNode?.basicStudentInformation || {};
+          const statusRaw = studentNode?.isActive === false
+            ? "inactive"
+            : basicStudentInfo?.status || studentNode?.status || "active";
+
           return {
             studentId,
             userId: studentNode?.userId || "",
-            name: basicStudentInfo?.name || studentNode?.name || studentId || "No Name",
+            name:
+              studentNode?.name ||
+              studentNode?.studentName ||
+              basicStudentInfo?.name ||
+              studentId ||
+              "No Name",
             profileImage:
+              studentNode?.profileImage ||
               basicStudentInfo?.studentPhoto ||
               studentNode?.studentPhoto ||
-              studentNode?.profileImage ||
               "/default-profile.png",
-            grade: basicStudentInfo?.grade || studentNode?.grade || "-",
-            section: basicStudentInfo?.section || studentNode?.section || "-",
+            grade: studentNode?.grade || basicStudentInfo?.grade || "-",
+            section: studentNode?.section || basicStudentInfo?.section || "-",
             gender: String(basicStudentInfo?.gender || studentNode?.gender || "").trim().toLowerCase(),
-            status: String(basicStudentInfo?.status || studentNode?.status || "active").toLowerCase(),
-            createdAt: studentNode?.createdAt || studentNode?.registeredAt || basicStudentInfo?.admissionDate || null,
+            status: String(statusRaw).toLowerCase(),
+            createdAt:
+              studentNode?.createdAt ||
+              studentNode?.registeredAt ||
+              studentNode?.admissionDate ||
+              basicStudentInfo?.admissionDate ||
+              null,
           };
         });
 
@@ -148,7 +172,7 @@ export default function OverviewPage() {
     return () => {
       isMounted = false;
     };
-  }, [DB_URL, OVERVIEW_CACHE_KEY]);
+  }, [DB_URL, OVERVIEW_CACHE_KEY, STUDENT_DIRECTORY_URL]);
 
   const summary = useMemo(() => {
     const totalStudents = students.length;
