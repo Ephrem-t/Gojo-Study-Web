@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import CompanySidebar from '../components/CompanySidebar'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
@@ -182,6 +182,17 @@ function createManualIdState() {
 	}
 }
 
+function createQuestionBankImportState() {
+	return {
+		loading: false,
+		error: '',
+		success: '',
+		warnings: [],
+	}
+}
+
+const SUBMISSION_KEY_PATTERN = /^[A-Za-z0-9_.-]+$/
+
 function isPlainObject(value) {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
@@ -208,6 +219,102 @@ function formatReadableToken(value) {
 			return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
 		})
 		.join(' ')
+}
+
+function normalizeLookupToken(value) {
+	return trimText(value).toLowerCase()
+}
+
+function getRoundPrefix(value) {
+	const normalized = normalizeExamMode(value)
+	if (normalized === 'entrance') {
+		return 'E'
+	}
+
+	return normalized === 'competitive' ? 'R' : 'P'
+}
+
+function toRoundNumber(roundId, examMode) {
+	const normalizedRoundId = normalizeIdToken(roundId)
+	const match = normalizedRoundId.match(new RegExp(`^${getRoundPrefix(examMode)}(\\d+)$`))
+	return match ? Number(match[1]) : null
+}
+
+function findReusablePackage(packages, form, fallbackPackageId = '') {
+	const packageList = Array.isArray(packages) ? packages : []
+	if (!packageList.length || !isPlainObject(form?.package)) {
+		return null
+	}
+
+	const targetPackageId = trimText(form.packageId) || trimText(fallbackPackageId)
+	if (targetPackageId) {
+		const exactMatch = packageList.find((item) => trimText(item?.packageId) === targetPackageId)
+		if (exactMatch) {
+			return exactMatch
+		}
+	}
+
+	const targetMode = normalizeExamMode(form.package.type)
+	const targetGrade = normalizeLookupToken(form.package.grade)
+	if (!targetGrade) {
+		return null
+	}
+
+	const targetEntranceYear = normalizeEntranceYear(form.package.entranceYear)
+	const matches = packageList.filter((item) => {
+		if (!isPlainObject(item)) {
+			return false
+		}
+
+		if (normalizeExamMode(item.type) !== targetMode) {
+			return false
+		}
+
+		if (normalizeLookupToken(item.grade) !== targetGrade) {
+			return false
+		}
+
+		if (targetMode === 'entrance') {
+			return String(item.entranceYear || '') === targetEntranceYear
+		}
+
+		return true
+	})
+
+	return matches.length === 1 ? matches[0] : null
+}
+
+function findPackageSubject(packageRecord, subjectKey, subjectName = '') {
+	if (!isPlainObject(packageRecord?.subjects)) {
+		return null
+	}
+
+	const lookupValues = [normalizeLookupToken(subjectKey), normalizeLookupToken(subjectName)].filter(Boolean)
+	if (!lookupValues.length) {
+		return null
+	}
+
+	return Object.values(packageRecord.subjects).find((item) => {
+		if (!isPlainObject(item)) {
+			return false
+		}
+
+		const subjectTokens = [normalizeLookupToken(item.subjectKey), normalizeLookupToken(item.name)].filter(Boolean)
+		return lookupValues.some((lookupValue) => subjectTokens.includes(lookupValue))
+	}) || null
+}
+
+function buildSuggestedRoundName(form, roundId) {
+	const roundNumber = toRoundNumber(roundId, form.package.type) || 1
+	const examMode = normalizeExamMode(form.package.type)
+	const roundLabel = examMode === 'competitive'
+		? `Round ${roundNumber}`
+		: examMode === 'entrance'
+			? `Entrance Round ${roundNumber}`
+			: `Practice Round ${roundNumber}`
+	const chapterLabel = formatReadableToken(form.package.round.chapter)
+
+	return chapterLabel ? `${roundLabel} - ${chapterLabel}` : roundLabel
 }
 
 function createDraftStorageKey(routeMode) {
@@ -585,13 +692,19 @@ function normalizeEntranceYear(value) {
 	return /^\d{4}$/.test(normalized) ? normalized : ''
 }
 
-function buildSuggestedRoundId(form) {
-	const examMode = normalizeExamMode(form.package.type)
-	if (examMode === 'entrance') {
-		return 'E1'
+function buildSuggestedRoundId(form, existingRounds = []) {
+	const roundPrefix = getRoundPrefix(form.package.type)
+	let highestRoundNumber = 0
+
+	for (const round of existingRounds) {
+		const roundId = isPlainObject(round) ? round.roundId : round
+		const roundNumber = toRoundNumber(roundId, form.package.type)
+		if (roundNumber && roundNumber > highestRoundNumber) {
+			highestRoundNumber = roundNumber
+		}
 	}
 
-	return examMode === 'competitive' ? 'R1' : 'P1'
+	return `${roundPrefix}${Math.max(1, highestRoundNumber + 1)}`
 }
 
 function toCompetitiveSetCode(roundId) {
@@ -779,6 +892,8 @@ function buildExamNode(form) {
 
 function buildPackageNode(form) {
 	const examMode = normalizeExamMode(form.package.type)
+	const subjectKey = trimText(form.package.subjectKey)
+	const roundId = trimText(form.package.roundId)
 	const round = {
 		examId: trimText(form.examId),
 		name: trimText(form.package.round.name),
@@ -802,10 +917,10 @@ function buildPackageNode(form) {
 		grade: trimText(form.package.grade),
 		name: trimText(form.package.name),
 		subjects: {
-			[trimText(form.package.subjectKey) || 'subject_key']: {
+			[subjectKey]: {
 				name: trimText(form.package.subjectName),
 				rounds: {
-					[trimText(form.package.roundId) || 'R1']: round,
+					[roundId]: round,
 				},
 			},
 		},
@@ -824,9 +939,12 @@ function buildPackageNode(form) {
 }
 
 function buildSubmission(form, overwrite) {
-	const questionBankId = trimText(form.questionBankId) || 'QUESTION_BANK_ID'
-	const examId = trimText(form.examId) || 'EXAM_ID'
-	const packageId = trimText(form.packageId) || 'PACKAGE_ID'
+	const questionBankId = trimText(form.questionBankId)
+	const examId = trimText(form.examId)
+	const packageId = trimText(form.packageId)
+	const previewQuestionBankId = questionBankId || 'QUESTION_BANK_ID'
+	const previewExamId = examId || 'EXAM_ID'
+	const previewPackageId = packageId || 'PACKAGE_ID'
 	const questionBank = buildQuestionBankNode(form)
 	const exam = buildExamNode(form)
 	const packageNode = buildPackageNode(form)
@@ -844,19 +962,370 @@ function buildSubmission(form, overwrite) {
 		preview: {
 			questionBanks: {
 				questionBanks: {
-					[questionBankId]: questionBank,
+					[previewQuestionBankId]: questionBank,
 				},
 			},
 			companyExams: {
 				exams: {
-					[examId]: exam,
+					[previewExamId]: exam,
 				},
 				packages: {
-					[packageId]: packageNode,
+					[previewPackageId]: packageNode,
 				},
 			},
 		},
 	}
+}
+
+function requireSubmissionString(value, fieldName) {
+	const text = trimText(value)
+	if (!text) {
+		throw new Error(`${fieldName} is required`)
+	}
+	return text
+}
+
+function requireSubmissionKey(value, fieldName) {
+	const text = requireSubmissionString(value, fieldName)
+	if (!SUBMISSION_KEY_PATTERN.test(text)) {
+		throw new Error(`${fieldName} may only contain letters, numbers, underscores, dots, and dashes`)
+	}
+	return text
+}
+
+function coerceSubmissionInt(value, fieldName, options = {}) {
+	const { allowNone = false, minimum = null } = options
+
+	if (value === null || value === undefined || value === '') {
+		if (allowNone) {
+			return null
+		}
+		throw new Error(`${fieldName} is required`)
+	}
+
+	const number = Number(value)
+	if (!Number.isInteger(number)) {
+		throw new Error(`${fieldName} must be an integer`)
+	}
+
+	if (minimum !== null && number < minimum) {
+		throw new Error(`${fieldName} must be at least ${minimum}`)
+	}
+
+	return number
+}
+
+function coerceSubmissionBool(value, fieldName) {
+	if (typeof value === 'boolean') {
+		return value
+	}
+
+	if (typeof value === 'number') {
+		return Boolean(value)
+	}
+
+	if (typeof value === 'string') {
+		const normalized = value.trim().toLowerCase()
+		if (['true', '1', 'yes', 'on'].includes(normalized)) {
+			return true
+		}
+		if (['false', '0', 'no', 'off'].includes(normalized)) {
+			return false
+		}
+	}
+
+	throw new Error(`${fieldName} must be a boolean`)
+}
+
+function normalizeSubmissionMode(value, fieldName, options = {}) {
+	const { allowNone = false } = options
+	const normalized = trimText(value).toLowerCase()
+
+	if (!normalized) {
+		if (allowNone) {
+			return ''
+		}
+		throw new Error(`${fieldName} is required`)
+	}
+
+	if (!['practice', 'competitive', 'entrance'].includes(normalized)) {
+		throw new Error(`${fieldName} must be one of practice, competitive, or entrance`)
+	}
+
+	return normalized
+}
+
+function optionalSubmissionTextList(value, fieldName) {
+	if (value === null || value === undefined) {
+		return null
+	}
+
+	if (!Array.isArray(value)) {
+		throw new Error(`${fieldName} must be a list`)
+	}
+
+	const cleaned = []
+	value.forEach((item, index) => {
+		if (item === null) {
+			if (index === 0) {
+				cleaned.push(null)
+			}
+			return
+		}
+
+		const text = trimText(item)
+		if (text) {
+			cleaned.push(text)
+		}
+	})
+
+	return cleaned.length ? cleaned : null
+}
+
+function collectOptionalPositiveIntFields(source, fieldNames) {
+	return fieldNames.reduce((result, fieldName) => {
+		if (Object.hasOwn(source, fieldName) && source[fieldName] !== null && source[fieldName] !== '') {
+			result[fieldName] = coerceSubmissionInt(source[fieldName], fieldName, { minimum: 0 })
+		}
+		return result
+	}, {})
+}
+
+function validateQuestionBankSubmission(questionBankId, node) {
+	if (!isPlainObject(node)) {
+		throw new Error('questionBank must be an object')
+	}
+
+	const metadata = node.metadata
+	const questions = node.questions
+	if (!isPlainObject(metadata)) {
+		throw new Error('questionBank.metadata must be an object')
+	}
+	if (!isPlainObject(questions) || !Object.keys(questions).length) {
+		throw new Error('questionBank.questions must be a non-empty object')
+	}
+
+	const validatedQuestions = {}
+	for (const [questionKey, questionPayload] of Object.entries(questions)) {
+		const key = requireSubmissionKey(questionKey, `question key for ${questionBankId}`)
+		if (!isPlainObject(questionPayload)) {
+			throw new Error(`questionBank.questions.${key} must be an object`)
+		}
+
+		const questionType = requireSubmissionString(questionPayload.type, `questionBank.questions.${key}.type`)
+		const validatedQuestion = {
+			question: requireSubmissionString(questionPayload.question, `questionBank.questions.${key}.question`),
+			type: questionType,
+			correctAnswer: requireSubmissionString(questionPayload.correctAnswer, `questionBank.questions.${key}.correctAnswer`),
+			marks: coerceSubmissionInt(questionPayload.marks, `questionBank.questions.${key}.marks`, { minimum: 1 }),
+		}
+
+		const explanation = trimText(questionPayload.explanation)
+		if (explanation) {
+			validatedQuestion.explanation = explanation
+		}
+
+		const options = questionPayload.options
+		if (questionType.toLowerCase() === 'mcq') {
+			if (!isPlainObject(options) || Object.keys(options).length < 2) {
+				throw new Error(`questionBank.questions.${key}.options must include at least two choices for mcq questions`)
+			}
+
+			const validatedOptions = {}
+			for (const [optionKey, optionValue] of Object.entries(options)) {
+				const normalizedOptionKey = requireSubmissionKey(optionKey, `questionBank.questions.${key}.options key`)
+				validatedOptions[normalizedOptionKey] = requireSubmissionString(optionValue, `questionBank.questions.${key}.options.${normalizedOptionKey}`)
+			}
+
+			if (!Object.hasOwn(validatedOptions, validatedQuestion.correctAnswer)) {
+				throw new Error(`questionBank.questions.${key}.correctAnswer must match an option key`)
+			}
+			validatedQuestion.options = validatedOptions
+		} else if (isPlainObject(options) && Object.keys(options).length) {
+			validatedQuestion.options = Object.fromEntries(
+				Object.entries(options).map(([optionKey, optionValue]) => [
+					requireSubmissionKey(optionKey, `questionBank.questions.${key}.options key`),
+					requireSubmissionString(optionValue, `questionBank.questions.${key}.options.${optionKey}`),
+				])
+			)
+		}
+
+		validatedQuestions[key] = validatedQuestion
+	}
+
+	return {
+		metadata: {
+			chapter: requireSubmissionString(metadata.chapter, 'questionBank.metadata.chapter'),
+			difficulty: requireSubmissionString(metadata.difficulty, 'questionBank.metadata.difficulty'),
+			grade: requireSubmissionString(metadata.grade, 'questionBank.metadata.grade'),
+			subject: requireSubmissionString(metadata.subject, 'questionBank.metadata.subject'),
+			totalQuestions: coerceSubmissionInt(metadata.totalQuestions, 'questionBank.metadata.totalQuestions', { minimum: 1 }),
+		},
+		questions: validatedQuestions,
+	}
+}
+
+function validateExamSubmission(examId, questionBankId, node) {
+	if (!isPlainObject(node)) {
+		throw new Error('exam must be an object')
+	}
+
+	const validated = {
+		questionBankId: requireSubmissionKey(node.questionBankId, 'exam.questionBankId'),
+		maxAttempts: coerceSubmissionInt(node.maxAttempts, 'exam.maxAttempts', { minimum: 1 }),
+		questionPoolSize: coerceSubmissionInt(node.questionPoolSize, 'exam.questionPoolSize', { minimum: 1 }),
+		rankingEnabled: coerceSubmissionBool(node.rankingEnabled, 'exam.rankingEnabled'),
+		scoringEnabled: coerceSubmissionBool(node.scoringEnabled, 'exam.scoringEnabled'),
+		timeLimit: coerceSubmissionInt(node.timeLimit, 'exam.timeLimit', { minimum: 1 }),
+		totalQuestions: coerceSubmissionInt(node.totalQuestions, 'exam.totalQuestions', { minimum: 1 }),
+	}
+
+	if (validated.questionBankId !== questionBankId) {
+		throw new Error('exam.questionBankId must match questionBankId')
+	}
+
+	let examMode = normalizeSubmissionMode(node.mode, 'exam.mode', { allowNone: true })
+	if (!examMode) {
+		examMode = validated.rankingEnabled ? 'competitive' : 'practice'
+	}
+	validated.mode = examMode
+	validated.rankingEnabled = examMode === 'competitive'
+
+	if (node.passPercent !== null && node.passPercent !== undefined && node.passPercent !== '') {
+		validated.passPercent = coerceSubmissionInt(node.passPercent, 'exam.passPercent', { allowNone: true, minimum: 0 })
+	}
+
+	if (node.attemptRefillEnabled !== null && node.attemptRefillEnabled !== undefined) {
+		validated.attemptRefillEnabled = coerceSubmissionBool(node.attemptRefillEnabled, 'exam.attemptRefillEnabled')
+	}
+
+	const attemptRefillInterval = coerceSubmissionInt(node.attemptRefillIntervalMs, 'exam.attemptRefillIntervalMs', { allowNone: true, minimum: 1 })
+	if (attemptRefillInterval !== null) {
+		validated.attemptRefillIntervalMs = attemptRefillInterval
+	}
+
+	const title = trimText(node.title)
+	if (title) {
+		validated.title = title
+	}
+
+	const textKeys = ['instructions', 'instruction', 'rules'].filter((key) => Object.hasOwn(node, key))
+	if (textKeys.length > 1) {
+		throw new Error('exam may only include one of instructions, instruction, or rules')
+	}
+	if (textKeys.length) {
+		const textKey = textKeys[0]
+		const validatedList = optionalSubmissionTextList(node[textKey], `exam.${textKey}`)
+		if (validatedList) {
+			validated[textKey] = validatedList
+		}
+	}
+
+	if (node.scoring !== null && node.scoring !== undefined) {
+		if (!isPlainObject(node.scoring)) {
+			throw new Error('exam.scoring must be an object')
+		}
+		const validatedScoring = collectOptionalPositiveIntFields(node.scoring, ['diamondPercent', 'goldPercent', 'maxPoints', 'platinumPercent'])
+		if (Object.keys(validatedScoring).length) {
+			validated.scoring = validatedScoring
+		}
+	}
+
+	return validated
+}
+
+function validatePackageSubmission(packageId, examId, node) {
+	if (!isPlainObject(node)) {
+		throw new Error('package must be an object')
+	}
+
+	const subjects = node.subjects
+	if (!isPlainObject(subjects) || Object.keys(subjects).length !== 1) {
+		throw new Error('package.subjects must contain exactly one subject')
+	}
+
+	const [subjectKey, subjectPayload] = Object.entries(subjects)[0]
+	const normalizedSubjectKey = requireSubmissionKey(subjectKey, 'package subject key')
+	if (!isPlainObject(subjectPayload)) {
+		throw new Error('package subject payload must be an object')
+	}
+
+	const rounds = subjectPayload.rounds
+	if (!isPlainObject(rounds) || Object.keys(rounds).length !== 1) {
+		throw new Error('package subject rounds must contain exactly one round')
+	}
+
+	const [roundId, roundPayload] = Object.entries(rounds)[0]
+	const normalizedRoundId = requireSubmissionKey(roundId, 'package round id')
+	if (!isPlainObject(roundPayload)) {
+		throw new Error('package round payload must be an object')
+	}
+
+	const validatedRound = {
+		examId: requireSubmissionKey(roundPayload.examId, 'package round examId'),
+		name: requireSubmissionString(roundPayload.name, 'package round name'),
+		status: requireSubmissionString(roundPayload.status, 'package round status'),
+	}
+	if (validatedRound.examId !== examId) {
+		throw new Error('package round examId must match examId')
+	}
+
+	const chapter = trimText(roundPayload.chapter)
+	if (chapter) {
+		validatedRound.chapter = chapter
+	}
+
+	Object.assign(
+		validatedRound,
+		collectOptionalPositiveIntFields(roundPayload, ['createdAt', 'updatedAt', 'startTimestamp', 'endTimestamp', 'resultReleaseTimestamp'])
+	)
+
+	const validatedPackage = {
+		active: coerceSubmissionBool(node.active, 'package.active'),
+		description: requireSubmissionString(node.description, 'package.description'),
+		grade: requireSubmissionString(node.grade, 'package.grade'),
+		name: requireSubmissionString(node.name, 'package.name'),
+		type: normalizeSubmissionMode(node.type, 'package.type'),
+		subjects: {
+			[normalizedSubjectKey]: {
+				name: requireSubmissionString(subjectPayload.name, 'package subject name'),
+				rounds: {
+					[normalizedRoundId]: validatedRound,
+				},
+			},
+		},
+	}
+
+	if (validatedPackage.type === 'entrance') {
+		validatedPackage.entranceYear = coerceSubmissionInt(node.entranceYear, 'package.entranceYear', { minimum: 1900 })
+	}
+
+	const packageIcon = trimText(node.packageIcon)
+	if (packageIcon) {
+		validatedPackage.packageIcon = packageIcon
+	}
+
+	return {
+		package: validatedPackage,
+		subjectKey: normalizedSubjectKey,
+		roundId: normalizedRoundId,
+	}
+}
+
+function validateCompanyExamSubmission(payload) {
+	if (!isPlainObject(payload)) {
+		throw new Error('Request body must be an object')
+	}
+
+	const questionBankId = requireSubmissionKey(payload.questionBankId, 'questionBankId')
+	const examId = requireSubmissionKey(payload.examId, 'examId')
+	const packageId = requireSubmissionKey(payload.packageId, 'packageId')
+
+	coerceSubmissionBool(payload.overwrite, 'overwrite')
+	validateQuestionBankSubmission(questionBankId, payload.questionBank)
+	validateExamSubmission(examId, questionBankId, payload.exam)
+	validatePackageSubmission(packageId, examId, payload.package)
+	return { questionBankId, examId, packageId }
 }
 
 function StatCard({ label, value, tone = 'teal' }) {
@@ -877,10 +1346,15 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const [draftState, setDraftState] = useState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
 	const [draftLibrary, setDraftLibrary] = useState({ loading: true, error: '', drafts: [] })
 	const [assetUploadState, setAssetUploadState] = useState({ loadingKey: '', error: '', success: '' })
+	const [questionBankImportState, setQuestionBankImportState] = useState(() => createQuestionBankImportState())
 	const [activeDraftId, setActiveDraftId] = useState('')
 	const [isDraftLibraryVisible, setIsDraftLibraryVisible] = useState(false)
 	const [allowOverwrite, setAllowOverwrite] = useState(false)
 	const [manualIds, setManualIds] = useState(() => createManualIdState())
+	const autoPackageDefaultsRef = useRef({ packageId: '', name: '', description: '', packageIcon: '', entranceYear: '', active: true })
+	const previousAutoSubjectNameRef = useRef('')
+	const previousAutoRoundIdRef = useRef('')
+	const previousAutoRoundNameRef = useRef('')
 	const [stageVisibility, setStageVisibility] = useState(() => ({
 		package: true,
 		exam: false,
@@ -889,12 +1363,16 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 	const { payload } = buildSubmission(form, allowOverwrite)
 	const generatedIds = buildGeneratedIds(form)
-	const suggestedRoundId = buildSuggestedRoundId(form)
 	const entranceFlow = isEntranceFlow(form)
 	const examMode = normalizeExamMode(form.package.type)
 	const competitiveExams = overview.exams.filter((item) => item.mode === 'competitive')
 	const practiceExams = overview.exams.filter((item) => item.mode === 'practice')
 	const entranceExams = overview.exams.filter((item) => item.mode === 'entrance')
+	const reusablePackage = manualIds.package ? null : findReusablePackage(overview.packages, form, generatedIds.packageId)
+	const reusablePackageSubject = findPackageSubject(reusablePackage, form.package.subjectKey, form.package.subjectName)
+	const reusableSubjectRounds = Array.isArray(reusablePackageSubject?.rounds) ? reusablePackageSubject.rounds : []
+	const suggestedRoundId = buildSuggestedRoundId(form, reusableSubjectRounds)
+	const suggestedRoundName = buildSuggestedRoundName(form, suggestedRoundId)
 	const activeDraft = draftLibrary.drafts.find((item) => item.draftId === activeDraftId) || null
 	const currentRoundId = trimText(form.package.roundId) || suggestedRoundId
 	const startedQuestionCount = countStartedQuestions(form)
@@ -921,16 +1399,57 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	const currentModeExamCount = examMode === 'competitive' ? competitiveExams.length : examMode === 'entrance' ? entranceExams.length : practiceExams.length
 	const currentModeExamLabel = `${formatModeLabel(examMode)} Exams`
 	const activeWorkspaceLabel = activeDraft?.label || activeDraft?.packageId || 'New package draft'
-	const workspaceTargetsExistingRecord = (candidateForm) => {
-		const nextQuestionBankId = trimText(candidateForm?.questionBankId)
-		const nextExamId = trimText(candidateForm?.examId)
+	const reusablePackageSubjectCount = reusablePackage?.subjectCount ?? Object.keys(reusablePackage?.subjects || {}).length
+	const reusableSubjectRoundLabels = reusableSubjectRounds.map((round) => {
+		const chapterToken = trimText(round?.chapter)
+		return chapterToken ? `${round.roundId} - ${formatReadableToken(chapterToken)}` : round.roundId
+	})
+	const findExistingRoundConflict = (candidateForm) => {
 		const nextPackageId = trimText(candidateForm?.packageId)
+		const nextSubjectKey = trimText(candidateForm?.package?.subjectKey)
+		const nextRoundId = trimText(candidateForm?.package?.roundId)
 
-		return Boolean(
-			(nextQuestionBankId && overview.questionBanks.some((item) => item.questionBankId === nextQuestionBankId)) ||
-			(nextExamId && overview.exams.some((item) => item.examId === nextExamId)) ||
-			(nextPackageId && overview.packages.some((item) => item.packageId === nextPackageId))
+		if (!nextPackageId || !nextSubjectKey || !nextRoundId) {
+			return null
+		}
+
+		const matchingPackage = overview.packages.find((item) => trimText(item?.packageId) === nextPackageId)
+		if (!isPlainObject(matchingPackage?.subjects)) {
+			return null
+		}
+
+		const matchingSubject = Object.values(matchingPackage.subjects).find(
+			(item) => normalizeLookupToken(item?.subjectKey) === normalizeLookupToken(nextSubjectKey)
 		)
+		if (!matchingSubject || !Array.isArray(matchingSubject.rounds)) {
+			return null
+		}
+
+		return matchingSubject.rounds.find((item) => trimText(item?.roundId) === nextRoundId) || null
+	}
+	const getPublishConflictMessage = (candidateForm) => {
+		const nextQuestionBankId = trimText(candidateForm?.questionBankId)
+		if (nextQuestionBankId && overview.questionBanks.some((item) => item.questionBankId === nextQuestionBankId)) {
+			return `questionBankId ${nextQuestionBankId} already exists in Platform1. Change the ID or enable Allow overwrite to replace it.`
+		}
+
+		const nextExamId = trimText(candidateForm?.examId)
+		if (nextExamId && overview.exams.some((item) => item.examId === nextExamId)) {
+			return `examId ${nextExamId} already exists in Platform1. Change the ID or enable Allow overwrite to replace it.`
+		}
+
+		const existingRound = findExistingRoundConflict(candidateForm)
+		if (existingRound) {
+			const nextPackageId = trimText(candidateForm?.packageId)
+			const nextSubjectKey = trimText(candidateForm?.package?.subjectKey)
+			const nextRoundId = trimText(candidateForm?.package?.roundId)
+			return `round ${nextRoundId} already exists for package ${nextPackageId}/${nextSubjectKey} in Platform1. Use a new round ID or enable Allow overwrite to replace it.`
+		}
+
+		return ''
+	}
+	const workspaceTargetsExistingRecord = (candidateForm) => {
+		return Boolean(getPublishConflictMessage(candidateForm))
 	}
 
 	useEffect(() => {
@@ -946,7 +1465,12 @@ export default function ExamPage({ routeMode = 'practice' }) {
 		setAllowOverwrite(false)
 		setForm(createInitialForm(normalizedRouteMode))
 		setManualIds(createManualIdState())
+		autoPackageDefaultsRef.current = { packageId: '', name: '', description: '', packageIcon: '', entranceYear: '', active: true }
+		previousAutoSubjectNameRef.current = ''
+		previousAutoRoundIdRef.current = ''
+		previousAutoRoundNameRef.current = ''
 		setAssetUploadState({ loadingKey: '', error: '', success: '' })
+		setQuestionBankImportState(createQuestionBankImportState())
 		setActiveDraftId('')
 		setIsDraftLibraryVisible(false)
 		setDraftState({ loading: false, error: '', success: '', lastSavedAt: null, hasDraft: false })
@@ -980,11 +1504,83 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 	useEffect(() => {
 		setForm((current) => {
-			const currentRoundId = trimText(current.package.roundId)
-			const nextRoundId = buildSuggestedRoundId(current)
-			const shouldReplaceRoundId = !currentRoundId || ['R1', 'P1', 'E1'].includes(currentRoundId)
+			if (!reusablePackage || manualIds.package) {
+				autoPackageDefaultsRef.current = { packageId: '', name: '', description: '', packageIcon: '', entranceYear: '', active: true }
+				return current
+			}
 
-			if (!shouldReplaceRoundId || currentRoundId === nextRoundId) {
+			const previousDefaults = autoPackageDefaultsRef.current
+			const nextDefaults = {
+				packageId: trimText(reusablePackage.packageId),
+				name: trimText(reusablePackage.name),
+				description: trimText(reusablePackage.description),
+				packageIcon: trimText(reusablePackage.packageIcon),
+				entranceYear: reusablePackage.entranceYear ? String(reusablePackage.entranceYear) : '',
+				active: Boolean(reusablePackage.active),
+			}
+			autoPackageDefaultsRef.current = nextDefaults
+
+			const currentPackage = current.package
+			const nextPackage = { ...currentPackage }
+			let packageChanged = false
+			let packageId = current.packageId
+
+			if (!trimText(current.packageId) || trimText(current.packageId) === previousDefaults.packageId) {
+				if (packageId !== nextDefaults.packageId) {
+					packageId = nextDefaults.packageId
+				}
+			}
+
+			if ((!trimText(currentPackage.name) || trimText(currentPackage.name) === previousDefaults.name) && nextPackage.name !== nextDefaults.name) {
+				nextPackage.name = nextDefaults.name
+				packageChanged = true
+			}
+
+			if ((!trimText(currentPackage.description) || trimText(currentPackage.description) === previousDefaults.description) && nextPackage.description !== nextDefaults.description) {
+				nextPackage.description = nextDefaults.description
+				packageChanged = true
+			}
+
+			if ((!trimText(currentPackage.packageIcon) || trimText(currentPackage.packageIcon) === previousDefaults.packageIcon) && nextDefaults.packageIcon && nextPackage.packageIcon !== nextDefaults.packageIcon) {
+				nextPackage.packageIcon = nextDefaults.packageIcon
+				packageChanged = true
+			}
+
+			if (entranceFlow && (!trimText(currentPackage.entranceYear) || trimText(currentPackage.entranceYear) === previousDefaults.entranceYear) && nextDefaults.entranceYear && nextPackage.entranceYear !== nextDefaults.entranceYear) {
+				nextPackage.entranceYear = nextDefaults.entranceYear
+				packageChanged = true
+			}
+
+			if (currentPackage.active === previousDefaults.active && nextPackage.active !== nextDefaults.active) {
+				nextPackage.active = nextDefaults.active
+				packageChanged = true
+			}
+
+			if (!packageChanged && current.packageId === packageId) {
+				return current
+			}
+
+			return {
+				...current,
+				packageId,
+				package: packageChanged ? nextPackage : current.package,
+			}
+		})
+	}, [entranceFlow, manualIds.package, reusablePackage])
+
+	useEffect(() => {
+		setForm((current) => {
+			const nextSubjectName = trimText(reusablePackageSubject?.name) || formatReadableToken(current.package.subjectKey)
+			const previousAutoSubjectName = previousAutoSubjectNameRef.current
+			previousAutoSubjectNameRef.current = nextSubjectName
+
+			if (!nextSubjectName) {
+				return current
+			}
+
+			const currentSubjectName = trimText(current.package.subjectName)
+			const shouldReplace = !currentSubjectName || currentSubjectName === previousAutoSubjectName
+			if (!shouldReplace || currentSubjectName === nextSubjectName) {
 				return current
 			}
 
@@ -992,11 +1588,83 @@ export default function ExamPage({ routeMode = 'practice' }) {
 				...current,
 				package: {
 					...current.package,
-					roundId: nextRoundId,
+					subjectName: nextSubjectName,
 				},
 			}
 		})
-	}, [form.package.type])
+	}, [form.package.subjectKey, reusablePackageSubject])
+
+	useEffect(() => {
+		setForm((current) => {
+			const nextMetadata = {
+				...current.questionBank.metadata,
+				grade: trimText(current.package.grade),
+				subject: trimText(current.package.subjectKey),
+				chapter: trimText(current.package.round.chapter),
+			}
+
+			if (
+				current.questionBank.metadata.grade === nextMetadata.grade &&
+				current.questionBank.metadata.subject === nextMetadata.subject &&
+				current.questionBank.metadata.chapter === nextMetadata.chapter
+			) {
+				return current
+			}
+
+			return {
+				...current,
+				questionBank: {
+					...current.questionBank,
+					metadata: nextMetadata,
+				},
+			}
+		})
+	}, [form.package.grade, form.package.subjectKey, form.package.round.chapter])
+
+	useEffect(() => {
+		setForm((current) => {
+			const currentRoundId = trimText(current.package.roundId)
+			const previousAutoRoundId = previousAutoRoundIdRef.current
+			previousAutoRoundIdRef.current = suggestedRoundId
+			const shouldReplaceRoundId = !currentRoundId || currentRoundId === previousAutoRoundId || ['R1', 'P1', 'E1'].includes(currentRoundId)
+
+			if (!shouldReplaceRoundId || currentRoundId === suggestedRoundId) {
+				return current
+			}
+
+			return {
+				...current,
+				package: {
+					...current.package,
+					roundId: suggestedRoundId,
+				},
+			}
+		})
+	}, [suggestedRoundId])
+
+	useEffect(() => {
+		setForm((current) => {
+			const currentRoundName = trimText(current.package.round.name)
+			const previousAutoRoundName = previousAutoRoundNameRef.current
+			previousAutoRoundNameRef.current = suggestedRoundName
+			const shouldReplaceRoundName = !currentRoundName || currentRoundName === previousAutoRoundName
+
+			if (!shouldReplaceRoundName || currentRoundName === suggestedRoundName) {
+				return current
+			}
+
+			return {
+				...current,
+				package: {
+					...current.package,
+					round: {
+						...current.package.round,
+						name: suggestedRoundName,
+					},
+				},
+			}
+		})
+	}, [suggestedRoundName])
 
 	useEffect(() => {
 		setForm((current) => {
@@ -1154,6 +1822,71 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			})
 		} catch (error) {
 			setAssetUploadState({ loadingKey: '', error: error.message || 'Upload failed', success: '' })
+		}
+	}
+
+	async function handleQuestionBankPdfImport(file) {
+		if (!file) {
+			return
+		}
+
+		setQuestionBankImportState({
+			loading: true,
+			error: '',
+			success: '',
+			warnings: [],
+		})
+
+		try {
+			const body = new FormData()
+			body.append('file', file)
+
+			const response = await fetch(`${API_BASE_URL}/api/company-exams/question-banks/import-pdf`, {
+				method: 'POST',
+				body,
+			})
+			const data = await response.json()
+
+			if (!response.ok) {
+				throw new Error(data.error || 'Unable to import questions from this PDF')
+			}
+
+			const importedQuestions = Array.isArray(data.questions)
+				? data.questions.map((question, index) => normalizeDraftQuestion(question, index))
+				: []
+
+			if (!importedQuestions.length) {
+				throw new Error('The PDF was parsed, but no questions were returned')
+			}
+
+			const warningList = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : []
+			const importedTotalQuestions = String(data.metadata?.totalQuestions || importedQuestions.length)
+
+			updateForm((current) => ({
+				...current,
+				questionBank: {
+					...current.questionBank,
+					metadata: {
+						...current.questionBank.metadata,
+						totalQuestions: importedTotalQuestions,
+					},
+					questions: importedQuestions,
+				},
+			}))
+
+			setQuestionBankImportState({
+				loading: false,
+				error: '',
+				success: `${importedQuestions.length} question${importedQuestions.length === 1 ? '' : 's'} imported from ${file.name}.${warningList.length ? ` Review ${warningList.length} parser note${warningList.length === 1 ? '' : 's'} below.` : ''}`,
+				warnings: warningList,
+			})
+		} catch (error) {
+			setQuestionBankImportState({
+				loading: false,
+				error: error.message || 'Unable to import questions from this PDF',
+				success: '',
+				warnings: [],
+			})
 		}
 	}
 
@@ -1329,6 +2062,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			success: '',
 		}))
 		setAssetUploadState({ loadingKey: '', error: '', success: '' })
+		setQuestionBankImportState(createQuestionBankImportState())
 
 		try {
 			const response = await fetch(`${API_BASE_URL}/api/company-exams/drafts/${encodeURIComponent(draftId)}`)
@@ -1339,6 +2073,10 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 			const nextForm = normalizeDraftForm(data.form, normalizedRouteMode)
 
+			autoPackageDefaultsRef.current = { packageId: '', name: '', description: '', packageIcon: '', entranceYear: '', active: true }
+			previousAutoSubjectNameRef.current = ''
+			previousAutoRoundIdRef.current = ''
+			previousAutoRoundNameRef.current = ''
 			setForm(nextForm)
 			setManualIds(normalizeManualIds(data.manualIds))
 			setActiveDraftId(data.draftId)
@@ -1488,10 +2226,15 @@ export default function ExamPage({ routeMode = 'practice' }) {
 			}
 		}
 
+		autoPackageDefaultsRef.current = { packageId: '', name: '', description: '', packageIcon: '', entranceYear: '', active: true }
+		previousAutoSubjectNameRef.current = ''
+		previousAutoRoundIdRef.current = ''
+		previousAutoRoundNameRef.current = ''
 		setForm(createInitialForm(normalizedRouteMode))
 		setManualIds(createManualIdState())
 		setAllowOverwrite(false)
 		setAssetUploadState({ loadingKey: '', error: '', success: '' })
+		setQuestionBankImportState(createQuestionBankImportState())
 		setActiveDraftId('')
 		setStageVisibility({ package: true, exam: false, questionBank: false })
 		setDraftState({
@@ -1506,6 +2249,19 @@ export default function ExamPage({ routeMode = 'practice' }) {
 	async function handleSubmit(event) {
 		event.preventDefault()
 		setSubmitState({ loading: true, error: '', success: '' })
+
+		try {
+			validateCompanyExamSubmission(payload)
+		} catch (error) {
+			setSubmitState({ loading: false, error: error.message || 'Save failed', success: '' })
+			return
+		}
+
+		const publishConflictMessage = allowOverwrite ? '' : getPublishConflictMessage(form)
+		if (publishConflictMessage) {
+			setSubmitState({ loading: false, error: publishConflictMessage, success: '' })
+			return
+		}
 
 		try {
 			const response = await fetch(`${API_BASE_URL}/api/platform/company-exams/save-record`, {
@@ -1697,7 +2453,7 @@ export default function ExamPage({ routeMode = 'practice' }) {
 						</div>
 
 						<div className='builder-grid exam-builder-grid'>
-							<form className={`builder-form-panel exam-builder-panel ${questionBankFocus ? 'question-bank-focus' : ''}`} onSubmit={handleSubmit}>
+							<form className={`builder-form-panel exam-builder-panel ${questionBankFocus ? 'question-bank-focus' : ''}`} onSubmit={handleSubmit} noValidate>
 								<section className={`form-card package-card exam-stage-card exam-stage-package is-open ${packageStageTone} ${questionBankFocus ? 'question-bank-focus' : ''}`}>
 									<div className='exam-stage-header exam-package-header'>
 										<div className='exam-stage-header-row'>
@@ -1745,6 +2501,47 @@ export default function ExamPage({ routeMode = 'practice' }) {
 									</div>
 
 									<div className='exam-stage-body' id='package-stage-body'>
+										<div className={`exam-smart-defaults ${reusablePackage ? 'is-linked' : 'is-empty'}`}>
+											<div className='exam-smart-defaults-copy'>
+												<p className='config-key'>Smart defaults</p>
+												<h3>{reusablePackage ? `Reusing ${reusablePackage.packageId}` : 'No matching package yet'}</h3>
+												<p>
+													{reusablePackage
+														? `Package-level values are loaded from ${reusablePackage.name || reusablePackage.packageId}. Change only the subject and round details that are new.`
+														: 'When this grade already has a saved package for the current mode, the shared package details are filled automatically so you do not enter them again.'}
+												</p>
+											</div>
+
+											<div className='exam-smart-defaults-metrics'>
+												<div>
+													<span className='config-key'>Package</span>
+													<strong>{reusablePackage ? reusablePackage.packageId : 'New package'}</strong>
+												</div>
+												<div>
+													<span className='config-key'>Subjects</span>
+													<strong>{reusablePackage ? reusablePackageSubjectCount : 0}</strong>
+												</div>
+												<div>
+													<span className='config-key'>This subject rounds</span>
+													<strong>{reusableSubjectRounds.length}</strong>
+												</div>
+												<div>
+													<span className='config-key'>Next round</span>
+													<strong>{suggestedRoundId}</strong>
+												</div>
+											</div>
+
+											<p className='exam-smart-defaults-note'>
+												{reusablePackage
+													? reusablePackageSubject
+														? reusableSubjectRoundLabels.length
+															? `${reusablePackageSubject.name || packageSubjectLabel} already has ${reusableSubjectRounds.length} round${reusableSubjectRounds.length === 1 ? '' : 's'}: ${reusableSubjectRoundLabels.join(', ')}. ${suggestedRoundId} is ready by default.`
+															: `${reusablePackageSubject.name || packageSubjectLabel} already exists in this package. ${suggestedRoundId} is ready as the next round.`
+														: `${packageSubjectLabel} is new inside this package, so ${suggestedRoundId} is prepared as the first round.`
+													: 'Save the first package once, and the next subject you add for this grade and mode will open with shared package values already in place.'}
+											</p>
+										</div>
+
 										<div className='form-grid two-column exam-package-grid'>
 											<label className='field'>
 												<div className='field-heading'>
@@ -1771,6 +2568,11 @@ export default function ExamPage({ routeMode = 'practice' }) {
 											<label className='field'>
 												<span>Package name</span>
 												<input value={form.package.name} onChange={(event) => updatePackageField('name', event.target.value)} placeholder='National Competitive Exam' required />
+													<small className='field-hint'>
+														{reusablePackage
+															? 'Loaded from the matching package. Edit it only when the shared package record itself should change.'
+															: 'This stays at package level and is reused for subjects stored under the same package.'}
+													</small>
 											</label>
 
 											<label className='field'>
@@ -1781,11 +2583,13 @@ export default function ExamPage({ routeMode = 'practice' }) {
 											<label className='field'>
 												<span>Subject key</span>
 												<input value={form.package.subjectKey} onChange={(event) => updatePackageField('subjectKey', event.target.value)} placeholder='general_science' required />
+													<small className='field-hint'>Use the subject database key, such as mathematics or english.</small>
 											</label>
 
 											<label className='field'>
 												<span>Subject name</span>
 												<input value={form.package.subjectName} onChange={(event) => updatePackageField('subjectName', event.target.value)} placeholder='General Science' required />
+													<small className='field-hint'>This is auto-filled from saved package data when the subject already exists.</small>
 											</label>
 
 											{entranceFlow ? (
@@ -1807,12 +2611,17 @@ export default function ExamPage({ routeMode = 'practice' }) {
 											<label className='field'>
 												<span>Round ID</span>
 												<input value={form.package.roundId} onChange={(event) => updatePackageField('roundId', event.target.value)} placeholder={suggestedRoundId} required />
-												<small className='field-hint'>Suggested round ID: {suggestedRoundId}. Competitive uses R1, practice uses P1, entrance uses E1.</small>
+													<small className='field-hint'>
+														{reusablePackageSubject
+															? `${suggestedRoundId} is suggested because this subject already has ${reusableSubjectRounds.length} round${reusableSubjectRounds.length === 1 ? '' : 's'} in the package.`
+															: `Suggested round ID: ${suggestedRoundId}. Competitive uses R1, R2, R3 while practice uses P1, P2, P3.`}
+													</small>
 											</label>
 
 											<label className='field'>
 												<span>Round name</span>
-												<input value={form.package.round.name} onChange={(event) => updateRoundField('name', event.target.value)} placeholder='Round 1 - Chapter 1' required />
+													<input value={form.package.round.name} onChange={(event) => updateRoundField('name', event.target.value)} placeholder={suggestedRoundName} required />
+													<small className='field-hint'>Until you type your own label, this stays aligned with the next round number.</small>
 											</label>
 
 											<label className='field'>
@@ -1828,6 +2637,11 @@ export default function ExamPage({ routeMode = 'practice' }) {
 											<label className='field field-span-2'>
 												<span>Description</span>
 												<textarea value={form.package.description} onChange={(event) => updatePackageField('description', event.target.value)} placeholder='Practice without ranking' rows='3' required />
+													<small className='field-hint'>
+														{reusablePackage
+															? 'Reused from the shared package so you do not type it again for each subject.'
+															: 'Write the shared package description once. Future subjects in this package will reuse it.'}
+													</small>
 											</label>
 
 											<div className='field field-span-2 exam-package-icon-field'>
@@ -2171,17 +2985,20 @@ export default function ExamPage({ routeMode = 'practice' }) {
 
 														<label className='field'>
 															<span>Subject</span>
-															<input value={form.questionBank.metadata.subject} onChange={(event) => updateMetadata('subject', event.target.value)} placeholder='general_science' required />
+															<input className='field-auto-input' value={form.questionBank.metadata.subject} readOnly required />
+															<small className='field-hint'>Pulled from the package subject key so you do not enter it again.</small>
 														</label>
 
 														<label className='field'>
 															<span>Grade</span>
-															<input value={form.questionBank.metadata.grade} onChange={(event) => updateMetadata('grade', event.target.value)} placeholder='grade7' required />
+															<input className='field-auto-input' value={form.questionBank.metadata.grade} readOnly required />
+															<small className='field-hint'>Synced from the package grade.</small>
 														</label>
 
 														<label className='field'>
 															<span>Chapter</span>
-															<input value={form.questionBank.metadata.chapter} onChange={(event) => updateMetadata('chapter', event.target.value)} placeholder='ch1' required />
+															<input className='field-auto-input' value={form.questionBank.metadata.chapter} readOnly required />
+															<small className='field-hint'>Set the chapter once in the round section above. The question bank follows it automatically.</small>
 														</label>
 
 														<label className='field'>
@@ -2198,7 +3015,41 @@ export default function ExamPage({ routeMode = 'practice' }) {
 															<span>Total questions</span>
 															<input type='number' min='1' value={form.questionBank.metadata.totalQuestions} onChange={(event) => updateMetadata('totalQuestions', event.target.value)} placeholder='120' />
 														</label>
+
+														<div className='field field-span-2 exam-package-icon-field'>
+															<span>Import questions from PDF</span>
+															<label className='secondary-action exam-package-icon-upload'>
+																<input
+																	type='file'
+																	accept='application/pdf,.pdf'
+																	hidden
+																	onChange={(event) => {
+																		const nextFile = event.target.files?.[0]
+																		if (nextFile) {
+																			handleQuestionBankPdfImport(nextFile)
+																		}
+																		event.target.value = ''
+																	}}
+																/>
+																<span>{questionBankImportState.loading ? 'Importing PDF...' : 'Upload exam PDF'}</span>
+															</label>
+															<span className='field-hint'>Use a text-based PDF where each question starts with 1. or 1), choices start with A./A), and answers use Answer: or Correct Answer:. Importing replaces the current draft questions.</span>
+														</div>
 													</div>
+
+													{questionBankImportState.error ? <div className='status-banner warning'>{questionBankImportState.error}</div> : null}
+													{questionBankImportState.success ? <div className='status-banner success-banner'>{questionBankImportState.success}</div> : null}
+													{questionBankImportState.warnings.length ? (
+														<div className='status-banner warning'>
+															<strong>Import notes</strong>
+															<div className='stack-list tight-stack'>
+																{questionBankImportState.warnings.slice(0, 5).map((warning, index) => (
+																	<p key={`${warning}-${index}`}>{warning}</p>
+																))}
+																{questionBankImportState.warnings.length > 5 ? <p>{questionBankImportState.warnings.length - 5} more import note{questionBankImportState.warnings.length - 5 === 1 ? '' : 's'} hidden.</p> : null}
+															</div>
+														</div>
+													) : null}
 
 													<div className='row-header'>
 														<h3>Questions</h3>
@@ -2268,6 +3119,8 @@ export default function ExamPage({ routeMode = 'practice' }) {
 								</section>
 
 								<div className='submit-row exam-submit-row'>
+									{submitState.error ? <div className='status-banner warning'>{submitState.error}</div> : null}
+									{submitState.success ? <div className='status-banner success-banner'>{submitState.success}</div> : null}
 									<div className='exam-submit-actions'>
 										<button className='secondary-action' type='button' onClick={handleSaveDraft} disabled={submitState.loading || draftState.loading}>
 											{draftState.loading ? 'Working...' : activeDraftId ? 'Update draft' : 'Save draft'}
