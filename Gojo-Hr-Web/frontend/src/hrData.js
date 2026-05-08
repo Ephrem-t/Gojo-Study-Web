@@ -1,6 +1,7 @@
 import api from './api';
 
 const HR_RESOURCE_CACHE = new Map();
+const HR_PERSISTED_RESOURCE_PREFIX = 'gojo-hr:resource-cache:';
 
 function normalizeCollection(data) {
   if (Array.isArray(data)) {
@@ -11,6 +12,92 @@ function normalizeCollection(data) {
     ...(payload || {}),
     id,
   }));
+}
+
+function getHrResourceStorage() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function buildPersistedHrResourceKey(cacheKey) {
+  return `${HR_PERSISTED_RESOURCE_PREFIX}${cacheKey}`;
+}
+
+function readPersistedHrResource(cacheKey, ttlMs) {
+  if (ttlMs <= 0) {
+    return { found: false, data: null };
+  }
+
+  const storage = getHrResourceStorage();
+  if (!storage) {
+    return { found: false, data: null };
+  }
+
+  const storageKey = buildPersistedHrResourceKey(cacheKey);
+
+  try {
+    const rawValue = storage.getItem(storageKey);
+    if (!rawValue) {
+      return { found: false, data: null };
+    }
+
+    const parsedValue = JSON.parse(rawValue);
+    const timestamp = Number(parsedValue?.timestamp || 0);
+    if (!Number.isFinite(timestamp) || (Date.now() - timestamp) >= ttlMs) {
+      storage.removeItem(storageKey);
+      return { found: false, data: null };
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(parsedValue || {}, 'data')) {
+      storage.removeItem(storageKey);
+      return { found: false, data: null };
+    }
+
+    return { found: true, data: parsedValue.data };
+  } catch {
+    try {
+      storage.removeItem(storageKey);
+    } catch {
+      // Ignore cleanup errors for corrupted cache entries.
+    }
+    return { found: false, data: null };
+  }
+}
+
+function writePersistedHrResource(cacheKey, data) {
+  const storage = getHrResourceStorage();
+  if (!storage) {
+    return;
+  }
+
+  try {
+    storage.setItem(buildPersistedHrResourceKey(cacheKey), JSON.stringify({
+      data,
+      timestamp: Date.now(),
+    }));
+  } catch {
+    // Ignore storage quota or serialization errors and keep the in-memory cache working.
+  }
+}
+
+function deletePersistedHrResource(cacheKey) {
+  const storage = getHrResourceStorage();
+  if (!storage) {
+    return;
+  }
+
+  try {
+    storage.removeItem(buildPersistedHrResourceKey(cacheKey));
+  } catch {
+    // Ignore cleanup errors.
+  }
 }
 
 export function getCachedHrResource(cacheKey, loader, ttlMs = 60 * 1000) {
@@ -25,13 +112,21 @@ export function getCachedHrResource(cacheKey, loader, ttlMs = 60 * 1000) {
     return Promise.resolve(existing.data);
   }
 
+  const persisted = readPersistedHrResource(cacheKey, ttlMs);
+  if (persisted.found) {
+    HR_RESOURCE_CACHE.set(cacheKey, { data: persisted.data, timestamp: now });
+    return Promise.resolve(persisted.data);
+  }
+
   const promise = loader()
     .then((data) => {
       HR_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
+      writePersistedHrResource(cacheKey, data);
       return data;
     })
     .catch((error) => {
       HR_RESOURCE_CACHE.delete(cacheKey);
+      deletePersistedHrResource(cacheKey);
       throw error;
     });
 
@@ -41,6 +136,7 @@ export function getCachedHrResource(cacheKey, loader, ttlMs = 60 * 1000) {
 
 export function setCachedHrResource(cacheKey, data) {
   HR_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
+  writePersistedHrResource(cacheKey, data);
 }
 
 export const HR_EMPLOYEES_CACHE_KEY = 'hr:employees:summary:all';

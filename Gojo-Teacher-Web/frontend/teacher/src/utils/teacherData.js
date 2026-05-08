@@ -4,10 +4,12 @@ import { RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveAvatarImage } from "./profileImage";
 import {
   buildChatKeyCandidates,
+  buildChatSummaryPath,
+  buildOwnerChatSummariesPath,
   chatKeyIncludesUser,
-  formatLastMessagePreview,
   getConversationSortTime,
   mapInBatches,
+  normalizeChatSummaryValue,
   parseChatParticipantIds,
   resolveExistingChatKey,
 } from "./chatRtdb";
@@ -545,86 +547,68 @@ export const fetchTeacherConversationSummaries = async ({
     }
   });
 
-  const shallowIndex = await fetchCachedJson(`${normalizedBase}/Chats.json?shallow=true`, {
-    ttlMs: CHAT_INDEX_TTL_MS,
+  const ownerSummariesRaw = await fetchCachedJson(`${normalizedBase}/${buildOwnerChatSummariesPath(normalizedTeacherUserId)}.json`, {
+    ttlMs: CHAT_SUMMARY_TTL_MS,
     fallbackValue: {},
     force,
   });
-  const chatKeySet = new Set(Object.keys(shallowIndex || {}));
+  const ownerSummaryMap = ownerSummariesRaw && typeof ownerSummariesRaw === "object" ? ownerSummariesRaw : {};
 
-  let candidateChatIds = [];
-  if (contactHintsByUserId.size) {
-    candidateChatIds = [...contactHintsByUserId.keys()]
-      .map((contactUserId) => resolveExistingChatKey(chatKeySet, normalizedTeacherUserId, contactUserId))
-      .filter(Boolean);
-
-    if (!candidateChatIds.length && contactHintsByUserId.size <= 12) {
-      candidateChatIds = [...contactHintsByUserId.keys()]
-        .flatMap((contactUserId) => buildChatKeyCandidates(normalizedTeacherUserId, contactUserId))
-        .filter(Boolean);
-    }
-  } else {
-    candidateChatIds = [...chatKeySet].filter((chatKey) => chatKeyIncludesUser(chatKey, normalizedTeacherUserId));
-  }
-
-  candidateChatIds = [...new Set(candidateChatIds)];
-  if (!candidateChatIds.length) {
-    return [];
-  }
-
-  const rawSummaries = await mapInBatches(candidateChatIds, 10, async (chatId) => {
-    const [participants, unreadForMeRaw, lastMessage] = await Promise.all([
-      fetchCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(chatId)}/participants.json`, {
-        ttlMs: CHAT_SUMMARY_TTL_MS,
-        fallbackValue: {},
-        force,
-      }),
-      fetchCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(chatId)}/unread/${encodeURIComponent(normalizedTeacherUserId)}.json`, {
-        ttlMs: CHAT_SUMMARY_TTL_MS,
-        fallbackValue: 0,
-        force,
-      }),
-      fetchCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(chatId)}/lastMessage.json`, {
-        ttlMs: CHAT_SUMMARY_TTL_MS,
-        fallbackValue: {},
-        force,
-      }),
-    ]);
-
-    const participantIds = parseChatParticipantIds(chatId, participants).filter(
+  const summariesByOtherUserId = Object.entries(ownerSummaryMap).reduce((result, [chatId, value]) => {
+    const participantIds = parseChatParticipantIds(chatId).filter(
       (participantId) => normalizeIdentifier(participantId) !== normalizedTeacherUserId
     );
-    const otherUserId = normalizeIdentifier(participantIds[0]);
-    const unreadForMe = Number(unreadForMeRaw || 0);
-    const lastMessageTime = getConversationSortTime(
-      lastMessage?.timeStamp ||
-        lastMessage?.time ||
-        lastMessage?.updatedAt ||
-        lastMessage?.createdAt ||
-        0
-    );
-
-    if (!otherUserId && !chatKeyIncludesUser(chatId, normalizedTeacherUserId)) {
-      return null;
-    }
-
-    if (unreadOnly && unreadForMe <= 0) {
-      return null;
-    }
-
-    if (!includeWithoutLastMessage && unreadForMe <= 0 && !lastMessageTime) {
-      return null;
-    }
-
-    return {
+    const normalizedSummary = normalizeChatSummaryValue(value, {
       chatId,
-      otherUserId,
-      unreadForMe,
-      lastMessage: isRecordObject(lastMessage) ? lastMessage : {},
-      lastMessageText: formatLastMessagePreview(lastMessage),
-      lastMessageTime,
-    };
-  });
+      otherUserId: participantIds[0] || "",
+    });
+
+    const otherUserId = normalizeIdentifier(normalizedSummary.otherUserId);
+    if (!otherUserId) {
+      return result;
+    }
+
+    const existingSummary = result.get(otherUserId);
+    if (!existingSummary || normalizedSummary.lastMessageTime >= existingSummary.lastMessageTime) {
+      result.set(otherUserId, normalizedSummary);
+    }
+
+    return result;
+  }, new Map());
+
+  const rawSummaries = (contactHintsByUserId.size ? [...contactHintsByUserId.keys()] : [...summariesByOtherUserId.keys()])
+    .map((otherUserId) => {
+      const normalizedOtherUserId = normalizeIdentifier(otherUserId);
+      const summary = summariesByOtherUserId.get(normalizedOtherUserId);
+      if (!summary) {
+        return null;
+      }
+
+      if (unreadOnly && summary.unreadCount <= 0) {
+        return null;
+      }
+
+      if (!includeWithoutLastMessage && summary.unreadCount <= 0 && !summary.lastMessageTime) {
+        return null;
+      }
+
+      return {
+        chatId: summary.chatId,
+        otherUserId: normalizedOtherUserId,
+        unreadForMe: summary.unreadCount,
+        lastMessage: {
+          senderId: summary.lastSenderId,
+          seen: summary.lastMessageSeen,
+          seenAt: summary.lastMessageSeenAt,
+          timeStamp: summary.lastMessageTime,
+          type: summary.lastMessageType,
+          text: summary.lastMessageText,
+        },
+        lastMessageText: summary.lastMessageText,
+        lastMessageTime: summary.lastMessageTime,
+      };
+    })
+    .filter(Boolean);
 
   const summaries = rawSummaries.filter(Boolean);
   const userIdsToLoad = summaries
@@ -705,10 +689,8 @@ export const clearCachedChatSummary = ({ rtdbBase, chatId, teacherUserId } = {})
     return;
   }
 
-  clearCachedJson(`${normalizedBase}/Chats.json?shallow=true`);
-  clearCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(normalizedChatId)}/participants.json`);
-  clearCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(normalizedChatId)}/lastMessage.json`);
   if (normalizedTeacherUserId) {
-    clearCachedJson(`${normalizedBase}/Chats/${encodeURIComponent(normalizedChatId)}/unread/${encodeURIComponent(normalizedTeacherUserId)}.json`);
+    clearCachedJson(`${normalizedBase}/${buildChatSummaryPath(normalizedTeacherUserId, normalizedChatId)}.json`);
+    clearCachedJson(`${normalizedBase}/${buildOwnerChatSummariesPath(normalizedTeacherUserId)}.json`);
   }
 };

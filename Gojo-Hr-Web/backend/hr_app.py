@@ -3,18 +3,41 @@ from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db
 from firebase_config import FIREBASE_CREDENTIALS, FIREBASE_STORAGE_BUCKET, get_firebase_options, require_firebase_credentials
+from google.auth import exceptions as google_auth_exceptions
 
 import os
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 import re
 import tempfile
 from werkzeug.utils import secure_filename
 from firebase_admin import storage
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+
+# Configure app from environment variables
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-please-change')
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', '16777216'))  # 16MB default
+
+# Configure CORS from environment variables
+ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*')
+if ALLOWED_ORIGINS == '*':
+    cors_origins = '*'
+else:
+    cors_origins = [origin.strip() for origin in ALLOWED_ORIGINS.split(',') if origin.strip()]
+
+CORS(
+    app,
+    resources={r"/*": {"origins": cors_origins}},
+    allow_headers=["Content-Type", "Authorization", "X-School-Code"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    supports_credentials=True,
+)
 
 # Initialize Firebase Storage bucket accessor
 def get_storage_bucket():
@@ -82,6 +105,11 @@ def upload_profile_image_to_storage(file_storage, user_id):
             blob.upload_from_filename(tmp_path, content_type=file_storage.mimetype)
         except Exception as ex:
             raise RuntimeError(f'Failed uploading file to storage: {ex}')
+        try:
+            blob.cache_control = 'public, max-age=31536000, immutable'
+            blob.patch()
+        except Exception as ex:
+            app.logger.warning('Failed to set cache headers for HR profile image %s: %s', storage_path, ex)
     finally:
         try:
             os.unlink(tmp_path)
@@ -97,50 +125,67 @@ def upload_profile_image_to_storage(file_storage, user_id):
 
 def upload_post_media_to_storage(file_storage, owner_id):
     if not file_storage:
-        return ''
+        return {'postUrl': '', 'postPreviewUrl': ''}
 
     bucket = get_storage_bucket()
     if bucket is None:
         raise RuntimeError('Storage bucket not available. Ensure FIREBASE_STORAGE_BUCKET and credentials are configured.')
 
-    filename = secure_filename(file_storage.filename or '')
-    ext = os.path.splitext(filename)[1] if filename else ''
-    if not ext:
-        mimetype = getattr(file_storage, 'mimetype', '') or 'application/octet-stream'
-        ext_guess = mimetype.split('/')[-1] if '/' in mimetype else 'bin'
-        ext = f'.{ext_guess}'
-
     safe_owner_id = secure_filename(str(owner_id or 'hr-admin')) or 'hr-admin'
     timestamp = str(int(datetime.utcnow().timestamp()))
-    storage_filename = f'{safe_owner_id}_{timestamp}_post{ext}'
-    storage_path = f'HR/Posts/{storage_filename}'
-    blob = bucket.blob(storage_path)
 
-    tmp = tempfile.NamedTemporaryFile(delete=False)
-    tmp_path = tmp.name
-    try:
-        tmp.close()
+    def _infer_extension(storage_file):
+        filename = secure_filename(storage_file.filename or '')
+        ext = os.path.splitext(filename)[1] if filename else ''
+        if ext:
+            return ext
+
+        mimetype = getattr(storage_file, 'mimetype', '') or 'application/octet-stream'
+        ext_guess = mimetype.split('/')[-1] if '/' in mimetype else 'bin'
+        return f'.{ext_guess}'
+
+    def _upload_single_media(storage_file, suffix):
+        ext = _infer_extension(storage_file)
+        storage_filename = f'{safe_owner_id}_{timestamp}_{suffix}{ext}'
+        storage_path = f'HR/Posts/{storage_filename}'
+        blob = bucket.blob(storage_path)
+
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp_path = tmp.name
         try:
-            file_storage.save(tmp_path)
+            tmp.close()
+            try:
+                storage_file.save(tmp_path)
+            except Exception as ex:
+                raise RuntimeError(f'Failed saving incoming post media to temp path: {ex}')
+
+            try:
+                blob.upload_from_filename(tmp_path, content_type=storage_file.mimetype)
+            except Exception as ex:
+                raise RuntimeError(f'Failed uploading post media to storage: {ex}')
+
+            try:
+                blob.cache_control = 'public, max-age=31536000, immutable'
+                blob.patch()
+            except Exception as ex:
+                app.logger.warning('Failed to set cache headers for HR post media %s: %s', storage_path, ex)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        try:
+            blob.make_public()
         except Exception as ex:
-            raise RuntimeError(f'Failed saving incoming post media to temp path: {ex}')
+            raise RuntimeError(f'Uploaded post media but failed to make object public: {ex}')
 
-        try:
-            blob.upload_from_filename(tmp_path, content_type=file_storage.mimetype)
-        except Exception as ex:
-            raise RuntimeError(f'Failed uploading post media to storage: {ex}')
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        return blob.public_url
 
-    try:
-        blob.make_public()
-    except Exception as ex:
-        raise RuntimeError(f'Uploaded post media but failed to make object public: {ex}')
-
-    return blob.public_url
+    preview_file = request.files.get('mediaPreview')
+    post_url = _upload_single_media(file_storage, 'post')
+    post_preview_url = _upload_single_media(preview_file, 'post_preview') if preview_file else ''
+    return {'postUrl': post_url, 'postPreviewUrl': post_preview_url}
 
 # Initialize Firebase Admin
 cred_path = require_firebase_credentials()
@@ -151,6 +196,16 @@ ROOT = 'Employees'
 PLATFORM_ROOT = (os.getenv('PLATFORM_ROOT') or 'Platform1').strip()
 SCHOOLS_ROOT = 'Schools'
 DEFAULT_SCHOOL_CODE = (os.getenv('SCHOOL_CODE') or 'ET-ORO-ADA-GMI').strip()
+SCHOOL_ADMIN_ROLE = 'school_admins'
+SCHOOL_ADMINS_NODE = 'School_Admins'
+LEGACY_MANAGEMENT_NODE = 'Management'
+SCHOOL_ADMIN_ID_KEYS = ('schoolAdminId', 'managementId')
+EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS = max(5, int(os.getenv('EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS') or '60'))
+
+_EMPLOYEE_SUMMARY_CACHE = {
+    'data': None,
+    'timestamp': 0.0,
+}
 
 if not DEFAULT_SCHOOL_CODE:
     raise RuntimeError('SCHOOL_CODE cannot be empty.')
@@ -212,14 +267,51 @@ def _extract_school_shortname(school_node):
     return ''
 
 
+@lru_cache(maxsize=1)
+def school_directory_cache():
+    schools = schools_root().get() or {}
+    if not isinstance(schools, dict):
+        return {
+            'codes': frozenset(),
+            'shortnames': {},
+        }
+
+    known_codes = set()
+    shortname_map = {}
+
+    for school_code, school_node in schools.items():
+        normalized_school_code = _normalize_school_code(school_code)
+        if not normalized_school_code:
+            continue
+
+        known_codes.add(normalized_school_code)
+        short_key = _extract_school_shortname(school_node)
+        if short_key and short_key not in shortname_map:
+            shortname_map[short_key] = normalized_school_code
+
+    return {
+        'codes': frozenset(known_codes),
+        'shortnames': shortname_map,
+    }
+
+
+@lru_cache(maxsize=1)
+def known_school_codes():
+    return school_directory_cache().get('codes', frozenset())
+
+
+@lru_cache(maxsize=1)
+def school_shortname_map():
+    return dict(school_directory_cache().get('shortnames', {}))
+
+
+@lru_cache(maxsize=256)
 def resolve_school_code(value, default=None):
     requested_school_code = _normalize_school_code(value or default or DEFAULT_SCHOOL_CODE)
     if not requested_school_code:
         return ''
 
-    schools = schools_root().get() or {}
-    if not isinstance(schools, dict):
-        return requested_school_code
+    schools = known_school_codes()
 
     if requested_school_code in schools:
         return requested_school_code
@@ -229,9 +321,9 @@ def resolve_school_code(value, default=None):
     if mapped_school_code and mapped_school_code in schools:
         return mapped_school_code
 
-    for school_code, school_node in schools.items():
-        if _extract_school_shortname(school_node) == short_key:
-            return str(school_code)
+    fallback_school_code = _normalize_school_code(school_shortname_map().get(short_key))
+    if fallback_school_code:
+        return fallback_school_code
 
     return requested_school_code
 
@@ -303,34 +395,80 @@ def school_root():
     return school_root_for(get_active_school_code())
 
 
-def find_user_across_schools(username):
+_LOGIN_USERNAME_SCHOOL_HINTS = {}
+
+
+def _remember_login_school_hint(username, school_code):
     normalized_username = str(username or '').strip()
+    normalized_school_code = _normalize_school_code(school_code)
+    if normalized_username and normalized_school_code:
+        _LOGIN_USERNAME_SCHOOL_HINTS[normalized_username] = normalized_school_code
+
+
+def _query_user_in_school(school_code, username):
+    normalized_school_code = _normalize_school_code(school_code)
+    normalized_username = str(username or '').strip()
+    if not normalized_school_code or not normalized_username:
+        return None, None, None
+
+    matched_users = (
+        schools_root()
+        .child(normalized_school_code)
+        .child('Users')
+        .order_by_child('username')
+        .equal_to(normalized_username)
+        .limit_to_first(1)
+        .get()
+        or {}
+    )
+    if not isinstance(matched_users, dict):
+        return None, None, None
+
+    for uid, user in matched_users.items():
+        if not isinstance(user, dict):
+            continue
+        if str(user.get('username') or '').strip() == normalized_username:
+            return normalized_school_code, str(uid), user
+
+    return None, None, None
+
+
+def find_user_across_schools(username, password=None):
+    normalized_username = str(username or '').strip()
+    normalized_password = str(password or '')
     if not normalized_username:
         return None, None, None
 
-    schools = schools_root().get() or {}
-    if not isinstance(schools, dict):
-        return None, None, None
+    tried_school_codes = set()
+    fast_path_school_codes = [
+        _normalize_school_code(_LOGIN_USERNAME_SCHOOL_HINTS.get(normalized_username)),
+        _normalize_school_code(get_requested_school_code()),
+        _normalize_school_code(DEFAULT_SCHOOL_CODE),
+    ]
 
-    for school_code in schools.keys():
-        matched_users = (
-            schools_root()
-            .child(str(school_code))
-            .child('Users')
-            .order_by_child('username')
-            .equal_to(normalized_username)
-            .limit_to_first(1)
-            .get()
-            or {}
-        )
-        if not isinstance(matched_users, dict):
+    for school_code in fast_path_school_codes:
+        if not school_code or school_code in tried_school_codes:
             continue
 
-        for uid, user in matched_users.items():
-            if not isinstance(user, dict):
-                continue
-            if str(user.get('username') or '').strip() == normalized_username:
-                return str(school_code), str(uid), user
+        tried_school_codes.add(school_code)
+        matched_school_code, uid, user = _query_user_in_school(school_code, normalized_username)
+        if not isinstance(user, dict):
+            continue
+
+        if not normalized_password or str(user.get('password') or '') == normalized_password:
+            return matched_school_code, uid, user
+
+    for school_code in known_school_codes():
+        normalized_school_code = _normalize_school_code(school_code)
+        if not normalized_school_code or normalized_school_code in tried_school_codes:
+            continue
+
+        matched_school_code, uid, user = _query_user_in_school(normalized_school_code, normalized_username)
+        if not isinstance(user, dict):
+            continue
+
+        if not normalized_password or str(user.get('password') or '') == normalized_password:
+            return matched_school_code, uid, user
 
     return None, None, None
 
@@ -379,8 +517,63 @@ def employees_attendance_ref():
     return school_root().child('Employees_Attendance')
 
 
+def employees_attendance_summary_ref():
+    return school_root().child('Employees_Attendance_Summary')
+
+
 def employee_summaries_ref():
     return school_root().child('EmployeeSummaries')
+
+
+def _clone_employee_summary_map(summary_map):
+    if not isinstance(summary_map, dict):
+        return {}
+    return dict(summary_map)
+
+
+def set_cached_employee_summary_map(summary_map):
+    _EMPLOYEE_SUMMARY_CACHE['data'] = _clone_employee_summary_map(summary_map)
+    _EMPLOYEE_SUMMARY_CACHE['timestamp'] = time.monotonic()
+    return _clone_employee_summary_map(summary_map)
+
+
+def clear_cached_employee_summary_map():
+    _EMPLOYEE_SUMMARY_CACHE['data'] = None
+    _EMPLOYEE_SUMMARY_CACHE['timestamp'] = 0.0
+
+
+def update_cached_employee_summary(emp_id, summary):
+    cached_map = _EMPLOYEE_SUMMARY_CACHE.get('data')
+    if not isinstance(cached_map, dict):
+        return
+
+    next_map = dict(cached_map)
+    normalized_emp_id = str(emp_id or '').strip()
+    if not normalized_emp_id:
+        return
+
+    if isinstance(summary, dict):
+        next_map[normalized_emp_id] = summary
+    else:
+        next_map.pop(normalized_emp_id, None)
+
+    set_cached_employee_summary_map(next_map)
+
+
+def get_employee_summary_map(force_refresh=False):
+    cached_map = _EMPLOYEE_SUMMARY_CACHE.get('data')
+    cached_at = float(_EMPLOYEE_SUMMARY_CACHE.get('timestamp') or 0.0)
+    cache_is_fresh = (time.monotonic() - cached_at) < EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS
+
+    if not force_refresh and isinstance(cached_map, dict) and cache_is_fresh:
+        return _clone_employee_summary_map(cached_map)
+
+    summary_map = employee_summaries_ref().get() or {}
+    if not isinstance(summary_map, dict):
+        clear_cached_employee_summary_map()
+        return {}
+
+    return set_cached_employee_summary_map(summary_map)
 
 
 def employee_terminations_ref():
@@ -397,6 +590,136 @@ def positions_ref():
 
 def counters_ref():
     return school_root().child('_meta').child('counters')
+
+
+def _attendance_summary_from_records(record_map):
+    if not isinstance(record_map, dict):
+        record_map = {}
+
+    total = 0
+    present_count = 0
+    late_count = 0
+
+    for entry in record_map.values():
+        if isinstance(entry, dict):
+            status = str(entry.get('status') or '').strip().lower()
+            present = entry.get('present')
+        else:
+            status = ''
+            present = bool(entry)
+
+        if present is None:
+            present = True if status in ('present', 'late') else False
+
+        normalized_status = status or ('present' if present else 'absent')
+        total += 1
+
+        if normalized_status == 'late':
+            late_count += 1
+        elif normalized_status == 'present':
+            present_count += 1
+        elif normalized_status not in ('absent',):
+            if present:
+                present_count += 1
+
+    attending_count = present_count + late_count
+    absent_count = max(0, total - attending_count)
+
+    return {
+        'total': total,
+        'presentCount': present_count,
+        'lateCount': late_count,
+        'absentCount': absent_count,
+        'rate': round((attending_count / total) * 100) if total > 0 else 0,
+        'updatedAt': datetime.utcnow().isoformat() + 'Z',
+    }
+
+
+def _resolve_attendance_history_range():
+    days = _coerce_non_negative_int(request.args.get('days'), default=None, max_value=365)
+    start_date = _coerce_iso_date(request.args.get('startDate') or request.args.get('start'))
+    end_date = _coerce_iso_date(request.args.get('endDate') or request.args.get('end'))
+
+    if start_date or end_date:
+        resolved_end = end_date or _today_iso_date()
+        resolved_start = start_date or resolved_end
+    elif days is not None:
+        resolved_end = _today_iso_date()
+        resolved_start = (datetime.utcnow().date() - timedelta(days=max(days - 1, 0))).isoformat()
+    else:
+        return None, None
+
+    if resolved_start > resolved_end:
+        resolved_start, resolved_end = resolved_end, resolved_start
+
+    return resolved_start, resolved_end
+
+
+def _get_attendance_range_data(source_ref, start_date=None, end_date=None):
+    if start_date is not None or end_date is not None:
+        range_start = start_date or end_date or _today_iso_date()
+        range_end = end_date or start_date or _today_iso_date()
+        data = source_ref.order_by_key().start_at(range_start).end_at(range_end).get() or {}
+    else:
+        data = source_ref.get() or {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def backfill_attendance_summaries(school_code=None, all_schools=False, overwrite=False):
+    if all_schools:
+        school_nodes = schools_root().get() or {}
+        target_school_codes = sorted(
+            _normalize_school_code(code)
+            for code in school_nodes.keys()
+            if _normalize_school_code(code)
+        ) if isinstance(school_nodes, dict) else []
+    else:
+        resolved_school_code = resolve_school_code(school_code, DEFAULT_SCHOOL_CODE)
+        target_school_codes = [resolved_school_code] if resolved_school_code else []
+
+    results = []
+
+    for target_school_code in target_school_codes:
+        school_ref = school_root_for(target_school_code)
+        attendance_ref = school_ref.child('Employees_Attendance')
+        summary_ref = school_ref.child('Employees_Attendance_Summary')
+
+        raw_attendance = attendance_ref.get() or {}
+        existing_summaries = {} if overwrite else (summary_ref.get() or {})
+
+        if not isinstance(raw_attendance, dict):
+            raw_attendance = {}
+
+        if not isinstance(existing_summaries, dict):
+            existing_summaries = {}
+
+        summary_updates = {}
+        skipped_existing_days = 0
+
+        for iso_date, record_map in raw_attendance.items():
+            if not isinstance(iso_date, str):
+                continue
+
+            if not overwrite and iso_date in existing_summaries:
+                skipped_existing_days += 1
+                continue
+
+            summary_updates[iso_date] = _attendance_summary_from_records(record_map)
+
+        if summary_updates:
+            summary_ref.update(summary_updates)
+
+        results.append({
+            'schoolCode': target_school_code,
+            'rawAttendanceDays': len(raw_attendance),
+            'existingSummaryDays': len(existing_summaries),
+            'backfilledDays': len(summary_updates),
+            'skippedExistingDays': skipped_existing_days,
+            'overwrite': bool(overwrite),
+        })
+
+    return results
 
 
 def _remove_role_nodes_for_employee(emp_id, employee_data=None, user_data=None):
@@ -482,6 +805,21 @@ def _coerce_non_negative_int(value, default=None, max_value=None):
         parsed = min(parsed, max_value)
 
     return parsed
+
+
+def _is_firebase_transport_error(error):
+    if isinstance(error, google_auth_exceptions.TransportError):
+        return True
+
+    message = str(error or '')
+    transport_markers = (
+        'oauth2.googleapis.com',
+        'getaddrinfo failed',
+        'Max retries exceeded',
+        'NameResolutionError',
+        'ConnectionError',
+    )
+    return any(marker in message for marker in transport_markers)
 
 
 def _normalize_reference_name(value):
@@ -950,6 +1288,22 @@ def _normalize_gender(raw):
     return None
 
 
+def _get_first_nonempty(data_dict, *keys):
+    """Get first non-empty value from dict by trying multiple keys."""
+    if not isinstance(data_dict, dict):
+        return None
+    for key in keys:
+        value = data_dict.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value.strip()
+        else:
+            return value
+    return None
+
+
 def _pick_first_non_empty(*values):
     for value in values:
         if value is None:
@@ -1138,8 +1492,8 @@ def build_employee_credential_slip(emp_id, employee_payload, linked_user=None):
 
 def seed_employee_summaries(force=False):
     if not force:
-        existing = employee_summaries_ref().get() or {}
-        if isinstance(existing, dict) and existing:
+        existing = get_employee_summary_map(force_refresh=False)
+        if existing:
             return existing
 
     employees_map = ref().get() or {}
@@ -1156,7 +1510,7 @@ def seed_employee_summaries(force=False):
             summary_map[emp_id] = build_employee_summary(emp_id, payload, linked_user)
 
     employee_summaries_ref().set(summary_map)
-    return summary_map
+    return set_cached_employee_summary_map(summary_map)
 
 
 def sync_employee_summary(emp_id, employee_payload=None, linked_user=None):
@@ -1166,6 +1520,7 @@ def sync_employee_summary(emp_id, employee_payload=None, linked_user=None):
 
     if not isinstance(payload, dict):
         employee_summaries_ref().child(emp_id).delete()
+        update_cached_employee_summary(emp_id, None)
         return None
 
     user_payload = linked_user
@@ -1178,16 +1533,54 @@ def sync_employee_summary(emp_id, employee_payload=None, linked_user=None):
 
     summary = build_employee_summary(emp_id, payload, user_payload)
     employee_summaries_ref().child(emp_id).set(summary)
+    update_cached_employee_summary(emp_id, summary)
     return summary
+
+
+def _employee_summary_needs_chat_refresh(summary_item):
+    if not isinstance(summary_item, dict):
+        return False
+
+    if bool(summary_item.get('terminated')):
+        return False
+
+    if summary_item.get('isActive') is False or bool(summary_item.get('deactivated')):
+        return False
+
+    return not str(summary_item.get('userId') or '').strip()
+
+
+def refresh_employee_summaries_for_chat(summary_map):
+    if not isinstance(summary_map, dict) or not summary_map:
+        return summary_map if isinstance(summary_map, dict) else {}
+
+    refreshed_map = dict(summary_map)
+    candidate_ids = [
+        str(emp_id)
+        for emp_id, summary_item in refreshed_map.items()
+        if _employee_summary_needs_chat_refresh(summary_item)
+    ]
+
+    for emp_id in candidate_ids:
+        refreshed_summary = sync_employee_summary(emp_id)
+        if isinstance(refreshed_summary, dict):
+            refreshed_map[emp_id] = refreshed_summary
+
+    if candidate_ids:
+        set_cached_employee_summary_map(refreshed_map)
+
+    return refreshed_map
 
 
 @app.route('/employees/summary', methods=['GET'])
 def list_employee_summaries():
     status_filter = (request.args.get('status') or 'all').strip().lower()
-    summary_map = employee_summaries_ref().get() or {}
+    summary_map = get_employee_summary_map(force_refresh=False)
 
     if not isinstance(summary_map, dict) or not summary_map:
         summary_map = seed_employee_summaries(force=False)
+    else:
+        summary_map = refresh_employee_summaries_for_chat(summary_map)
 
     if status_filter not in ('active', 'terminated'):
         return jsonify(summary_map or {}), 200
@@ -1207,8 +1600,8 @@ def list_employee_summaries():
 
 @app.route('/employees/summary/stats', methods=['GET'])
 def employee_summary_stats():
-    summary_map = employee_summaries_ref().get() or {}
-    if not isinstance(summary_map, dict) or not summary_map:
+    summary_map = get_employee_summary_map(force_refresh=False)
+    if not summary_map:
         summary_map = seed_employee_summaries(force=False)
 
     items = list((summary_map or {}).values()) if isinstance(summary_map, dict) else []
@@ -1617,7 +2010,7 @@ def register_school_admin():
         emp_id=emp_key,
         user_id=user_id,
         role='management',
-        role_code=management_code,
+        role_code=school_admin_code,
         profile_image_url=user_payload.get('profileImage') or '',
     )
     # persist employee using code-based key
@@ -1657,9 +2050,30 @@ def _file_to_dataurl(fstorage):
     return f"data:{fstorage.mimetype};base64,{b64}"
 
 
+def _normalize_role(value):
+    """Normalize role string to standard format."""
+    normalized = str(value or '').strip().lower().replace('-', '_').replace(' ', '_')
+    # Map common variations to standard role names
+    role_map = {
+        'school_admin': SCHOOL_ADMIN_ROLE,
+        'school_admins': SCHOOL_ADMIN_ROLE,
+        'management': SCHOOL_ADMIN_ROLE,
+        'admin': SCHOOL_ADMIN_ROLE,
+        'admins': SCHOOL_ADMIN_ROLE,
+        'hr': 'hr',
+        'human_resources': 'hr',
+        'finance': 'finance',
+        'teacher': 'teacher',
+        'teachers': 'teacher',
+    }
+    return role_map.get(normalized, normalized)
+
+
 def _normalize_post_target_role(value):
     allowed_roles = {'all', 'teacher', SCHOOL_ADMIN_ROLE, 'finance', 'hr'}
-    normalized = _normalize_role(value or 'all')
+    normalized = str(value or 'all').strip().lower().replace('-', '_').replace(' ', '_')
+    if normalized in {'school_admin', 'management', 'school_admins'}:
+        normalized = SCHOOL_ADMIN_ROLE
     return normalized if normalized in allowed_roles else 'all'
 
 
@@ -1747,6 +2161,7 @@ def _normalize_post_record(post_id, payload):
         'likeCount': max(like_count, len(likes)),
         'message': item.get('message') or '',
         'postUrl': item.get('postUrl') or '',
+        'postPreviewUrl': item.get('postPreviewUrl') or '',
         'time': item.get('time') or item.get('createdAt') or datetime.utcnow().isoformat() + 'Z',
     }
 
@@ -1777,15 +2192,21 @@ def create_post():
 
         owner_key = hr_id or user_id
         post_url = ''
+        post_preview_url = ''
         media_type = ''
 
         if media_file:
-            post_url = upload_post_media_to_storage(media_file, owner_key)
+            media_upload = upload_post_media_to_storage(media_file, owner_key)
+            post_url = str((media_upload or {}).get('postUrl') or '')
+            post_preview_url = str((media_upload or {}).get('postPreviewUrl') or '')
             media_type = media_file.mimetype or ''
         else:
             raw_post_url = pick('postUrl', '') or ''
+            raw_post_preview_url = pick('postPreviewUrl', '') or ''
             if raw_post_url and not str(raw_post_url).startswith('data:'):
                 post_url = raw_post_url
+            if raw_post_preview_url and not str(raw_post_preview_url).startswith('data:'):
+                post_preview_url = raw_post_preview_url
 
         if not message and not post_url:
             return jsonify({'success': False, 'message': 'Post content is required'}), 400
@@ -1798,6 +2219,7 @@ def create_post():
             'adminName': admin_name or 'HR Office',
             'adminProfile': admin_profile,
             'postUrl': post_url,
+            'postPreviewUrl': post_preview_url,
             'mediaType': media_type,
             'message': message,
             'targetRole': target_role,
@@ -1872,19 +2294,26 @@ def update_post(post_id):
         remove_media = str(pick('removeMedia', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
         post_url = str(post_data.get('postUrl') or '').strip()
+        post_preview_url = str(post_data.get('postPreviewUrl') or '').strip()
         media_type = str(post_data.get('mediaType') or '').strip()
 
         if media_file:
-            post_url = upload_post_media_to_storage(media_file, requester_id)
+            media_upload = upload_post_media_to_storage(media_file, requester_id)
+            post_url = str((media_upload or {}).get('postUrl') or '')
+            post_preview_url = str((media_upload or {}).get('postPreviewUrl') or '')
             media_type = media_file.mimetype or ''
         elif remove_media:
             post_url = ''
+            post_preview_url = ''
             media_type = ''
         else:
             incoming_post_url = pick('postUrl', None)
+            incoming_post_preview_url = pick('postPreviewUrl', None)
             incoming_media_type = pick('mediaType', None)
             if incoming_post_url is not None and not str(incoming_post_url).startswith('data:'):
                 post_url = str(incoming_post_url or '').strip()
+            if incoming_post_preview_url is not None and not str(incoming_post_preview_url).startswith('data:'):
+                post_preview_url = str(incoming_post_preview_url or '').strip()
             if incoming_media_type is not None:
                 media_type = str(incoming_media_type or '').strip()
 
@@ -1899,6 +2328,7 @@ def update_post(post_id):
             'adminName': admin_name,
             'adminProfile': admin_profile,
             'postUrl': post_url,
+            'postPreviewUrl': post_preview_url,
             'mediaType': media_type,
             'editedAt': datetime.utcnow().isoformat(),
         }
@@ -2162,10 +2592,17 @@ def get_posts():
     """
     try:
         limit = _coerce_non_negative_int(request.args.get('limit'), default=None, max_value=100)
+        include_meta = _coerce_bool_value(request.args.get('withMeta'), default=False)
+        before_time = str(request.args.get('beforeTime') or '').strip()
+        before_post_id = str(request.args.get('beforePostId') or '').strip()
 
         try:
             if limit:
-                raw = posts_ref().order_by_child('time').limit_to_last(limit).get() or {}
+                query = posts_ref().order_by_child('time')
+                if before_time:
+                    query = query.end_at(before_time)
+                fetch_limit = limit + 1 + (1 if before_time else 0)
+                raw = query.limit_to_last(fetch_limit).get() or {}
             else:
                 raw = posts_ref().get() or {}
         except Exception:
@@ -2181,8 +2618,36 @@ def get_posts():
         except Exception:
             pass
 
+        if before_post_id:
+            posts = [
+                post for post in posts
+                if str(post.get('postId') or post.get('id') or '') != before_post_id
+            ]
+
+        has_more = False
+        next_cursor = None
+
+        if limit:
+            has_more = len(posts) > limit
+            posts = posts[:limit]
+
+            if has_more and posts:
+                last_post = posts[-1]
+                next_cursor = {
+                    'beforeTime': str(last_post.get('time') or ''),
+                    'beforePostId': str(last_post.get('postId') or last_post.get('id') or ''),
+                }
+
+        if include_meta:
+            return jsonify({'posts': posts, 'hasMore': has_more, 'nextCursor': next_cursor}), 200
+
         return jsonify(posts), 200
     except Exception as e:
+        if _is_firebase_transport_error(e):
+            app.logger.warning('Falling back to empty posts feed because Firebase transport is unavailable: %s', e)
+            if include_meta:
+                return jsonify({'posts': [], 'hasMore': False, 'nextCursor': None}), 200
+            return jsonify([]), 200
         return jsonify({'error': str(e)}), 500
 
 
@@ -2713,25 +3178,24 @@ def login():
     if not username or not password:
         return jsonify({'error': 'username and password required'}), 400
 
-    school_code, uid, user = find_user_across_schools(username)
+    school_code, uid, user = find_user_across_schools(username, password=password)
     if isinstance(user, dict):
-        stored_password = str(user.get('password') or '')
-        if str(user.get('username') or '').strip() == username and stored_password == password:
-            school_short_code = _normalize_school_code(user.get('schoolCode')).upper()
-            # successful login - return minimal user info
-            safe = {
-                'id': uid,
-                'username': user.get('username'),
-                'name': user.get('name'),
-                'role': user.get('role'),
-                'isActive': user.get('isActive', True),
-                'email': user.get('email', ''),
-                'profileImage': user.get('profileImage', ''),
-                'schoolCode': school_code,
-                'activeSchoolCode': school_code,
-                'schoolShortCode': school_short_code,
-            }
-            return jsonify({'ok': True, 'user': safe})
+        _remember_login_school_hint(username, school_code)
+        school_short_code = _normalize_school_code(user.get('schoolCode')).upper()
+        # successful login - return minimal user info
+        safe = {
+            'id': uid,
+            'username': user.get('username'),
+            'name': user.get('name'),
+            'role': user.get('role'),
+            'isActive': user.get('isActive', True),
+            'email': user.get('email', ''),
+            'profileImage': user.get('profileImage', ''),
+            'schoolCode': school_code,
+            'activeSchoolCode': school_code,
+            'schoolShortCode': school_short_code,
+        }
+        return jsonify({'ok': True, 'user': safe})
 
     return jsonify({'ok': False, 'error': 'invalid credentials'}), 401
 
@@ -2739,7 +3203,11 @@ def login():
 @app.route('/api/employee_attendance', methods=['GET'])
 def get_employee_attendance():
     iso_date = _coerce_iso_date(request.args.get('date')) or _today_iso_date()
-    data = employees_attendance_ref().child(iso_date).get() or {}
+    try:
+        data = employees_attendance_ref().child(iso_date).get() or {}
+    except Exception as exc:
+        print(f'Failed to load attendance for {iso_date}: {exc}')
+        data = {}
     return jsonify({'ok': True, 'date': iso_date, 'attendance': data}), 200
 
 
@@ -2805,23 +3273,44 @@ def upsert_employee_attendance():
         return jsonify({'ok': False, 'error': 'attendance (object) or records (array) is required'}), 400
 
     employees_attendance_ref().child(iso_date).update(normalized)
+    stored_records = employees_attendance_ref().child(iso_date).get() or {}
+    employees_attendance_summary_ref().child(iso_date).set(_attendance_summary_from_records(stored_records))
     return jsonify({'ok': True, 'date': iso_date, 'savedCount': len(normalized)}), 200
 
 
 @app.route('/api/employee_attendance/history', methods=['GET'])
 def get_employee_attendance_history():
-    days = _coerce_non_negative_int(request.args.get('days'), default=None, max_value=365)
-
-    if days is not None:
-        start_date = (datetime.utcnow().date() - timedelta(days=max(days - 1, 0))).isoformat()
-        data = employees_attendance_ref().order_by_key().start_at(start_date).end_at(_today_iso_date()).get() or {}
-    else:
-        data = employees_attendance_ref().get() or {}
-
-    if not isinstance(data, dict):
+    start_date, end_date = _resolve_attendance_history_range()
+    try:
+        data = _get_attendance_range_data(employees_attendance_ref(), start_date, end_date)
+    except Exception as exc:
+        print(f'Failed to load attendance history: {exc}')
         data = {}
 
     return jsonify({'ok': True, 'attendanceByDate': data}), 200
+
+
+@app.route('/api/employee_attendance/summary', methods=['GET'])
+def get_employee_attendance_summary():
+    start_date, end_date = _resolve_attendance_history_range()
+    try:
+        summary_data = _get_attendance_range_data(employees_attendance_summary_ref(), start_date, end_date)
+        if not summary_data:
+            raw_attendance_data = _get_attendance_range_data(employees_attendance_ref(), start_date, end_date)
+            if raw_attendance_data:
+                summary_data = {
+                    iso_date: _attendance_summary_from_records(record_map)
+                    for iso_date, record_map in raw_attendance_data.items()
+                    if isinstance(iso_date, str)
+                }
+
+                if summary_data:
+                    employees_attendance_summary_ref().update(summary_data)
+    except Exception as exc:
+        print(f'Failed to load attendance summary: {exc}')
+        summary_data = {}
+
+    return jsonify({'ok': True, 'attendanceSummaryByDate': summary_data}), 200
 
 
 
@@ -3087,7 +3576,7 @@ def reactivate_employee(emp_id):
 def list_employee_terminations():
     try:
         raw = employee_terminations_ref().get() or {}
-        summary_map = employee_summaries_ref().get() or {}
+        summary_map = get_employee_summary_map(force_refresh=False)
         items = []
 
         if isinstance(raw, dict):

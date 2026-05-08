@@ -14,6 +14,8 @@ import {
   runTransaction,
 } from "firebase/database";
 import { db, schoolPath } from "../firebase";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
+import { clearCachedChatSummary, fetchTeacherConversationSummaries } from "../utils/teacherData";
 import {
   FaHome,
   FaUsers,
@@ -741,18 +743,26 @@ function AdminPage() {
 
     const chatId = getChatId(teacherUserId, quickChatTarget.userId);
     const timeStamp = Date.now();
-    const payload = {
-      [`unread/${teacherUserId}`]: 0,
-      "lastMessage/seen": true,
-      "lastMessage/seenAt": timeStamp,
-    };
+    const payload = {};
 
     unseen.forEach((message) => {
       payload[`messages/${message.id}/seen`] = true;
       payload[`messages/${message.id}/seenAt`] = timeStamp;
     });
 
-    update(dbRef(db, schoolPath(`Chats/${chatId}`, resolvedSchoolCode)), payload).catch((chatError) =>
+    Promise.all([
+      update(dbRef(db, schoolPath(`Chats/${chatId}`, resolvedSchoolCode)), payload),
+      update(
+        dbRef(db, schoolPath(buildChatSummaryPath(teacherUserId, chatId), resolvedSchoolCode)),
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: quickChatTarget.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: timeStamp,
+        })
+      ),
+    ]).catch((chatError) =>
       console.error("Failed to mark messages seen:", chatError)
     );
   }, [adminChatOpen, messages, quickChatTarget?.userId, teacherUserId, resolvedSchoolCode]);
@@ -787,17 +797,42 @@ function AdminPage() {
       await update(dbRef(db, schoolPath(`Chats/${chatId}`, resolvedSchoolCode)), {
         [`participants/${senderId}`]: true,
         [`participants/${receiverId}`]: true,
-        "lastMessage/text": text,
-        "lastMessage/senderId": senderId,
-        "lastMessage/seen": false,
-        "lastMessage/timeStamp": timeStamp,
-        [`unread/${senderId}`]: 0,
       });
+
+      await Promise.all([
+        update(
+          dbRef(db, schoolPath(buildChatSummaryPath(senderId, chatId), resolvedSchoolCode)),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: receiverId,
+            unreadCount: 0,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          dbRef(db, schoolPath(buildChatSummaryPath(receiverId, chatId), resolvedSchoolCode)),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: senderId,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       setNewMessageText("");
 
       await runTransaction(
-        dbRef(db, schoolPath(`Chats/${chatId}/unread/${receiverId}`, resolvedSchoolCode)),
+        dbRef(db, schoolPath(`${buildChatSummaryPath(receiverId, chatId)}/unreadCount`, resolvedSchoolCode)),
         (current) => (Number(current) || 0) + 1
       );
     } catch (err) {
@@ -908,63 +943,13 @@ function saveSeenPost(teacherId, postId) {
         setConversations([]);
         return;
       }
-
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${rtdbBase}/Chats.json`), axios.get(`${rtdbBase}/Users.json`)]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-
-      // build maps
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+      const convs = await fetchTeacherConversationSummaries({
+        rtdbBase,
+        schoolCode: resolvedSchoolCode,
+        teacherUserId: t.userId,
+        contactCandidates: admins,
+        unreadOnly: true,
       });
-
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-
-          if (!otherRecord) {
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-
-          const lastMessage = chat.lastMessage || {};
-
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
 
       setConversations(convs);
     } catch (err) {
@@ -987,7 +972,17 @@ function saveSeenPost(teacherId, postId) {
 
     // Clear unread for this teacher in DB
     try {
-      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.patch(
+        `${rtdbBase}/${buildChatSummaryPath(teacher.userId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
+      clearCachedChatSummary({ rtdbBase, chatId, teacherUserId: teacher.userId });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }

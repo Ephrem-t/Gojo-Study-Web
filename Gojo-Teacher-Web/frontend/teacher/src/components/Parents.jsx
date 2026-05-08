@@ -32,6 +32,7 @@ import {
 import { db, schoolPath } from "../firebase"; // adjust path if needed
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { resolveProfileImage } from "../utils/profileImage";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
   extractAllowedGradeSectionsFromCourseContext,
@@ -862,11 +863,7 @@ const [children, setChildren] = useState([]);
 
     const chatId = getChatId(teacherId, selectedParent.userId);
     const seenAt = Date.now();
-    const payload = {
-      [`unread/${teacherId}`]: 0,
-      "lastMessage/seen": true,
-      "lastMessage/seenAt": seenAt,
-    };
+    const payload = {};
 
     unseenMessages.forEach((message) => {
       const messageKey = normalizeIdentifier(message?.id || message?.messageId);
@@ -875,7 +872,19 @@ const [children, setChildren] = useState([]);
       payload[`messages/${messageKey}/seenAt`] = seenAt;
     });
 
-    update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), payload).catch((error) => {
+    Promise.all([
+      update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), payload),
+      update(
+        dbRef(db, scopedParentPath(buildChatSummaryPath(teacherId, chatId))),
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: selectedParent.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: seenAt,
+        })
+      ),
+    ]).catch((error) => {
       console.error("Failed to mark messages seen:", error);
     });
   }, [chatOpen, messages, selectedParent?.userId, teacherId, resolvedSchoolCode, teacherSchoolCode]);
@@ -905,17 +914,42 @@ const [children, setChildren] = useState([]);
       await update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), {
         [`participants/${senderId}`]: true,
         [`participants/${receiverId}`]: true,
-        "lastMessage/text": text,
-        "lastMessage/senderId": senderId,
-        "lastMessage/seen": false,
-        "lastMessage/timeStamp": timeStamp,
-        [`unread/${senderId}`]: 0,
       });
+
+      await Promise.all([
+        update(
+          dbRef(db, scopedParentPath(buildChatSummaryPath(senderId, chatId))),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: receiverId,
+            unreadCount: 0,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          dbRef(db, scopedParentPath(buildChatSummaryPath(receiverId, chatId))),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: senderId,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       setNewMessageText("");
 
       await runTransaction(
-        dbRef(db, scopedParentPath(`Chats/${chatId}/unread/${receiverId}`)),
+        dbRef(db, scopedParentPath(`${buildChatSummaryPath(receiverId, chatId)}/unreadCount`)),
         (current) => (Number(current) || 0) + 1
       );
     } catch (err) {
@@ -1025,9 +1059,16 @@ const [children, setChildren] = useState([]);
     const { chatId, contact } = conv;
     navigate("/all-chat", { state: { contact, chatId, tab: "parent" } });
     try {
-      await update(dbRef(db, scopedParentPath(`Chats/${chatId}/unread`)), {
-        [teacherId]: null,
-      });
+      await update(
+        dbRef(db, scopedParentPath(buildChatSummaryPath(teacherId, chatId))),
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
       clearCachedChatSummary({
         rtdbBase: RTDB_BASE,
         chatId,

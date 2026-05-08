@@ -6,9 +6,13 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage
 import { db, storage } from "../firebase";
 import { FIREBASE_DATABASE_URL } from "../config.js";
 import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
   fetchJson,
-  formatLastMessagePreview,
+  getConversationSortTime,
   mapInBatches,
+  normalizeChatSummaryValue,
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -193,6 +197,12 @@ const officeRoleLabel = (role) => {
   if (role === "finance") return "Finance";
   if (role === "registerer") return "Registerer";
   return "Management";
+};
+
+const sortContactsBySummary = (left, right) => {
+  const timeDifference = Number(right?.lastMsgTime || 0) - Number(left?.lastMsgTime || 0);
+  if (timeDifference !== 0) return timeDifference;
+  return String(left?.name || "").localeCompare(String(right?.name || ""));
 };
 
 export default function AllChat() {
@@ -456,7 +466,7 @@ export default function AllChat() {
     const fetchUsers = async () => {
       setLoadingContacts(true);
       try {
-        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, usersRes, chatIndexRes] = await Promise.all([
+        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, usersRes, chatIndexRes, ownerSummariesRes] = await Promise.all([
           fetchJson(`${schoolDbRoot}/Teachers.json`, {}),
           fetchJson(`${schoolDbRoot}/Students.json`, {}),
           fetchJson(`${schoolDbRoot}/Parents.json`, {}),
@@ -465,40 +475,44 @@ export default function AllChat() {
           fetchJson(`${schoolDbRoot}/Registerers.json`, {}),
           fetchJson(`${schoolDbRoot}/Users.json`, {}),
           fetchJson(`${schoolDbRoot}/Chats.json?shallow=true`, {}),
+          fetchJson(`${schoolDbRoot}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {}),
         ]);
 
         const usersMap = usersRes && typeof usersRes === "object" ? usersRes : {};
         const chatKeyIndex = new Set(Object.keys(chatIndexRes || {}));
-
-        const buildLastMessageMeta = async (otherUserId) => {
-          const resolvedChatKey = resolveExistingChatKey(chatKeyIndex, adminUserId, otherUserId);
-          if (!resolvedChatKey || !chatKeyIndex.has(resolvedChatKey)) {
-            return {
-              chatKey: "",
-              lastMsgTime: 0,
-              lastMsgText: "",
-              unread: 0,
-            };
+        const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
+        const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
           }
 
-          const encodedChatKey = encodeURIComponent(resolvedChatKey);
-          const [lastMessage, unreadValue] = await Promise.all([
-            fetchJson(`${schoolDbRoot}/Chats/${encodedChatKey}/lastMessage.json`, null),
-            fetchJson(`${schoolDbRoot}/Chats/${encodedChatKey}/unread/${encodeURIComponent(adminUserId)}.json`, 0),
-          ]);
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
+
+          return result;
+        }, {});
+
+        const buildLastMessageMeta = (otherUserId) => {
+          const summary = summaryByOtherUserId[String(otherUserId || "").trim()] || null;
+          const resolvedChatKey = String(
+            summary?.chatId || resolveExistingChatKey(chatKeyIndex, adminUserId, otherUserId)
+          ).trim();
 
           return {
             chatKey: resolvedChatKey,
-            lastMsgTime: Number(lastMessage?.timeStamp || 0),
-            lastMsgText: formatLastMessagePreview(lastMessage),
-            unread: Number(unreadValue || 0),
+            lastMsgTime: getConversationSortTime(summary?.lastMessageTime),
+            lastMsgText: String(summary?.lastMessageText || "").trim(),
+            unread: Math.max(0, Number(summary?.unreadCount || 0) || 0),
           };
         };
 
         const hydrateChatPreviewMeta = async (records) => {
           const hydratedRecords = await mapInBatches(records, 24, async (record) => ({
             ...record,
-            ...(await buildLastMessageMeta(record.userId)),
+            ...buildLastMessageMeta(record.userId),
           }));
 
           return hydratedRecords;
@@ -523,8 +537,7 @@ export default function AllChat() {
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
 
         const studentRecords = Object.entries(studentsRes || {})
           .map(([studentId, studentNode]) => {
@@ -549,8 +562,7 @@ export default function AllChat() {
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
 
         const parentRecords = Object.entries(parentsRes || {})
           .map(([parentId, parentNode]) => {
@@ -572,8 +584,7 @@ export default function AllChat() {
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedParents = (await hydrateChatPreviewMeta(parentRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+        const mappedParents = (await hydrateChatPreviewMeta(parentRecords)).sort(sortContactsBySummary);
 
         const mapOfficeRecords = (source, officeRole) =>
           Object.entries(source || {})
@@ -603,8 +614,7 @@ export default function AllChat() {
           ...mapOfficeRecords(registerersRes, "registerer"),
         ];
 
-        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime || a.name.localeCompare(b.name));
+        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords)).sort(sortContactsBySummary);
 
         setTeachers(mappedTeachers);
         setStudents(mappedStudents);
@@ -640,24 +650,57 @@ export default function AllChat() {
   useEffect(() => {
     if (!adminUserId) return;
 
-    const unsubscribers = [];
-    const allUsers = [...teachers, ...students, ...parents, ...managements];
+    const summaryRef = ref(db, scopedPath(buildOwnerChatSummariesPath(adminUserId)));
+    const unsubscribe = onValue(summaryRef, (snapshot) => {
+      const ownerSummaries = snapshot.val() || {};
+      const summaryByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
+        (result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
+          }
 
-    allUsers.forEach((user) => {
-      if (!user?.userId || !user?.chatKey) return;
-      const chatKey = user.chatKey;
-      const unreadRef = ref(db, scopedPath(`Chats/${chatKey}/unread/${adminUserId}`));
-      const unsubscribe = onValue(unreadRef, (snapshot) => {
-        setUnreadCounts((prev) => ({
-          ...prev,
-          [user.userId]: Number(snapshot.val() || 0),
-        }));
-      });
-      unsubscribers.push(unsubscribe);
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
+
+          return result;
+        },
+        {}
+      );
+
+      const nextUnreadCounts = {};
+      const mergeSummary = (record) => {
+        const summary = summaryByOtherUserId[String(record?.userId || "").trim()] || null;
+        const unreadCount = Math.max(0, Number(summary?.unreadCount || 0) || 0);
+        nextUnreadCounts[String(record?.userId || "").trim()] = unreadCount;
+
+        if (!summary) {
+          return {
+            ...record,
+            unread: unreadCount,
+          };
+        }
+
+        return {
+          ...record,
+          chatKey: String(summary.chatId || record?.chatKey || "").trim(),
+          lastMsgTime: getConversationSortTime(summary.lastMessageTime),
+          lastMsgText: String(summary.lastMessageText || "").trim(),
+          unread: unreadCount,
+        };
+      };
+
+      setTeachers((previousTeachers) => previousTeachers.map(mergeSummary).sort(sortContactsBySummary));
+      setStudents((previousStudents) => previousStudents.map(mergeSummary).sort(sortContactsBySummary));
+      setParents((previousParents) => previousParents.map(mergeSummary).sort(sortContactsBySummary));
+      setManagements((previousManagements) => previousManagements.map(mergeSummary).sort(sortContactsBySummary));
+      setUnreadCounts(nextUnreadCounts);
     });
 
-    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
-  }, [teachers, students, parents, managements, adminUserId, schoolNodePrefix]);
+    return () => unsubscribe();
+  }, [adminUserId, schoolNodePrefix]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -704,7 +747,7 @@ export default function AllChat() {
     let unsubscribePresence = null;
 
     const connect = async () => {
-      const chatKey = currentChatKey || await resolveLegacyChatKey(selectedChatUser.userId);
+      const chatKey = currentChatKey || selectedChatUser.chatKey || await resolveLegacyChatKey(selectedChatUser.userId);
       if (!chatKey || cancelled) return;
 
       setCurrentChatKey(chatKey);
@@ -725,6 +768,10 @@ export default function AllChat() {
         setMessages(list);
 
         const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (message) => String(message?.receiverId) === String(adminUserId) && !message?.seen
+        );
+        const seenAt = Date.now();
         Object.entries(data).forEach(([messageId, message]) => {
           if (String(message?.receiverId) === String(adminUserId) && !message?.seen) {
             updates[`${scopedPath(`Chats/${chatKey}/messages/${messageId}/seen`)}`] = true;
@@ -732,13 +779,32 @@ export default function AllChat() {
         });
 
         try {
-          await update(ref(db), {
-            ...updates,
-            [scopedPath(`Chats/${chatKey}/unread/${adminUserId}`)]: 0,
-          });
+          if (Object.keys(updates).length) {
+            await update(ref(db), updates);
+          }
         } catch {
           // ignore read receipt write failures
         }
+
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: seenAt,
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadCounts((previousCounts) => ({
+          ...previousCounts,
+          [selectedChatUser.userId]: 0,
+        }));
       });
 
       unsubscribePresence = onValue(lastSeenRef, (snapshot) => {
@@ -773,6 +839,10 @@ export default function AllChat() {
   const getActiveChatKey = async () => {
     if (!selectedChatUser || !adminUserId) return null;
     if (currentChatKey) return currentChatKey;
+    if (selectedChatUser.chatKey) {
+      setCurrentChatKey(selectedChatUser.chatKey);
+      return selectedChatUser.chatKey;
+    }
     const resolved = await resolveLegacyChatKey(selectedChatUser.userId);
     setCurrentChatKey(resolved);
     return resolved;
@@ -816,15 +886,41 @@ export default function AllChat() {
       [selectedChatUser.userId]: true,
     });
 
-    await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-      text: input,
-      senderId: adminUserId,
-      seen: false,
-      timeStamp: messageData.timeStamp,
-    });
+    await Promise.all([
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedChatUser.userId,
+          unreadCount: 0,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+    ]);
 
     try {
-      await runTransaction(ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)), (current) => Number(current || 0) + 1);
+      await runTransaction(
+        ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+        (current) => Number(current || 0) + 1
+      );
       await set(ref(db, scopedPath(`Chats/${chatKey}/typing`)), { userId: null });
     } catch {
       // ignore unread increment failures
@@ -888,16 +984,41 @@ export default function AllChat() {
         [selectedChatUser.userId]: true,
       });
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-        seen: false,
-        senderId: adminUserId,
-        text: "📷 Image",
-        timeStamp,
-        type: "image",
-      });
+      await Promise.all([
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       try {
-        await runTransaction(ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)), (current) => Number(current || 0) + 1);
+        await runTransaction(
+          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+          (current) => Number(current || 0) + 1
+        );
       } catch {
         // ignore unread increment failures
       }

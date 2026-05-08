@@ -1,4 +1,7 @@
 const FALLBACK_PROFILE_IMAGE = '/default-profile.png'
+const ALLOWED_GOOGLE_STORAGE_BUCKETS = new Set([
+	'gojo-education.firebasestorage.app',
+])
 
 const escapeSvgText = (value) =>
 	String(value || '')
@@ -13,6 +16,20 @@ const isValidProfileImage = (value) => {
 	const trimmed = value.trim()
 	if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return false
 	if (trimmed.startsWith('file://')) return false
+
+	if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+		try {
+			const parsedUrl = new URL(trimmed)
+			if (parsedUrl.hostname === 'storage.googleapis.com') {
+				const bucketName = parsedUrl.pathname.split('/').filter(Boolean)[0] || ''
+				if (!ALLOWED_GOOGLE_STORAGE_BUCKETS.has(bucketName)) {
+					return false
+				}
+			}
+		} catch {
+			return false
+		}
+	}
 
 	return (
 		trimmed.startsWith('http://') ||

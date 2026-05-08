@@ -964,7 +964,7 @@ export default function Register() {
     { label: 'Other', value: 'other' }
   ]
   const activeSectionLabel = sections.find(section => section.key === activeSection)?.label || 'Section'
-  const selectedRoleLabel = roleOptions.find((role) => role.toLowerCase() === selectedRole) || 'Employee'
+  const selectedRoleLabel = roleOptions.find((role) => role.value === selectedRole)?.label || 'Employee'
   const headerActionStyle = {
     position: 'relative',
     display: 'inline-flex',
@@ -987,30 +987,8 @@ export default function Register() {
       className="dashboard-page"
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
+        background: 'var(--page-bg)',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--warning': '#b45309',
-        '--warning-soft': '#fff7ed',
-        '--warning-border': '#fed7aa',
-        '--input-border': '#dbe4ef',
-        '--input-bg': '#fbfdff',
-        '--input-focus': '#60a5fa',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -1026,22 +1004,17 @@ export default function Register() {
         }
 
         .register-hero {
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-          border: 1px solid #e7ecf3;
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
           border-radius: 22px;
           padding: 22px 24px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           position: relative;
           overflow: hidden;
         }
 
         .register-hero::before {
-          content: "";
-          position: absolute;
-          inset: 0 auto auto 0;
-          width: 260px;
-          height: 260px;
-          background: radial-gradient(circle, rgba(0, 122, 251, 0.12) 0%, rgba(0, 122, 251, 0) 74%);
+          content: none;
           pointer-events: none;
         }
 
@@ -1062,9 +1035,9 @@ export default function Register() {
           min-height: 30px;
           padding: 0 12px;
           border-radius: 999px;
-          border: 1px solid #d8e8ff;
-          background: #eef6ff;
-          color: #0f4fa8;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent-strong);
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.06em;
@@ -1097,11 +1070,11 @@ export default function Register() {
         }
 
         .register-metric {
-          background: #ffffff;
-          border: 1px solid #e7ecf3;
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
           border-radius: 18px;
           padding: 16px;
-          box-shadow: 0 18px 44px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
         }
 
         .register-metric-value {
@@ -1145,9 +1118,9 @@ export default function Register() {
         }
 
         .role-pill {
-          border: 1px solid #e7ecf3;
-          background: #ffffff;
-          color: #475569;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
+          color: var(--text-secondary);
           border-radius: 999px;
           min-height: 38px;
           padding: 0 16px;
@@ -1159,22 +1132,23 @@ export default function Register() {
 
         .role-pill:hover {
           transform: translateY(-1px);
-          border-color: #c9dbf3;
-          box-shadow: 0 10px 18px rgba(0, 122, 251, 0.08);
+          border-color: var(--border-strong);
+          background: var(--surface-accent);
+          box-shadow: var(--shadow-soft);
         }
 
         .role-pill.active {
-          background: #f3f8ff;
-          color: #0f172a;
-          border-color: #c9dbf3;
+          background: var(--surface-accent);
+          color: var(--text-primary);
+          border-color: var(--border-strong);
           box-shadow: none;
         }
 
         .role-reset {
           min-height: 38px;
-          border: 1px solid #d8e8ff;
-          background: #eef6ff;
-          color: #1f4f96;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent-strong);
           font-weight: 700;
           cursor: pointer;
           padding: 0 14px;
@@ -1191,11 +1165,11 @@ export default function Register() {
         .register-left {
           width: 260px;
           min-width: 240px;
-          background: #ffffff;
-          border: 1px solid #e7ecf3;
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
           border-radius: 20px;
           padding: 18px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           position: sticky;
           top: 20px;
         }
@@ -1215,27 +1189,27 @@ export default function Register() {
           gap: 10px;
           padding: 12px 13px;
           border-radius: 14px;
-          border: 1px solid #e7ecf3;
-          background: #ffffff;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
           cursor: pointer;
           text-align: left;
           font-weight: 700;
-          color: #475569;
+          color: var(--text-secondary);
           margin-bottom: 8px;
           transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
         }
 
         .section-btn:hover {
           transform: translateY(-1px);
-          background: #f3f8ff;
-          border-color: #c9dbf3;
-          box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06);
+          background: var(--surface-accent);
+          border-color: var(--border-strong);
+          box-shadow: var(--shadow-soft);
         }
 
         .section-btn.active {
-          background: #f3f8ff;
-          border-color: #c9dbf3;
-          color: #0f172a;
+          background: var(--surface-accent);
+          border-color: var(--border-strong);
+          color: var(--text-primary);
           box-shadow: none;
         }
 
@@ -1246,25 +1220,25 @@ export default function Register() {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          background: #eef6ff;
-          color: #1f4f96;
+          background: var(--surface-accent);
+          color: var(--accent-strong);
           font-size: 12px;
           font-weight: 800;
           flex-shrink: 0;
         }
 
         .section-btn.active .section-index {
-          background: #dbeafe;
-          color: #1d4ed8;
+          background: var(--surface-strong);
+          color: var(--accent-strong);
         }
 
         .form-card {
           flex: 1;
-          background: #ffffff;
-          border: 1px solid #e7ecf3;
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
           padding: 28px;
           border-radius: 22px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           min-width: 0;
         }
 
@@ -1285,9 +1259,9 @@ export default function Register() {
         .chip {
           font-size: 12px;
           font-weight: 800;
-          color: #1f4f96;
-          background: #eef6ff;
-          border: 1px solid #d8e8ff;
+          color: var(--accent-strong);
+          background: var(--surface-accent);
+          border: 1px solid var(--border-strong);
           border-radius: 999px;
           padding: 7px 11px;
         }
@@ -1296,8 +1270,8 @@ export default function Register() {
           margin-bottom: 22px;
           padding: 16px;
           border-radius: 16px;
-          border: 1px solid #e7ecf3;
-          background: #fbfdff;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-muted);
         }
 
         .progress-meta {
@@ -1313,7 +1287,7 @@ export default function Register() {
           width: 100%;
           height: 9px;
           border-radius: 999px;
-          background: #dbe7fb;
+          background: var(--surface-strong);
           overflow: hidden;
         }
 
@@ -1355,7 +1329,7 @@ export default function Register() {
 
         .field-error {
           font-size: 12px;
-          color: #b91c1c;
+          color: var(--danger);
           font-weight: 700;
         }
 
@@ -1363,8 +1337,8 @@ export default function Register() {
           margin-bottom: 16px;
           padding: 12px 14px;
           border-radius: 14px;
-          border: 1px solid #e7ecf3;
-          background: #fbfdff;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-muted);
           font-size: 13px;
           line-height: 1.6;
           color: var(--text-muted);
@@ -1460,7 +1434,7 @@ export default function Register() {
           padding: 16px 18px;
           border-radius: 18px;
           border: 1px solid var(--border-soft);
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+          background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
         }
 
@@ -1491,9 +1465,9 @@ export default function Register() {
           min-height: 42px;
           padding: 0 16px;
           border-radius: 999px;
-          border: 1px solid #cfe0f7;
-          background: #eef6ff;
-          color: #1f4f96;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent-strong);
           font-size: 13px;
           font-weight: 800;
           cursor: pointer;
@@ -1503,9 +1477,9 @@ export default function Register() {
 
         .file-upload-button:hover {
           transform: translateY(-1px);
-          border-color: #bfd7f7;
-          background: #e7f2ff;
-          box-shadow: 0 10px 20px rgba(0, 122, 251, 0.08);
+          border-color: var(--border-strong);
+          background: var(--surface-strong);
+          box-shadow: var(--shadow-soft);
         }
 
         .file-upload-button:focus-visible {
@@ -1557,14 +1531,14 @@ export default function Register() {
           border: 1px solid var(--border-soft);
           background: var(--surface-panel);
           color: var(--text-secondary);
-          box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+          box-shadow: var(--shadow-soft);
         }
 
         .reference-manager {
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-          border: 1px solid #e7ecf3;
+          background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%);
+          border: 1px solid var(--border-soft);
           border-radius: 22px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           padding: 24px;
         }
 
@@ -1599,9 +1573,9 @@ export default function Register() {
           width: 40px;
           height: 40px;
           border-radius: 999px;
-          border: 1px solid #d8e8ff;
-          background: #eef6ff;
-          color: #1f4f96;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent-strong);
           cursor: pointer;
           flex-shrink: 0;
           transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
@@ -1609,9 +1583,9 @@ export default function Register() {
 
         .reference-manager-toggle:hover {
           transform: translateY(-1px);
-          border-color: #bfd7f7;
-          background: #e7f2ff;
-          box-shadow: 0 10px 20px rgba(0, 122, 251, 0.08);
+          border-color: var(--border-strong);
+          background: var(--surface-strong);
+          box-shadow: var(--shadow-soft);
         }
 
         .reference-manager-toggle:focus-visible {
@@ -1627,10 +1601,10 @@ export default function Register() {
 
         .reference-card {
           border-radius: 20px;
-          border: 1px solid #e7ecf3;
-          background: #ffffff;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
           padding: 18px;
-          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.04);
+          box-shadow: var(--shadow-soft);
         }
 
         .reference-card-title {
@@ -1669,22 +1643,22 @@ export default function Register() {
         }
 
         .reference-status.success {
-          border: 1px solid #bfdbfe;
-          background: #eff6ff;
-          color: #1d4ed8;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent-strong);
         }
 
         .reference-status.error {
-          border: 1px solid #fecaca;
-          background: #fef2f2;
-          color: #b91c1c;
+          border: 1px solid var(--danger-border);
+          background: var(--danger-soft);
+          color: var(--danger);
         }
 
         .register-empty {
-          background: #ffffff;
-          border: 1px solid #e7ecf3;
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
           border-radius: 22px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           padding: 28px;
         }
 
@@ -1702,10 +1676,10 @@ export default function Register() {
         }
 
         .credentials-panel {
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-          border: 1px solid #dbeafe;
+          background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%);
+          border: 1px solid var(--border-strong);
           border-radius: 22px;
-          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+          box-shadow: var(--shadow-panel);
           padding: 24px;
         }
 
@@ -1734,8 +1708,8 @@ export default function Register() {
 
         .credentials-card {
           border-radius: 18px;
-          border: 1px solid #e7ecf3;
-          background: #ffffff;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
           padding: 16px;
         }
 
@@ -1860,10 +1834,10 @@ export default function Register() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px 18px', height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
         <div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
 
-        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
+        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
           <div style={{ width: '100%', maxWidth: 1260 }}>
           <div className="register-shell">
             <div className="register-hero">
@@ -2051,7 +2025,7 @@ export default function Register() {
                 <div className="form-card">
                   <div className="form-card-header">
                     <h3>{activeSectionLabel} Details</h3>
-                    <span className="chip">{activeRoleLabel}</span>
+                    <span className="chip">{selectedRoleLabel}</span>
                   </div>
 
                   <div className="progress-wrap">

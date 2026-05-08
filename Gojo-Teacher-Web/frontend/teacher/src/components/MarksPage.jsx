@@ -19,6 +19,7 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
   fetchTeacherConversationSummaries,
@@ -1131,7 +1132,16 @@ export default function MarksPage() {
     navigate("/all-chat", { state: { contact, chatId, tab: "marks" } });
     // clear unread in RTDB for this teacher
     try {
-      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.patch(
+        `${rtdbBase}/${buildChatSummaryPath(teacher.userId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
       clearCachedChatSummary({
         rtdbBase,
         chatId,

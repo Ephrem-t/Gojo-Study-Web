@@ -7,6 +7,7 @@ import { db, schoolPath, storage } from "../firebase";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
   buildUnreadConversationMap,
   extractAllowedGradeSectionsFromCourseContext,
@@ -973,6 +974,11 @@ export default function TeacherAllChat() {
 
       setMessages(list);
 
+      const hasUnseenIncomingMessages = Object.values(data).some(
+        (message) => message && !message.seen && message.receiverId === teacherUserId
+      );
+      const seenAt = Date.now();
+
       // mark as seen where teacher is receiver
       Object.entries(data).forEach(([id, m]) => {
         if (m && !m.seen && m.receiverId === teacherUserId) {
@@ -980,8 +986,17 @@ export default function TeacherAllChat() {
         }
       });
 
-      // reset unread count for this teacher
-      update(ref(db, scopedPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 }).catch(console.error);
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedChatUser.userId,
+          unreadCount: 0,
+          ...(hasUnseenIncomingMessages
+            ? { lastMessageSeen: true, lastMessageSeenAt: seenAt }
+            : {}),
+        })
+      ).catch(console.error);
       setUnreadCounts((previousCounts) => ({
         ...previousCounts,
         [selectedChatUser.userId]: 0,
@@ -1055,18 +1070,40 @@ export default function TeacherAllChat() {
         [selectedChatUser.userId]: true,
       });
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-        text: input,
-        senderId: teacherUserId,
-        seen: false,
-        timeStamp: messageData.timeStamp,
-      });
+      await Promise.all([
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            lastMessageText: input,
+            lastMessageType: "text",
+            lastMessageTime: messageData.timeStamp,
+            lastSenderId: teacherUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: teacherUserId,
+            lastMessageText: input,
+            lastMessageType: "text",
+            lastMessageTime: messageData.timeStamp,
+            lastSenderId: teacherUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       // increment unread for receiver
       try {
-        await update(ref(db, scopedPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 });
         await runTransaction(
-          ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)),
+          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
           (current) => (Number(current) || 0) + 1
         );
       } catch (e) {
@@ -1132,18 +1169,39 @@ export default function TeacherAllChat() {
         [selectedChatUser.userId]: true,
       });
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-        seen: false,
-        senderId: teacherUserId,
-        text: "📷 Image",
-        timeStamp,
-        type: "image",
-      });
+      await Promise.all([
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: teacherUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: teacherUserId,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: teacherUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       try {
-        await update(ref(db, scopedPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 });
         await runTransaction(
-          ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)),
+          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
           (current) => (Number(current) || 0) + 1
         );
       } catch (error) {

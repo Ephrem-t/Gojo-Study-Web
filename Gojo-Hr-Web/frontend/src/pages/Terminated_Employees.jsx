@@ -77,9 +77,9 @@ function AvatarBadge({ src, name, size = 48 }) {
           width: size,
           height: size,
           borderRadius: 16,
-          border: '1px solid #d7e7fb',
-          background: 'linear-gradient(135deg, #eef6ff 0%, #dfeeff 100%)',
-          color: '#1f4f96',
+          border: '1px solid var(--border-soft)',
+          background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)',
+          color: 'var(--accent-strong)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -98,7 +98,7 @@ function AvatarBadge({ src, name, size = 48 }) {
       src={src}
       alt={name || 'Employee'}
       onError={() => setFailed(true)}
-      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid #d7e7fb', flexShrink: 0 }}
+      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid var(--border-soft)', flexShrink: 0 }}
     />
   );
 }
@@ -245,27 +245,8 @@ export default function TerminatedEmployees() {
       className="dashboard-page"
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
+        background: 'var(--page-bg)',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--danger': '#b91c1c',
-        '--danger-soft': '#fff1f2',
-        '--danger-border': '#fecaca',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -289,7 +270,7 @@ export default function TerminatedEmployees() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Gojo HR</h2>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Gojo HR</h2>
         </div>
 
         <div className="nav-right" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -305,9 +286,10 @@ export default function TerminatedEmployees() {
         style={{
           display: 'flex',
           gap: 14,
-          padding: 'calc(var(--topbar-height) + 18px) 14px 18px',
-          minHeight: '100vh',
-          background: '#ffffff',
+          padding: '18px 14px 18px',
+          height: '100vh',
+          overflow: 'hidden',
+          background: 'var(--page-bg)',
           width: '100%',
           boxSizing: 'border-box',
           alignItems: 'flex-start',
@@ -320,40 +302,47 @@ export default function TerminatedEmployees() {
           style={{
             flex: '1 1 0',
             minWidth: 0,
+            maxWidth: 'none',
             margin: 0,
             boxSizing: 'border-box',
-            minHeight: 'calc(100vh - 24px)',
-            overflowX: 'auto',
-            padding: '0 12px 0 2px',
+            alignSelf: 'flex-start',
+            height: 'calc(100vh - var(--topbar-height) - 36px)',
+            maxHeight: 'calc(100vh - var(--topbar-height) - 36px)',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            overscrollBehavior: 'contain',
+            WebkitOverflowScrolling: 'touch',
+            position: 'relative',
+            padding: '0 12px 12px 2px',
             display: 'flex',
             justifyContent: 'center',
             width: '100%',
           }}
         >
           <div style={{ width: '100%', maxWidth: 1320 }}>
-            <section style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)', border: '1px solid #e7ecf3', borderRadius: 22, padding: '22px 24px', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)' }}>
+            <section style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', border: '1px solid var(--border-soft)', borderRadius: 22, padding: '22px 24px', boxShadow: 'var(--shadow-panel)' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: '#fff1f2', border: '1px solid #fecdd3', color: '#be123c', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--danger-soft)', border: '1px solid var(--danger-border)', color: 'var(--danger)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                     Workforce Archive
                   </div>
-                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Terminated Employees</h1>
-                  <p style={{ margin: '8px 0 0', fontSize: 14, color: '#64748b', lineHeight: 1.6, maxWidth: 760 }}>
+                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Terminated Employees</h1>
+                  <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 760 }}>
                     Archived employee records stay here with termination history, and can be reactivated without rebuilding accounts from scratch.
                   </p>
                 </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid #f5d0d6', background: '#fff6f7', color: '#9f1239', fontSize: 12, fontWeight: 700 }}>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid var(--danger-border)', background: 'var(--danger-soft)', color: 'var(--danger)', fontSize: 12, fontWeight: 700 }}>
                   <FaUserSlash /> {summary.total} archived
                 </div>
               </div>
             </section>
 
             <section style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-              <div style={{ background: '#ffffff', borderRadius: 18, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
+              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Archived Staff</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{summary.total}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Archived Staff</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.total}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fff1f2', border: '1px solid #fecdd3', color: '#e11d48', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
                     <FaUsers />
@@ -361,11 +350,11 @@ export default function TerminatedEmployees() {
                 </div>
               </div>
 
-              <div style={{ background: '#ffffff', borderRadius: 18, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
+              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Departments</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{summary.departments}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Departments</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.departments}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#f3f8ff', border: '1px solid #dbe8f7', color: '#2563eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
                     <FaHistory />
@@ -373,11 +362,11 @@ export default function TerminatedEmployees() {
                 </div>
               </div>
 
-              <div style={{ background: '#ffffff', borderRadius: 18, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
+              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Last 30 Days</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{summary.recent}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Last 30 Days</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.recent}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fffbeb', border: '1px solid #fde68a', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
                     <FaUserSlash />
@@ -392,54 +381,54 @@ export default function TerminatedEmployees() {
               </div>
             ) : null}
 
-            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', overflow: 'hidden' }}>
-              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', overflow: 'hidden' }}>
+              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Termination Archive</div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>Every archived record keeps reason, date, and responsible staff for later review or reactivation.</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Termination Archive</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text-muted)' }}>Every archived record keeps reason, date, and responsible staff for later review or reactivation.</div>
                 </div>
               </div>
 
               {isLoading ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>Loading terminated employees...</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>Loading terminated employees...</div>
               ) : terminatedEmployees.length === 0 ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>No terminated employees found.</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>No terminated employees found.</div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto' }}>
                   <table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}>
                     <thead>
-                      <tr style={{ background: '#fbfdff' }}>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Employee</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Department</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Reason</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Last Day</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Terminated</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>By</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Note</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Actions</th>
+                      <tr style={{ background: 'var(--surface-muted)' }}>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Employee</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Department</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Reason</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Last Day</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Terminated</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>By</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Note</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {terminatedEmployees.map((employee) => (
                         <tr key={employee.terminationId || employee.id || employee._name}>
-                          <td style={{ padding: '16px 18px', borderBottom: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                               <AvatarBadge src={employee._profileImage} name={employee._name} size={50} />
                               <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{employee._name}</div>
-                                <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>{employee.employeeId || '—'} · {employee._position}</div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{employee._name}</div>
+                                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>{employee.employeeId || '—'} · {employee._position}</div>
                               </div>
                             </div>
                           </td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700, borderBottom: '1px solid #f1f5f9' }}>{employee._department}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', borderBottom: '1px solid #f1f5f9' }}>{employee._terminationReason}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', borderBottom: '1px solid #f1f5f9' }}>{formatDate(employee._lastWorkingDate)}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', borderBottom: '1px solid #f1f5f9' }}>{formatDate(employee._terminatedAt)}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', borderBottom: '1px solid #f1f5f9' }}>{employee._terminatedBy}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#64748b', borderBottom: '1px solid #f1f5f9', minWidth: 220, maxWidth: 280 }}>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._department}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{employee._terminationReason}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{formatDate(employee._lastWorkingDate)}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{formatDate(employee._terminatedAt)}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{employee._terminatedBy}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-soft)', minWidth: 220, maxWidth: 280 }}>
                             <div style={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5 }}>{employee._terminationNote || '—'}</div>
                           </td>
-                          <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid var(--border-soft)' }}>
                             <button
                               type="button"
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 34, background: '#eefbf3', color: '#166534', border: '1px solid #bbf7d0', borderRadius: 10, padding: '0 14px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}

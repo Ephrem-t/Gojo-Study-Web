@@ -27,15 +27,27 @@ import {
 	getEmployeeProfileImage,
 	getEmployeesSnapshot,
 } from '../hrData'
+import {
+	buildChatSummaryUpdate,
+	clearChatSummaryUnread,
+	dedupeUserIds,
+	loadChatSummariesForContacts,
+	loadPresenceByUserIds,
+	writeChatSummaryUpdate,
+	sortedChatId,
+} from '../utils/chatSummary'
 import { createProfilePlaceholder, isFallbackProfileImage, resolveProfileImage } from '../utils/profileImage'
 import '../styles/global.css'
 
 const DEFAULT_PROFILE_IMAGE = '/default-profile.png'
 const DEFAULT_SCHOOL_CODE = 'ET-ORO-ADA-GMI'
 const MESSAGE_PAGE_SIZE = 25
-const MAX_CHAT_IMAGE_BYTES = 280 * 1024
-
-const sortedChatId = (id1, id2) => [String(id1 || '').trim(), String(id2 || '').trim()].sort().join('_')
+const MAX_CHAT_IMAGE_BYTES = 180 * 1024
+const UNREAD_REFRESH_INTERVAL_MS = 60 * 1000
+const UNREAD_PRIORITY_LIMIT = 120
+const CONTACT_LIST_ROW_HEIGHT = 78
+const CONTACT_LIST_BUFFER_ROWS = 6
+const EMPLOYEE_CONTACTS_CACHE_TTL_MS = 5 * 60 * 1000
 
 function getInitials(name) {
 	return (name || 'HR Office')
@@ -192,6 +204,13 @@ function normalizeRoleLabel(value) {
 	return value
 }
 
+function normalizeRoleFilterLabel(value) {
+	const normalized = String(value || '').trim().toLowerCase()
+	if (!normalized) return 'Staff'
+	if (normalized.includes('finance') || normalized.includes('admin')) return 'Administrative'
+	return normalizeRoleLabel(value)
+}
+
 function formatTime(ts) {
 	const date = new Date(Number(ts) || Date.now())
 	let hours = date.getHours()
@@ -216,6 +235,10 @@ function formatDateLabel(ts) {
 	if (diffDays === 1) return 'Yesterday'
 	if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`
 	return msgDate.toLocaleDateString()
+}
+
+function isPageVisible() {
+	return typeof document === 'undefined' || document.visibilityState === 'visible'
 }
 
 function isEmployeeActive(employee = {}) {
@@ -247,10 +270,11 @@ export default function AllChat() {
 	const navigate = useNavigate()
 	const chatEndRef = useRef(null)
 	const imageInputRef = useRef(null)
+	const contactListRef = useRef(null)
 	const db = useMemo(() => getDatabase(app), [])
 	const storage = useMemo(() => getStorage(app), [])
 	const [admin] = useState(() => JSON.parse(localStorage.getItem('admin') || '{}'))
-	const adminUserId = String(admin?.userId || admin?.id || '').trim()
+	const adminUserId = String(admin?.userId || admin?.id || admin?.hrId || admin?.adminId || admin?.hrID || admin?.adminID || '').trim()
 	const schoolCode = String(admin?.activeSchoolCode || admin?.schoolCode || DEFAULT_SCHOOL_CODE).trim() || DEFAULT_SCHOOL_CODE
 	const locationState = location.state || {}
 	const incomingContact = locationState.contact || locationState.user || null
@@ -266,6 +290,7 @@ export default function AllChat() {
 	const [recentMessages, setRecentMessages] = useState([])
 	const [olderMessages, setOlderMessages] = useState([])
 	const [input, setInput] = useState('')
+	const [chatSummariesByUserId, setChatSummariesByUserId] = useState({})
 	const [presence, setPresence] = useState({})
 	const [unreadCounts, setUnreadCounts] = useState({})
 	const [imageSending, setImageSending] = useState(false)
@@ -274,6 +299,8 @@ export default function AllChat() {
 	const [activeMenuMessageId, setActiveMenuMessageId] = useState('')
 	const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
 	const [hasOlderMessages, setHasOlderMessages] = useState(false)
+	const [contactListScrollTop, setContactListScrollTop] = useState(0)
+	const [contactListViewportHeight, setContactListViewportHeight] = useState(0)
 
 	const schoolPath = (path) => `Platform1/Schools/${schoolCode}/${String(path || '').replace(/^\/+/, '')}`
 
@@ -281,6 +308,14 @@ export default function AllChat() {
 		if (adminUserId) return
 		navigate('/login', { replace: true })
 	}, [adminUserId, navigate])
+
+	useEffect(() => {
+		if (selectedRoleFilter === 'all') return
+		const normalizedFilter = normalizeRoleFilterLabel(selectedRoleFilter)
+		if (normalizedFilter !== selectedRoleFilter) {
+			setSelectedRoleFilter(normalizedFilter)
+		}
+	}, [selectedRoleFilter])
 
 	useEffect(() => {
 		if (!incomingContactUserId) return
@@ -301,10 +336,7 @@ export default function AllChat() {
 			setContactError('')
 
 			try {
-				const snapshot = await getEmployeesSnapshot(0)
-				if (cancelled) return
-
-				const normalized = snapshot
+				const buildChatContacts = (items) => (Array.isArray(items) ? items : [])
 					.map((employee) => {
 						const job = getEmployeeJob(employee)
 						const contact = getEmployeeContact(employee)
@@ -334,7 +366,25 @@ export default function AllChat() {
 					.filter((employee) => isEmployeeActive(employee))
 					.sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
 
+				let snapshot = await getEmployeesSnapshot(EMPLOYEE_CONTACTS_CACHE_TTL_MS)
+				if (cancelled) return
+
+				let normalized = buildChatContacts(snapshot)
+				const shouldForceFreshFetch =
+					!Array.isArray(snapshot)
+					|| snapshot.length === 0
+					|| normalized.length === 0
+
+				if (shouldForceFreshFetch) {
+					snapshot = await getEmployeesSnapshot(0)
+					if (cancelled) return
+					normalized = buildChatContacts(snapshot)
+				}
+
 				setEmployees(normalized)
+				if (!normalized.length && Array.isArray(snapshot) && snapshot.length > 0) {
+					setContactError('Only active employees with linked user accounts are available in chat.')
+				}
 			} catch (error) {
 				console.error(error)
 				if (!cancelled) {
@@ -354,15 +404,16 @@ export default function AllChat() {
 	}, [adminUserId])
 
 	const roleFilters = useMemo(() => {
-		const values = ['all', ...new Set(employees.map((employee) => String(employee.role || '').trim()).filter(Boolean))]
+		const values = ['all', ...new Set(employees.map((employee) => normalizeRoleFilterLabel(employee.role)).filter(Boolean))]
 		return values
 	}, [employees])
 
 	const filteredEmployees = useMemo(() => {
 		const query = String(searchText || '').trim().toLowerCase()
+		const activeRoleFilter = selectedRoleFilter === 'all' ? 'all' : normalizeRoleFilterLabel(selectedRoleFilter)
 
 		return employees.filter((employee) => {
-			if (selectedRoleFilter !== 'all' && String(employee.role || '').toLowerCase() !== String(selectedRoleFilter || '').toLowerCase()) {
+			if (activeRoleFilter !== 'all' && normalizeRoleFilterLabel(employee.role).toLowerCase() !== String(activeRoleFilter || '').toLowerCase()) {
 				return false
 			}
 
@@ -383,6 +434,78 @@ export default function AllChat() {
 			return 0
 		})
 	}, [filteredEmployees, selectedChatUser])
+
+	useEffect(() => {
+		const element = contactListRef.current
+		if (!element) return undefined
+
+		const syncContactListMetrics = () => {
+			setContactListScrollTop(element.scrollTop || 0)
+			setContactListViewportHeight(element.clientHeight || 0)
+		}
+
+		syncContactListMetrics()
+
+		if (typeof ResizeObserver === 'function') {
+			const resizeObserver = new ResizeObserver(() => {
+				syncContactListMetrics()
+			})
+			resizeObserver.observe(element)
+
+			return () => {
+				resizeObserver.disconnect()
+			}
+		}
+
+		if (typeof window !== 'undefined') {
+			window.addEventListener('resize', syncContactListMetrics)
+		}
+
+		return () => {
+			if (typeof window !== 'undefined') {
+				window.removeEventListener('resize', syncContactListMetrics)
+			}
+		}
+	}, [orderedFilteredEmployees.length, searchText, selectedRoleFilter])
+
+	const activeUnreadUserIds = useMemo(() => {
+		return Object.entries(unreadCounts || {})
+			.filter(([, count]) => Number(count || 0) > 0)
+			.slice(0, UNREAD_PRIORITY_LIMIT)
+			.map(([userId]) => String(userId || '').trim())
+			.filter(Boolean)
+	}, [unreadCounts])
+
+	const unreadRefreshUserIds = useMemo(() => {
+		return dedupeUserIds([
+			selectedChatUser?.userId,
+			...activeUnreadUserIds,
+			...orderedFilteredEmployees.slice(0, UNREAD_PRIORITY_LIMIT).map((employee) => employee.userId),
+		])
+	}, [activeUnreadUserIds, orderedFilteredEmployees, selectedChatUser])
+
+	const visiblePresenceEmployees = useMemo(() => {
+		if (!orderedFilteredEmployees.length) {
+			return []
+		}
+
+		const viewportHeight = Math.max(contactListViewportHeight, CONTACT_LIST_ROW_HEIGHT * 6)
+		const visibleRowCount = Math.max(8, Math.ceil(viewportHeight / CONTACT_LIST_ROW_HEIGHT))
+		const startIndex = Math.max(0, Math.floor(contactListScrollTop / CONTACT_LIST_ROW_HEIGHT) - CONTACT_LIST_BUFFER_ROWS)
+		const endIndex = Math.min(
+			orderedFilteredEmployees.length,
+			startIndex + visibleRowCount + (CONTACT_LIST_BUFFER_ROWS * 2)
+		)
+
+		return orderedFilteredEmployees.slice(startIndex, endIndex)
+	}, [contactListScrollTop, contactListViewportHeight, orderedFilteredEmployees])
+
+	const visiblePresenceUserIds = useMemo(() => {
+		return dedupeUserIds([
+			selectedChatUser?.userId,
+			...visiblePresenceEmployees.map((employee) => employee.userId),
+		])
+	}, [selectedChatUser, visiblePresenceEmployees])
 
 	useEffect(() => {
 		if (!employees.length) return
@@ -465,36 +588,187 @@ export default function AllChat() {
 				}
 			})
 
-			update(ref(db, schoolPath(`Chats/${currentChatKey}/unread`)), { [adminUserId]: 0 }).catch(console.error)
+			Promise.all([
+				update(ref(db, schoolPath(`Chats/${currentChatKey}/unread`)), { [adminUserId]: 0 }).catch(() => {}),
+				clearChatSummaryUnread({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					otherUserId: selectedChatUser?.userId,
+					chatId: currentChatKey,
+				}).catch(() => {}),
+			]).catch(() => {})
+
+			if (selectedChatUser?.userId) {
+				setUnreadCounts((previous) => ({ ...previous, [selectedChatUser.userId]: 0 }))
+				setChatSummariesByUserId((previous) => ({
+					...previous,
+					[selectedChatUser.userId]: {
+						...(previous[selectedChatUser.userId] || {}),
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						unreadCount: 0,
+					},
+				}))
+			}
 		})
 
 		return () => unsubscribe()
 	}, [adminUserId, currentChatKey, db, selectedChatUser])
 
 	useEffect(() => {
-		if (!adminUserId || !employees.length) return undefined
+		if (!adminUserId || !employees.length) {
+			setChatSummariesByUserId({})
+			setUnreadCounts({})
+			return undefined
+		}
 
-		const unsubscribers = employees.map((employee) => {
-			const chatKey = sortedChatId(adminUserId, employee.userId)
-			return onValue(ref(db, schoolPath(`Chats/${chatKey}/unread/${adminUserId}`)), (snapshot) => {
-				const count = Number(snapshot.val() || 0)
-				setUnreadCounts((previous) => ({ ...previous, [employee.userId]: count }))
-			})
+		let cancelled = false
+
+		loadChatSummariesForContacts({
+			db,
+			schoolPath,
+			ownerUserId: adminUserId,
+			contacts: employees.map((employee) => ({ userId: employee.userId })),
 		})
+			.then((entries) => {
+				if (!cancelled) {
+					const summaryMap = entries.reduce((accumulator, entry) => {
+						accumulator[entry.userId] = entry
+						return accumulator
+					}, {})
+
+					setChatSummariesByUserId(summaryMap)
+					setUnreadCounts(employees.reduce((accumulator, employee) => {
+						accumulator[employee.userId] = Number(summaryMap[employee.userId]?.unreadCount || 0)
+						return accumulator
+					}, {}))
+				}
+			})
+			.catch((error) => {
+				console.error('Failed to load chat summaries:', error)
+				if (!cancelled) {
+					setChatSummariesByUserId({})
+					setUnreadCounts({})
+				}
+			})
 
 		return () => {
-			unsubscribers.forEach((unsubscribe) => unsubscribe())
+			cancelled = true
 		}
-	}, [adminUserId, db, employees])
+	}, [adminUserId, db, employees, schoolCode])
 
 	useEffect(() => {
-		const presenceRef = ref(db, schoolPath('Presence'))
-		const unsubscribe = onValue(presenceRef, (snapshot) => {
-			setPresence(snapshot.val() || {})
-		})
+		if (!adminUserId || !unreadRefreshUserIds.length) return undefined
 
-		return () => unsubscribe()
-	}, [db])
+		let cancelled = false
+
+		const refreshChatSummaries = () => {
+			if (!isPageVisible()) {
+				return Promise.resolve()
+			}
+
+			return loadChatSummariesForContacts({
+				db,
+				schoolPath,
+				ownerUserId: adminUserId,
+				contacts: unreadRefreshUserIds.map((userId) => ({ userId })),
+			})
+				.then((entries) => {
+					if (!cancelled) {
+						const summaryMap = entries.reduce((accumulator, entry) => {
+							accumulator[entry.userId] = entry
+							return accumulator
+						}, {})
+
+						const unreadMap = unreadRefreshUserIds.reduce((accumulator, userId) => {
+							accumulator[userId] = Number(summaryMap[userId]?.unreadCount || 0)
+							return accumulator
+						}, {})
+
+						setChatSummariesByUserId((previous) => ({ ...previous, ...summaryMap }))
+						setUnreadCounts((previous) => ({ ...previous, ...unreadMap }))
+					}
+				})
+				.catch((error) => {
+					console.error('Failed to refresh chat summaries:', error)
+				})
+		}
+
+		refreshChatSummaries().catch(() => {})
+		const intervalId = window.setInterval(() => {
+			refreshChatSummaries().catch(() => {})
+		}, UNREAD_REFRESH_INTERVAL_MS)
+		const handleVisibilityChange = () => {
+			if (!isPageVisible()) return
+			refreshChatSummaries().catch(() => {})
+		}
+
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', handleVisibilityChange)
+		}
+
+		return () => {
+			cancelled = true
+			window.clearInterval(intervalId)
+			if (typeof document !== 'undefined') {
+				document.removeEventListener('visibilitychange', handleVisibilityChange)
+			}
+		}
+	}, [adminUserId, db, schoolCode, unreadRefreshUserIds])
+
+	useEffect(() => {
+		if (!visiblePresenceUserIds.length) {
+			setPresence({})
+			return undefined
+		}
+
+		let cancelled = false
+
+		const refreshPresence = () => {
+			if (!isPageVisible()) {
+				return Promise.resolve()
+			}
+
+			return loadPresenceByUserIds({
+				db,
+				schoolPath,
+				userIds: visiblePresenceUserIds,
+			})
+				.then((presenceMap) => {
+					if (!cancelled) {
+						setPresence(visiblePresenceUserIds.reduce((accumulator, userId) => {
+							accumulator[userId] = Object.prototype.hasOwnProperty.call(presenceMap, userId) ? presenceMap[userId] : null
+							return accumulator
+						}, {}))
+					}
+				})
+				.catch((error) => {
+					console.error('Failed to refresh scoped presence:', error)
+				})
+		}
+
+		refreshPresence().catch(() => {})
+		const intervalId = window.setInterval(() => {
+			refreshPresence().catch(() => {})
+		}, UNREAD_REFRESH_INTERVAL_MS)
+		const handleVisibilityChange = () => {
+			if (!isPageVisible()) return
+			refreshPresence().catch(() => {})
+		}
+
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', handleVisibilityChange)
+		}
+
+		return () => {
+			cancelled = true
+			window.clearInterval(intervalId)
+			if (typeof document !== 'undefined') {
+				document.removeEventListener('visibilitychange', handleVisibilityChange)
+			}
+		}
+	}, [db, schoolCode, visiblePresenceUserIds])
 
 	useEffect(() => {
 		chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -587,12 +861,62 @@ export default function AllChat() {
 		if (!selectedChatUser || !adminUserId || !currentChatKey) return
 		const text = String(input || '').trim()
 		if (!text) return
+		const latestVisibleMessage = [...messages].filter((message) => !message?.deleted).sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0)).at(-1)
 
 		if (editingMessageId) {
 			await update(ref(db, schoolPath(`Chats/${currentChatKey}/messages/${editingMessageId}`)), {
 				text,
 				edited: true,
 			})
+
+			if (latestVisibleMessage?.id === editingMessageId) {
+				await Promise.all([
+					writeChatSummaryUpdate({
+						db,
+						schoolPath,
+						ownerUserId: adminUserId,
+						chatId: currentChatKey,
+						summary: {
+							chatId: currentChatKey,
+							otherUserId: selectedChatUser.userId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						},
+					}),
+					writeChatSummaryUpdate({
+						db,
+						schoolPath,
+						ownerUserId: selectedChatUser.userId,
+						chatId: currentChatKey,
+						summary: {
+							chatId: currentChatKey,
+							otherUserId: adminUserId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						},
+					}),
+				])
+
+				setChatSummariesByUserId((previous) => ({
+					...previous,
+					[selectedChatUser.userId]: {
+						...(previous[selectedChatUser.userId] || {}),
+						...buildChatSummaryUpdate({
+							chatId: currentChatKey,
+							otherUserId: selectedChatUser.userId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						}),
+					},
+				}))
+			}
+
 			resetComposer()
 			return
 		}
@@ -614,19 +938,59 @@ export default function AllChat() {
 			[adminUserId]: true,
 			[selectedChatUser.userId]: true,
 		})
-		await update(ref(db, schoolPath(`Chats/${currentChatKey}/lastMessage`)), {
-			text,
-			senderId: adminUserId,
-			seen: false,
-			timeStamp,
-			type: 'text',
-		})
-		const receiverUnreadRef = ref(db, schoolPath(`Chats/${currentChatKey}/unread/${selectedChatUser.userId}`))
-		const receiverUnreadSnapshot = await get(receiverUnreadRef).catch(() => null)
-		const nextReceiverUnread = Number(receiverUnreadSnapshot?.val() || 0) + 1
-		await update(ref(db, schoolPath(`Chats/${currentChatKey}/unread`)), {
-			[selectedChatUser.userId]: nextReceiverUnread,
-		}).catch(() => {})
+		const receiverSummaryUnreadRef = ref(
+			db,
+			schoolPath(`Chat_Summaries/${selectedChatUser.userId}/${currentChatKey}/unreadCount`),
+		)
+		const receiverSummaryUnreadSnapshot = await get(receiverSummaryUnreadRef).catch(() => null)
+		const nextReceiverUnread = Number(receiverSummaryUnreadSnapshot?.val() || 0) + 1
+
+		await Promise.all([
+			writeChatSummaryUpdate({
+				db,
+				schoolPath,
+				ownerUserId: adminUserId,
+				chatId: currentChatKey,
+				summary: {
+					chatId: currentChatKey,
+					otherUserId: selectedChatUser.userId,
+					unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+					lastMessageText: text,
+					lastMessageType: 'text',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}),
+			writeChatSummaryUpdate({
+				db,
+				schoolPath,
+				ownerUserId: selectedChatUser.userId,
+				chatId: currentChatKey,
+				summary: {
+					chatId: currentChatKey,
+					otherUserId: adminUserId,
+					unreadCount: nextReceiverUnread,
+					lastMessageText: text,
+					lastMessageType: 'text',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}),
+		])
+
+		setChatSummariesByUserId((previous) => ({
+			...previous,
+			[selectedChatUser.userId]: {
+				...(previous[selectedChatUser.userId] || {}),
+				chatId: currentChatKey,
+				otherUserId: selectedChatUser.userId,
+				unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+				lastMessageText: text,
+				lastMessageType: 'text',
+				lastMessageTime: timeStamp,
+				lastSenderId: adminUserId,
+			},
+		}))
 
 		setInput('')
 	}
@@ -667,19 +1031,59 @@ export default function AllChat() {
 				[adminUserId]: true,
 				[selectedChatUser.userId]: true,
 			})
-			await update(ref(db, schoolPath(`Chats/${currentChatKey}/lastMessage`)), {
-				senderId: adminUserId,
-				seen: false,
-				text: 'Image',
-				timeStamp,
-				type: 'image',
-			})
-			const receiverUnreadRef = ref(db, schoolPath(`Chats/${currentChatKey}/unread/${selectedChatUser.userId}`))
-			const receiverUnreadSnapshot = await get(receiverUnreadRef).catch(() => null)
-			const nextReceiverUnread = Number(receiverUnreadSnapshot?.val() || 0) + 1
-			await update(ref(db, schoolPath(`Chats/${currentChatKey}/unread`)), {
-				[selectedChatUser.userId]: nextReceiverUnread,
-			}).catch(() => {})
+			const receiverSummaryUnreadRef = ref(
+				db,
+				schoolPath(`Chat_Summaries/${selectedChatUser.userId}/${currentChatKey}/unreadCount`),
+			)
+			const receiverSummaryUnreadSnapshot = await get(receiverSummaryUnreadRef).catch(() => null)
+			const nextReceiverUnread = Number(receiverSummaryUnreadSnapshot?.val() || 0) + 1
+
+			await Promise.all([
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+						lastMessageText: 'Image',
+						lastMessageType: 'image',
+						lastMessageTime: timeStamp,
+						lastSenderId: adminUserId,
+					},
+				}),
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: selectedChatUser.userId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: adminUserId,
+						unreadCount: nextReceiverUnread,
+						lastMessageText: 'Image',
+						lastMessageType: 'image',
+						lastMessageTime: timeStamp,
+						lastSenderId: adminUserId,
+					},
+				}),
+			])
+
+			setChatSummariesByUserId((previous) => ({
+				...previous,
+				[selectedChatUser.userId]: {
+					...(previous[selectedChatUser.userId] || {}),
+					chatId: currentChatKey,
+					otherUserId: selectedChatUser.userId,
+					unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+					lastMessageText: 'Image',
+					lastMessageType: 'image',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}))
 		} catch (error) {
 			console.error('Image send failed:', error)
 			window.alert('Image send failed. Please try again.')
@@ -697,7 +1101,69 @@ export default function AllChat() {
 
 	const deleteMessage = async (messageId) => {
 		if (!currentChatKey || !messageId) return
+		const remainingMessages = [...messages]
+			.filter((message) => !message?.deleted && message.id !== messageId)
+			.sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+		const latestVisibleMessage = [...messages]
+			.filter((message) => !message?.deleted)
+			.sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+			.at(-1)
+		const nextLatestMessage = remainingMessages.at(-1)
 		await update(ref(db, schoolPath(`Chats/${currentChatKey}/messages/${messageId}`)), { deleted: true })
+
+		if (latestVisibleMessage?.id === messageId && selectedChatUser?.userId) {
+			const summaryPatch = nextLatestMessage
+				? {
+					lastMessageText: nextLatestMessage.text,
+					lastMessageType: nextLatestMessage.type,
+					lastMessageTime: nextLatestMessage.timeStamp,
+					lastSenderId: nextLatestMessage.senderId,
+				}
+				: {
+					lastMessageText: '',
+					lastMessageType: 'deleted',
+					lastMessageTime: 0,
+					lastSenderId: '',
+				}
+
+			await Promise.all([
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						...summaryPatch,
+					},
+				}),
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: selectedChatUser.userId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: adminUserId,
+						...summaryPatch,
+					},
+				}),
+			])
+
+			setChatSummariesByUserId((previous) => ({
+				...previous,
+				[selectedChatUser.userId]: {
+					...(previous[selectedChatUser.userId] || {}),
+					...buildChatSummaryUpdate({
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						...summaryPatch,
+					}),
+				},
+			}))
+		}
+
 		setActiveMenuMessageId('')
 		if (editingMessageId === messageId) {
 			resetComposer()
@@ -724,25 +1190,10 @@ export default function AllChat() {
 	return (
 		<div
 			style={{
-				minHeight: '100vh',
-				background: '#ffffff',
+				height: '100vh',
+				overflow: 'hidden',
+				background: 'var(--page-bg)',
 				color: 'var(--text-primary)',
-				'--surface-panel': '#FFFFFF',
-				'--surface-accent': '#F1F8FF',
-				'--surface-muted': '#F7FBFF',
-				'--surface-strong': '#DCEBFF',
-				'--page-bg': '#FFFFFF',
-				'--border-soft': '#D7E7FB',
-				'--border-strong': '#B5D2F8',
-				'--text-primary': '#0f172a',
-				'--text-secondary': '#334155',
-				'--text-muted': '#64748b',
-				'--accent': '#007AFB',
-				'--accent-soft': '#E7F2FF',
-				'--accent-strong': '#007AFB',
-				'--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-				'--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-				'--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
 				'--sidebar-width': 'clamp(230px, 16vw, 290px)',
 				'--topbar-height': '64px',
 			}}
@@ -754,60 +1205,37 @@ export default function AllChat() {
 
 				<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
 					<button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
-					<Link to="/all-chat" aria-label="Messages" style={{ ...headerActionStyle, color: '#007AFB', borderColor: '#bfdbfe', background: '#eff6ff' }}><FaFacebookMessenger /></Link>
+					<Link to="/all-chat" aria-label="Messages" style={{ ...headerActionStyle, color: 'var(--accent)', borderColor: 'var(--border-strong)', background: 'var(--surface-accent)' }}><FaFacebookMessenger /></Link>
 					<Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
 					<AvatarBadge src={admin.profileImage} name={admin.name || 'HR Office'} size={40} fontSize={14} />
 				</div>
 			</nav>
 
-			<div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+			<div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', marginTop: 0, height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
 				<div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
 
-				<main style={{ flex: '1 1 0', minWidth: 0, margin: 0, padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
-					<div style={{ width: '100%', maxWidth: 1260, display: 'flex', flexDirection: 'column', gap: 16 }}>
-						<section style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)', border: '1px solid #e7ecf3', borderRadius: 22, padding: '22px 24px', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 18, flexWrap: 'wrap' }}>
-							<div style={{ maxWidth: 760 }}>
-								<span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', minHeight: 30, padding: '0 12px', borderRadius: 999, border: '1px solid #d8e8ff', background: '#eef6ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 12 }}>Employee Messaging</span>
-								<h3 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1, letterSpacing: '-0.03em' }}>HR Internal Chat</h3>
-								<p style={{ margin: '8px 0 0', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)' }}>This page is restricted to employee conversations only. Parents and students are not loaded here, and HR can message active teachers, finance staff, management, and other HR employees.</p>
-							</div>
-
-							<div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: 12, minWidth: 'min(100%, 420px)' }}>
-								<div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-									<span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{employees.length}</span>
-									<span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Employees</span>
-								</div>
-								<div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-									<span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{filteredEmployees.length}</span>
-									<span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Visible Contacts</span>
-								</div>
-								<div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-									<span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{selectedChatUser ? selectedChatUser.role : 'None'}</span>
-									<span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Current Role</span>
-								</div>
-							</div>
-						</section>
-
-						<section style={{ display: 'grid', gridTemplateColumns: '340px minmax(0, 1fr)', gap: 16, alignItems: 'stretch' }}>
-							<div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', display: 'flex', flexDirection: 'column', minHeight: 620 }}>
-								<div style={{ padding: '18px 18px 14px', borderBottom: '1px solid #edf2f7' }}>
+				<main style={{ flex: '1 1 0', minWidth: 0, margin: 0, padding: '0 12px 0 2px', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+					<div style={{ width: '100%', maxWidth: 1260, height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+						<section style={{ display: 'grid', gridTemplateColumns: '340px minmax(0, 1fr)', gap: 16, alignItems: 'stretch', height: '100%', minHeight: 0 }}>
+							<div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 22, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
+								<div style={{ padding: '18px 18px 14px', borderBottom: '1px solid var(--border-soft)' }}>
 									<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
 										<div>
-											<div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a' }}>Employees</div>
-											<div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>HR conversations are limited to staff only</div>
+											<div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>Employees</div>
+											<div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>HR conversations are limited to staff only</div>
 										</div>
-										<div style={{ width: 38, height: 38, borderRadius: 14, border: '1px solid #dbeafe', background: '#eff6ff', color: '#007AFB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+										<div style={{ width: 38, height: 38, borderRadius: 14, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
 											<FaUsers />
 										</div>
 									</div>
 
 									<div style={{ position: 'relative', marginBottom: 12 }}>
-										<FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#64748b', fontSize: 13 }} />
+										<FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
 										<input
 											value={searchText}
 											onChange={(event) => setSearchText(event.target.value)}
 											placeholder="Search employees..."
-											style={{ width: '100%', height: 44, borderRadius: 14, border: '1px solid #dbe4ef', background: '#fbfdff', color: '#0f172a', padding: '0 14px 0 38px', fontSize: 13, outline: 'none' }}
+											style={{ width: '100%', height: 44, borderRadius: 14, border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', padding: '0 14px 0 38px', fontSize: 13, outline: 'none' }}
 										/>
 									</div>
 
@@ -820,9 +1248,9 @@ export default function AllChat() {
 													type="button"
 													onClick={() => setSelectedRoleFilter(role)}
 													style={{
-														border: active ? '1px solid #bfdbfe' : '1px solid #e7ecf3',
-														background: active ? '#eff6ff' : '#ffffff',
-														color: active ? '#007AFB' : '#475569',
+														border: active ? '1px solid var(--border-strong)' : '1px solid var(--border-soft)',
+														background: active ? 'var(--surface-accent)' : 'var(--surface-panel)',
+														color: active ? 'var(--accent)' : 'var(--text-secondary)',
 														borderRadius: 999,
 														minHeight: 34,
 														padding: '0 12px',
@@ -842,15 +1270,19 @@ export default function AllChat() {
 									</div>
 
 									{contactError ? (
-										<div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 14, border: '1px solid #fed7aa', background: '#fff7ed', color: '#b45309', fontSize: 13, fontWeight: 700 }}>
+										<div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--warning-border)', background: 'var(--warning-soft)', color: 'var(--warning)', fontSize: 13, fontWeight: 700 }}>
 											{contactError}
 										</div>
 									) : null}
 								</div>
 
-								<div style={{ padding: 14, overflowY: 'auto', flex: 1 }}>
-									{loadingContacts ? <div style={{ padding: '12px 8px', color: '#64748b', fontSize: 13 }}>Loading employee contacts...</div> : null}
-									{!loadingContacts && !filteredEmployees.length ? <div style={{ padding: '12px 8px', color: '#64748b', fontSize: 13 }}>No employee contacts matched the current filter.</div> : null}
+								<div
+									ref={contactListRef}
+									onScroll={(event) => setContactListScrollTop(event.currentTarget.scrollTop || 0)}
+									style={{ padding: 14, overflowY: 'auto', flex: 1, minHeight: 0 }}
+								>
+									{loadingContacts ? <div style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: 13 }}>Loading employee contacts...</div> : null}
+									{!loadingContacts && !filteredEmployees.length ? <div style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: 13 }}>No employee contacts matched the current filter.</div> : null}
 
 									{orderedFilteredEmployees.map((employee) => {
 										const isActive = selectedChatUser?.userId === employee.userId
@@ -877,9 +1309,9 @@ export default function AllChat() {
 													borderRadius: 16,
 													cursor: 'pointer',
 													marginBottom: 10,
-													background: '#ffffff',
-													border: isActive ? '1px solid #93c5fd' : '1px solid #e5e7eb',
-													boxShadow: isActive ? 'inset 3px 0 0 #007AFB, 0 8px 18px rgba(0,122,251,0.12)' : '0 2px 8px rgba(15,23,42,0.05)',
+													background: 'var(--surface-panel)',
+													border: isActive ? '1px solid var(--border-strong)' : '1px solid var(--border-soft)',
+													boxShadow: isActive ? 'inset 3px 0 0 var(--accent), var(--shadow-soft)' : 'var(--shadow-soft)',
 													textAlign: 'left',
 												}}
 											>
@@ -888,20 +1320,21 @@ export default function AllChat() {
 														<img
 															src={employee.profileImage}
 															alt={employee.name}
+															loading="lazy"
+															decoding="async"
 															onError={(event) => {
 																const fallback = createPlaceholderAvatar(employee.name)
 																if (event.currentTarget.src === fallback) return
 																event.currentTarget.src = fallback
 															}}
-															style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid #ffffff', boxShadow: '0 4px 10px rgba(15,23,42,0.12)' }}
+															style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}
 														/>
-														<span style={{ position: 'absolute', right: -2, bottom: -2, width: 12, height: 12, borderRadius: 12, border: '2px solid #fff', background: online ? '#22c55e' : '#cbd5e1' }} />
+														<span style={{ position: 'absolute', right: -2, bottom: -2, width: 12, height: 12, borderRadius: 12, border: '2px solid var(--surface-panel)', background: online ? '#22c55e' : '#94a3b8' }} />
 													</div>
 
 													<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-														<span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.name}</span>
-														<span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.role} · {employee.department}</span>
-														<span style={{ fontSize: 11, color: online ? '#16a34a' : '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{online ? 'Online now' : getLastSeenText(employee.userId)}</span>
+														<span style={{ fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.name}</span>
+														<span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.role} · {employee.department}</span>
 													</div>
 												</div>
 
@@ -912,10 +1345,10 @@ export default function AllChat() {
 								</div>
 							</div>
 
-							<div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', display: 'flex', flexDirection: 'column', minHeight: 620 }}>
+							<div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 22, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
 								{selectedChatUser ? (
 									<>
-										<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 18px 14px', borderBottom: '1px solid #eef2f7' }}>
+										<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 18px 14px', borderBottom: '1px solid var(--border-soft)' }}>
 											<div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
 												{/* <button
 													type="button"
@@ -934,23 +1367,23 @@ export default function AllChat() {
 														if (event.currentTarget.src === fallback) return
 														event.currentTarget.src = fallback
 													}}
-													style={{ width: 50, height: 50, borderRadius: '50%', objectFit: 'cover', border: '2px solid #ffffff', boxShadow: '0 6px 12px rgba(15,23,42,0.12)' }}
+													style={{ width: 50, height: 50, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}
 												/>
 
 												<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-													<span style={{ fontWeight: 800, fontSize: 16, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedChatUser.name}</span>
-													<span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? '#16A34A' : '#64748b' }}>{isUserOnline(selectedChatUser.userId) ? 'Online' : getLastSeenText(selectedChatUser.userId)}</span>
+													<span style={{ fontWeight: 800, fontSize: 16, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedChatUser.name}</span>
+													<span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? '#16A34A' : 'var(--text-muted)' }}>{isUserOnline(selectedChatUser.userId) ? 'Online' : getLastSeenText(selectedChatUser.userId)}</span>
 												</div>
 											</div>
 
 											<div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-												<span style={{ fontSize: 11, fontWeight: 700, color: '#007AFB', background: '#FFFFFF', border: '1px solid #007AFB', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.role}</span>
-												<span style={{ fontSize: 11, fontWeight: 700, color: '#334155', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.department}</span>
-												<span style={{ fontSize: 11, fontWeight: 700, color: '#334155', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '5px 10px', borderRadius: 999 }}>{messages.length} loaded</span>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.role}</span>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.department}</span>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', padding: '5px 10px', borderRadius: 999 }}>{messages.length} loaded</span>
 											</div>
 										</div>
 
-										<div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', background: '#ffffff' }}>
+										<div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', background: 'var(--surface-panel)' }}>
 											{hasOlderMessages ? (
 												<div style={{ display: 'flex', justifyContent: 'center', margin: '0 0 16px' }}>
 													<button
@@ -961,9 +1394,9 @@ export default function AllChat() {
 															minHeight: 36,
 															padding: '0 14px',
 															borderRadius: 999,
-															border: '1px solid #dbeafe',
-															background: '#eff6ff',
-															color: '#007AFB',
+															border: '1px solid var(--border-strong)',
+															background: 'var(--surface-accent)',
+															color: 'var(--accent)',
 															fontWeight: 800,
 															fontSize: 12,
 															cursor: loadingOlderMessages ? 'wait' : 'pointer',
@@ -982,7 +1415,7 @@ export default function AllChat() {
 												if (item.type === 'date') {
 													return (
 														<div key={item.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0 16px' }}>
-															<span style={{ fontSize: 11, fontWeight: 800, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 999, padding: '6px 12px' }}>{item.label}</span>
+															<span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', borderRadius: 999, padding: '6px 12px' }}>{item.label}</span>
 														</div>
 													)
 												}
@@ -1004,22 +1437,22 @@ export default function AllChat() {
 															}}
 															style={{
 																maxWidth: '76%',
-																background: isMine ? '#007AFB' : '#f6f7fb',
-																color: isMine ? '#fff' : '#111827',
+																background: isMine ? 'var(--accent)' : 'var(--surface-muted)',
+																color: isMine ? '#fff' : 'var(--text-primary)',
 																padding: isImageMessage ? 6 : '10px 13px',
 																borderRadius: 14,
 																borderTopRightRadius: isMine ? 6 : 14,
 																borderTopLeftRadius: isMine ? 14 : 6,
 																boxShadow: '0 2px 8px rgba(15, 23, 42, 0.08)',
-																border: isMine ? 'none' : '1px solid #e5e7eb',
+																border: isMine ? 'none' : '1px solid var(--border-soft)',
 																wordBreak: 'break-word',
 																cursor: isMine ? 'pointer' : 'default',
 																position: 'relative',
 																overflow: 'visible',
 															}}
 														>
-															{!isMine && !prevSameSender ? <div style={{ position: 'absolute', left: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid #f6f7fb', transform: 'rotate(180deg)' }} /> : null}
-															{isMine && !prevSameSender ? <div style={{ position: 'absolute', right: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid #007AFB' }} /> : null}
+															{!isMine && !prevSameSender ? <div style={{ position: 'absolute', left: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid var(--surface-muted)', transform: 'rotate(180deg)' }} /> : null}
+															{isMine && !prevSameSender ? <div style={{ position: 'absolute', right: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid var(--accent)' }} /> : null}
 
 															{isDeleted ? (
 																<>
@@ -1033,13 +1466,15 @@ export default function AllChat() {
 																	<img
 																		src={message.imageUrl}
 																		alt="Chat"
+																		loading="lazy"
+																		decoding="async"
 																		onClick={(event) => {
 																			event.stopPropagation()
 																			setPreviewImageUrl(message.imageUrl)
 																		}}
-																		style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 12, display: 'block', background: isMine ? '#0b61c3' : '#e2e8f0', cursor: 'zoom-in' }}
+																		style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 12, display: 'block', background: isMine ? '#0b61c3' : 'var(--surface-muted)', cursor: 'zoom-in' }}
 																	/>
-																	<div style={{ position: 'absolute', right: 8, bottom: 8, display: 'flex', alignItems: 'center', gap: 6, background: isMine ? 'rgba(2,6,23,0.24)' : 'rgba(255,255,255,0.82)', borderRadius: 999, padding: '2px 8px', fontSize: 10, color: isMine ? '#f8fafc' : '#475569' }}>
+																	<div style={{ position: 'absolute', right: 8, bottom: 8, display: 'flex', alignItems: 'center', gap: 6, background: isMine ? 'rgba(2,6,23,0.24)' : 'rgba(8,17,31,0.72)', borderRadius: 999, padding: '2px 8px', fontSize: 10, color: '#f8fafc' }}>
 																		<span>{formatTime(message.timeStamp)}</span>
 																		{isMine ? <span style={{ display: 'flex', alignItems: 'center' }}><FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />{message.seen ? <FaCheck size={10} color="#fff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}</span> : null}
 																	</div>
@@ -1047,7 +1482,7 @@ export default function AllChat() {
 															) : (
 																<>
 																	{message.text}
-																	<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginTop: 6, fontSize: 10, color: isMine ? 'rgba(255,255,255,0.85)' : '#64748b' }}>
+																	<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginTop: 6, fontSize: 10, color: isMine ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)' }}>
 																		{message.edited ? <span style={{ fontStyle: 'italic', opacity: 0.95 }}>edited</span> : null}
 																		<span>{formatTime(message.timeStamp)}</span>
 																		{isMine ? <span style={{ display: 'flex', alignItems: 'center' }}><FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />{message.seen ? <FaCheck size={10} color="#fff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}</span> : null}
@@ -1056,13 +1491,13 @@ export default function AllChat() {
 															)}
 
 															{showMenu ? (
-																<div style={{ position: 'absolute', top: '100%', right: isMine ? 0 : 'auto', left: isMine ? 'auto' : 0, marginTop: 8, background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 14, boxShadow: '0 18px 40px rgba(2,6,23,0.18)', minWidth: 150, overflow: 'hidden', zIndex: 5 }}>
+																<div style={{ position: 'absolute', top: '100%', right: isMine ? 0 : 'auto', left: isMine ? 'auto' : 0, marginTop: 8, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 14, boxShadow: 'var(--shadow-panel)', minWidth: 150, overflow: 'hidden', zIndex: 5 }}>
 																	{!isImageMessage ? (
-																		<button type="button" onClick={(event) => { event.stopPropagation(); beginEditing(message) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: '#ffffff', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: '#0f172a', cursor: 'pointer' }}>
+																		<button type="button" onClick={(event) => { event.stopPropagation(); beginEditing(message) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'var(--surface-panel)', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: 'var(--text-primary)', cursor: 'pointer' }}>
 																			<FaEdit size={12} /> Edit message
 																		</button>
 																	) : null}
-																	<button type="button" onClick={(event) => { event.stopPropagation(); deleteMessage(message.id).catch(console.error) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: '#ffffff', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: '#b91c1c', cursor: 'pointer' }}>
+																	<button type="button" onClick={(event) => { event.stopPropagation(); deleteMessage(message.id).catch(console.error) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'var(--surface-panel)', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: 'var(--danger)', cursor: 'pointer' }}>
 																		<FaTrash size={12} /> Delete message
 																	</button>
 																</div>
@@ -1074,9 +1509,9 @@ export default function AllChat() {
 											<div ref={chatEndRef} />
 										</div>
 
-										<div style={{ display: 'flex', gap: 8, margin: '0 18px 18px', padding: 8, borderRadius: 16, background: '#ffffff', border: '1px solid #e2e8f0', boxShadow: '0 6px 14px rgba(15,23,42,0.06)' }}>
+										<div style={{ display: 'flex', gap: 8, margin: '0 18px 18px', padding: 8, borderRadius: 16, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
 											<input ref={imageInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={sendImageMessage} />
-											<button type="button" onClick={() => imageInputRef.current?.click()} style={{ width: 46, height: 46, borderRadius: '50%', background: '#eff6ff', border: '1px solid #dbeafe', color: '#007AFB', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: imageSending ? 'not-allowed' : 'pointer', opacity: imageSending ? 0.65 : 1 }} disabled={imageSending} aria-label="Attach image">
+											<button type="button" onClick={() => imageInputRef.current?.click()} style={{ width: 46, height: 46, borderRadius: '50%', background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent)', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: imageSending ? 'not-allowed' : 'pointer', opacity: imageSending ? 0.65 : 1 }} disabled={imageSending} aria-label="Attach image">
 												<FaImage />
 											</button>
 											<input
@@ -1089,9 +1524,9 @@ export default function AllChat() {
 													}
 												}}
 												placeholder={editingMessageId ? 'Edit your message...' : 'Type a message...'}
-												style={{ flex: 1, padding: 12, borderRadius: 999, border: '1px solid #d1d5db', outline: 'none', background: '#ffffff', boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.04)' }}
+												style={{ flex: 1, padding: 12, borderRadius: 999, border: '1px solid var(--input-border)', outline: 'none', background: 'var(--input-bg)', color: 'var(--text-primary)', boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.04)' }}
 											/>
-											{editingMessageId ? <button type="button" onClick={resetComposer} style={{ minWidth: 88, borderRadius: 999, border: '1px solid #d1d5db', background: '#ffffff', color: '#334155', fontWeight: 700, cursor: 'pointer' }}>Cancel</button> : null}
+											{editingMessageId ? <button type="button" onClick={resetComposer} style={{ minWidth: 88, borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontWeight: 700, cursor: 'pointer' }}>Cancel</button> : null}
 											<button type="button" onClick={() => sendMessage().catch(console.error)} style={{ width: 46, height: 46, borderRadius: '50%', background: '#007AFB', border: 'none', color: '#fff', display: 'flex', justifyContent: 'center', alignItems: 'center', boxShadow: '0 8px 18px rgba(0, 122, 251, 0.25)', cursor: 'pointer' }} aria-label="Send message" disabled={imageSending}>
 												<FaPaperPlane />
 											</button>
@@ -1099,12 +1534,12 @@ export default function AllChat() {
 									</>
 								) : (
 									<div style={{ display: 'grid', placeItems: 'center', flex: 1, padding: 24 }}>
-										<div style={{ textAlign: 'center', maxWidth: 460, padding: 28, borderRadius: 20, border: '1px solid #e2e8f0', background: '#ffffff', boxShadow: '0 8px 22px rgba(15,23,42,0.06)' }}>
-											<div style={{ width: 58, height: 58, margin: '0 auto 14px', borderRadius: 18, background: '#eff6ff', color: '#007AFB', border: '1px solid #dbeafe', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+										<div style={{ textAlign: 'center', maxWidth: 460, padding: 28, borderRadius: 20, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}>
+											<div style={{ width: 58, height: 58, margin: '0 auto 14px', borderRadius: 18, background: 'var(--surface-accent)', color: 'var(--accent)', border: '1px solid var(--border-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
 												<FaFacebookMessenger />
 											</div>
-											<h3 style={{ margin: 0, color: '#0f172a', fontSize: 22 }}>Select an employee to start chatting</h3>
-											<div style={{ marginTop: 8, color: '#475569', fontSize: 14, lineHeight: 1.6 }}>This HR page loads internal employee conversations only. Students and parents are intentionally excluded from the contact list.</div>
+											<h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: 22 }}>Select an employee to start chatting</h3>
+											<div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.6 }}>This HR page loads internal employee conversations only. Students and parents are intentionally excluded from the contact list.</div>
 										</div>
 									</div>
 								)}

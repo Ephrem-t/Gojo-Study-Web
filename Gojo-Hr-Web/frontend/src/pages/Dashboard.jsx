@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
@@ -9,14 +9,21 @@ import './Dashboard.css';
 import '../styles/global.css';
 import DashboardOverview from '../components/DashboardOverview';
 import { app } from '../firebase';
-import { getEmployeeJob, getEmployeeMeta, getEmployeeName, getEmployeeProfileImage } from '../hrData';
+import { getEmployeeJob, getEmployeeMeta, getEmployeeName, getEmployeeProfileImage, getEmployeesSnapshot } from '../hrData';
+import { clearChatSummaryUnread, loadChatSummariesForContacts } from '../utils/chatSummary';
 import { createProfilePlaceholder, resolveAvatarImage, resolveProfileImage } from '../utils/profileImage';
 
 const DASHBOARD_RESOURCE_CACHE = new Map();
 const DASHBOARD_EMPLOYEES_CACHE_KEY = 'dashboard:employees:v2';
-const DASHBOARD_ATTENDANCE_CACHE_KEY = 'dashboard:attendance:90';
+const DASHBOARD_ATTENDANCE_CACHE_KEY = 'dashboard:attendance-summary:90:v1';
 const DASHBOARD_POSTS_CACHE_KEY = 'dashboard:posts:25';
 const DASHBOARD_CALENDAR_CACHE_KEY = 'dashboard:calendar:upcoming:120';
+const DASHBOARD_CHAT_ACTIVITY_CACHE_KEY = 'dashboard:chat-activity:v1';
+const POST_PAGE_SIZE = 25;
+const POST_IMAGE_MAX_DIMENSION = 1280;
+const POST_IMAGE_MAX_BYTES = 450 * 1024;
+const POST_IMAGE_PREVIEW_MAX_DIMENSION = 640;
+const POST_IMAGE_PREVIEW_MAX_BYTES = 140 * 1024;
 
 const DEFAULT_PROFILE_IMAGE = '/default-profile.png';
 
@@ -232,10 +239,6 @@ function isLikelyVideoMedia(mediaType, mediaUrl) {
   }
 
   return /\.(mp4|mov|webm|ogg|m4v)(?:$|\?)/i.test(String(mediaUrl || ''));
-}
-
-function sortedChatId(id1, id2) {
-  return [String(id1 || '').trim(), String(id2 || '').trim()].sort().join('_');
 }
 
 function getConversationSortTime(rawValue) {
@@ -769,7 +772,14 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
   const gapBetweenBars = 4;
   const chartBottom = topPad + chartHeight;
 
-  const countTicks = Array.from({ length: 4 }, (_, i) => Math.round((maxCount * i) / 3));
+  const countTicks = Array.from({ length: 4 }, (_, index) => {
+    const rawValue = (maxCount * index) / 3;
+    return {
+      index,
+      rawValue,
+      label: Math.round(rawValue),
+    };
+  });
   const rateTicks = [0, 25, 50, 75, 100];
   const barColors = {
     present: 'var(--success, #16a34a)',
@@ -799,12 +809,12 @@ function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = '
         <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="var(--surface-panel, #fcfdff)" stroke="var(--border-soft, #e2e8f0)" rx={8} />
       </g>
 
-      {countTicks.map((tickValue) => {
-        const y = yForCount(tickValue);
+      {countTicks.map((tick) => {
+        const y = yForCount(tick.rawValue);
         return (
-          <g key={`count-tick-${tickValue}`}>
+          <g key={`count-tick-${tick.index}-${tick.label}`}>
             <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #eef2ff)" strokeDasharray="4 6" />
-            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{tickValue}</text>
+            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{tick.label}</text>
           </g>
         );
       })}
@@ -936,6 +946,21 @@ function resolveDashboardSelection(action) {
   return { dashboardView: 'home', postFeedView: 'all' };
 }
 
+function readStoredDashboardSelection() {
+  try {
+    const parsedValue = JSON.parse(localStorage.getItem('hr_dashboard_sidebar_view_state') || '{}');
+    return {
+      dashboardView: parsedValue?.dashboardView === 'overview' ? 'overview' : 'home',
+      postFeedView: parsedValue?.postFeedView === 'mine' ? 'mine' : 'all',
+    };
+  } catch (error) {
+    return {
+      dashboardView: 'home',
+      postFeedView: 'all',
+    };
+  }
+}
+
 function getPostId(post) {
   return String(post?.postId || post?.id || '');
 }
@@ -955,11 +980,42 @@ function normalizePostRecord(post) {
     adminName: post?.adminName || post?.name || 'HR Office',
     adminProfile: post?.adminProfile || post?.profileImage || '/default-profile.png',
     postUrl: post?.postUrl || '',
+    postPreviewUrl: post?.postPreviewUrl || '',
+    mediaType: String(post?.mediaType || ''),
     message: post?.message || '',
     targetRole: (post?.targetRole || 'all').toString().toLowerCase(),
     likes,
     likeCount: Number.isFinite(parsedLikeCount) ? parsedLikeCount : Object.keys(likes).length,
     time: post?.time || post?.createdAt || '',
+  };
+}
+
+function getPostFeedImageUrl(post = {}) {
+  return String(post?.postPreviewUrl || post?.postUrl || '');
+}
+
+function getPostFullMediaUrl(post = {}) {
+  return String(post?.postUrl || post?.postPreviewUrl || '');
+}
+
+function normalizePostsApiPayload(payload) {
+  const items = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.posts)
+      ? payload.posts
+      : [];
+
+  const nextCursor = payload?.nextCursor && typeof payload.nextCursor === 'object'
+    ? {
+        beforeTime: String(payload.nextCursor.beforeTime || ''),
+        beforePostId: String(payload.nextCursor.beforePostId || ''),
+      }
+    : null;
+
+  return {
+    items: items.map((item) => normalizePostRecord(item)),
+    hasMore: Boolean(payload?.hasMore),
+    nextCursor: nextCursor && nextCursor.beforeTime ? nextCursor : null,
   };
 }
 
@@ -1006,19 +1062,6 @@ function toIsoDateString(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function getOrthodoxEasterDate(year) {
-  const a = year % 4;
-  const b = year % 7;
-  const c = year % 19;
-  const d = (19 * c + 15) % 30;
-  const e = (2 * a + 4 * b - d + 34) % 7;
-  const month = Math.floor((d + e + 114) / 31);
-  const day = ((d + e + 114) % 31) + 1;
-  const julianDate = new Date(Date.UTC(year, month - 1, day));
-  julianDate.setUTCDate(julianDate.getUTCDate() + 13);
-  return new Date(julianDate.getUTCFullYear(), julianDate.getUTCMonth(), julianDate.getUTCDate());
 }
 
 function getRecurringHolidayEvents(year) {
@@ -1092,50 +1135,6 @@ function getDashboardRoleLabel(value = '') {
   return 'Staff';
 }
 
-function getChatParticipantIds(chatKey = '', chatNode = {}) {
-  const participantIds = Object.keys(chatNode?.participants || {})
-    .map((id) => String(id || '').trim())
-    .filter(Boolean);
-
-  if (participantIds.length) {
-    return Array.from(new Set(participantIds));
-  }
-
-  return String(chatKey || '')
-    .split('_')
-    .map((id) => String(id || '').trim())
-    .filter(Boolean);
-}
-
-function getLatestChatMessage(chatNode = {}) {
-  if (chatNode?.lastMessage?.timeStamp) {
-    return chatNode.lastMessage;
-  }
-
-  return Object.values(chatNode?.messages || {}).reduce((latestMessage, message) => {
-    if (!message || message.deleted) return latestMessage;
-    if (Number(message?.timeStamp || 0) > Number(latestMessage?.timeStamp || 0)) {
-      return message;
-    }
-    return latestMessage;
-  }, null);
-}
-
-function getUnreadReceivedMessages(chatNode = {}, receiverId = '') {
-  const resolvedReceiverId = String(receiverId || '').trim();
-  if (!resolvedReceiverId) return [];
-
-  return Object.entries(chatNode?.messages || {})
-    .filter(([, message]) => {
-      if (!message || message.deleted || message.seen) return false;
-      return String(message.receiverId || '').trim() === resolvedReceiverId;
-    })
-    .map(([id, message]) => ({
-      id,
-      ...(message || {}),
-    }));
-}
-
 function formatActivityTime(value) {
   const stamp = Number(value || 0);
   if (!stamp) return '';
@@ -1148,16 +1147,45 @@ function formatActivityTime(value) {
   return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
+function normalizeAttendanceSummaryEntry(entry = {}) {
+  const presentCount = Math.max(0, Number(entry?.presentCount) || 0);
+  const lateCount = Math.max(0, Number(entry?.lateCount) || 0);
+  const rawAbsentCount = Math.max(0, Number(entry?.absentCount) || 0);
+  const rawTotal = Math.max(0, Number(entry?.total) || 0);
+  const total = Math.max(rawTotal, presentCount + lateCount + rawAbsentCount);
+  const absentCount = total > 0
+    ? Math.max(0, total - (presentCount + lateCount))
+    : rawAbsentCount;
+  const rawRate = Number(entry?.rate);
+  const rate = Number.isFinite(rawRate)
+    ? Math.max(0, Math.min(100, Math.round(rawRate)))
+    : total > 0
+      ? Math.round(((presentCount + lateCount) / total) * 100)
+      : 0;
+
+  return {
+    total,
+    presentCount,
+    lateCount,
+    absentCount,
+    rate,
+  };
+}
+
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
-  const [attendanceByDate, setAttendanceByDate] = useState({});
+  const [attendanceSummaryByDate, setAttendanceSummaryByDate] = useState({});
+  const [attendancePeopleDetailByDate, setAttendancePeopleDetailByDate] = useState({});
+  const [attendancePeopleLoading, setAttendancePeopleLoading] = useState(false);
   const [conversations, setConversations] = useState([]);
   const [posts, setPosts] = useState([]);
-  const [calendarEvents, setCalendarEvents] = useState([]);
-  const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
+  const [postsCursor, setPostsCursor] = useState(null);
+  const [hasMorePosts, setHasMorePosts] = useState(false);
+  const [loadingMorePosts, setLoadingMorePosts] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [postText, setPostText] = useState('');
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaPreviewFile, setPostMediaPreviewFile] = useState(null);
   const [postMediaMeta, setPostMediaMeta] = useState(null);
   const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const [isPostSubmitting, setIsPostSubmitting] = useState(false);
@@ -1166,7 +1194,9 @@ export default function Dashboard() {
   const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [editingPostId, setEditingPostId] = useState('');
   const [existingPostMediaUrl, setExistingPostMediaUrl] = useState('');
+  const [existingPostPreviewUrl, setExistingPostPreviewUrl] = useState('');
   const [existingPostMediaType, setExistingPostMediaType] = useState('');
+  const [expandedPostImage, setExpandedPostImage] = useState(null);
   const [showDeletePostModal, setShowDeletePostModal] = useState(false);
   const [pendingDeletePost, setPendingDeletePost] = useState(null);
   const [isDeletingPost, setIsDeletingPost] = useState(false);
@@ -1182,7 +1212,6 @@ export default function Dashboard() {
   const db = useMemo(() => getDatabase(app), []);
   const navigate = useNavigate();
   const location = useLocation();
-  const db = getDatabase(app);
   const hrUserId = String(admin?.userId || admin?.id || admin?.uid || admin?.user_id || admin?.hrId || '').trim();
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState(() => {
     const directSchoolCode = String(admin?.schoolCode || '').trim();
@@ -1199,9 +1228,10 @@ export default function Dashboard() {
   const withSchoolPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
   const initialSidebarAction = location.state?.dashboardAction;
   const initialOpenNotifications = Boolean(location.state?.openNotifications);
-  const initialDashboardSelection = resolveDashboardSelection(initialSidebarAction);
+  const initialDashboardSelection = initialSidebarAction
+    ? resolveDashboardSelection(initialSidebarAction)
+    : readStoredDashboardSelection();
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(initialOpenNotifications);
-  const [chatRoleLookup, setChatRoleLookup] = useState({});
   const [chatSidebarData, setChatSidebarData] = useState({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
   const [calendarViewDate, setCalendarViewDate] = useState(() => {
     const now = new Date();
@@ -1241,7 +1271,7 @@ export default function Dashboard() {
   const fileInputRef = useRef(null);
   const CALENDAR_WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const adminChatUserId = String(admin?.userId || admin?.id || '').trim();
-  const activeSchoolCode = String(admin?.activeSchoolCode || admin?.schoolCode || '').trim();
+  const dashboardChatUserId = adminChatUserId || hrUserId;
   const schoolPath = (path) => `Platform1/Schools/${activeSchoolCode}/${String(path || '').replace(/^\/+/, '')}`;
   const roleCandidates = [
     admin?.role,
@@ -1324,8 +1354,10 @@ export default function Dashboard() {
     setEditingPostId('');
     setPostText('');
     setPostMedia(null);
+    setPostMediaPreviewFile(null);
     setPostMediaMeta(null);
     setExistingPostMediaUrl('');
+    setExistingPostPreviewUrl('');
     setExistingPostMediaType('');
     setTargetRole('all');
     if (fileInputRef.current) {
@@ -1351,8 +1383,10 @@ export default function Dashboard() {
     setEditingPostId(String(post.postId || ''));
     setPostText(String(post.message || ''));
     setPostMedia(null);
+    setPostMediaPreviewFile(null);
     setPostMediaMeta(null);
     setExistingPostMediaUrl(String(post.postUrl || ''));
+    setExistingPostPreviewUrl(String(post.postPreviewUrl || post.postUrl || ''));
     setExistingPostMediaType(String(post.mediaType || ''));
     setTargetRole(targetOptions.includes(nextTargetRole) ? nextTargetRole : 'all');
     if (fileInputRef.current) {
@@ -1373,10 +1407,25 @@ export default function Dashboard() {
     setShowDeletePostModal(true);
   };
 
-  const loadCalendarEvents = async ({ forceRefresh = false } = {}) => {
+  const openExpandedPostImage = (post) => {
+    const fullImageUrl = getPostFullMediaUrl(post);
+    if (!fullImageUrl || isLikelyVideoMedia(post?.mediaType, fullImageUrl)) {
+      return;
+    }
+
+    setExpandedPostImage({
+      src: fullImageUrl,
+      alt: `${post?.adminName || 'HR Office'} post image`,
+    });
+  };
+
+  const closeExpandedPostImage = () => {
+    setExpandedPostImage(null);
+  };
+
+  const loadCalendarEvents = useCallback(async ({ forceRefresh = false } = {}) => {
     if (!activeSchoolCode) {
       setCalendarEvents([]);
-      setUpcomingCalendarEvents([]);
       return;
     }
 
@@ -1405,29 +1454,44 @@ export default function Dashboard() {
       if (forceRefresh) {
         setCachedDashboardResource(calendarCacheKey, normalizedEvents);
       }
+      setCalendarEvents(normalizedEvents);
+    } catch (error) {
+      console.error('Failed to load calendar events:', error);
+      setCalendarEvents([]);
+    } finally {
+      setCalendarEventsLoading(false);
     }
-    load();
-  }, []);
+  }, [activeSchoolCode, calendarCacheKey]);
 
   useEffect(() => {
-    async function loadUsers() {
+    loadCalendarEvents().catch((error) => {
+      console.error('Failed to initialize calendar events:', error);
+    });
+  }, [loadCalendarEvents]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadEmployees() {
       try {
-        const res = await api.get('/users');
-        const items = res.data || [];
-        if (Array.isArray(items)) {
-          setUsers(items);
-          return;
+        let snapshot = await getEmployeesSnapshot(5 * 60 * 1000);
+        if (cancelled) return;
+
+        if (!Array.isArray(snapshot) || snapshot.length === 0) {
+          snapshot = await getEmployeesSnapshot(0);
+          if (cancelled) return;
         }
-        const normalized = Object.entries(items || {}).map(([id, payload]) => ({
-          ...(payload || {}),
-          id,
-        }));
-        setUsers(normalized);
-      } catch (e) {
-        console.error(e);
-        setUsers([]);
+
+        setEmployees(Array.isArray(snapshot) ? snapshot : []);
+      } catch (error) {
+        console.error('Failed to load dashboard employees:', error);
+        if (!cancelled) {
+          setEmployees([]);
+        }
       }
     }
+
+    loadEmployees();
 
     return () => {
       cancelled = true;
@@ -1438,21 +1502,21 @@ export default function Dashboard() {
     let cancelled = false;
 
     getCachedDashboardResource(DASHBOARD_ATTENDANCE_CACHE_KEY, async () => {
-      const response = await api.get('/api/employee_attendance/history', {
+      const response = await api.get('/api/employee_attendance/summary', {
         params: { days: 90 },
       });
-      const map = response.data?.attendanceByDate;
+      const map = response.data?.attendanceSummaryByDate;
       return map && typeof map === 'object' ? map : {};
     }, 45 * 1000)
       .then((map) => {
         if (!cancelled) {
-          setAttendanceByDate(map);
+          setAttendanceSummaryByDate(map);
         }
       })
       .catch((error) => {
         console.error(error);
         if (!cancelled) {
-          setAttendanceByDate({});
+          setAttendanceSummaryByDate({});
         }
       });
 
@@ -1466,23 +1530,24 @@ export default function Dashboard() {
 
     getCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, async () => {
       const response = await api.get('/api/get_posts', {
-        params: { limit: 25 },
+        params: { limit: POST_PAGE_SIZE, withMeta: 1 },
       });
-      return Array.isArray(response.data)
-        ? response.data
-        : Array.isArray(response.data?.posts)
-          ? response.data.posts
-          : [];
+      return response.data;
     }, 30 * 1000)
-      .then((items) => {
+      .then((payload) => {
+        const { items, hasMore, nextCursor } = normalizePostsApiPayload(payload);
         if (!cancelled) {
           setPosts(items);
+          setHasMorePosts(hasMore);
+          setPostsCursor(nextCursor);
         }
       })
       .catch((error) => {
         console.error('Failed to load posts:', error);
         if (!cancelled) {
           setPosts([]);
+          setHasMorePosts(false);
+          setPostsCursor(null);
         }
       });
 
@@ -1491,80 +1556,22 @@ export default function Dashboard() {
     };
   }, []);
 
-  useEffect(() => {
-    async function fetchCalendarDeadlines() {
-      try {
-        const response = await api.get('/api/calendar_events', {
-          params: {
-            deadlinesOnly: 1,
-            upcoming: 1,
-            days: 120,
-          },
-        });
-
-        const events = Array.isArray(response.data)
-          ? response.data
-          : Array.isArray(response.data?.events)
-            ? response.data.events
-            : [];
-
-        setUpcomingCalendarEvents(events);
-      } catch (error) {
-        console.error('Failed to load calendar deadlines:', error);
-        setUpcomingCalendarEvents([]);
-      }
-    }
-
-    loadConversations();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSchoolCode, adminChatUserId, db, employeeContactByUserId]);
-
   const count = employees.length;
   const departments = Array.from(new Set(employees.map(e => e.department).filter(Boolean))).length || 3;
   const openPositions = Math.max(2, Math.round((count / 10))) ;
 
   const attendanceSeries = useMemo(() => {
-    const dateEntries = Object.entries(attendanceByDate || {})
-      .filter(([dateKey, recordMap]) => typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && recordMap && typeof recordMap === 'object')
+    const dateEntries = Object.entries(attendanceSummaryByDate || {})
+      .filter(([dateKey, summary]) => typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && summary && typeof summary === 'object')
       .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate));
 
-    return dateEntries.map(([dateKey, recordMap]) => {
-      const records = Object.values(recordMap || {}).filter((entry) => entry && typeof entry === 'object');
-      const total = records.length;
-
-      if (total === 0) {
-        return { date: dateKey, rate: 0, total: 0, presentCount: 0, lateCount: 0, absentCount: 0 };
-      }
-
-      const lateCount = records.filter((entry) => String(entry.status || '').toLowerCase() === 'late').length;
-      const presentCount = records.filter((entry) => {
-        const status = String(entry.status || '').toLowerCase();
-        if (status === 'present') {
-          return true;
-        }
-
-        if (status === 'late' || status === 'absent') {
-          return false;
-        }
-
-        return entry.present === true;
-      }).length;
-      const attendingCount = presentCount + lateCount;
-      const absentCount = Math.max(0, total - attendingCount);
-
+    return dateEntries.map(([dateKey, summary]) => {
       return {
         date: dateKey,
-        rate: Math.round((attendingCount / total) * 100),
-        total,
-        presentCount,
-        lateCount,
-        absentCount,
+        ...normalizeAttendanceSummaryEntry(summary),
       };
     });
-  }, [attendanceByDate]);
+  }, [attendanceSummaryByDate]);
 
   const attendanceDisplaySeries = useMemo(() => {
     const source = Array.isArray(attendanceSeries) ? attendanceSeries : [];
@@ -1652,8 +1659,9 @@ export default function Dashboard() {
       });
   }, [attendanceSeries, attendanceRecordView]);
 
-  const fallbackAttendanceRate = employees.length
-    ? `${Math.round((employees.filter((employee) => employee.presentToday).length / employees.length) * 100) || 96}%`
+  const employeesWithAttendanceFlag = employees.filter((employee) => typeof employee?.presentToday === 'boolean');
+  const fallbackAttendanceRate = employeesWithAttendanceFlag.length
+    ? `${Math.round((employeesWithAttendanceFlag.filter((employee) => employee.presentToday).length / employeesWithAttendanceFlag.length) * 100)}%`
     : '—';
   const latestAttendanceRate = attendanceDisplaySeries.length > 0
     ? `${attendanceDisplaySeries[attendanceDisplaySeries.length - 1].rate}%`
@@ -1669,29 +1677,15 @@ export default function Dashboard() {
     ? attendanceDisplaySeries[attendanceDisplaySeries.length - 1]
     : null;
   const attendanceChartPoints = useMemo(() => {
-    const map = attendanceByDate || {};
+    const map = attendanceSummaryByDate || {};
     const todayIso = new Date().toISOString().slice(0, 10);
     const availableDates = Object.keys(map).filter((dateKey) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey)).sort();
     const latestAvailableDate = availableDates[availableDates.length - 1] || todayIso;
-    const normalizeRecords = (recordMap) => {
-      const records = Object.values(recordMap || {}).filter((r) => r && typeof r === 'object');
-      const lateCount = records.filter((entry) => String(entry.status || '').toLowerCase() === 'late').length;
-      const presentCount = records.filter((entry) => {
-        const status = String(entry.status || '').toLowerCase();
-        if (status === 'present') return true;
-        if (status === 'late' || status === 'absent') return false;
-        return entry.present === true;
-      }).length;
-      const absentCount = Math.max(0, records.length - (presentCount + lateCount));
-      const total = records.length;
-      const rate = total > 0 ? Math.round(((presentCount + lateCount) / total) * 100) : 0;
-      return { total, presentCount, lateCount, absentCount, rate };
-    };
 
     // DAILY: show that day's attendance as a single point (or empty)
     if (attendanceRecordView === 'daily') {
       const targetDate = map[todayIso] ? todayIso : latestAvailableDate;
-      const p = normalizeRecords(map[targetDate]);
+      const p = normalizeAttendanceSummaryEntry(map[targetDate]);
       return [{ date: targetDate, label: targetDate === todayIso ? 'Today' : targetDate, ...p }];
     }
 
@@ -1708,7 +1702,7 @@ export default function Dashboard() {
         const dt = new Date(weekStart);
         dt.setDate(weekStart.getDate() + i);
         const iso = toIsoDateString(dt);
-        const meta = normalizeRecords(map[iso]);
+        const meta = normalizeAttendanceSummaryEntry(map[iso]);
         const label = dt.toLocaleDateString('en-US', { weekday: 'short' });
         return { date: iso, label, ...meta };
       });
@@ -1742,7 +1736,7 @@ export default function Dashboard() {
         let total = 0, presentCount = 0, lateCount = 0, absentCount = 0;
         for (let dt = new Date(startClamp); dt <= endClamp; dt.setDate(dt.getDate() + 1)) {
           const iso = toIsoDateString(dt);
-          const meta = normalizeRecords(map[iso]);
+          const meta = normalizeAttendanceSummaryEntry(map[iso]);
           total += meta.total; presentCount += meta.presentCount; lateCount += meta.lateCount; absentCount += meta.absentCount;
         }
         const rate = total > 0 ? Math.round(((presentCount + lateCount) / total) * 100) : 0;
@@ -1754,7 +1748,7 @@ export default function Dashboard() {
     }
 
     return [];
-  }, [attendanceByDate, attendanceRecordView, attendanceDisplaySeries]);
+  }, [attendanceSummaryByDate, attendanceRecordView, attendanceDisplaySeries]);
   const recentAttendanceRecords = useMemo(() => {
     if (attendanceRecordView === 'daily') {
       return attendanceChartPoints.slice(0, 1);
@@ -1822,14 +1816,126 @@ export default function Dashboard() {
       return accumulator;
     }, {});
   }, [employees]);
-  const usersById = useMemo(() => {
-    return (users || []).reduce((accumulator, user) => {
-      const userId = String(user?.userId || user?.id || user?.uid || '').trim();
-      if (!userId) return accumulator;
-      accumulator[userId] = user;
-      return accumulator;
-    }, {});
-  }, [users]);
+  const chatSidebarContacts = useMemo(() => {
+    return (employees || [])
+      .map((employee) => {
+        const job = getEmployeeJob(employee);
+        const meta = getEmployeeMeta(employee);
+        const userId = String(employee?.userId || meta?.userId || '').trim();
+
+        if (!userId || userId === dashboardChatUserId) {
+          return null;
+        }
+
+        const roleValue = job?.employeeCategory || job?.category || job?.position || employee?.role || employee?.position || 'Staff';
+
+        return {
+          userId,
+          name: getEmployeeName(employee) || `User ${userId}`,
+          role: getDashboardRoleLabel(roleValue),
+          profileImage: getSafeProfileImage(getEmployeeProfileImage(employee)) || CHAT_DEFAULT_PROFILE,
+        };
+      })
+      .filter(Boolean);
+  }, [dashboardChatUserId, employees]);
+  const attendancePeopleDetailRange = useMemo(() => {
+    if (!showAttendancePeopleList) {
+      return null;
+    }
+
+    if (attendanceRecordView === 'daily') {
+      const targetDate = attendanceChartPoints[0]?.date;
+      return /^\d{4}-\d{2}-\d{2}$/.test(String(targetDate || ''))
+        ? { startDate: targetDate, endDate: targetDate }
+        : null;
+    }
+
+    if (attendanceRecordView === 'weekly') {
+      const weeklyDates = attendanceChartPoints
+        .map((point) => String(point?.date || ''))
+        .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+        .sort();
+
+      if (!weeklyDates.length) {
+        return null;
+      }
+
+      return {
+        startDate: weeklyDates[0],
+        endDate: weeklyDates[weeklyDates.length - 1],
+      };
+    }
+
+    const latestMonthlyBucket = String(attendanceDisplaySeries[attendanceDisplaySeries.length - 1]?.date || '');
+    if (!/^\d{4}-\d{2}$/.test(latestMonthlyBucket)) {
+      return null;
+    }
+
+    const [yearValue, monthValue] = latestMonthlyBucket.split('-').map((value) => Number(value));
+    if (!Number.isFinite(yearValue) || !Number.isFinite(monthValue)) {
+      return null;
+    }
+
+    const startDate = `${latestMonthlyBucket}-01`;
+    const monthEnd = new Date(yearValue, monthValue, 0);
+    return {
+      startDate,
+      endDate: toIsoDateString(monthEnd),
+    };
+  }, [showAttendancePeopleList, attendanceRecordView, attendanceChartPoints, attendanceDisplaySeries]);
+
+  useEffect(() => {
+    if (!showAttendancePeopleList || !attendancePeopleDetailRange) {
+      setAttendancePeopleLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const { startDate, endDate } = attendancePeopleDetailRange;
+    const cacheKey = `dashboard:attendance-detail:${startDate}:${endDate}`;
+
+    setAttendancePeopleLoading(true);
+    setAttendancePeopleDetailByDate({});
+
+    getCachedDashboardResource(cacheKey, async () => {
+      if (startDate === endDate) {
+        const response = await api.get('/api/employee_attendance', {
+          params: { date: startDate },
+        });
+        const detailMap = response.data?.attendance;
+        return detailMap && typeof detailMap === 'object'
+          ? { [startDate]: detailMap }
+          : {};
+      }
+
+      const response = await api.get('/api/employee_attendance/history', {
+        params: { startDate, endDate },
+      });
+      const detailMap = response.data?.attendanceByDate;
+      return detailMap && typeof detailMap === 'object' ? detailMap : {};
+    }, 45 * 1000)
+      .then((detailMap) => {
+        if (!cancelled) {
+          setAttendancePeopleDetailByDate(detailMap);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load attendance detail:', error);
+        if (!cancelled) {
+          setAttendancePeopleDetailByDate({});
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAttendancePeopleLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showAttendancePeopleList, attendancePeopleDetailRange]);
+
   const attendancePeopleList = useMemo(() => {
     const visibleBucketKeys = new Set((attendanceDisplaySeries || []).map((entry) => entry?.date).filter(Boolean));
     if (!visibleBucketKeys.size) return [];
@@ -1844,7 +1950,7 @@ export default function Dashboard() {
 
     const rows = [];
 
-    Object.entries(attendanceByDate || {}).forEach(([sourceDate, recordMap]) => {
+    Object.entries(attendancePeopleDetailByDate || {}).forEach(([sourceDate, recordMap]) => {
       if (!recordMap || typeof recordMap !== 'object') return;
 
       const bucketMeta = getAttendanceBucketMeta(sourceDate, attendanceRecordView);
@@ -1877,7 +1983,7 @@ export default function Dashboard() {
         }
         return leftEntry.name.localeCompare(rightEntry.name);
       });
-  }, [attendanceByDate, attendanceDisplaySeries, attendanceRecordView, attendanceStatusFilter, employeeNameById]);
+  }, [attendancePeopleDetailByDate, attendanceDisplaySeries, attendanceRecordView, attendanceStatusFilter, employeeNameById]);
 
   // additional KPIs
   const leavesToday = employees.filter(e => e.presentToday === false).length;
@@ -1886,74 +1992,82 @@ export default function Dashboard() {
   const turnoverRate =  employees.length ? `${Math.round((employees.filter(e=>e.terminated === true).length / employees.length) * 100)}%` : '—';
 
   useEffect(() => {
-    if (!hrUserId || !activeSchoolCode) {
+    if (!dashboardChatUserId || !activeSchoolCode || !chatSidebarContacts.length) {
       setChatSidebarData({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
+      setConversations([]);
       return undefined;
     }
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const endOfToday = startOfToday.getTime() + 86400000;
-    const chatsRef = ref(db, withSchoolPath('Chats'));
+    let cancelled = false;
+    const cacheKey = `${DASHBOARD_CHAT_ACTIVITY_CACHE_KEY}:${activeSchoolCode}:${dashboardChatUserId}`;
 
-    const unsubscribe = onValue(chatsRef, (snapshot) => {
-      const chats = snapshot.val() || {};
-      let unreadCount = 0;
-      let todayMessageCount = 0;
+    getCachedDashboardResource(cacheKey, async () => {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = startOfToday.getTime() + 86400000;
 
-      const contactEntries = Object.entries(chats)
-        .map(([chatKey, chatNode]) => {
-          if (!chatNode || typeof chatNode !== 'object') return null;
-
-          const participantIds = getChatParticipantIds(chatKey, chatNode);
-          if (!participantIds.includes(hrUserId)) return null;
-
-          const otherUserId = participantIds.find((participantId) => participantId !== hrUserId) || '';
-          if (!otherUserId) return null;
-
-          const messageEntries = Object.values(chatNode?.messages || {}).filter((message) => message && typeof message === 'object' && !message.deleted);
-          const unreadMessages = getUnreadReceivedMessages(chatNode, hrUserId);
-          const unread = unreadMessages.length;
-          unreadCount += unread;
-
-          todayMessageCount += messageEntries.filter((message) => {
-            const stamp = Number(message?.timeStamp || 0);
-            return stamp >= startOfToday.getTime() && stamp < endOfToday;
-          }).length;
-
-          const latestMessage = getLatestChatMessage(chatNode);
-          const userNode = usersById[otherUserId] || {};
-          const roleNode = chatRoleLookup[otherUserId] || {};
-          const roleKey = String(roleNode.roleKey || userNode?.role || userNode?.userType || '').trim().toLowerCase();
-
-          return {
-            userId: otherUserId,
-            tab: roleNode.roleKey || roleKey || 'teacher',
-            name: userNode?.name || userNode?.displayName || userNode?.username || roleNode?.name || `User ${otherUserId}`,
-            role: roleNode?.roleLabel || getDashboardRoleLabel(roleKey),
-            avatar: userNode?.profileImage || userNode?.profile || userNode?.avatar || roleNode?.profileImage || CHAT_DEFAULT_PROFILE,
-            lastMsgText: String(latestMessage?.text || '').trim() || 'No recent message',
-            lastMsgTime: Number(latestMessage?.timeStamp || 0),
-            chatKey,
-            unread,
-            unreadMessageIds: unreadMessages.map((message) => message.id),
-          };
-        })
-        .filter(Boolean)
+      const entries = (await loadChatSummariesForContacts({
+        db,
+        schoolPath,
+        ownerUserId: dashboardChatUserId,
+        contacts: chatSidebarContacts,
+      }))
         .sort((left, right) => {
-          const timeDiff = Number(right.lastMsgTime || 0) - Number(left.lastMsgTime || 0);
+          const timeDiff = Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0);
           if (timeDiff !== 0) return timeDiff;
-          return left.name.localeCompare(right.name);
+          return String(left.name || '').localeCompare(String(right.name || ''));
         });
 
-      const recentContacts = contactEntries.slice(0, 4);
-      const unreadContacts = contactEntries.filter((contact) => Number(contact.unread || 0) > 0).slice(0, 4);
+      const conversations = entries.map((entry) => ({
+        chatId: entry.chatId,
+        contact: {
+          userId: entry.userId,
+          name: entry.name,
+          role: entry.role,
+          profileImage: entry.profileImage,
+        },
+        displayName: entry.name,
+        profile: entry.profileImage,
+        unreadForMe: entry.unreadCount,
+        lastMessageText: entry.lastMessageText,
+        lastMessageAt: entry.lastMessageTime,
+      }));
 
-      setChatSidebarData({ unreadCount, todayMessageCount, recentContacts, unreadContacts });
-    });
+      return {
+        unreadCount: entries.reduce((sum, entry) => sum + Number(entry.unreadCount || 0), 0),
+        todayMessageCount: entries.reduce((sum, entry) => (
+          entry.lastMessageTime >= startOfToday.getTime() && entry.lastMessageTime < endOfToday
+            ? sum + 1
+            : sum
+        ), 0),
+        recentContacts: entries.slice(0, 4),
+        unreadContacts: entries.filter((entry) => Number(entry.unreadCount || 0) > 0).slice(0, 4),
+        conversations,
+      };
+    }, 2 * 60 * 1000)
+      .then((data) => {
+        if (cancelled) return;
 
-    return () => unsubscribe();
-  }, [activeSchoolCode, chatRoleLookup, db, hrUserId, usersById, schoolNodePrefix]);
+        setChatSidebarData({
+          unreadCount: Number(data?.unreadCount || 0),
+          todayMessageCount: Number(data?.todayMessageCount || 0),
+          recentContacts: Array.isArray(data?.recentContacts) ? data.recentContacts : [],
+          unreadContacts: Array.isArray(data?.unreadContacts) ? data.unreadContacts : [],
+        });
+        setConversations(Array.isArray(data?.conversations) ? data.conversations : []);
+      })
+      .catch((error) => {
+        console.error('Failed to load dashboard chat activity:', error);
+        if (!cancelled) {
+          setChatSidebarData({ unreadCount: 0, todayMessageCount: 0, recentContacts: [], unreadContacts: [] });
+          setConversations([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSchoolCode, chatSidebarContacts, dashboardChatUserId, db, schoolNodePrefix]);
 
   // upcoming birthdays within 30 days
   const upcomingBirthdays = employees.filter(e => e.birthDate).map(e => ({...e, birthDateObj: new Date(e.birthDate)})).filter(e=>{
@@ -2150,8 +2264,10 @@ export default function Dashboard() {
 
   const notificationCount = upcomingBirthdays.length + upcomingContracts.length;
   const totalUnreadMessages = conversations.reduce((sum, conversation) => sum + Number(conversation?.unreadForMe || 0), 0);
-  const messageCount = totalUnreadMessages;
-  const totalNotifications = notificationCount + totalUnreadMessages;
+  const unreadMessageCount = Number(chatSidebarData?.unreadCount ?? totalUnreadMessages ?? 0);
+  const todayMessageCount = Number(chatSidebarData?.todayMessageCount || 0);
+  const messageCount = unreadMessageCount;
+  const totalNotifications = notificationCount + unreadMessageCount;
   const todayPostCount = posts.filter((post) => {
     if (!post?.time) return false;
     const postDate = new Date(post.time);
@@ -2266,7 +2382,19 @@ export default function Dashboard() {
   const deadlineWindowEnd = new Date(calendarNow);
   deadlineWindowEnd.setDate(deadlineWindowEnd.getDate() + 30);
   const deadlineWindowEndIsoDate = `${deadlineWindowEnd.getFullYear()}-${String(deadlineWindowEnd.getMonth() + 1).padStart(2, '0')}-${String(deadlineWindowEnd.getDate()).padStart(2, '0')}`;
+  const dashboardDeadlineWindowEnd = new Date(calendarNow);
+  dashboardDeadlineWindowEnd.setDate(dashboardDeadlineWindowEnd.getDate() + 120);
+  const dashboardDeadlineWindowEndIsoDate = `${dashboardDeadlineWindowEnd.getFullYear()}-${String(dashboardDeadlineWindowEnd.getMonth() + 1).padStart(2, '0')}-${String(dashboardDeadlineWindowEnd.getDate()).padStart(2, '0')}`;
   const calendarTodayIsoDate = `${calendarNow.getFullYear()}-${String(calendarNow.getMonth() + 1).padStart(2, '0')}-${String(calendarNow.getDate()).padStart(2, '0')}`;
+
+  const upcomingCalendarEvents = calendarEvents
+    .filter((eventItem) => (
+      eventItem.showInUpcomingDeadlines
+      && eventItem.category === 'academic'
+      && String(eventItem.gregorianDate || '') >= calendarTodayIsoDate
+      && String(eventItem.gregorianDate || '') <= dashboardDeadlineWindowEndIsoDate
+    ))
+    .sort((leftItem, rightItem) => String(leftItem.gregorianDate || '').localeCompare(String(rightItem.gregorianDate || '')));
 
   const upcomingDeadlineEvents = calendarEvents
     .filter((eventItem) => (
@@ -2352,6 +2480,27 @@ export default function Dashboard() {
 
   const departmentCount = Object.keys(departmentCounts).length;
   const positionCount = new Set(normalizedEmployees.map((employee) => employee._position).filter(Boolean)).size;
+
+  const recentHires = normalizedEmployees
+    .map((employee) => {
+      const hireDate = getEmployeeHireDate(employee);
+      if (!hireDate) return null;
+
+      return {
+        name: employee._name,
+        role: employee._position || employee._department || 'Staff',
+        date: hireDate.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+        timestamp: hireDate.getTime(),
+      };
+    })
+    .filter(Boolean)
+    .sort((leftItem, rightItem) => rightItem.timestamp - leftItem.timestamp)
+    .slice(0, 4)
+    .map(({ timestamp, ...item }) => item);
 
   const recentTerminations = normalizedEmployees
     .filter((employee) => employee.terminated || employee._status === 'terminated')
@@ -2472,17 +2621,17 @@ export default function Dashboard() {
     boxShadow: 'none',
   };
   const postSurfaceStyle = {
-    background: '#ffffff',
+    background: 'var(--surface-panel)',
     color: 'var(--text-primary, #111827)',
     borderRadius: 10,
-    border: '1px solid #dadde1',
+    border: '1px solid var(--border-soft, #dbe2f2)',
     boxShadow: 'none',
   };
   const sectionHeaderCardStyle = {
     ...shellCardStyle,
     padding: '12px 20px 18px',
-    background: '#ffffff',
-    border: '1px solid #dadde1',
+    background: 'var(--surface-panel)',
+    border: '1px solid var(--border-soft, #dbe2f2)',
   };
   const metricPillStyle = {
     display: 'inline-flex',
@@ -2522,7 +2671,14 @@ export default function Dashboard() {
     }
     return `${Math.max(1, Math.round(numericBytes / 1024))} KB`;
   };
-  const compressImageToJpeg = async (file) => {
+  const compressImageToJpeg = async (
+    file,
+    {
+      maxDimension = POST_IMAGE_MAX_DIMENSION,
+      maxBytes = POST_IMAGE_MAX_BYTES,
+      nameSuffix = '',
+    } = {},
+  ) => {
     if (!file || !String(file.type || '').startsWith('image/') || file.type === 'image/svg+xml') {
       return {
         file,
@@ -2543,7 +2699,6 @@ export default function Dashboard() {
         image.src = imageUrl;
       });
 
-      const maxDimension = 1600;
       const originalWidth = imageElement.naturalWidth || imageElement.width;
       const originalHeight = imageElement.naturalHeight || imageElement.height;
       const scale = Math.min(1, maxDimension / Math.max(originalWidth, originalHeight));
@@ -2583,23 +2738,26 @@ export default function Dashboard() {
 
       renderImage();
 
-      const qualitySteps = [0.82, 0.74, 0.66, 0.58, 0.5];
-      const maxBytes = 900 * 1024;
+      const qualitySteps = [0.78, 0.68, 0.58, 0.48, 0.4];
+      const resizeSteps = [1, 0.88, 0.76];
       let bestBlob = null;
 
-      for (const quality of qualitySteps) {
-        const candidateBlob = await canvasToBlob(quality);
-        bestBlob = candidateBlob;
-        if (candidateBlob.size <= maxBytes) {
+      for (const resizeFactor of resizeSteps) {
+        targetWidth = Math.max(1, Math.round(originalWidth * scale * resizeFactor));
+        targetHeight = Math.max(1, Math.round(originalHeight * scale * resizeFactor));
+        renderImage();
+
+        for (const quality of qualitySteps) {
+          const candidateBlob = await canvasToBlob(quality);
+          bestBlob = candidateBlob;
+          if (candidateBlob.size <= maxBytes) {
+            break;
+          }
+        }
+
+        if (bestBlob && bestBlob.size <= maxBytes) {
           break;
         }
-      }
-
-      if (bestBlob && bestBlob.size > maxBytes) {
-        targetWidth = Math.max(960, Math.round(targetWidth * 0.82));
-        targetHeight = Math.max(960, Math.round(targetHeight * 0.82 * (originalHeight / Math.max(originalWidth, 1))));
-        renderImage();
-        bestBlob = await canvasToBlob(0.5);
       }
 
       if (!bestBlob || bestBlob.size >= file.size) {
@@ -2612,9 +2770,10 @@ export default function Dashboard() {
         };
       }
 
+      const baseFileName = file.name.replace(/\.[^.]+$/, '') || 'post-image';
       const jpegFile = new File(
         [bestBlob],
-        `${file.name.replace(/\.[^.]+$/, '') || 'post-image'}.jpg`,
+        `${baseFileName}${nameSuffix ? `-${nameSuffix}` : ''}.jpg`,
         { type: 'image/jpeg', lastModified: Date.now() },
       );
 
@@ -2634,6 +2793,7 @@ export default function Dashboard() {
 
     if (!file) {
       setPostMedia(null);
+      setPostMediaPreviewFile(null);
       setPostMediaMeta(null);
       return;
     }
@@ -2641,22 +2801,37 @@ export default function Dashboard() {
     setIsOptimizingMedia(true);
 
     try {
-      const optimizedResult = await compressImageToJpeg(file);
+      const optimizedResult = await compressImageToJpeg(file, { nameSuffix: 'full' });
+      const isImageMedia = String(file.type || '').startsWith('image/') && file.type !== 'image/svg+xml';
+      const previewResult = isImageMedia
+        ? await compressImageToJpeg(file, {
+            maxDimension: POST_IMAGE_PREVIEW_MAX_DIMENSION,
+            maxBytes: POST_IMAGE_PREVIEW_MAX_BYTES,
+            nameSuffix: 'preview',
+          })
+        : null;
+
       setPostMedia(optimizedResult.file);
+      setPostMediaPreviewFile(previewResult?.file || null);
       setPostMediaMeta({
         originalSize: optimizedResult.originalSize,
         finalSize: optimizedResult.finalSize,
         wasCompressed: optimizedResult.wasCompressed,
         wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+        previewFinalSize: Number(previewResult?.finalSize || 0),
+        hasPreviewVariant: Boolean(previewResult?.file),
       });
     } catch (error) {
       console.error('Failed to optimize media:', error);
       setPostMedia(file);
+      setPostMediaPreviewFile(null);
       setPostMediaMeta({
         originalSize: Number(file.size || 0),
         finalSize: Number(file.size || 0),
         wasCompressed: false,
         wasConvertedToJpeg: false,
+        previewFinalSize: 0,
+        hasPreviewVariant: false,
       });
     } finally {
       setIsOptimizingMedia(false);
@@ -2676,6 +2851,14 @@ export default function Dashboard() {
     setPostFeedView(nextSelection.postFeedView);
   };
 
+  const cachePostsFeed = (items, nextCursor, hasMore) => {
+    setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, {
+      posts: items,
+      nextCursor,
+      hasMore,
+    });
+  };
+
   const upsertPostInState = (incomingPost) => {
     if (!incomingPost?.postId) {
       return;
@@ -2683,13 +2866,51 @@ export default function Dashboard() {
 
     setPosts((currentPosts) => {
       const alreadyExists = currentPosts.some((post) => post.postId === incomingPost.postId);
-      const nextPosts = alreadyExists
+      const retainedCount = Math.max(currentPosts.length, POST_PAGE_SIZE);
+      const mergedPosts = alreadyExists
         ? currentPosts.map((post) => (post.postId === incomingPost.postId ? { ...post, ...incomingPost } : post))
-        : [incomingPost, ...currentPosts].slice(0, 25);
+        : [incomingPost, ...currentPosts];
+      const nextPosts = mergedPosts.slice(0, retainedCount);
 
-      setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+      cachePostsFeed(nextPosts, postsCursor, hasMorePosts);
       return nextPosts;
     });
+  };
+
+  const loadMorePosts = async () => {
+    if (loadingMorePosts || !hasMorePosts || !postsCursor?.beforeTime) {
+      return;
+    }
+
+    setLoadingMorePosts(true);
+
+    try {
+      const response = await api.get('/api/get_posts', {
+        params: {
+          limit: POST_PAGE_SIZE,
+          withMeta: 1,
+          beforeTime: postsCursor.beforeTime,
+          beforePostId: postsCursor.beforePostId,
+        },
+      });
+
+      const { items, hasMore, nextCursor } = normalizePostsApiPayload(response.data);
+
+      setPosts((currentPosts) => {
+        const existingIds = new Set(currentPosts.map((post) => String(post.postId || '')));
+        const appendedPosts = items.filter((post) => !existingIds.has(String(post.postId || '')));
+        const nextPosts = [...currentPosts, ...appendedPosts];
+        cachePostsFeed(nextPosts, nextCursor, hasMore);
+        return nextPosts;
+      });
+
+      setHasMorePosts(hasMore);
+      setPostsCursor(nextCursor);
+    } catch (error) {
+      console.error('Failed to load older posts:', error);
+    } finally {
+      setLoadingMorePosts(false);
+    }
   };
 
   const handleOpenConversation = async (conversation) => {
@@ -2698,17 +2919,32 @@ export default function Dashboard() {
       return;
     }
 
-    const nextChatId = String(conversation?.chatId || sortedChatId(adminChatUserId, conversation.contact.userId));
+    const nextChatId = String(conversation?.chatId || sortedChatId(dashboardChatUserId, conversation.contact.userId));
+    const currentUnread = Number(conversation?.unreadForMe || conversation?.unreadCount || 0);
 
     navigate('/all-chat', { state: { contact: conversation.contact, chatId: nextChatId } });
 
-    if (adminChatUserId && nextChatId) {
+    if (dashboardChatUserId && nextChatId) {
       try {
-        await update(ref(db, schoolPath(`Chats/${nextChatId}/unread`)), { [adminChatUserId]: 0 });
+        await Promise.all([
+          update(ref(db, schoolPath(`Chats/${nextChatId}/unread`)), { [dashboardChatUserId]: 0 }),
+          clearChatSummaryUnread({
+            db,
+            schoolPath,
+            ownerUserId: dashboardChatUserId,
+            otherUserId: conversation.contact.userId,
+            chatId: nextChatId,
+          }),
+        ]);
       } catch (error) {
         console.error('Failed to clear dashboard unread count:', error);
       }
     }
+
+    setChatSidebarData((currentValue) => ({
+      ...currentValue,
+      unreadCount: Math.max(0, Number(currentValue?.unreadCount || 0) - currentUnread),
+    }));
 
     setConversations((currentValue) => currentValue.map((item) => (
       item.chatId === nextChatId
@@ -2763,41 +2999,6 @@ export default function Dashboard() {
     }));
   };
 
-  const resetPostComposer = () => {
-    setPostText('');
-    setPostMedia(null);
-    setPostMediaPreviewUrl('');
-    setTargetRole('all');
-    setEditingPostId('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const closeCreatePostModal = () => {
-    setShowCreatePostModal(false);
-    setActivePostMenuId('');
-    resetPostComposer();
-  };
-
-  const openCreatePostModal = () => {
-    resetPostComposer();
-    setShowCreatePostModal(true);
-  };
-
-  const openEditPostModal = (post) => {
-    setEditingPostId(getPostId(post));
-    setPostText(post?.message || '');
-    setPostMedia(null);
-    setPostMediaPreviewUrl(post?.postUrl || '');
-    setTargetRole((post?.targetRole || 'all').toString().toLowerCase());
-    setActivePostMenuId('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    setShowCreatePostModal(true);
-  };
-
   const readPostMediaFile = (file) => new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (event) => resolve(event?.target?.result || '');
@@ -2826,6 +3027,9 @@ export default function Dashboard() {
 
       if (postMedia) {
         payload.append('media', postMedia);
+        if (postMediaPreviewFile) {
+          payload.append('mediaPreview', postMediaPreviewFile);
+        }
       }
 
       if (editingPostId) {
@@ -2833,6 +3037,7 @@ export default function Dashboard() {
 
         if (existingPostMediaUrl && !postMedia) {
           payload.append('postUrl', existingPostMediaUrl);
+          payload.append('postPreviewUrl', existingPostPreviewUrl || existingPostMediaUrl);
           payload.append('mediaType', existingPostMediaType || '');
         }
 
@@ -2846,18 +3051,18 @@ export default function Dashboard() {
         return updatedPost;
       }
 
-      const response = isEditingPost
+      const response = isPostComposerEditing
         ? await api.put(`/api/update_post/${editingPostId}`, payload)
         : await api.post('/api/create_post', payload);
       const savedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
 
-      if (createdPost) {
-        upsertPostInState(createdPost);
+      if (savedPost) {
+        upsertPostInState(savedPost);
       }
 
-      return createdPost;
+      return savedPost;
     } catch (error) {
-      console.error(`Failed to ${isEditingPost ? 'update' : 'create'} post:`, error?.response?.data || error);
+      console.error(`Failed to ${isPostComposerEditing ? 'update' : 'create'} post:`, error?.response?.data || error);
       throw error;
     } finally {
       setIsPostSubmitting(false);
@@ -2886,7 +3091,7 @@ export default function Dashboard() {
       });
       setPosts((currentPosts) => {
         const nextPosts = currentPosts.filter((post) => post.postId !== postId);
-        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
+        cachePostsFeed(nextPosts, postsCursor, hasMorePosts);
         return nextPosts;
       });
 
@@ -3202,36 +3407,9 @@ export default function Dashboard() {
     <div
       className="dashboard-page"
       style={{
-        background: '#FFFFFF',
+        background: 'var(--page-bg)',
         minHeight: '100vh',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--success': '#00B6A9',
-        '--success-soft': '#E9FBF9',
-        '--success-border': '#AAEDE7',
-        '--warning': '#DC2626',
-        '--warning-soft': '#FEE2E2',
-        '--warning-border': '#FCA5A5',
-        '--danger': '#b91c1c',
-        '--danger-border': '#fca5a5',
-        '--surface-overlay': '#F1F8FF',
-        '--input-bg': '#FFFFFF',
-        '--input-border': '#B5D2F8',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -3281,7 +3459,7 @@ export default function Dashboard() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px 18px', height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
         <div
           className="teacher-sidebar-spacer"
           style={{
@@ -3292,28 +3470,18 @@ export default function Dashboard() {
           }}
         />
 
-        <main className="main-content google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', top: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
+        <main className="main-content google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', top: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center' }}>
           <div style={{ width: '100%', maxWidth: dashboardView === 'home' ? FEED_SECTION_STYLE.maxWidth : 1180 }}>
             {dashboardView === 'home' ? (
               <div className="section-header-card" style={{ ...sectionHeaderCardStyle, ...FEED_SECTION_STYLE, margin: '0 auto 14px' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, flex: 1 }}>
                     <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--accent-soft)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                       Gojo HR Workspace
                     </div>
                     <div>
                       <div className="section-header-card__title" style={{ fontSize: 22 }}>HR Updates Feed</div>
-                      <div className="section-header-card__subtitle" style={{ marginTop: 6 }}>Share announcements, attendance reminders, and team updates in the same clean shell used across the admin portal.</div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <div style={metricPillStyle}>Employees <strong style={{ color: 'var(--text-primary)' }}>{count}</strong></div>
-                      {/* <div style={metricPillStyle}>Attendance <strong style={{ color: 'var(--accent-strong)' }}>{attendanceRate}</strong></div> */}
-                      <div style={metricPillStyle}>Posts today <strong style={{ color: 'var(--text-primary)' }}>{todayPostCount}</strong></div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <div style={metricPillStyle}>Unread <strong style={{ color: 'var(--text-primary)' }}>{messageCount}</strong></div>
-                    <div style={metricPillStyle}>Notifications <strong style={{ color: 'var(--text-primary)' }}>{totalNotifications}</strong></div>
                   </div>
                 </div>
               </div>
@@ -3435,13 +3603,26 @@ export default function Dashboard() {
                               </button>
                             ) : null}
                           </div>
-                      ) : (
+                        );
+                      })() : (
                         <div style={{ padding: '0 16px 6px', minHeight: 56 }} />
                       )}
 
-                      {post.postUrl ? (
+                      {getPostFullMediaUrl(post) ? (
                         <div style={{ background: '#000', borderTop: '1px solid #dadde1', borderBottom: '1px solid #dadde1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <img src={post.postUrl} alt="post media" style={{ width: '100%', height: 'auto', maxHeight: 'min(78vh, 720px)', objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+                          {isLikelyVideoMedia(post.mediaType, getPostFullMediaUrl(post)) ? (
+                            <video src={getPostFullMediaUrl(post)} controls preload="metadata" style={{ width: '100%', height: 'auto', maxHeight: 'min(78vh, 720px)', objectFit: 'contain', display: 'block', margin: '0 auto', background: '#000' }} />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openExpandedPostImage(post)}
+                              style={{ width: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in' }}
+                              aria-label="Open full post image"
+                              title="Open full image"
+                            >
+                              <img src={getPostFeedImageUrl(post)} alt="post media" loading="lazy" decoding="async" style={{ width: '100%', height: 'auto', maxHeight: 'min(78vh, 720px)', objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+                            </button>
+                          )}
                         </div>
                       ) : null}
 
@@ -3472,6 +3653,19 @@ export default function Dashboard() {
                   );
                   })
                 )}
+
+                {hasMorePosts ? (
+                  <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+                    <button
+                      type="button"
+                      onClick={loadMorePosts}
+                      disabled={loadingMorePosts}
+                      style={{ minWidth: 170, height: 42, padding: '0 18px', borderRadius: 999, border: '1px solid var(--border-soft, #dbe2f2)', background: 'var(--surface-panel, #fff)', color: 'var(--text-secondary, #334155)', fontSize: 13, fontWeight: 700, cursor: loadingMorePosts ? 'progress' : 'pointer', opacity: loadingMorePosts ? 0.82 : 1 }}
+                    >
+                      {loadingMorePosts ? 'Loading older posts...' : 'Load older posts'}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </>
           ) : (
@@ -3495,6 +3689,7 @@ export default function Dashboard() {
               latestAttendanceSnapshot={latestAttendanceSnapshot}
               onAttendanceStatusCardClick={handleAttendanceStatusCardClick}
               showAttendancePeopleList={showAttendancePeopleList}
+              attendancePeopleLoading={attendancePeopleLoading}
               attendanceStatusFilter={attendanceStatusFilter}
               attendancePeopleDateLabel={attendancePeopleDateLabel}
               attendancePeopleList={attendancePeopleList}
@@ -3562,7 +3757,7 @@ export default function Dashboard() {
                   <strong style={{ color: 'var(--text-primary, #111827)' }}>{todayPostCount}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', ...softPanelStyle, padding: '7px 8px', fontSize: 10 }}>
-                  <span style={{ color: 'var(--text-secondary, #6b7280)', fontWeight: 600 }}>Messages Today</span>
+                  <span style={{ color: 'var(--text-secondary, #6b7280)', fontWeight: 600 }}>Chats Active Today</span>
                   <strong style={{ color: 'var(--text-primary, #111827)' }}>{todayMessageCount}</strong>
                 </div>
               </div>
@@ -3650,7 +3845,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div style={{ margin: '12px', background: '#F8FAFC', border: '1px solid rgba(15, 23, 42, 0.06)', borderRadius: 12, padding: '10px' }}>
+              <div style={{ margin: '12px', background: 'var(--surface-muted, #F8FAFC)', border: '1px solid var(--border-soft, #D7E7FB)', borderRadius: 12, padding: '10px' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 4, marginBottom: 6 }}>
                   {CALENDAR_WEEK_DAYS.map((day) => (
                     <div key={day} style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, color: 'var(--text-muted, #64748b)', letterSpacing: '0.03em', textTransform: 'uppercase' }}>
@@ -3756,10 +3951,10 @@ export default function Dashboard() {
               </div>
 
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '0 12px 0', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: '#F8FAFC', border: '1px solid rgba(220, 38, 38, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: 'var(--surface-muted, #F8FAFC)', border: '1px solid rgba(220, 38, 38, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--warning, #DC2626)' }} /> No class
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: '#F8FAFC', border: '1px solid rgba(0, 122, 251, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9, color: 'var(--text-secondary, #475569)', fontWeight: 800, background: 'var(--surface-muted, #F8FAFC)', border: '1px solid rgba(0, 122, 251, 0.18)', borderRadius: 999, padding: '5px 8px' }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent, #007AFB)' }} /> Academic
                 </div>
                 {canManageCalendar ? (
@@ -3776,12 +3971,12 @@ export default function Dashboard() {
               </div>
 
               {calendarActionMessage ? (
-                <div style={{ margin: '10px 12px 0', borderRadius: 12, border: '1px solid rgba(0, 122, 251, 0.12)', background: '#F8FAFC', color: 'var(--text-primary, #111827)', fontSize: 10, fontWeight: 800, padding: '8px 10px' }}>
+                <div style={{ margin: '10px 12px 0', borderRadius: 12, border: '1px solid rgba(0, 122, 251, 0.12)', background: 'var(--surface-muted, #F8FAFC)', color: 'var(--text-primary, #111827)', fontSize: 10, fontWeight: 800, padding: '8px 10px' }}>
                   {calendarActionMessage}
                 </div>
               ) : null}
 
-              <div style={{ margin: '12px', background: '#F8FAFC', border: '1px solid rgba(15, 23, 42, 0.06)', borderRadius: 12, padding: '10px' }}>
+              <div style={{ margin: '12px', background: 'var(--surface-muted, #F8FAFC)', border: '1px solid var(--border-soft, #D7E7FB)', borderRadius: 12, padding: '10px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
                   <div>
                     <div style={{ fontSize: 11, fontWeight: 900, color: 'var(--text-primary, #111827)' }}>
@@ -3878,11 +4073,11 @@ export default function Dashboard() {
               </div>
               <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {calendarEventsLoading ? (
-                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid var(--border-soft, #D7E7FB)', background: 'var(--surface-muted, #F8FAFC)', fontSize: 10, color: 'var(--text-muted, #64748b)', fontWeight: 700 }}>
                     Loading deadlines...
                   </div>
                 ) : upcomingDeadlineEvents.length === 0 ? (
-                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.06)', background: '#F8FAFC', fontSize: 10, color: 'var(--text-muted, #64748b)' }}>
+                  <div style={{ padding: '8px 9px', borderRadius: 10, border: '1px solid var(--border-soft, #D7E7FB)', background: 'var(--surface-muted, #F8FAFC)', fontSize: 10, color: 'var(--text-muted, #64748b)' }}>
                     No upcoming deadlines in the next 30 days.
                     {canManageCalendar ? (
                       <button
@@ -3905,7 +4100,7 @@ export default function Dashboard() {
                           padding: '8px 9px',
                           borderRadius: 10,
                           border: `1px solid ${eventMeta.border}`,
-                          background: '#F8FAFC',
+                          background: 'var(--surface-muted, #F8FAFC)',
                           display: 'flex',
                           alignItems: 'flex-start',
                           justifyContent: 'space-between',
@@ -4062,7 +4257,7 @@ export default function Dashboard() {
                               ? 'Optimizing your image before upload.'
                               : existingPostMediaUrl && !postMedia
                                 ? 'Replace it with a new file or remove it below.'
-                                : 'Images are automatically compressed and converted to JPEG when that reduces size.'}
+                                : 'Images are automatically resized and converted to smaller JPEGs before upload.'}
                           </div>
                         </div>
                       </div>
@@ -4089,9 +4284,9 @@ export default function Dashboard() {
                         <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary, #111827)' }}>Current attachment</div>
                         <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--border-soft, #dbe2f2)', background: '#ffffff' }}>
                           {isLikelyVideoMedia(existingPostMediaType, existingPostMediaUrl) ? (
-                            <video src={existingPostMediaUrl} controls style={{ width: '100%', maxHeight: 260, display: 'block', background: '#000' }} />
+                            <video src={existingPostMediaUrl} controls preload="metadata" style={{ width: '100%', maxHeight: 260, display: 'block', background: '#000' }} />
                           ) : (
-                            <img src={existingPostMediaUrl} alt="Current attachment" style={{ width: '100%', maxHeight: 260, objectFit: 'contain', display: 'block', background: '#ffffff' }} />
+                            <img src={existingPostPreviewUrl || existingPostMediaUrl} alt="Current attachment" loading="lazy" decoding="async" style={{ width: '100%', maxHeight: 260, objectFit: 'contain', display: 'block', background: '#ffffff' }} />
                           )}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -4102,6 +4297,7 @@ export default function Dashboard() {
                             type="button"
                             onClick={() => {
                               setExistingPostMediaUrl('');
+                              setExistingPostPreviewUrl('');
                               setExistingPostMediaType('');
                               if (fileInputRef.current) fileInputRef.current.value = '';
                             }}
@@ -4124,12 +4320,14 @@ export default function Dashboard() {
                             {postMediaMeta?.wasCompressed
                               ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? ' as JPEG' : ''}`
                               : `Ready to attach to this post${postMediaMeta?.wasConvertedToJpeg ? ' as JPEG' : ''}`}
+                            {postMediaMeta?.hasPreviewVariant ? `, feed preview ${formatFileSize(postMediaMeta.previewFinalSize)}` : ''}
                           </div>
                         </div>
                         <button
                           type="button"
                           onClick={() => {
                             setPostMedia(null);
+                            setPostMediaPreviewFile(null);
                             setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = '';
                           }}
@@ -4175,6 +4373,29 @@ export default function Dashboard() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {expandedPostImage ? (
+        <>
+          <div
+            onClick={closeExpandedPostImage}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(2, 6, 23, 0.72)', backdropFilter: 'blur(6px)', zIndex: 1205 }}
+          />
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1206, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
+            <div onClick={(event) => event.stopPropagation()} style={{ position: 'relative', width: 'min(1080px, 100%)', maxHeight: '92vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <button
+                type="button"
+                onClick={closeExpandedPostImage}
+                style={{ position: 'absolute', top: -8, right: -8, width: 42, height: 42, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.24)', background: 'rgba(15, 23, 42, 0.72)', color: '#fff', fontSize: 24, lineHeight: 1, cursor: 'pointer' }}
+                aria-label="Close post image"
+                title="Close"
+              >
+                ×
+              </button>
+              <img src={expandedPostImage.src} alt={expandedPostImage.alt} decoding="async" style={{ maxWidth: '100%', maxHeight: '92vh', objectFit: 'contain', borderRadius: 20, boxShadow: '0 24px 64px rgba(2, 6, 23, 0.35)', background: '#fff' }} />
             </div>
           </div>
         </>

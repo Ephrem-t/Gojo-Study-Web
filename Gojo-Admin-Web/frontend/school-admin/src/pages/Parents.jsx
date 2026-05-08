@@ -22,6 +22,11 @@ import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  normalizeChatSummaryValue,
+} from "../utils/chatRtdb";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -165,14 +170,30 @@ function Parent() {
     currentUserId: admin.userId,
   });
 
-  const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+  const maybeMarkLastMessageSeenForAdmin = async (chatKey, otherUserId = "") => {
     try {
-      const res = await axios.get(`${DB}/Chats/${chatKey}/lastMessage.json`).catch(() => ({ data: null }));
-      const last = res.data;
-      if (!last) return;
-      if (String(last.receiverId) === String(admin.userId) && last.seen === false) {
-        await axios.patch(`${DB}/Chats/${chatKey}/lastMessage.json`, { seen: true }).catch(() => {});
-      }
+      const summaryPath = `${DB}/${buildChatSummaryPath(admin.userId, chatKey)}.json`;
+      const res = await axios.get(summaryPath).catch(() => ({ data: null }));
+      const summary = normalizeChatSummaryValue(res.data, {
+        chatId: chatKey,
+        otherUserId,
+      });
+      const shouldMarkSeen = Boolean(summary.chatId) && summary.lastSenderId && String(summary.lastSenderId) !== String(admin.userId) && !summary.lastMessageSeen;
+
+      await axios.patch(
+        summaryPath,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId,
+          unreadCount: 0,
+          ...(shouldMarkSeen
+            ? {
+                lastMessageSeen: true,
+                lastMessageSeenAt: Date.now(),
+              }
+            : {}),
+        })
+      ).catch(() => {});
     } catch (e) {
       // ignore
     }
@@ -745,15 +766,17 @@ function Parent() {
         } catch (err) {
           console.warn('Failed to patch parent seen updates', err);
         }
-        // also reset unread for admin; only mark lastMessage seen if it was sent to admin
-        axios.patch(`${DB}/Chats/${chatId}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-        maybeMarkLastMessageSeenForAdmin(chatId);
+      }
+
+      maybeMarkLastMessageSeenForAdmin(chatId, selectedParent?.userId).catch(() => {});
+
+      if (Object.keys(updates).length > 0) {
         // optimistic local update
         setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
       }
     });
     return () => unsubscribe();
-  }, [DB, admin.userId, chatId, parentChatOpen]);
+  }, [DB, admin.userId, chatId, parentChatOpen, selectedParent?.userId]);
 
   // Listen to typing in realtime (only while popup open)
   useEffect(() => {
@@ -816,9 +839,7 @@ function Parent() {
     if (!chatId) return;
     await axios.patch(`${DB}/Chats/${chatId}.json`, {
       participants: { [admin.userId]: true, [selectedParent.userId]: true },
-      unread: { [admin.userId]: 0, [selectedParent.userId]: 0 },
       typing: null,
-      lastMessage: null,
     }).catch(() => {});
   };
 
@@ -848,35 +869,66 @@ function Parent() {
       const pushRes = await axios.post(`${DB}/Chats/${id}/messages.json`, newMsg).catch(() => ({ data: null }));
       const generatedId = pushRes?.data?.name || `${Date.now()}`;
 
-      // Build a full lastMessage object matching desired DB structure
-      const lastMessage = {
-        messageId: generatedId,
-        senderId: newMsg.senderId,
-        receiverId: newMsg.receiverId,
-        text: newMsg.text || "",
-        type: newMsg.type || "text",
-        timeStamp: newMsg.timeStamp,
-        seen: false,
-        edited: false,
-        deleted: false,
-      };
-
-      // Ensure chat root contains participants, typing cleared, and full lastMessage
+      // Ensure chat root contains participants and typing cleared.
       await axios.patch(`${DB}/Chats/${id}.json`, {
         participants: { [admin.userId]: true, [selectedParent.userId]: true },
-        lastMessage,
         typing: null,
       }).catch(() => {});
 
-      // increment unread for receiver (preserve existing unread counts)
+      await Promise.all([
+        axios.patch(
+          `${DB}/${buildChatSummaryPath(admin.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: selectedParent.userId,
+            unreadCount: 0,
+            lastMessageText: newMsg.text || "",
+            lastMessageType: newMsg.type || "text",
+            lastMessageTime: newMsg.timeStamp,
+            lastSenderId: admin.userId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            lastMessageText: newMsg.text || "",
+            lastMessageType: newMsg.type || "text",
+            lastMessageTime: newMsg.timeStamp,
+            lastSenderId: admin.userId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]).catch(() => {});
+
+      // increment unread for receiver summary
       try {
-        const unreadRes = await axios.get(`${DB}/Chats/${id}/unread.json`);
-        const unread = unreadRes.data || {};
-        const prev = Number(unread[selectedParent.userId] || 0);
-        const updated = { ...(unread || {}), [selectedParent.userId]: prev + 1, [admin.userId]: Number(unread[admin.userId] || 0) };
-        await axios.put(`${DB}/Chats/${id}/unread.json`, updated).catch(() => {});
+        const summaryRes = await axios.get(`${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`);
+        const summary = normalizeChatSummaryValue(summaryRes.data, {
+          chatId: id,
+          otherUserId: admin.userId,
+        });
+        await axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            unreadCount: Number(summary.unreadCount || 0) + 1,
+          })
+        ).catch(() => {});
       } catch (uErr) {
-        await axios.put(`${DB}/Chats/${id}/unread.json`, { [selectedParent.userId]: 1, [admin.userId]: 0 }).catch(() => {});
+        await axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            unreadCount: 1,
+          })
+        ).catch(() => {});
       }
 
       // update local UI state immediately and clear typing indicator
@@ -892,9 +944,8 @@ function Parent() {
   useEffect(() => {
     if (!selectedParent || !admin?.userId) return;
     const id = getChatId(admin.userId, selectedParent.userId);
-    axios.patch(`${DB}/Chats/${id}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-    maybeMarkLastMessageSeenForAdmin(id);
-  }, [selectedParent, admin]);
+    maybeMarkLastMessageSeenForAdmin(id, selectedParent.userId).catch(() => {});
+  }, [DB, selectedParent, admin]);
 
   // allow rendering even if no admin/userId is present; effects will no-op when adminId is falsy
 

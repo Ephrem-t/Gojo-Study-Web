@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import {
-  buildChatKeyCandidates,
+  buildOwnerChatSummariesPath,
   DEFAULT_PROFILE_IMAGE,
   fetchJson,
   getSafeProfileImage,
+  getConversationSortTime,
   inferContactTypeFromUser,
   mapInBatches,
-  parseChatParticipantIds,
+  normalizeChatSummaryValue,
   uniqueNonEmptyValues,
 } from "../utils/chatRtdb";
 
@@ -100,52 +101,26 @@ export default function useTopbarNotifications({
     }
 
     try {
-      const chatIndex = await fetchJson(`${dbRoot}/Chats.json?shallow=true`, {});
-      const candidateChatKeys = Object.keys(chatIndex || {}).filter((chatKey) =>
-        String(chatKey || "").split("_").includes(String(currentUserId || "").trim())
+      const ownerSummaries = await fetchJson(
+        `${dbRoot}/${buildOwnerChatSummariesPath(currentUserId)}.json`,
+        {}
       );
+      const summaryEntries = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {})
+        .map(([chatId, summaryValue]) => normalizeChatSummaryValue(summaryValue, { chatId }))
+        .filter((summary) => summary.otherUserId && summary.unreadCount > 0);
 
-      if (candidateChatKeys.length === 0) {
+      if (summaryEntries.length === 0) {
         setUnreadSenders({});
         return;
       }
 
-      const senderEntries = await mapInBatches(candidateChatKeys, 16, async (chatKey) => {
-        const encodedChatKey = encodeURIComponent(chatKey);
-        const unreadCount = Number(
-          await fetchJson(
-            `${dbRoot}/Chats/${encodedChatKey}/unread/${encodeURIComponent(currentUserId)}.json`,
-            0
-          )
-        );
-
-        if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
-          return null;
-        }
-
-        let participantIds = parseChatParticipantIds(chatKey);
-        if (participantIds.length < 2) {
-          const participantsNode = await fetchJson(`${dbRoot}/Chats/${encodedChatKey}/participants.json`, {});
-          participantIds = parseChatParticipantIds(chatKey, participantsNode);
-        }
-
-        const otherUserId = participantIds.find(
-          (participantId) => String(participantId || "") !== String(currentUserId || "")
-        );
-        if (!otherUserId) {
-          return null;
-        }
-
-        const [lastMessage, userRecord] = await Promise.all([
-          fetchJson(`${dbRoot}/Chats/${encodedChatKey}/lastMessage.json`, null),
-          resolveUserRecord(otherUserId),
-        ]);
-
+      const senderEntries = await mapInBatches(summaryEntries, 16, async (summary) => {
+        const userRecord = await resolveUserRecord(summary.otherUserId);
         return {
-          otherUserId,
-          unreadCount,
+          otherUserId: summary.otherUserId,
+          unreadCount: summary.unreadCount,
           userRecord,
-          lastMessageTime: Number(lastMessage?.timeStamp || 0),
+          lastMessageTime: getConversationSortTime(summary.lastMessageTime),
         };
       });
 

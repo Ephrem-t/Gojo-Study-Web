@@ -1,4 +1,5 @@
 export const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const CHAT_SUMMARY_NODE = "Chat_Summaries";
 
 export const uniqueNonEmptyValues = (values) => {
   const seen = new Set();
@@ -134,6 +135,114 @@ export const getSafeProfileImage = (value, fallback = DEFAULT_PROFILE_IMAGE) => 
   }
 
   return normalizedValue;
+};
+
+export const getConversationSortTime = (rawValue) => {
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue === "string") {
+    const trimmedValue = rawValue.trim();
+    if (!trimmedValue) {
+      return 0;
+    }
+
+    const numericValue = Number(trimmedValue);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+
+    const parsedTime = new Date(trimmedValue).getTime();
+    if (!Number.isNaN(parsedTime)) {
+      return parsedTime;
+    }
+  }
+
+  return 0;
+};
+
+export const buildChatSummaryPath = (ownerUserId, chatId) => {
+  return `${CHAT_SUMMARY_NODE}/${String(ownerUserId || "").trim()}/${String(chatId || "").trim()}`;
+};
+
+export const buildOwnerChatSummariesPath = (ownerUserId) => {
+  return `${CHAT_SUMMARY_NODE}/${String(ownerUserId || "").trim()}`;
+};
+
+export const buildChatSummaryPreview = ({ text = "", type = "" } = {}) => {
+  const normalizedType = String(type || "").trim().toLowerCase();
+
+  if (normalizedType === "image") return "Image";
+  if (normalizedType === "video") return "Video";
+  if (normalizedType === "deleted") return "";
+
+  return String(text || "").trim();
+};
+
+export const normalizeChatSummaryValue = (value = {}, fallback = {}) => {
+  const lastMessageType = String(value?.lastMessageType || fallback?.lastMessageType || "text").trim().toLowerCase() || "text";
+  const lastMessageTime = getConversationSortTime(value?.lastMessageTime ?? fallback?.lastMessageTime);
+  const unreadCount = Math.max(0, Number(value?.unreadCount ?? fallback?.unreadCount ?? 0) || 0);
+
+  return {
+    chatId: String(value?.chatId || fallback?.chatId || "").trim(),
+    otherUserId: String(value?.otherUserId || fallback?.otherUserId || "").trim(),
+    unreadCount,
+    lastMessageText: buildChatSummaryPreview({
+      text: value?.lastMessageText ?? fallback?.lastMessageText,
+      type: lastMessageType,
+    }),
+    lastMessageType,
+    lastMessageTime,
+    lastSenderId: String(value?.lastSenderId || fallback?.lastSenderId || "").trim(),
+    lastMessageSeen: Boolean(value?.lastMessageSeen ?? fallback?.lastMessageSeen),
+    lastMessageSeenAt: value?.lastMessageSeenAt ?? fallback?.lastMessageSeenAt ?? null,
+    updatedAt: String(value?.updatedAt || fallback?.updatedAt || "").trim(),
+  };
+};
+
+export const buildChatSummaryUpdate = (summary = {}) => {
+  const patch = {
+    updatedAt: new Date(getConversationSortTime(summary?.lastMessageTime) || Date.now()).toISOString(),
+  };
+
+  if (Object.prototype.hasOwnProperty.call(summary, "chatId")) {
+    patch.chatId = String(summary?.chatId || "").trim();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(summary, "otherUserId")) {
+    patch.otherUserId = String(summary?.otherUserId || "").trim();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(summary, "unreadCount")) {
+    patch.unreadCount = Math.max(0, Number(summary?.unreadCount || 0) || 0);
+  }
+
+  const hasLastMessageData = ["lastMessageText", "lastMessageType", "lastMessageTime", "lastSenderId"].some((key) =>
+    Object.prototype.hasOwnProperty.call(summary, key)
+  );
+
+  if (hasLastMessageData) {
+    const lastMessageType = String(summary?.lastMessageType || "text").trim().toLowerCase() || "text";
+    patch.lastMessageType = lastMessageType;
+    patch.lastMessageText = buildChatSummaryPreview({
+      text: summary?.lastMessageText,
+      type: lastMessageType,
+    });
+    patch.lastMessageTime = getConversationSortTime(summary?.lastMessageTime);
+    patch.lastSenderId = String(summary?.lastSenderId || "").trim();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(summary, "lastMessageSeen")) {
+    patch.lastMessageSeen = Boolean(summary?.lastMessageSeen);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(summary, "lastMessageSeenAt")) {
+    patch.lastMessageSeenAt = summary?.lastMessageSeenAt ?? null;
+  }
+
+  return patch;
 };
 
 export const mapInBatches = async (items, batchSize, mapper) => {

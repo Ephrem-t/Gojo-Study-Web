@@ -4,6 +4,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import '../styles/global.css'
 import './Login.css'
 
+const LAST_HR_SCHOOL_CODE_KEY = 'gojo-hr-last-school-code'
+
 const isHrRole = (value) => {
   const role = String(value || '').trim().toLowerCase().replace(/-/g, '_')
   return ['hr', 'human_resources', 'human_resource', 'humanresource'].includes(role)
@@ -27,7 +29,7 @@ export default function Login() {
 
       if (hasSession) {
         if (!storedAdmin.role || isHrRole(storedAdmin.role)) {
-          navigate('/', { replace: true })
+          navigate('/dashboard', { replace: true })
           return
         }
 
@@ -66,7 +68,13 @@ export default function Login() {
     setLoading(true)
 
     try {
-      const res = await api.post('/login', { username: username.trim(), password })
+      const schoolCodeHint = String(localStorage.getItem(LAST_HR_SCHOOL_CODE_KEY) || '').trim()
+      const requestPayload = {
+        username: username.trim(),
+        password,
+        ...(schoolCodeHint ? { schoolCode: schoolCodeHint } : {}),
+      }
+      const res = await api.post('/login', requestPayload)
       if (res.data && res.data.ok && res.data.user) {
         const user = res.data.user || {}
 
@@ -77,7 +85,11 @@ export default function Login() {
         }
 
         localStorage.setItem('admin', JSON.stringify(user))
-        window.location.href = '/' // full reload to ensure app state
+        if (user.schoolCode) {
+          localStorage.setItem(LAST_HR_SCHOOL_CODE_KEY, String(user.schoolCode).trim())
+        }
+        window.dispatchEvent(new Event('hr-admin-updated'))
+        navigate('/dashboard', { replace: true })
         return
       }
       setError(res.data?.error || 'Login failed')

@@ -26,6 +26,7 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getTeacherContext, getTeacherCourseContext } from "../api/teacherApi";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import { resolveProfileImage } from "../utils/profileImage";
 import {
   clearCachedChatSummary,
@@ -1173,7 +1174,16 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     // clear unread in RTDB for this teacher
     try {
-      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.patch(
+        `${rtdbBase}/${buildChatSummaryPath(teacher.userId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
       clearCachedChatSummary({
         rtdbBase,
         chatId,
@@ -2163,17 +2173,25 @@ const toggleExpand = (key) => {
     const chatId = getChatId(teacherUserId, quickChatTarget.userId);
     const ts = Date.now();
 
-    const payload = {
-      [`unread/${teacherUserId}`]: 0,
-      "lastMessage/seen": true,
-      "lastMessage/seenAt": ts,
-    };
+    const payload = {};
     unseen.forEach((m) => {
       payload[`messages/${m.id}/seen`] = true;
       payload[`messages/${m.id}/seenAt`] = ts;
     });
 
-    update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), payload)
+    Promise.all([
+      update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), payload),
+      update(
+        dbRef(db, scopedStudentPath(buildChatSummaryPath(teacherUserId, chatId))),
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: quickChatTarget.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: ts,
+        })
+      ),
+    ])
       .catch((err) => console.error("Failed to mark messages seen:", err));
 
   }, [chatOpen, messages, quickChatTarget?.userId, teacherUserId, resolvedSchoolCode, teacherSchoolCode]);
@@ -2209,17 +2227,42 @@ const toggleExpand = (key) => {
       await update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), {
         [`participants/${senderId}`]: true,
         [`participants/${receiverId}`]: true,
-        "lastMessage/text": text,
-        "lastMessage/senderId": senderId,
-        "lastMessage/seen": false,
-        "lastMessage/timeStamp": timeStamp,
-        [`unread/${senderId}`]: 0,
       });
+
+      await Promise.all([
+        update(
+          dbRef(db, scopedStudentPath(buildChatSummaryPath(senderId, chatId))),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: receiverId,
+            unreadCount: 0,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          dbRef(db, scopedStudentPath(buildChatSummaryPath(receiverId, chatId))),
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: senderId,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       setNewMessageText("");
 
       await runTransaction(
-        dbRef(db, scopedStudentPath(`Chats/${chatId}/unread/${receiverId}`)),
+        dbRef(db, scopedStudentPath(`${buildChatSummaryPath(receiverId, chatId)}/unreadCount`)),
         (current) => (Number(current) || 0) + 1
       );
     } catch (err) {

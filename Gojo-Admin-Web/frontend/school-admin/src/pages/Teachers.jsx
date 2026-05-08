@@ -28,7 +28,17 @@ import { BACKEND_BASE } from "../config.js";
 import LessonPlanInsightsModal from "../components/LessonPlanInsightsModal";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
-import { fetchJson, getSafeProfileImage, mapInBatches, parseChatParticipantIds } from "../utils/chatRtdb";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  fetchJson,
+  getConversationSortTime,
+  getSafeProfileImage,
+  mapInBatches,
+  normalizeChatSummaryValue,
+  parseChatParticipantIds,
+} from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 
 
@@ -2366,13 +2376,8 @@ const ensureChatRoot = async (chatKey, otherUserId) => {
     const existing = res.data || {};
     const participants = { ...(existing.participants || {}), [adminUserId]: true, [otherUserId]: true };
 
-    const unread = { ...(existing.unread || {}) };
-    if (unread[adminUserId] === undefined) unread[adminUserId] = 0;
-    if (unread[otherUserId] === undefined) unread[otherUserId] = 0;
-
-    const patch = { participants, unread };
+    const patch = { participants };
     if (existing.typing === undefined) patch.typing = null;
-    if (existing.lastMessage === undefined) patch.lastMessage = null;
 
     await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}.json`, patch).catch(() => {});
   } catch (e) {
@@ -2380,14 +2385,18 @@ const ensureChatRoot = async (chatKey, otherUserId) => {
   }
 };
 
-const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+const maybeMarkLastMessageSeenForAdmin = async (chatKey, otherUserId = "") => {
   try {
-    const res = await axios.get(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`).catch(() => ({ data: null }));
-    const last = res.data;
-    if (!last) return;
-    if (String(last.receiverId) === String(adminUserId) && last.seen === false) {
-      await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`, { seen: true }).catch(() => {});
-    }
+    await axios.patch(
+      `${RTDB_BASE}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+      buildChatSummaryUpdate({
+        chatId: chatKey,
+        otherUserId,
+        unreadCount: 0,
+        lastMessageSeen: true,
+        lastMessageSeenAt: Date.now(),
+      })
+    ).catch(() => {});
   } catch (e) {
     // ignore
   }
@@ -2427,22 +2436,27 @@ const handleTyping = (text) => {
   const fetchUnreadTeachers = async () => {
     const unread = {};
 
-    for (const t of teachers) {
-      const chatKey = getChatKey(adminUserId, t.userId);
-      try {
-        const res = await axios.get(
-          `${RTDB_BASE}/Chats/${chatKey}/messages.json`
-        );
+    try {
+      const ownerSummaries = await fetchJson(`${RTDB_BASE}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {});
+      const summariesByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
+        (result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (summary.otherUserId && summary.unreadCount > 0) {
+            result[summary.otherUserId] = summary.unreadCount;
+          }
+          return result;
+        },
+        {}
+      );
 
-        const msgs = Object.values(res.data || {});
-        const count = msgs.filter(
-          m => m.receiverId === adminUserId && m.seen === false
-        ).length;
-
-        if (count > 0) unread[t.userId] = count;
-      } catch (err) {
-        console.error(err);
-      }
+      teachers.forEach((teacherEntry) => {
+        const count = Number(summariesByOtherUserId[teacherEntry.userId] || 0);
+        if (count > 0) {
+          unread[teacherEntry.userId] = count;
+        }
+      });
+    } catch (err) {
+      console.error(err);
     }
 
     setUnreadTeachers(unread);
@@ -2485,41 +2499,61 @@ const sendPopupMessage = async () => {
     );
     const generatedId = pushRes.data && pushRes.data.name;
 
-    // 2) Update lastMessage with full schema
-    const lastMessage = {
-      messageId: generatedId || `${timestamp}`,
-      senderId: newMessage.senderId,
-      receiverId: newMessage.receiverId,
-      text: newMessage.text || "",
-      type: newMessage.type || "text",
-      timeStamp: newMessage.timeStamp,
-      seen: false,
-      edited: false,
-      deleted: false,
-    };
+    await Promise.all([
+      axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedTeacher.userId,
+          unreadCount: 0,
+          lastMessageText: newMessage.text || "",
+          lastMessageType: newMessage.type || "text",
+          lastMessageTime: newMessage.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+      axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          lastMessageText: newMessage.text || "",
+          lastMessageType: newMessage.type || "text",
+          lastMessageTime: newMessage.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+    ]).catch(() => {});
 
-    await axios.put(
-      `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`,
-      lastMessage
-    ).catch(() => {});
-
-    // 3) Increment unread count for receiver (non-atomic: read -> increment -> write)
+    // 3) Increment unread count for receiver summary (non-atomic: read -> increment -> write)
     try {
-      const unreadRes = await axios.get(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`
+      const summaryRes = await axios.get(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`
       );
-      const unread = unreadRes.data || {};
-      const prev = Number(unread[selectedTeacher.userId] || 0);
-      const updated = { ...(unread || {}), [selectedTeacher.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-      await axios.put(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`,
-        updated
+      const summary = normalizeChatSummaryValue(summaryRes.data, {
+        chatId: chatKey,
+        otherUserId: adminUserId,
+      });
+      await axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          unreadCount: Number(summary.unreadCount || 0) + 1,
+        })
       );
     } catch (uErr) {
-      // if unread node missing or failed, set it
-      await axios.put(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`,
-        { [selectedTeacher.userId]: 1, [adminUserId]: 0 }
+      await axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          unreadCount: 1,
+        })
       );
     }
 
@@ -2599,9 +2633,7 @@ useEffect(() => {
       try {
         await axios.patch(`${RTDB_BASE}/.json`, updates);
         setUnreadTeachers(prev => ({ ...prev, [selectedTeacher.userId]: 0 }));
-        await ensureChatRoot(chatKey, selectedTeacher.userId);
-        await axios.put(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread/${adminUserId}.json`, 0).catch(() => {});
-        await maybeMarkLastMessageSeenForAdmin(chatKey);
+        await maybeMarkLastMessageSeenForAdmin(chatKey, selectedTeacher.userId);
       } catch (err) {
         console.error('Failed to patch seen updates:', err);
       }
@@ -2815,30 +2847,15 @@ useEffect(() => {
         parseChatParticipantIds(chatKey).includes(String(admin.userId || ""))
       );
 
-      const unreadEntries = await mapInBatches(candidateChatKeys, 20, async (chatKey) => {
-        const participantIds = parseChatParticipantIds(chatKey);
-        const otherUserId = participantIds.find((participantId) => String(participantId || "") !== String(admin.userId || ""));
-        if (!otherUserId) {
-          return null;
-        }
-
-        const encodedChatKey = encodeURIComponent(chatKey);
-        const [unreadValue, lastMessage] = await Promise.all([
-          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/unread/${encodeURIComponent(admin.userId)}.json`, 0),
-          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/lastMessage.json`, null),
-        ]);
-
-        const unreadCount = Number(unreadValue || 0);
-        if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
-          return null;
-        }
-
-        return {
-          otherUserId,
-          unreadCount,
-          lastMessageTime: Number(lastMessage?.timeStamp || 0),
-        };
-      });
+      const ownerSummaries = await fetchJson(`${RTDB_BASE}/${buildOwnerChatSummariesPath(admin.userId)}.json`, {});
+      const unreadEntries = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {})
+        .map(([chatId, summaryValue]) => normalizeChatSummaryValue(summaryValue, { chatId }))
+        .filter((summary) => summary.otherUserId && summary.unreadCount > 0)
+        .map((summary) => ({
+          otherUserId: summary.otherUserId,
+          unreadCount: summary.unreadCount,
+          lastMessageTime: getConversationSortTime(summary.lastMessageTime),
+        }));
 
       const appendUnreadSenders = (collection, type, fallbackNameResolver, fallbackImageResolver) => {
         Object.values(collection || {}).forEach((item) => {

@@ -7,6 +7,7 @@ import '../styles/global.css';
 import { getEmployeeJob, getEmployeeName, getEmployeeProfileImage, getEmployeesSnapshot } from '../hrData';
 
 const ATTENDANCE_AUTOSAVE_STORAGE_KEY = 'gojo-hr-attendance-autosave-enabled';
+const ATTENDANCE_EMPLOYEES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function toIsoDate(dateObj) {
   const year = dateObj.getFullYear();
@@ -49,9 +50,9 @@ function AvatarBadge({ src, name, size = 48 }) {
           width: size,
           height: size,
           borderRadius: 16,
-          border: '1px solid #d7e7fb',
-          background: 'linear-gradient(135deg, #eef6ff 0%, #dfeeff 100%)',
-          color: '#1f4f96',
+          border: '1px solid var(--border-soft)',
+          background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)',
+          color: 'var(--accent-strong)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -70,7 +71,7 @@ function AvatarBadge({ src, name, size = 48 }) {
       src={src}
       alt={name || 'Employee'}
       onError={() => setFailed(true)}
-      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid #d7e7fb', flexShrink: 0 }}
+      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid var(--border-soft)', flexShrink: 0 }}
     />
   );
 }
@@ -79,17 +80,17 @@ function MetricCard({ icon: Icon, label, value, accent }) {
   return (
     <div
       style={{
-        background: '#ffffff',
+        background: 'var(--surface-panel)',
         borderRadius: 18,
-        border: '1px solid #e7ecf3',
+        border: '1px solid var(--border-soft)',
         padding: 18,
-        boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)',
+        boxShadow: 'var(--shadow-panel)',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
-          <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{value}</div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+          <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{value}</div>
         </div>
         <div
           style={{
@@ -121,14 +122,14 @@ function StatusActionButton({ label, value, active, colors, onClick }) {
         minHeight: 34,
         padding: '0 12px',
         borderRadius: 999,
-        border: `1px solid ${active ? colors.border : '#dbe2f2'}`,
-        background: active ? colors.background : '#ffffff',
-        color: active ? colors.color : '#475569',
+        border: `1px solid ${active ? colors.border : 'var(--border-soft)'}`,
+        background: active ? colors.background : 'var(--surface-panel)',
+        color: active ? colors.color : 'var(--text-secondary)',
         fontSize: 12,
         fontWeight: 800,
         cursor: 'pointer',
         transition: 'all 0.18s ease',
-        boxShadow: active ? '0 8px 18px rgba(15, 23, 42, 0.06)' : 'none',
+        boxShadow: active ? 'var(--shadow-soft)' : 'none',
       }}
     >
       {label}
@@ -213,10 +214,41 @@ export default function EmployeesAttendance() {
     return filtered.sort((a, b) => a._name.localeCompare(b._name));
   }, [employees, selectedPosition, searchTerm]);
 
+  const attendanceStats = useMemo(() => {
+    return normalizedEmployees.reduce(
+      (stats, employee) => {
+        const employeeId = employee.id;
+        stats.total += 1;
+
+        if (!Object.prototype.hasOwnProperty.call(attendance || {}, employeeId)) {
+          stats.unset += 1;
+          return stats;
+        }
+
+        const record = attendance?.[employeeId] || {};
+        const rawStatus = (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase();
+        const status = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
+
+        if (status === 'present') {
+          stats.present += 1;
+        } else if (status === 'late') {
+          stats.late += 1;
+        } else if (status === 'absent') {
+          stats.absent += 1;
+        } else {
+          stats.unset += 1;
+        }
+
+        return stats;
+      },
+      { total: 0, present: 0, late: 0, absent: 0, unset: 0 },
+    );
+  }, [attendance, normalizedEmployees]);
+
   useEffect(() => {
     async function loadEmployees() {
       try {
-        const snapshot = await getEmployeesSnapshot();
+        const snapshot = await getEmployeesSnapshot(ATTENDANCE_EMPLOYEES_CACHE_TTL_MS);
         setEmployees(snapshot);
       } catch (e) {
         console.error(e);
@@ -309,14 +341,26 @@ export default function EmployeesAttendance() {
   };
 
   const statusStyles = (status) => {
-    if (!status) return { bg: '#ffffff', border: '#dbe2f2', text: '#64748b' };
+    if (!status) return { bg: 'var(--surface-panel)', border: 'var(--border-soft)', text: 'var(--text-muted)' };
     if (status === 'present') return { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' };
     if (status === 'late') return { bg: '#fffbeb', border: '#fde68a', text: '#92400e' };
     return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
+  const presentColors = { background: '#f0fdf4', border: '#bbf7d0', color: '#166534' };
+  const lateColors = { background: '#fffbeb', border: '#fde68a', color: '#92400e' };
+  const absentColors = { background: '#fef2f2', border: '#fecaca', color: '#991b1b' };
+
+  const handleSave = useCallback(async ({ silent = false } = {}) => {
+    const nextSignature = createAttendanceSignature(selectedDate, attendance);
+
+    if (silent) {
+      setIsAutoSaving(true);
+      setAutoSaveState('saving');
+    } else {
+      setIsSaving(true);
+    }
+
     setErrorMessage('');
     setSuccessMessage('');
 
@@ -348,7 +392,7 @@ export default function EmployeesAttendance() {
         setIsSaving(false);
       }
     }
-  }, [attendance, markedBy, selectedDate];
+  }, [attendance, markedBy, selectedDate]);
 
   useEffect(() => {
     if (!autoSaveEnabled || !selectedDate || isLoading || isSaving || isAutoSaving) {
@@ -384,32 +428,33 @@ export default function EmployeesAttendance() {
           : 'Changes will save automatically'
     : 'Manual save only';
 
+  const headerActionStyle = {
+    position: 'relative',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 38,
+    minWidth: 38,
+    padding: '0 14px',
+    borderRadius: 999,
+    border: '1px solid var(--border-soft, #dbe2f2)',
+    background: 'var(--surface-panel, #fff)',
+    color: 'var(--text-secondary, #334155)',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    textDecoration: 'none',
+    boxShadow: 'none',
+  };
+
   return (
     <div
       className="dashboard-page"
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
+        background: 'var(--page-bg)',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--danger': '#b91c1c',
-        '--danger-soft': '#fff1f2',
-        '--danger-border': '#fecaca',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -427,31 +472,31 @@ export default function EmployeesAttendance() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px 18px', height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
         <div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
 
-        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
+        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
           <div style={{ width: '100%', maxWidth: 1320 }}>
             <section
               style={{
-                background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
-                border: '1px solid #e7ecf3',
+                background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)',
+                border: '1px solid var(--border-soft)',
                 borderRadius: 22,
                 padding: '22px 24px',
-                boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)',
+                boxShadow: 'var(--shadow-panel)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: '#eef6ff', border: '1px solid #d8e8ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                     Workforce Attendance
                   </div>
-                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Employees Attendance</h1>
-                  <p style={{ margin: '8px 0 0', fontSize: 14, color: '#64748b', lineHeight: 1.6, maxWidth: 760 }}>
+                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Employees Attendance</h1>
+                  <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 760 }}>
                     Review daily staff attendance from one premium workspace, filter quickly, and mark each employee with faster status actions.
                   </p>
                 </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
                   <FaCalendarAlt /> {selectedDate}
                 </div>
               </div>
@@ -464,27 +509,27 @@ export default function EmployeesAttendance() {
               <MetricCard icon={FaTimesCircle} label="Absent / Unset" value={attendanceStats.absent + attendanceStats.unset} accent={{ background: '#fff7f7', border: '#fecaca', color: '#dc2626' }} />
             </section>
 
-            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)' }}>
+            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', flex: '1 1 720px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Date</label>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Date</label>
                     <input
                       type="date"
                       value={selectedDate}
                       onChange={(e) => setSelectedDate(e.target.value)}
-                      style={{ height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff' }}
+                      style={{ height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)' }}
                     />
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Position</label>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Position</label>
                     <div style={{ position: 'relative' }}>
-                      <FaFilter style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', fontSize: 13 }} />
+                      <FaFilter style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
                       <select
                         value={selectedPosition}
                         onChange={(e) => setSelectedPosition(e.target.value)}
-                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff', cursor: 'pointer' }}
+                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)', cursor: 'pointer' }}
                       >
                         <option value="">All positions</option>
                         {positions.length ? positions.map((p) => (
@@ -495,14 +540,14 @@ export default function EmployeesAttendance() {
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 280, flex: '1 1 280px' }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Search</label>
+                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Search</label>
                     <div style={{ position: 'relative' }}>
-                      <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', fontSize: 13 }} />
+                      <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
                       <input
                         placeholder="Search by name or employee ID"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
-                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid #dbe4ef', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#fbfdff' }}
+                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)' }}
                       />
                     </div>
                   </div>
@@ -592,31 +637,31 @@ export default function EmployeesAttendance() {
               </div>
             ) : null}
 
-            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', overflow: 'hidden' }}>
-              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', overflow: 'hidden' }}>
+              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Daily Attendance Sheet</div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>Use the action pills for faster marking, then save once when the register is complete.</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Daily Attendance Sheet</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text-muted)' }}>Use the action pills for faster marking, then save once when the register is complete.</div>
                 </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
                   <FaUserCheck /> {normalizedEmployees.length} visible employee{normalizedEmployees.length === 1 ? '' : 's'}
                 </div>
               </div>
 
               {isLoading ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>Loading attendance...</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>Loading attendance...</div>
               ) : normalizedEmployees.length === 0 ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: '#64748b', fontWeight: 600 }}>No employees found for the current filters.</div>
+                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>No employees found for the current filters.</div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto' }}>
                   <table style={{ width: '100%', minWidth: 1080, borderCollapse: 'collapse' }}>
                     <thead>
-                      <tr style={{ background: '#fbfdff' }}>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Employee</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Department</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Position</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Current Status</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Mark Attendance</th>
+                      <tr style={{ background: 'var(--surface-muted)' }}>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Employee</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Department</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Position</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Current Status</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Mark Attendance</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -636,25 +681,25 @@ export default function EmployeesAttendance() {
                             key={employeeId}
                             onMouseEnter={() => setHoveredEmployeeId(employeeId)}
                             onMouseLeave={() => setHoveredEmployeeId(null)}
-                            style={{ background: isHovered ? '#fcfdff' : '#ffffff', transition: 'background 0.18s ease' }}
+                            style={{ background: isHovered ? 'var(--surface-muted)' : 'var(--surface-panel)', transition: 'background 0.18s ease' }}
                           >
-                            <td style={{ padding: '16px 18px', borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
                                 <AvatarBadge src={employee._avatar} name={employee._name} size={50} />
                                 <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee._name}</div>
-                                  <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>{employeeId}</div>
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee._name}</div>
+                                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>{employeeId}</div>
                                 </div>
                               </div>
                             </td>
-                            <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700, borderBottom: '1px solid #f1f5f9' }}>{employee._department}</td>
-                            <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700, borderBottom: '1px solid #f1f5f9' }}>{employee._position}</td>
-                            <td style={{ padding: '16px 18px', borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._department}</td>
+                            <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._position}</td>
+                            <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
                               <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: 30, padding: '0 12px', borderRadius: 999, border: `1px solid ${styles.border}`, background: styles.bg, color: styles.text, fontSize: 12, fontWeight: 800, textTransform: displayStatus ? 'capitalize' : 'none' }}>
                                 {displayStatus || 'Not set'}
                               </span>
                             </td>
-                            <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid var(--border-soft)' }}>
                               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                 <StatusActionButton label="Present" value="present" active={displayStatus === 'present'} colors={presentColors} onClick={(value) => handleSetStatus(employeeId, value)} />
                                 <StatusActionButton label="Late" value="late" active={displayStatus === 'late'} colors={lateColors} onClick={(value) => handleSetStatus(employeeId, value)} />
@@ -670,10 +715,10 @@ export default function EmployeesAttendance() {
               )}
             </section>
 
-            <section style={{ position: 'sticky', bottom: 18, marginTop: 16, background: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(10px)', border: '1px solid #dbe8f6', borderRadius: 20, padding: '14px 18px', boxShadow: '0 16px 38px rgba(15, 23, 42, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+            <section style={{ position: 'sticky', bottom: 18, marginTop: 16, background: 'var(--surface-overlay, rgba(8, 17, 31, 0.9))', backdropFilter: 'blur(10px)', border: '1px solid var(--border-soft)', borderRadius: 20, padding: '14px 18px', boxShadow: 'var(--shadow-panel)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>Attendance Ready to Save</div>
-                <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)' }}>Attendance Ready to Save</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>
                   {attendanceStats.present} present, {attendanceStats.late} late, {attendanceStats.absent} absent, {attendanceStats.unset} not set.
                 </div>
               </div>
