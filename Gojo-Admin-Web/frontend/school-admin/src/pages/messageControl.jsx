@@ -3,9 +3,11 @@ import axios from "axios";
 import { FaSearch, FaUserShield, FaComments, FaChalkboardTeacher, FaUsers, FaExclamationTriangle, FaPlus } from "react-icons/fa";
 import { FIREBASE_DATABASE_URL } from "../config.js";
 import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
   fetchJson,
-  formatLastMessagePreview,
   mapInBatches,
+  normalizeChatSummaryValue,
   parseChatParticipantIds,
 } from "../utils/chatRtdb";
 
@@ -180,6 +182,7 @@ export default function MessageControl() {
           registerersRes,
           schoolAdminsRes,
           chatIndex,
+          allChatSummariesRes,
         ] = await Promise.all([
           fetchJson(`${SCHOOL_DB_ROOT}/Users.json`, {}),
           fetchJson(`${SCHOOL_DB_ROOT}/Teachers.json`, {}),
@@ -190,10 +193,34 @@ export default function MessageControl() {
           fetchJson(`${SCHOOL_DB_ROOT}/Registerers.json`, {}),
           fetchJson(`${SCHOOL_DB_ROOT}/School_Admins.json`, {}),
           fetchJson(`${SCHOOL_DB_ROOT}/Chats.json?shallow=true`, {}),
+          fetchJson(`${SCHOOL_DB_ROOT}/Chat_Summaries.json`, {}),
         ]);
 
         const users = usersRes || {};
         const chatIds = Object.keys(chatIndex || {});
+        const conversationSummaryByChatId = Object.entries(allChatSummariesRes && typeof allChatSummariesRes === "object" ? allChatSummariesRes : {}).reduce(
+          (result, [, ownerSummaries]) => {
+            Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
+              const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+              const existingSummary = result[chatId] || {
+                unreadTotal: 0,
+                lastMessageText: "",
+                lastMessageTime: 0,
+              };
+
+              existingSummary.unreadTotal += Number(summary.unreadCount || 0);
+              if (Number(summary.lastMessageTime || 0) >= Number(existingSummary.lastMessageTime || 0)) {
+                existingSummary.lastMessageText = String(summary.lastMessageText || "").trim();
+                existingSummary.lastMessageTime = Number(summary.lastMessageTime || 0);
+              }
+
+              result[chatId] = existingSummary;
+            });
+
+            return result;
+          },
+          {}
+        );
 
         const toUserSet = (source) =>
           new Set(
@@ -213,12 +240,15 @@ export default function MessageControl() {
 
         const parsedChats = (await mapInBatches(chatIds, 20, async (chatId) => {
           const encodedChatId = encodeURIComponent(chatId);
-          const [participantsNode, lastMessage, unreadNode, messageKeys] = await Promise.all([
+          const [participantsNode, messageKeys] = await Promise.all([
             fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/participants.json`, {}),
-            fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/lastMessage.json`, null),
-            fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/unread.json`, {}),
             fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?shallow=true`, {}),
           ]);
+          const conversationSummary = conversationSummaryByChatId[chatId] || {
+            unreadTotal: 0,
+            lastMessageText: "",
+            lastMessageTime: 0,
+          };
 
           const participantIds = parseChatParticipantIds(chatId, participantsNode);
           const participants = participantIds.slice(0, 2).map((id) => {
@@ -236,10 +266,6 @@ export default function MessageControl() {
             const leftRole = participants[0]?.role || "user";
             const rightRole = participants[1]?.role || "user";
             const category = getPairCategory(leftRole, rightRole);
-            const unreadTotal = Object.values(unreadNode).reduce(
-              (sum, value) => sum + Number(value || 0),
-              0
-            );
 
             return {
               chatId,
@@ -247,9 +273,9 @@ export default function MessageControl() {
               category,
               categoryLabel: pairCategoryLabel[category] || "Other",
               messageCount: Object.keys(messageKeys || {}).length,
-              unreadTotal,
-              lastMessageText: formatLastMessagePreview(lastMessage),
-              lastMessageTime: Number(lastMessage?.timeStamp || 0),
+              unreadTotal: Number(conversationSummary.unreadTotal || 0),
+              lastMessageText: String(conversationSummary.lastMessageText || "").trim(),
+              lastMessageTime: Number(conversationSummary.lastMessageTime || 0),
               messages: [],
             };
           }))
@@ -352,6 +378,7 @@ export default function MessageControl() {
   }, [enrichedConversations]);
 
   const handleSelectConversation = async (chatId) => {
+    const selectedConversation = conversations.find((conversation) => conversation.chatId === chatId) || null;
     setSelectedChatId(chatId);
     setSelectedConversationMessages([]);
     setConversations((previousConversations) =>
@@ -363,18 +390,24 @@ export default function MessageControl() {
     );
 
     try {
-      const unreadSnapshot = await axios
-        .get(`${SCHOOL_DB_ROOT}/Chats/${chatId}/unread.json`)
-        .catch(() => ({ data: {} }));
-      const unreadNode = unreadSnapshot.data || {};
-      const resetPayload = Object.keys(unreadNode).reduce((payload, key) => {
-        payload[key] = 0;
-        return payload;
-      }, {});
-
-      if (Object.keys(resetPayload).length > 0) {
-        await axios.patch(`${SCHOOL_DB_ROOT}/Chats/${chatId}/unread.json`, resetPayload);
-      }
+      const participants = Array.isArray(selectedConversation?.participants) ? selectedConversation.participants : [];
+      await Promise.all(
+        participants
+          .filter((participant) => String(participant?.userId || "").trim())
+          .map((participant) => {
+            const otherParticipant = participants.find(
+              (candidate) => String(candidate?.userId || "").trim() !== String(participant?.userId || "").trim()
+            );
+            return axios.patch(
+              `${SCHOOL_DB_ROOT}/${buildChatSummaryPath(participant.userId, chatId)}.json`,
+              buildChatSummaryUpdate({
+                chatId,
+                otherUserId: otherParticipant?.userId || "",
+                unreadCount: 0,
+              })
+            );
+          })
+      );
     } catch {
       // keep UI updated even if remote reset fails
     }

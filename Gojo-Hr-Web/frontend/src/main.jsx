@@ -8,7 +8,9 @@ import { ThemeProvider, applyTheme, getStoredTheme } from './theme/ThemeContext'
 applyTheme(getStoredTheme())
 
 createRoot(document.getElementById('root')).render(
-  <BrowserRouter>
-    <AppRoutes />
+  <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <ThemeProvider>
+      <AppRoutes />
+    </ThemeProvider>
   </BrowserRouter>
 )

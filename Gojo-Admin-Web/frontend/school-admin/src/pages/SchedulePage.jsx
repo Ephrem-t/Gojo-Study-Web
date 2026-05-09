@@ -20,7 +20,12 @@ import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
-import { fetchJson, getSafeProfileImage, mapInBatches, parseChatParticipantIds } from "../utils/chatRtdb";
+import {
+  buildOwnerChatSummariesPath,
+  fetchJson,
+  getSafeProfileImage,
+  normalizeChatSummaryValue,
+} from "../utils/chatRtdb";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 /* ================= CONSTANTS ================= */
@@ -736,10 +741,10 @@ const getTeachersForCourse = (courseId) => {
     if (!admin.userId) return;
 
     try {
-      const [usersRaw, teachersRaw, chatIndex] = await Promise.all([
+      const [usersRaw, teachersRaw, ownerSummaries] = await Promise.all([
         readSchoolNode("Users"),
         readSchoolNode("Teachers"),
-        fetchJson(`${RTDB_BASE}/Chats.json?shallow=true`, {}),
+        fetchJson(`${RTDB_BASE}/${buildOwnerChatSummariesPath(admin.userId)}.json`, {}),
       ]);
 
       const usersData = usersRaw && typeof usersRaw === "object" ? usersRaw : {};
@@ -749,44 +754,30 @@ const getTeachersForCourse = (courseId) => {
         if (userId) acc[userId] = userRecord;
         return acc;
       }, {});
-      const teachersByUserId = Object.values(teachersData || {}).reduce((acc, teacherRecord) => {
-        const userId = String(teacherRecord?.userId || "").trim();
-        if (userId) acc[userId] = teacherRecord;
-        return acc;
-      }, {});
 
-      const candidateChatKeys = Object.keys(chatIndex || {}).filter((chatKey) =>
-        parseChatParticipantIds(chatKey).includes(String(admin.userId || ""))
-      );
+      const unreadEntries = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {})
+        .map(([chatKey, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId: chatKey });
+          const otherUserId = String(summary.otherUserId || "").trim();
+          if (!otherUserId || !teachersByUserId[otherUserId]) {
+            return null;
+          }
 
-      const unreadEntries = await mapInBatches(candidateChatKeys, 20, async (chatKey) => {
-        const participantIds = parseChatParticipantIds(chatKey);
-        const otherUserId = participantIds.find((participantId) => String(participantId || "") !== String(admin.userId || ""));
-        if (!otherUserId || !teachersByUserId[otherUserId]) {
-          return null;
-        }
+          const unreadCount = Number(summary.unreadCount || 0);
+          if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
+            return null;
+          }
 
-        const encodedChatKey = encodeURIComponent(chatKey);
-        const [unreadValue, lastMessage] = await Promise.all([
-          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/unread/${encodeURIComponent(admin.userId)}.json`, 0),
-          fetchJson(`${RTDB_BASE}/Chats/${encodedChatKey}/lastMessage.json`, null),
-        ]);
-
-        const unreadCount = Number(unreadValue || 0);
-        if (!Number.isFinite(unreadCount) || unreadCount <= 0) {
-          return null;
-        }
-
-        return {
-          otherUserId,
-          unreadCount,
-          lastMessageTime: Number(lastMessage?.timeStamp || 0),
-        };
-      });
+          return {
+            otherUserId,
+            unreadCount,
+            lastMessageTime: Number(summary.lastMessageTime || 0),
+          };
+        })
+        .filter(Boolean);
 
       const senders = {};
       unreadEntries
-        .filter(Boolean)
         .sort((leftEntry, rightEntry) => Number(rightEntry.lastMessageTime || 0) - Number(leftEntry.lastMessageTime || 0))
         .forEach((entry) => {
           const teacherRecord = teachersByUserId[entry.otherUserId] || {};
@@ -798,6 +789,9 @@ const getTeachersForCourse = (courseId) => {
               userRecord?.profileImage || teacherRecord?.profileImage,
               "/default-profile.png"
             ),
+            count: entry.unreadCount,
+          };
+        });
             count: entry.unreadCount,
           };
         });

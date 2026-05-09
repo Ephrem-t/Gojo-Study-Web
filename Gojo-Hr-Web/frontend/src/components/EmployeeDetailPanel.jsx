@@ -213,11 +213,91 @@ function getInitials(name) {
 
 function SummaryChip({ icon: Icon, label }) {
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid #dbe8f6', background: '#f8fbff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
-      <Icon style={{ color: '#2563eb', fontSize: 12 }} />
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
+      <Icon style={{ color: 'var(--accent)', fontSize: 12 }} />
       {label}
     </div>
   )
+}
+
+async function compressImageToJpeg(file, { maxDimension = 960, maxBytes = 350 * 1024 } = {}) {
+  if (!file || !String(file.type || '').startsWith('image/') || file.type === 'image/svg+xml') {
+    return file
+  }
+
+  const imageUrl = URL.createObjectURL(file)
+
+  try {
+    const imageElement = await new Promise((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => resolve(image)
+      image.onerror = () => reject(new Error('Unable to process selected image.'))
+      image.src = imageUrl
+    })
+
+    const originalWidth = imageElement.naturalWidth || imageElement.width || 1
+    const originalHeight = imageElement.naturalHeight || imageElement.height || 1
+    const scale = Math.min(1, maxDimension / Math.max(originalWidth, originalHeight))
+    let targetWidth = Math.max(1, Math.round(originalWidth * scale))
+    let targetHeight = Math.max(1, Math.round(originalHeight * scale))
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d', { alpha: false })
+
+    if (!context) {
+      return file
+    }
+
+    const renderImage = () => {
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, targetWidth, targetHeight)
+      context.drawImage(imageElement, 0, 0, targetWidth, targetHeight)
+    }
+
+    const canvasToBlob = (quality) => new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob)
+          return
+        }
+
+        reject(new Error('Image compression failed.'))
+      }, 'image/jpeg', quality)
+    })
+
+    renderImage()
+
+    const qualitySteps = [0.78, 0.68, 0.58, 0.48, 0.4]
+    let bestBlob = null
+
+    for (const quality of qualitySteps) {
+      const candidateBlob = await canvasToBlob(quality)
+      bestBlob = candidateBlob
+      if (candidateBlob.size <= maxBytes) {
+        break
+      }
+    }
+
+    if (bestBlob && bestBlob.size > maxBytes) {
+      targetWidth = Math.max(480, Math.round(targetWidth * 0.8))
+      targetHeight = Math.max(480, Math.round(targetHeight * 0.8))
+      renderImage()
+      bestBlob = await canvasToBlob(0.4)
+    }
+
+    if (!bestBlob || bestBlob.size >= file.size) {
+      return file
+    }
+
+    return new File(
+      [bestBlob],
+      `${file.name.replace(/\.[^.]+$/, '') || 'employee-profile'}.jpg`,
+      { type: 'image/jpeg', lastModified: Date.now() }
+    )
+  } finally {
+    URL.revokeObjectURL(imageUrl)
+  }
 }
 
 export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, onSaved, embedded = false }) {
@@ -231,6 +311,14 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
   const [profileImageFile, setProfileImageFile] = useState(null)
   const [departments, setDepartments] = useState([])
   const [positions, setPositions] = useState([])
+
+  useEffect(() => {
+    return () => {
+      if (typeof profileImagePreview === 'string' && profileImagePreview.startsWith('blob:')) {
+        URL.revokeObjectURL(profileImagePreview)
+      }
+    }
+  }, [profileImagePreview])
 
   const displayName = useMemo(() => {
     const personal = formData.personal || {}
@@ -473,7 +561,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
     if (sectionKey === 'employment' && field.key === 'departmentId') {
       return (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
           <select
             value={value || ''}
             onChange={(event) => {
@@ -498,7 +586,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
                 }
               })
             }}
-            style={{ width: '100%', height: 46, border: '1px solid #dbe4ef', borderRadius: 14, padding: '0 14px', fontSize: 14, color: '#0f172a', background: '#fcfdff', boxSizing: 'border-box' }}
+            style={{ width: '100%', height: 46, border: '1px solid var(--input-border)', borderRadius: 14, padding: '0 14px', fontSize: 14, color: 'var(--text-primary)', background: 'var(--input-bg)', boxSizing: 'border-box' }}
           >
             <option value="">Select</option>
             {departments.map((option) => (
@@ -512,7 +600,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
     if (sectionKey === 'employment' && field.key === 'positionId') {
       return (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
           <select
             value={value || ''}
             onChange={(event) => {
@@ -541,7 +629,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
                 }
               })
             }}
-            style={{ width: '100%', height: 46, border: '1px solid #dbe4ef', borderRadius: 14, padding: '0 14px', fontSize: 14, color: '#0f172a', background: '#fcfdff', boxSizing: 'border-box' }}
+            style={{ width: '100%', height: 46, border: '1px solid var(--input-border)', borderRadius: 14, padding: '0 14px', fontSize: 14, color: 'var(--text-primary)', background: 'var(--input-bg)', boxSizing: 'border-box' }}
           >
             <option value="">Select</option>
             {availablePositions.map((option) => (
@@ -555,26 +643,46 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
     if (field.type === 'file' && field.isImage) {
       return (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
-          <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 42, padding: '0 16px', borderRadius: 12, border: '1px solid #dbe8f6', background: '#f8fbff', color: '#1f4f96', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 42, padding: '0 16px', borderRadius: 12, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent-strong)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               <FaUpload /> Choose Image
               <input
                 type="file"
                 accept="image/*"
                 style={{ display: 'none' }}
-                onChange={(event) => {
+                onChange={async (event) => {
                   const file = event.target.files?.[0]
                   if (!file) return
-                  setProfileImageFile(file)
-                  setProfileImagePreview(URL.createObjectURL(file))
+
+                  try {
+                    const optimizedFile = await compressImageToJpeg(file)
+                    setProfileImageFile(optimizedFile)
+                    setProfileImagePreview((currentValue) => {
+                      if (typeof currentValue === 'string' && currentValue.startsWith('blob:')) {
+                        URL.revokeObjectURL(currentValue)
+                      }
+                      return URL.createObjectURL(optimizedFile)
+                    })
+                  } catch (error) {
+                    console.error('Failed to optimize employee profile image:', error)
+                    setProfileImageFile(file)
+                    setProfileImagePreview((currentValue) => {
+                      if (typeof currentValue === 'string' && currentValue.startsWith('blob:')) {
+                        URL.revokeObjectURL(currentValue)
+                      }
+                      return URL.createObjectURL(file)
+                    })
+                  } finally {
+                    event.target.value = ''
+                  }
                 }}
               />
             </label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>{profileImageFile?.name || 'Upload a portrait or profile photo'}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{profileImageFile?.name || 'Upload a portrait or profile photo'}</div>
           </div>
           {(profileImagePreview || value) ? (
-            <img src={profileImagePreview || value} alt="Profile preview" style={{ width: 132, height: 132, objectFit: 'cover', borderRadius: 20, border: '1px solid #dbe8f6', background: '#f8fbff' }} />
+            <img src={profileImagePreview || value} alt="Profile preview" style={{ width: 132, height: 132, objectFit: 'cover', borderRadius: 20, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)' }} />
           ) : null}
         </label>
       )
@@ -582,7 +690,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
 
     if (field.type === 'checkbox') {
       return (
-        <label key={field.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minHeight: 46, padding: '0 14px', borderRadius: 12, border: '1px solid #e7ecf3', background: '#fbfdff', color: '#334155', fontSize: 13, fontWeight: 700, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
+        <label key={field.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minHeight: 46, padding: '0 14px', borderRadius: 12, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 700, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
           <input type="checkbox" checked={Boolean(value)} onChange={(event) => setField(sectionKey, field.key, event.target.checked)} />
           {field.label}
         </label>
@@ -592,12 +700,12 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
     if (field.type === 'textarea') {
       return (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
-          <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
           <textarea
             value={value || ''}
             onChange={(event) => setField(sectionKey, field.key, event.target.value)}
             rows={4}
-            style={{ width: '100%', border: '1px solid #dbe4ef', borderRadius: 14, padding: '12px 14px', fontSize: 14, color: '#0f172a', background: '#fcfdff', resize: 'vertical', boxSizing: 'border-box' }}
+            style={{ width: '100%', border: '1px solid var(--input-border)', borderRadius: 14, padding: '12px 14px', fontSize: 14, color: 'var(--text-primary)', background: 'var(--input-bg)', resize: 'vertical', boxSizing: 'border-box' }}
           />
         </label>
       )
@@ -613,11 +721,11 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
 
       return (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
-          <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
           <select
             value={value || ''}
             onChange={(event) => setField(sectionKey, field.key, event.target.value)}
-            style={{ width: '100%', height: 46, border: '1px solid #dbe4ef', borderRadius: 14, padding: '0 14px', fontSize: 14, color: '#0f172a', background: '#fcfdff', boxSizing: 'border-box' }}
+            style={{ width: '100%', height: 46, border: '1px solid var(--input-border)', borderRadius: 14, padding: '0 14px', fontSize: 14, color: 'var(--text-primary)', background: 'var(--input-bg)', boxSizing: 'border-box' }}
           >
             {selectOptions.map((option) => (
               <option key={option || 'empty'} value={option}>{option || 'Select'}</option>
@@ -629,13 +737,13 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
 
     return (
       <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 8, gridColumn: field.fullWidth ? '1 / -1' : 'auto' }}>
-        <span style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>{field.label}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{field.label}</span>
         <input
           type={field.type || 'text'}
           value={value || ''}
           readOnly={field.readOnly}
           onChange={(event) => setField(sectionKey, field.key, event.target.value)}
-          style={{ width: '100%', height: 46, border: '1px solid #dbe4ef', borderRadius: 14, padding: '0 14px', fontSize: 14, color: field.readOnly ? '#64748b' : '#0f172a', background: field.readOnly ? '#f8fafc' : '#fcfdff', boxSizing: 'border-box' }}
+          style={{ width: '100%', height: 46, border: '1px solid var(--input-border)', borderRadius: 14, padding: '0 14px', fontSize: 14, color: field.readOnly ? 'var(--text-muted)' : 'var(--text-primary)', background: field.readOnly ? 'var(--surface-muted)' : 'var(--input-bg)', boxSizing: 'border-box' }}
         />
       </label>
     )
@@ -647,18 +755,18 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
         maxHeight: 'calc(100vh - 36px)',
         overflow: 'hidden',
         borderRadius: 28,
-        border: '1px solid #dbe8f6',
-        background: '#ffffff',
-        boxShadow: '0 30px 90px rgba(15, 23, 42, 0.24)',
+        border: '1px solid var(--border-soft)',
+        background: 'var(--surface-panel)',
+        boxShadow: 'var(--shadow-panel)',
         display: 'flex',
         flexDirection: 'column',
       }
     : {
         width: '100%',
         borderRadius: 24,
-        border: '1px solid #dbe8f6',
-        background: '#ffffff',
-        boxShadow: '0 18px 48px rgba(15, 23, 42, 0.08)',
+        border: '1px solid var(--border-soft)',
+        background: 'var(--surface-panel)',
+        boxShadow: 'var(--shadow-panel)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -666,20 +774,20 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
 
   return (
     <div style={panelStyle}>
-      <div style={{ padding: embedded ? '22px 24px 18px' : '24px 24px 18px', borderBottom: '1px solid #edf2f7', background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)' }}>
+      <div style={{ padding: embedded ? '22px 24px 18px' : '24px 24px 18px', borderBottom: '1px solid var(--border-soft)', background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0, flex: 1 }}>
-            <div style={{ width: 84, height: 84, borderRadius: 24, background: 'linear-gradient(135deg, #eef6ff 0%, #dfeeff 100%)', border: '1px solid #d7e6fb', color: '#1f4f96', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ width: 84, height: 84, borderRadius: 24, background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)', border: '1px solid var(--border-soft)', color: 'var(--accent-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
               {(profileImagePreview || formData.personal?.profileImageName) ? (
                 <img src={profileImagePreview || formData.personal?.profileImageName} alt={displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               ) : getInitials(displayName)}
             </div>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ display: 'inline-flex', alignItems: 'center', minHeight: 28, padding: '0 12px', borderRadius: 999, background: '#eef6ff', border: '1px solid #d8e8ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+              <div style={{ display: 'inline-flex', alignItems: 'center', minHeight: 28, padding: '0 12px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                 Employee Profile
               </div>
-              <h2 style={{ margin: '12px 0 0', fontSize: 30, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>{displayName}</h2>
-              <p style={{ margin: '8px 0 0', fontSize: 14, color: '#64748b', lineHeight: 1.6, maxWidth: 760 }}>
+              <h2 style={{ margin: '12px 0 0', fontSize: 30, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>{displayName}</h2>
+              <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 760 }}>
                 Update the employee record from a single premium workspace without leaving the employee list.
               </p>
               {/* <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -698,7 +806,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
               type="button"
               onClick={handlePrintCredentialSlip}
               disabled={!canUseCredentialSlip}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderRadius: 12, border: '1px solid #d8e8ff', background: '#eef6ff', color: '#1f4f96', fontSize: 13, fontWeight: 700, cursor: canUseCredentialSlip ? 'pointer' : 'not-allowed', opacity: canUseCredentialSlip ? 1 : 0.55 }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderRadius: 12, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent-strong)', fontSize: 13, fontWeight: 700, cursor: canUseCredentialSlip ? 'pointer' : 'not-allowed', opacity: canUseCredentialSlip ? 1 : 0.55 }}
             >
               <FaPrint /> Print Slip
             </button>
@@ -711,7 +819,7 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
               <FaDownload /> Export PDF
             </button>
             {onClose ? (
-              <button type="button" onClick={onClose} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderRadius: 12, border: '1px solid #dbe8f6', background: '#ffffff', color: '#334155', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <button type="button" onClick={onClose} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderRadius: 12, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                 {embedded ? <FaTimes /> : <FaArrowLeft />} {embedded ? 'Close' : 'Back'}
               </button>
             ) : null}
@@ -728,26 +836,26 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
         </div>
 
         {!loading && !canUseCredentialSlip ? (
-          <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid #dbe8f6', background: '#f8fbff', color: '#475569', fontSize: 12, fontWeight: 700 }}>
+          <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
             Linked portal credentials are not available for this employee yet, so the slip actions are disabled.
           </div>
         ) : null}
       </div>
 
       {error ? (
-        <div style={{ margin: '16px 24px 0', padding: '12px 14px', borderRadius: 14, border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', fontSize: 13, fontWeight: 700 }}>
+        <div style={{ margin: '16px 24px 0', padding: '12px 14px', borderRadius: 14, border: '1px solid var(--danger-border)', background: 'var(--danger-soft)', color: 'var(--danger)', fontSize: 13, fontWeight: 700 }}>
           {error}
         </div>
       ) : null}
 
       {loading ? (
-        <div style={{ padding: '48px 24px', textAlign: 'center', color: '#64748b', fontWeight: 700 }}>Loading employee information...</div>
+        <div style={{ padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)', fontWeight: 700 }}>Loading employee information...</div>
       ) : (
         <>
           <div style={{ padding: '16px 24px 0', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             {SECTION_ORDER.map((section, index) => (
-              <a key={section.key} href={`#employee-section-${section.key}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 38, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#ffffff', color: '#334155', textDecoration: 'none', fontSize: 13, fontWeight: 700 }}>
-                <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#eef6ff', color: '#1f4f96', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800 }}>{index + 1}</span>
+              <a key={section.key} href={`#employee-section-${section.key}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 38, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', textDecoration: 'none', fontSize: 13, fontWeight: 700 }}>
+                <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--surface-accent)', color: 'var(--accent-strong)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800 }}>{index + 1}</span>
                 {section.label}
               </a>
             ))}
@@ -756,11 +864,11 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
           <div style={{ padding: '18px 24px 24px', overflowY: 'auto' }}>
             <div style={{ display: 'grid', gap: 16 }}>
               {SECTION_ORDER.map((section) => (
-                <section key={section.key} id={`employee-section-${section.key}`} style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, padding: 20, boxShadow: '0 14px 34px rgba(15, 23, 42, 0.04)' }}>
+                <section key={section.key} id={`employee-section-${section.key}`} style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 22, padding: 20, boxShadow: 'var(--shadow-soft)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
                     <div>
-                      <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#0f172a' }}>{section.label}</h3>
-                      <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>Keep this section current and aligned with the employee record.</div>
+                      <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>{section.label}</h3>
+                      <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>Keep this section current and aligned with the employee record.</div>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
@@ -771,11 +879,11 @@ export default function EmployeeDetailPanel({ employeeId, admin = {}, onClose, o
             </div>
           </div>
 
-          <div style={{ padding: '16px 24px 22px', borderTop: '1px solid #edf2f7', background: 'rgba(255,255,255,0.96)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 13, color: '#64748b' }}>Changes are saved directly to the employee record and linked profile data.</div>
+          <div style={{ padding: '16px 24px 22px', borderTop: '1px solid var(--border-soft)', background: 'var(--surface-overlay, rgba(8,17,31,0.9))', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Changes are saved directly to the employee record and linked profile data.</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               {onClose ? (
-                <button type="button" onClick={onClose} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 42, padding: '0 16px', borderRadius: 12, border: '1px solid #dbe8f6', background: '#ffffff', color: '#334155', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                <button type="button" onClick={onClose} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, height: 42, padding: '0 16px', borderRadius: 12, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                   <FaArrowLeft /> Back
                 </button>
               ) : null}

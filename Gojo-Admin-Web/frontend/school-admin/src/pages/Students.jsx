@@ -13,7 +13,14 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildChatKeyCandidates, mapInBatches, uniqueNonEmptyValues } from "../utils/chatRtdb";
+import {
+  buildChatKeyCandidates,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  normalizeChatSummaryValue,
+  uniqueNonEmptyValues,
+} from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
 
@@ -484,6 +491,27 @@ function StudentsPage() {
     studentLike?.id,
   ]);
 
+  const findStudentSummary = (ownerSummaries, studentLike = {}) => {
+    const studentKeys = new Set(
+      getStudentIdentityCandidates(studentLike).map((studentKey) => String(studentKey || "").trim().toLowerCase())
+    );
+
+    let matchedSummary = null;
+    Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
+      const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+      const otherUserId = String(summary.otherUserId || "").trim().toLowerCase();
+      if (!otherUserId || !studentKeys.has(otherUserId)) {
+        return;
+      }
+
+      if (!matchedSummary || summary.lastMessageTime >= matchedSummary.lastMessageTime) {
+        matchedSummary = summary;
+      }
+    });
+
+    return matchedSummary;
+  };
+
   const findExistingChatKey = (chatKeySet, currentUserCandidates, otherUserCandidates) => {
     if (!(chatKeySet instanceof Set)) {
       return "";
@@ -504,6 +532,15 @@ function StudentsPage() {
   };
 
   const resolveStudentChatKey = async (studentLike = {}) => {
+    const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+      ttlMs: 30 * 1000,
+      fallbackValue: {},
+    });
+    const existingSummary = findStudentSummary(ownerSummaries, studentLike);
+    if (existingSummary?.chatId) {
+      return existingSummary.chatId;
+    }
+
     const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
       ttlMs: CHAT_INDEX_CACHE_TTL_MS,
       fallbackValue: {},
@@ -1181,27 +1218,17 @@ function StudentsPage() {
   //-------------------------Fetch unread status for each student--------------
   useEffect(() => {
     const fetchUnread = async () => {
-      const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
-        ttlMs: CHAT_INDEX_CACHE_TTL_MS,
+      const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+        ttlMs: 30 * 1000,
         fallbackValue: {},
       });
-      const chatKeySet = new Set(Object.keys(chatIndex || {}));
-      const currentUserCandidates = uniqueNonEmptyValues([adminUserId, adminId]);
-      const unreadEntries = await mapInBatches(students, 10, async (studentItem) => {
+      const unreadEntries = students.map((studentItem) => {
         const studentKeys = getStudentIdentityCandidates(studentItem);
-        const chatKey = findExistingChatKey(chatKeySet, currentUserCandidates, studentKeys);
-        if (!chatKey) {
-          return { studentKeys, hasUnread: false };
-        }
-
-        const unreadCount = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread/${adminUserId}.json`, {
-          ttlMs: 30 * 1000,
-          fallbackValue: 0,
-        });
+        const summary = findStudentSummary(ownerSummaries, studentItem);
 
         return {
           studentKeys,
-          hasUnread: Number(unreadCount || 0) > 0,
+          hasUnread: Number(summary?.unreadCount || 0) > 0,
         };
       });
 
@@ -1260,43 +1287,71 @@ function StudentsPage() {
 
       const generatedId = pushRes.data && pushRes.data.name;
 
-      // 2) update lastMessage + participants
-      const lastMessage = {
-        text: newMessage.text,
-        senderId: newMessage.senderId,
-        seen: false,
-        timeStamp: newMessage.timeStamp,
-      };
-
       await axios.patch(
         `${DB_URL}/Chats/${chatKey}.json`,
         {
           participants: {
-            ...(/* keep existing participants if any */ {}),
             [adminUserId]: true,
             [selectedStudent.userId]: true,
           },
-          lastMessage,
         }
       );
 
-      // 3) increment unread for receiver
+      await Promise.all([
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]).catch(() => {});
+
+      // 3) increment unread for receiver summary
       try {
-        const unread = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread.json`, {
-          ttlMs: 10 * 1000,
-          fallbackValue: {},
-          force: true,
+        const summaryRes = await axios.get(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
+        );
+        const summary = normalizeChatSummaryValue(summaryRes.data, {
+          chatId: chatKey,
+          otherUserId: adminUserId,
         });
-        const prev = Number(unread[selectedStudent.userId] || 0);
-        const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          updated
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: Number(summary.unreadCount || 0) + 1,
+          })
         );
       } catch (uErr) {
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          { [selectedStudent.userId]: 1, [adminUserId]: 0 }
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: 1,
+          })
         );
       }
 
@@ -1346,28 +1401,69 @@ function StudentsPage() {
 
         const generatedId = pushRes.data && pushRes.data.name;
 
-        // patch lastMessage + participants
-        const lastMessage = { text: newMessage.text, senderId: newMessage.senderId, seen: false, timeStamp: newMessage.timeStamp };
         await axios.patch(
           `${DB_URL}/Chats/${chatKey}.json`,
           {
             participants: { [adminUserId]: true, [selectedStudent.userId]: true },
-            lastMessage,
           }
         );
 
-        // update unread
+        await Promise.all([
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: selectedStudent.userId,
+              unreadCount: 0,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+        ]).catch(() => {});
+
+        // update receiver unread summary
         try {
-          const unread = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread.json`, {
-            ttlMs: 10 * 1000,
-            fallbackValue: {},
-            force: true,
+          const summaryRes = await axios.get(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
+          );
+          const summary = normalizeChatSummaryValue(summaryRes.data, {
+            chatId: chatKey,
+            otherUserId: adminUserId,
           });
-          const prev = Number(unread[selectedStudent.userId] || 0);
-          const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, updated);
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: Number(summary.unreadCount || 0) + 1,
+            })
+          );
         } catch (uErr) {
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: 1,
+            })
+          );
         }
 
         setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
@@ -1430,6 +1526,9 @@ function StudentsPage() {
         setPopupMessages(list);
 
         const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (msg) => msg && msg.receiverId === adminUserId && !msg.seen
+        );
         Object.entries(data).forEach(([msgId, msg]) => {
           if (msg && msg.receiverId === adminUserId && !msg.seen) {
             updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
@@ -1439,11 +1538,33 @@ function StudentsPage() {
         if (Object.keys(updates).length > 0) {
           try {
             await axios.patch(`${DB_URL}/.json`, updates);
-            axios.patch(`${DB_URL}/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
           } catch (err) {
             console.error('Failed to patch seen updates:', err);
           }
         }
+
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: Date.now(),
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadMap((previousMap) => {
+          const nextMap = { ...previousMap };
+          getStudentIdentityCandidates(selectedStudent).forEach((studentKey) => {
+            nextMap[studentKey] = false;
+          });
+          return nextMap;
+        });
       });
     };
 

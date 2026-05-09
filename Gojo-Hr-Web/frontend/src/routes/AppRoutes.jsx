@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import Dashboard from '../pages/Dashboard'
 import Register from '../pages/Register'
@@ -74,6 +74,12 @@ function PersistentSidebarShell() {
   )
 }
 
+function RootRedirect() {
+  const admin = readStoredAdmin()
+  const hasSession = Boolean(admin && typeof admin === 'object' && Object.keys(admin).length)
+  return <Navigate to={hasSession ? '/dashboard' : '/login'} replace />
+}
+
 export default function AppRoutes() {
   const location = useLocation()
   const isLoginRoute = location.pathname === '/login'
@@ -82,26 +88,8 @@ export default function AppRoutes() {
     <div
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--danger': '#b91c1c',
-        '--danger-soft': '#fff1f2',
-        '--danger-border': '#fecaca',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
+        background: 'var(--page-bg)',
+        color: 'var(--text-primary)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -110,6 +98,8 @@ export default function AppRoutes() {
       <Routes>
         <Route path="/" element={<RootRedirect />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />
         <Route path="/employees/terminated" element={<TerminatedEmployees />} />

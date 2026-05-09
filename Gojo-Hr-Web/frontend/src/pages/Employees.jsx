@@ -178,6 +178,7 @@ import { getEmployeesSnapshot, setEmployeesSnapshot } from '../hrData';
 // }
 
 const MOCK_EMPLOYEES = {}
+const EMPLOYEE_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000
 
 function getInitials(name) {
   return (name || 'Employee')
@@ -188,7 +189,7 @@ function getInitials(name) {
     .join('') || 'E'
 }
 
-function AvatarBadge({ src, name, size = 44, fontSize = 14, radius = '50%' }) {
+function AvatarBadge({ src, name, size = 44, fontSize = 14, radius = '50%', loading = 'eager', decoding = 'auto' }) {
   const [failed, setFailed] = useState(false)
   const initials = getInitials(name)
 
@@ -224,6 +225,8 @@ function AvatarBadge({ src, name, size = 44, fontSize = 14, radius = '50%' }) {
     <img
       src={src}
       alt={name || 'Employee'}
+      loading={loading}
+      decoding={decoding}
       onError={() => setFailed(true)}
       style={{ width: size, height: size, borderRadius: radius, objectFit: 'cover', border: '1px solid #d9e5f5', flexShrink: 0 }}
     />
@@ -417,7 +420,7 @@ export default function Employees() {
 
   async function load() {
     try {
-      const snapshot = await getEmployeesSnapshot()
+      const snapshot = await getEmployeesSnapshot(EMPLOYEE_SUMMARY_CACHE_TTL_MS)
       const list = mapDataToList(snapshot)
       setEmployees((Array.isArray(list) && list.length) || (!Array.isArray(list) && Object.keys(list || {}).length) ? list : mapDataToList(MOCK_EMPLOYEES))
     } catch (e) {
@@ -584,11 +587,11 @@ export default function Employees() {
   }
 
   const metricCardStyle = {
-    background: '#ffffff',
+    background: 'var(--surface-panel)',
     borderRadius: 18,
-    border: '1px solid #e7ecf3',
+    border: '1px solid var(--border-soft)',
     padding: 18,
-    boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)',
+    boxShadow: 'var(--shadow-panel)',
   }
 
   const filterOptions = [
@@ -604,27 +607,8 @@ export default function Employees() {
       className="dashboard-page"
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
+        background: 'var(--page-bg)',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--danger': '#b91c1c',
-        '--danger-soft': '#fff1f2',
-        '--danger-border': '#fecaca',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
@@ -642,32 +626,32 @@ export default function Employees() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px 18px', height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
         <div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
 
-        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
+        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
           <div style={{ width: '100%', maxWidth: 1260 }}>
             <section
               style={{
-                background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
-                border: '1px solid #e7ecf3',
+                background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)',
+                border: '1px solid var(--border-soft)',
                 borderRadius: 22,
                 padding: '22px 24px',
-                boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)',
+                boxShadow: 'var(--shadow-panel)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: '#eef6ff', border: '1px solid #d8e8ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                     Employee Directory
                   </div>
-                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em' }}>Employee List</h1>
-                  <p style={{ margin: '8px 0 0', fontSize: 14, color: '#64748b', lineHeight: 1.6, maxWidth: 760 }}>
+                  <h1 style={{ margin: '12px 0 0', fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Employee List</h1>
+                  <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 760 }}>
                     Review active and deactivated staff, browse departments, and move into employee details from a cleaner HR workspace built to match the rest of the platform.
                   </p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid #e7ecf3', background: '#fff', color: '#334155', fontSize: 12, fontWeight: 700 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
                     <FaFilter /> {filteredEmployees.length} visible
                   </div>
                 </div>
@@ -678,8 +662,8 @@ export default function Employees() {
               <div style={metricCardStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total Employees</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{totalCount}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total Employees</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{totalCount}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#f3f8ff', border: '1px solid #dbe8f7', color: '#2563eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><FaUsers /></div>
                 </div>
@@ -687,8 +671,8 @@ export default function Employees() {
               <div style={metricCardStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Active Staff</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{activeCount}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Active Staff</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{activeCount}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#f5fbf7', border: '1px solid #d9efe1', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><FaUserTie /></div>
                 </div>
@@ -696,8 +680,8 @@ export default function Employees() {
               <div style={metricCardStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Departments</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{departmentCount}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Departments</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{departmentCount}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fbf8ff', border: '1px solid #ece3fb', color: '#7c3aed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><FaBuilding /></div>
                 </div>
@@ -705,15 +689,15 @@ export default function Employees() {
               <div style={metricCardStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Leadership</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{leadershipCount}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Leadership</div>
+                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{leadershipCount}</div>
                   </div>
                   <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fff8f2', border: '1px solid #f4e3d1', color: '#c2410c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><FaChalkboardTeacher /></div>
                 </div>
               </div>
             </section>
 
-            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', padding: 18, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)' }}>
+            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   {filterOptions.map((option) => (
@@ -725,9 +709,9 @@ export default function Employees() {
                         height: 38,
                         padding: '0 16px',
                         borderRadius: 999,
-                        border: filter === option.key ? '1px solid #c9dbf3' : '1px solid #e7ecf3',
-                        background: filter === option.key ? '#f3f8ff' : '#ffffff',
-                        color: filter === option.key ? '#0f172a' : '#475569',
+                        border: filter === option.key ? '1px solid var(--border-strong)' : '1px solid var(--border-soft)',
+                        background: filter === option.key ? 'var(--surface-accent)' : 'var(--surface-panel)',
+                        color: filter === option.key ? 'var(--text-primary)' : 'var(--text-secondary)',
                         fontSize: 13,
                         fontWeight: 700,
                         cursor: 'pointer',
@@ -738,66 +722,66 @@ export default function Employees() {
                   ))}
                 </div>
                 <div style={{ position: 'relative', minWidth: 260, flex: '1 1 280px', maxWidth: 360 }}>
-                  <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', fontSize: 13 }} />
+                  <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
                   <input
                     aria-label="Search employees"
                     placeholder="Search by name, ID, role, phone, or email"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid #e2e8f0', padding: '0 14px 0 40px', background: '#fbfdff', color: '#0f172a', fontSize: 13, outline: 'none' }}
+                    style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px 0 40px', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: 13, outline: 'none' }}
                   />
                 </div>
               </div>
             </section>
 
-            <section style={{ marginTop: 16, background: '#ffffff', borderRadius: 22, border: '1px solid #e7ecf3', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', overflow: 'hidden' }}>
-              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid #edf2f7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', overflow: 'hidden' }}>
+              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Employee Directory</div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>A refined table view for quick HR review, deactivation follow-up, and navigation into employee details.</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Employee Directory</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text-muted)' }}>A refined table view for quick HR review, deactivation follow-up, and navigation into employee details.</div>
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>{filteredEmployees.length} result{filteredEmployees.length === 1 ? '' : 's'}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>{filteredEmployees.length} result{filteredEmployees.length === 1 ? '' : 's'}</div>
               </div>
 
               {filteredEmployees.length === 0 ? (
-                <div style={{ padding: '40px 24px', textAlign: 'center', color: '#64748b', fontSize: 14, fontWeight: 600 }}>
+                <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14, fontWeight: 600 }}>
                   No employee records match the current filters.
                 </div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto' }}>
                   <table style={{ width: '100%', minWidth: 1060, borderCollapse: 'collapse' }}>
                     <thead>
-                      <tr style={{ background: '#fbfdff' }}>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Employee</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>ID</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Role</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Contact</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Department</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Joined</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Status</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid #edf2f7' }}>Actions</th>
+                      <tr style={{ background: 'var(--surface-muted)' }}>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Employee</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>ID</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Role</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Contact</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Department</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Joined</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Status</th>
+                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredEmployees.map((employee) => (
-                        <tr key={employee.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <tr key={employee.id} style={{ borderBottom: '1px solid var(--border-soft)' }}>
                           <td style={{ padding: '16px 18px', verticalAlign: 'middle' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                              <AvatarBadge src={employee.image} name={employee.name} size={54} fontSize={15} radius={16} />
+                              <AvatarBadge src={employee.image} name={employee.name} size={54} fontSize={15} radius={16} loading="lazy" decoding="async" />
                               <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.name}</div>
-                                <div style={{ marginTop: 5, fontSize: 12, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.email || 'No email available'}</div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.name}</div>
+                                <div style={{ marginTop: 5, fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.email || 'No email available'}</div>
                               </div>
                             </div>
                           </td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155', fontWeight: 700 }}>{employee.id}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155' }}>
-                            <div style={{ fontWeight: 700, color: '#0f172a' }}>{employee.role || 'Staff'}</div>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700 }}>{employee.id}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)' }}>
+                            <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{employee.role || 'Staff'}</div>
                             {/* <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>{employee.roleId || 'No role code'}</div> */}
                           </td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155' }}>{employee.phone || '—'}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155' }}>{employee.deptPos || '—'}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: '#334155' }}>{formatJoinedDate(employee.joined)}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)' }}>{employee.phone || '—'}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)' }}>{employee.deptPos || '—'}</td>
+                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)' }}>{formatJoinedDate(employee.joined)}</td>
                           <td style={{ padding: '16px 18px' }}>
                             <span
                               style={{

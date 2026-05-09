@@ -21,6 +21,8 @@ import { getRtdbRoot } from "../../api/rtdbScope";
 import Sidebar from "../Sidebar";
 import ProfileAvatar from "../ProfileAvatar";
 import QuickLessonPlanCheckModal from "./QuickLessonPlanCheckModal";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../../utils/chatRtdb";
+import { clearCachedChatSummary, fetchTeacherConversationSummaries } from "../../utils/teacherData";
 
 const RTDB_BASE = getRtdbRoot();
 const DEFAULT_PREFERENCES = {
@@ -273,11 +275,16 @@ export default function SettingsPagePremium() {
     setActivity((previous) => ({ ...previous, loading: true, error: "" }));
 
     try {
-      const [postsRes, adminsRes, usersRes, chatsRes] = await Promise.all([
+      const [postsRes, adminsRes, usersRes, conversationSummaries] = await Promise.all([
         axios.get(`${API_BASE}/get_posts`),
         axios.get(`${RTDB_BASE}/School_Admins.json`),
         axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/Chats.json`),
+        fetchTeacherConversationSummaries({
+          rtdbBase: RTDB_BASE,
+          schoolCode: activeTeacher.schoolCode,
+          teacherUserId: activeTeacher.userId,
+          unreadOnly: true,
+        }),
       ]);
 
       let postsData = postsRes.data || [];
@@ -287,7 +294,6 @@ export default function SettingsPagePremium() {
 
       const schoolAdmins = adminsRes.data || {};
       const users = usersRes.data || {};
-      const chats = chatsRes.data || {};
       const seenPosts = getSeenPosts(activeTeacher.userId);
       const usersByPushKey = {};
       const usersByUserId = {};
@@ -341,40 +347,17 @@ export default function SettingsPagePremium() {
           };
         });
 
-      const conversations = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadForMe = Number(chat?.unread?.[activeTeacher.userId] || 0);
-          if (!unreadForMe) return null;
-
-          const otherParticipantId = Object.keys(chat?.participants || {}).find(
-            (participantId) => participantId !== activeTeacher.userId
-          );
-          if (!otherParticipantId) return null;
-
-          const otherUser = usersByPushKey[otherParticipantId] || usersByUserId[otherParticipantId] || {
-            pushKey: otherParticipantId,
-            userId: otherParticipantId,
-            name: otherParticipantId,
-            profileImage: "/default-profile.png",
-          };
-
-          return {
-            chatId,
-            type: "message",
-            actorName: otherUser.name || otherUser.username || otherParticipantId,
-            actorProfile: otherUser.profileImage || otherUser.profile || "/default-profile.png",
-            headline: chat?.lastMessage?.text || "Unread conversation",
-            unreadCount: unreadForMe,
-            timestamp: normalizeTimestamp(chat?.lastMessage?.timeStamp || chat?.lastMessage?.time),
-            contact: {
-              pushKey: otherUser.pushKey || otherParticipantId,
-              userId: otherUser.userId || otherParticipantId,
-              name: otherUser.name || otherUser.username || otherParticipantId,
-              profileImage: otherUser.profileImage || otherUser.profile || "/default-profile.png",
-            },
-          };
-        })
-        .filter(Boolean)
+      const conversations = (conversationSummaries || [])
+        .map((conversation) => ({
+          chatId: conversation.chatId,
+          type: "message",
+          actorName: conversation.displayName || conversation.contact?.name || "User",
+          actorProfile: conversation.profile || conversation.contact?.profileImage || "/default-profile.png",
+          headline: conversation.lastMessageText || "Unread conversation",
+          unreadCount: Number(conversation.unreadForMe || 0),
+          timestamp: normalizeTimestamp(conversation.lastMessageTime),
+          contact: conversation.contact,
+        }))
         .sort((left, right) => right.timestamp - left.timestamp)
         .slice(0, 8);
 
@@ -644,7 +627,17 @@ export default function SettingsPagePremium() {
       }));
 
       try {
-        await axios.put(`${RTDB_BASE}/Chats/${item.chatId}/unread/${teacher.userId}.json`, null);
+        await axios.patch(
+          `${RTDB_BASE}/${buildChatSummaryPath(teacher.userId, item.chatId)}.json`,
+          buildChatSummaryUpdate({
+            chatId: item.chatId,
+            otherUserId: item.contact?.userId,
+            unreadCount: 0,
+            lastMessageSeen: true,
+            lastMessageSeenAt: Date.now(),
+          })
+        );
+        clearCachedChatSummary({ rtdbBase: RTDB_BASE, chatId: item.chatId, teacherUserId: teacher.userId });
       } catch (error) {
         console.error("Failed to clear unread messages:", error);
       }

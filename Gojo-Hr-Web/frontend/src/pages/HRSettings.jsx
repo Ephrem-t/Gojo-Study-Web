@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { FaBell, FaCheckCircle, FaCog, FaFacebookMessenger, FaShieldAlt, FaUserLock } from 'react-icons/fa'
+import { FaBell, FaCheckCircle, FaCog, FaFacebookMessenger, FaMoon, FaShieldAlt, FaSun, FaUserLock } from 'react-icons/fa'
 import api from '../api'
 import './Dashboard.css'
 import '../styles/global.css'
+import { useTheme } from '../theme/ThemeContext'
 
 function getInitials(name) {
   return (name || 'HR Office')
@@ -199,6 +200,7 @@ function validatePassword(currentValue, value, confirmValue) {
 
 export default function HRSettings() {
   const navigate = useNavigate()
+  const { theme, isDark, setTheme } = useTheme()
   const [admin, setAdmin] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('admin') || '{}')
@@ -227,6 +229,34 @@ export default function HRSettings() {
     setProfileImage(admin?.profileImage || admin?.photoURL || '');
     setPreview(admin?.profileImage || admin?.photoURL || '');
   }, [admin]);
+
+  const resolvedPreviewImage = useMemo(() => sanitizeProfileImage(
+    preview || (typeof profileImage === 'string' ? profileImage : '') || admin?.profileImage || admin?.photoURL || '',
+  ), [admin?.photoURL, admin?.profileImage, preview, profileImage])
+
+  const passwordChecks = useMemo(() => {
+    const nextPassword = String(password || '')
+    return [
+      { label: 'At least 8 characters', ok: nextPassword.length >= 8 },
+      { label: 'Contains uppercase', ok: /[A-Z]/.test(nextPassword) },
+      { label: 'Contains lowercase', ok: /[a-z]/.test(nextPassword) },
+      { label: 'Contains a number', ok: /\d/.test(nextPassword) },
+    ]
+  }, [password])
+
+  function resetFormToStoredAdmin() {
+    setDisplayName(admin?.displayName || admin?.name || '')
+    setUsername(admin?.username || admin?.userName || admin?.hrId || '')
+    setProfileImage(admin?.profileImage || admin?.photoURL || '')
+    setPreview(admin?.profileImage || admin?.photoURL || '')
+    setCurrentPassword('')
+    setPassword('')
+    setConfirmPassword('')
+    setFieldErrors({})
+    setProfileImageMeta(null)
+    setMessage('')
+    setMessageType('info')
+  }
 
   function handleFileChange(e) {
     const f = e.target.files && e.target.files[0];
@@ -349,10 +379,10 @@ export default function HRSettings() {
   }
 
   const alertStyles = {
-    success: { border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8' },
-    error: { border: '1px solid #fecaca', background: '#fef2f2', color: '#b91c1c' },
-    warning: { border: '1px solid #fed7aa', background: '#fff7ed', color: '#b45309' },
-    info: { border: '1px solid #e6ecf8', background: '#f8fafc', color: '#111827' },
+    success: { border: '1px solid var(--success-border)', background: 'var(--success-soft)', color: 'var(--success)' },
+    error: { border: '1px solid var(--danger-border)', background: 'var(--danger-soft)', color: 'var(--danger)' },
+    warning: { border: '1px solid var(--warning-border)', background: 'var(--warning-soft)', color: 'var(--warning)' },
+    info: { border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', color: 'var(--text-primary)' },
   }
 
   return (
@@ -360,29 +390,140 @@ export default function HRSettings() {
       className="dashboard-page"
       style={{
         minHeight: '100vh',
-        background: '#ffffff',
+        background: 'var(--page-bg)',
         color: 'var(--text-primary)',
-        '--surface-panel': '#FFFFFF',
-        '--surface-accent': '#F1F8FF',
-        '--surface-muted': '#F7FBFF',
-        '--surface-strong': '#DCEBFF',
-        '--page-bg': '#FFFFFF',
-        '--border-soft': '#D7E7FB',
-        '--border-strong': '#B5D2F8',
-        '--text-primary': '#0f172a',
-        '--text-secondary': '#334155',
-        '--text-muted': '#64748b',
-        '--accent': '#007AFB',
-        '--accent-soft': '#E7F2FF',
-        '--accent-strong': '#007AFB',
-        '--shadow-soft': '0 10px 24px rgba(0, 122, 251, 0.10)',
-        '--shadow-panel': '0 14px 30px rgba(0, 122, 251, 0.14)',
-        '--shadow-glow': '0 0 0 2px rgba(0, 122, 251, 0.18)',
+        '--surface-panel': isDark ? '#0f172a' : '#FFFFFF',
+        '--surface-accent': isDark ? '#14213b' : '#F1F8FF',
+        '--surface-muted': isDark ? '#111c31' : '#F7FBFF',
+        '--surface-strong': isDark ? '#1e293b' : '#DCEBFF',
+        '--page-bg': isDark ? '#08111f' : '#FFFFFF',
+        '--border-soft': isDark ? '#243247' : '#D7E7FB',
+        '--border-strong': isDark ? '#2f4f77' : '#B5D2F8',
+        '--text-primary': isDark ? '#e5eefb' : '#0f172a',
+        '--text-secondary': isDark ? '#c5d4ea' : '#334155',
+        '--text-muted': isDark ? '#94a3b8' : '#64748b',
+        '--accent': isDark ? '#60a5fa' : '#007AFB',
+        '--accent-soft': isDark ? 'rgba(59, 130, 246, 0.18)' : '#E7F2FF',
+        '--accent-strong': isDark ? '#3b82f6' : '#007AFB',
+        '--success': isDark ? '#4ade80' : '#16a34a',
+        '--success-soft': isDark ? 'rgba(20, 83, 45, 0.32)' : '#eefbf3',
+        '--success-border': isDark ? 'rgba(74, 222, 128, 0.35)' : '#bbf7d0',
+        '--warning': isDark ? '#fbbf24' : '#d97706',
+        '--warning-soft': isDark ? 'rgba(120, 53, 15, 0.3)' : '#fffbeb',
+        '--warning-border': isDark ? 'rgba(251, 191, 36, 0.34)' : '#fde68a',
+        '--danger': isDark ? '#f87171' : '#dc2626',
+        '--danger-soft': isDark ? 'rgba(127, 29, 29, 0.28)' : '#fff1f2',
+        '--danger-border': isDark ? 'rgba(248, 113, 113, 0.32)' : '#fecaca',
+        '--shadow-soft': isDark ? '0 10px 24px rgba(2, 6, 23, 0.26)' : '0 10px 24px rgba(0, 122, 251, 0.10)',
+        '--shadow-panel': isDark ? '0 14px 30px rgba(2, 6, 23, 0.32)' : '0 14px 30px rgba(0, 122, 251, 0.14)',
+        '--shadow-glow': isDark ? '0 0 0 2px rgba(59, 130, 246, 0.24)' : '0 0 0 2px rgba(0, 122, 251, 0.18)',
         '--sidebar-width': 'clamp(230px, 16vw, 290px)',
         '--topbar-height': '64px',
       }}
     >
       <style>{`
+        .settings-theme-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          min-height: 36px;
+          padding: 0 14px;
+          border-radius: 999px;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .settings-panel {
+          background: var(--surface-panel);
+          border: 1px solid var(--border-soft);
+          border-radius: 22px;
+          box-shadow: 0 20px 46px rgba(15, 23, 42, 0.05);
+        }
+
+        .settings-soft-panel {
+          border: 1px solid var(--border-soft);
+          background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%);
+        }
+
+        .settings-icon-badge {
+          width: 42px;
+          height: 42px;
+          border-radius: 14px;
+          border: 1px solid var(--border-strong);
+          background: var(--surface-accent);
+          color: var(--accent);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .settings-theme-toggle {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .settings-theme-option {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-height: 64px;
+          padding: 14px 16px;
+          border-radius: 18px;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-panel);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .settings-theme-option:hover {
+          transform: translateY(-1px);
+          border-color: var(--border-strong);
+          background: var(--surface-muted);
+        }
+
+        .settings-theme-option.active {
+          border-color: var(--accent-strong);
+          background: var(--accent-soft);
+          color: var(--text-primary);
+          box-shadow: var(--shadow-glow);
+        }
+
+        .settings-theme-option-icon {
+          width: 42px;
+          height: 42px;
+          border-radius: 14px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-muted);
+          color: var(--accent);
+          flex-shrink: 0;
+        }
+
+        .settings-theme-option.active .settings-theme-option-icon {
+          border-color: var(--accent-strong);
+          background: var(--surface-panel);
+        }
+
+        .settings-theme-option-title {
+          font-size: 14px;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+
+        .settings-theme-option-copy {
+          margin-top: 4px;
+          font-size: 12px;
+          line-height: 1.5;
+          color: var(--text-muted);
+        }
+
         .settings-hidden-file {
           position: absolute;
           width: 1px;
@@ -399,9 +540,9 @@ export default function HRSettings() {
           width: 100%;
           height: 46px;
           border-radius: 14px;
-          border: 1px solid #dbe4ef;
-          background: #fbfdff;
-          color: #0f172a;
+          border: 1px solid var(--border-soft);
+          background: var(--surface-muted);
+          color: var(--text-primary);
           padding: 0 14px;
           font-size: 14px;
           outline: none;
@@ -417,13 +558,13 @@ export default function HRSettings() {
           margin-top: 6px;
           font-size: 12px;
           font-weight: 700;
-          color: #b91c1c;
+          color: var(--danger);
         }
 
         .settings-input.readonly {
-          background: #f8fafc;
-          color: #64748b;
-          border-color: #e2e8f0;
+          background: var(--surface-panel);
+          color: var(--text-muted);
+          border-color: var(--border-soft);
           cursor: not-allowed;
         }
       `}</style>
@@ -441,31 +582,23 @@ export default function HRSettings() {
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', minHeight: '100vh', background: '#ffffff', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+      <div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: '18px 14px 18px', height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
         <div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
 
-        <main style={{ flex: '1 1 0', minWidth: 0, margin: 0, padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center' }}>
+        <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
           <div style={{ width: '100%', maxWidth: 1160, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <section style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)', border: '1px solid #e7ecf3', borderRadius: 22, padding: '22px 24px', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 18, flexWrap: 'wrap' }}>
+            <section style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', border: '1px solid var(--border-soft)', borderRadius: 22, padding: '22px 24px', boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 18, flexWrap: 'wrap' }}>
               <div style={{ maxWidth: 760 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', minHeight: 30, padding: '0 12px', borderRadius: 999, border: '1px solid #d8e8ff', background: '#eef6ff', color: '#0f4fa8', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 12 }}>Account Settings</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', minHeight: 30, padding: '0 12px', borderRadius: 999, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 12 }}>Account Settings</span>
                 <h3 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1, letterSpacing: '-0.03em' }}>HR Profile & Security</h3>
                 <p style={{ margin: '8px 0 0', fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)' }}>Update your account identity, replace your profile image, and set a stronger password with validation before any save is allowed.</p>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: 12, minWidth: 'min(100%, 420px)' }}>
-                {/* <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-                  <span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{displayName.trim() ? 'Ready' : 'Missing'}</span>
-                  <span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Profile Name</span>
-                </div> */}
-                {/* <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-                  <span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{password ? `${passwordChecks.filter((item) => item.ok).length}/4` : '0/4'}</span>
-                  <span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Password Rules</span>
+                <div className="settings-theme-chip">
+                  {isDark ? <FaMoon /> : <FaSun />}
+                  <span>{theme === 'dark' ? 'Dark mode on' : 'Light mode on'}</span>
                 </div>
-                <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 18, padding: 16, boxShadow: '0 18px 44px rgba(15, 23, 42, 0.05)' }}>
-                  <span style={{ display: 'block', fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1 }}>{profileImage ? 'Set' : 'Default'}</span>
-                  <span style={{ display: 'block', marginTop: 5, fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Profile Photo</span>
-                </div> */}
               </div>
             </section>
 
@@ -476,8 +609,8 @@ export default function HRSettings() {
             ) : null}
 
             <section style={{ display: 'grid', gridTemplateColumns: '320px minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
-              <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', padding: 22 }}>
-                <div style={{ width: 180, height: 180, borderRadius: 28, overflow: 'hidden', margin: '0 auto', background: '#f1f5f9', boxShadow: '0 18px 34px rgba(15, 23, 42, 0.08)', border: '1px solid #e7ecf3', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="settings-panel" style={{ padding: 22 }}>
+                <div style={{ width: 180, height: 180, borderRadius: 28, overflow: 'hidden', margin: '0 auto', background: 'var(--surface-muted)', boxShadow: '0 18px 34px rgba(15, 23, 42, 0.08)', border: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <AvatarBadge
                     src={resolvedPreviewImage}
                     name={displayName || admin?.name || 'HR Officer'}
@@ -488,23 +621,23 @@ export default function HRSettings() {
                 </div>
 
                 <div style={{ marginTop: 18, textAlign: 'center' }}>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>{displayName || admin?.name || 'HR Officer'}</div>
-                  <div style={{ marginTop: 4, fontSize: 13, color: '#64748b' }}>Profile image used across the HR portal.</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>{displayName || admin?.name || 'HR Officer'}</div>
+                  <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted)' }}>Profile image used across the HR portal.</div>
                 </div>
 
                 <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 76, padding: '16px 18px', borderRadius: 18, border: '1px solid #d7e7fb', background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)' }}>
+                  <div className="settings-soft-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 76, padding: '16px 18px', borderRadius: 18 }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>Update profile photo</span>
-                      <span style={{ fontSize: 12, lineHeight: 1.5, color: '#64748b' }}>Use a clear square photo for better display across employee-facing views. Images are compressed to JPEG before upload.</span>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)' }}>Update profile photo</span>
+                      <span style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-muted)' }}>Use a clear square photo for better display across employee-facing views. Images are compressed to JPEG before upload.</span>
                     </div>
-                    <label htmlFor="hr-settings-image" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 146, minHeight: 42, padding: '0 16px', borderRadius: 999, border: '1px solid #cfe0f7', background: '#eef6ff', color: '#1f4f96', fontSize: 13, fontWeight: 800, cursor: 'pointer', flexShrink: 0 }}>
+                    <label htmlFor="hr-settings-image" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 146, minHeight: 42, padding: '0 16px', borderRadius: 999, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent)', fontSize: 13, fontWeight: 800, cursor: 'pointer', flexShrink: 0 }}>
                       {isOptimizingImage ? 'Optimizing...' : typeof profileImage === 'string' ? 'Choose image' : 'Change image'}
                     </label>
                     <input id="hr-settings-image" type="file" accept="image/*" onChange={handleFileChange} className="settings-hidden-file" />
                   </div>
                   {profileImageMeta ? (
-                    <div style={{ padding: '10px 12px', borderRadius: 14, border: '1px solid #d7e7fb', background: '#f8fbff', color: '#47637f', fontSize: 12, fontWeight: 700 }}>
+                    <div style={{ padding: '10px 12px', borderRadius: 14, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
                       Optimized from {formatFileSize(profileImageMeta.originalSize)} to {formatFileSize(profileImageMeta.finalSize)}{profileImageMeta.wasConvertedToJpeg ? ' as JPEG' : ''}.
                     </div>
                   ) : null}
@@ -512,70 +645,99 @@ export default function HRSettings() {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', padding: 24 }}>
+                <div className="settings-panel" style={{ padding: 24 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-                    <div style={{ width: 42, height: 42, borderRadius: 14, border: '1px solid #dbeafe', background: '#eff6ff', color: '#007AFB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div className="settings-icon-badge">
                       <FaCog />
                     </div>
                     <div>
-                      <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Profile Details</div>
-                      <div style={{ fontSize: 13, color: '#64748b' }}>Edit the main identity fields stored for the HR account.</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Profile Details</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Edit the main identity fields stored for the HR account.</div>
                     </div>
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                     <div>
-                      <label style={{ fontSize: 12, fontWeight: 800, color: '#334155' }}>Display name</label>
+                      <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>Display name</label>
                       <input className="settings-input readonly" value={displayName} readOnly aria-readonly="true" />
-                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: '#64748b' }}>Display name is managed by the system and cannot be changed here.</div>
+                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>Display name is managed by the system and cannot be changed here.</div>
                     </div>
 
                     <div>
-                      <label style={{ fontSize: 12, fontWeight: 800, color: '#334155' }}>Username</label>
+                      <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>Username</label>
                       <input className="settings-input readonly" value={username} readOnly aria-readonly="true" />
-                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: '#64748b' }}>Username is locked for HR accounts and cannot be edited here.</div>
+                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>Username is locked for HR accounts and cannot be edited here.</div>
                     </div>
                   </div>
                 </div>
 
-                <div style={{ background: '#ffffff', border: '1px solid #e7ecf3', borderRadius: 22, boxShadow: '0 20px 46px rgba(15, 23, 42, 0.05)', padding: 24 }}>
+                <div className="settings-panel" style={{ padding: 24 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-                    <div style={{ width: 42, height: 42, borderRadius: 14, border: '1px solid #dbeafe', background: '#eff6ff', color: '#007AFB', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div className="settings-icon-badge">
+                      {isDark ? <FaMoon /> : <FaSun />}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Appearance</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Switch between light and dark mode for the full HR portal. Changes apply instantly.</div>
+                    </div>
+                  </div>
+
+                  <div className="settings-theme-toggle">
+                    <button type="button" className={`settings-theme-option ${theme === 'light' ? 'active' : ''}`} onClick={() => setTheme('light')}>
+                      <span className="settings-theme-option-icon"><FaSun /></span>
+                      <span>
+                        <span className="settings-theme-option-title">Light mode</span>
+                        <span className="settings-theme-option-copy">Bright surfaces for daytime work and print-friendly review.</span>
+                      </span>
+                    </button>
+                    <button type="button" className={`settings-theme-option ${theme === 'dark' ? 'active' : ''}`} onClick={() => setTheme('dark')}>
+                      <span className="settings-theme-option-icon"><FaMoon /></span>
+                      <span>
+                        <span className="settings-theme-option-title">Dark mode</span>
+                        <span className="settings-theme-option-copy">Lower-glare screens with the existing shared dark palette.</span>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-panel" style={{ padding: 24 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+                    <div className="settings-icon-badge">
                       <FaUserLock />
                     </div>
                     <div>
-                      <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Password Security</div>
-                      <div style={{ fontSize: 13, color: '#64748b' }}>A password update is optional, but if you change it you must provide the current password first.</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Password Security</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>A password update is optional, but if you change it you must provide the current password first.</div>
                     </div>
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
                     <div>
-                      <label style={{ fontSize: 12, fontWeight: 800, color: '#334155' }}>Current password</label>
+                      <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>Current password</label>
                       <input type="password" className="settings-input" placeholder="Enter your current password" value={currentPassword} onChange={(event) => { setCurrentPassword(event.target.value); setFieldErrors((previous) => ({ ...previous, currentPassword: '' })) }} />
                       {fieldErrors.currentPassword ? <div className="settings-field-error">{fieldErrors.currentPassword}</div> : null}
                     </div>
 
                     <div>
-                      <label style={{ fontSize: 12, fontWeight: 800, color: '#334155' }}>New password</label>
+                      <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>New password</label>
                       <input type="password" className="settings-input" placeholder="Enter a strong password" value={password} onChange={(event) => { setPassword(event.target.value); setFieldErrors((previous) => ({ ...previous, password: '', confirmPassword: previous.confirmPassword })) }} />
                       {fieldErrors.password ? <div className="settings-field-error">{fieldErrors.password}</div> : null}
                     </div>
 
                     <div>
-                      <label style={{ fontSize: 12, fontWeight: 800, color: '#334155' }}>Confirm password</label>
+                      <label style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>Confirm password</label>
                       <input type="password" className="settings-input" placeholder="Repeat the new password" value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); setFieldErrors((previous) => ({ ...previous, confirmPassword: '' })) }} />
                       {fieldErrors.confirmPassword ? <div className="settings-field-error">{fieldErrors.confirmPassword}</div> : null}
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 18, padding: 16, borderRadius: 16, border: '1px solid #e7ecf3', background: '#fbfdff' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13, fontWeight: 800, color: '#334155' }}>
-                      <FaShieldAlt style={{ color: '#007AFB' }} /> Password rules
+                  <div style={{ marginTop: 18, padding: 16, borderRadius: 16, border: '1px solid var(--border-soft)', background: 'var(--surface-muted)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13, fontWeight: 800, color: 'var(--text-secondary)' }}>
+                      <FaShieldAlt style={{ color: 'var(--accent)' }} /> Password rules
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                       {passwordChecks.map((rule) => (
-                        <div key={rule.label} style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 12px', borderRadius: 12, border: `1px solid ${rule.ok ? '#bfdbfe' : '#e7ecf3'}`, background: rule.ok ? '#eff6ff' : '#ffffff', color: rule.ok ? '#1d4ed8' : '#64748b', fontSize: 12, fontWeight: 700 }}>
+                        <div key={rule.label} style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 12px', borderRadius: 12, border: `1px solid ${rule.ok ? 'var(--border-strong)' : 'var(--border-soft)'}`, background: rule.ok ? 'var(--accent-soft)' : 'var(--surface-panel)', color: rule.ok ? 'var(--accent)' : 'var(--text-muted)', fontSize: 12, fontWeight: 700 }}>
                           <FaCheckCircle style={{ opacity: rule.ok ? 1 : 0.35 }} />
                           <span>{rule.label}</span>
                         </div>
@@ -585,10 +747,10 @@ export default function HRSettings() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-                  <button onClick={resetFormToStoredAdmin} type="button" style={{ minWidth: 132, height: 46, borderRadius: 14, padding: '0 18px', fontSize: 14, fontWeight: 800, cursor: 'pointer', border: '1px solid #d7e7fb', background: '#ffffff', color: '#334155', boxShadow: '0 8px 18px rgba(15, 23, 42, 0.04)' }}>
+                  <button onClick={resetFormToStoredAdmin} type="button" style={{ minWidth: 132, height: 46, borderRadius: 14, padding: '0 18px', fontSize: 14, fontWeight: 800, cursor: 'pointer', border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', boxShadow: '0 8px 18px rgba(15, 23, 42, 0.04)' }}>
                     Cancel
                   </button>
-                  <button onClick={handleSave} type="button" disabled={isSaving || isOptimizingImage} style={{ minWidth: 154, height: 46, borderRadius: 14, padding: '0 18px', fontSize: 14, fontWeight: 800, cursor: isSaving || isOptimizingImage ? 'not-allowed' : 'pointer', border: 'none', color: '#ffffff', background: 'linear-gradient(135deg, #007AFB 0%, #0b82ff 100%)', boxShadow: '0 0 0 2px rgba(0, 122, 251, 0.18)', opacity: isSaving || isOptimizingImage ? 0.7 : 1 }}>
+                  <button onClick={handleSave} type="button" disabled={isSaving || isOptimizingImage} style={{ minWidth: 154, height: 46, borderRadius: 14, padding: '0 18px', fontSize: 14, fontWeight: 800, cursor: isSaving || isOptimizingImage ? 'not-allowed' : 'pointer', border: 'none', color: '#ffffff', background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)', boxShadow: 'var(--shadow-glow)', opacity: isSaving || isOptimizingImage ? 0.7 : 1 }}>
                     {isOptimizingImage ? 'Optimizing...' : isSaving ? 'Saving...' : 'Save changes'}
                   </button>
                 </div>

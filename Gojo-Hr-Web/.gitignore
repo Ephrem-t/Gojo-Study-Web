@@ -1,6 +1,16 @@
 *.json
 firebase-adminsdk-*.json
 bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
 # Logs
 logs
 *.log

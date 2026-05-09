@@ -10,6 +10,7 @@ import { API_BASE } from "../api/apiConfig";
 import { RTDB_BASE_RAW } from "../api/rtdbScope";
 import QuickLessonPlanCheckModal from "./settings/QuickLessonPlanCheckModal";
 import { fetchCachedJson } from "../utils/rtdbCache";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
   buildSchoolRtdbBase,
   clearCachedChatSummary,
@@ -1058,7 +1059,16 @@ export default function Dashboard() {
     navigate("/all-chat", { state: { contact, chatId } });
 
     try {
-      await axios.put(`${DB_ROOT}/Chats/${chatId}/unread/${teacherId}.json`, null);
+      await axios.patch(
+        `${DB_ROOT}/${buildChatSummaryPath(teacherId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
       clearCachedChatSummary({ rtdbBase: DB_ROOT, chatId, teacherUserId: teacherId });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);

@@ -259,6 +259,49 @@
   text-decoration: underline;
 }
 
+html[data-theme="dark"] .hr-login-page {
+  --hrl-bg: #07111f;
+  --hrl-card: #0f172a;
+  --hrl-text: var(--text-primary);
+  --hrl-muted: var(--text-muted);
+  --hrl-primary-soft: rgba(59, 130, 246, 0.18);
+  background:
+    radial-gradient(circle at 10% 15%, rgba(37, 99, 235, 0.24), transparent 38%),
+    radial-gradient(circle at 92% 14%, rgba(20, 184, 166, 0.18), transparent 36%),
+    linear-gradient(180deg, #07111f 0%, #0d1728 100%);
+}
+
+html[data-theme="dark"] .hr-login-card {
+  border-color: var(--border-soft);
+  box-shadow: 0 26px 80px rgba(2, 6, 23, 0.42);
+}
+
+html[data-theme="dark"] .hr-login-alert {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
+
+html[data-theme="dark"] .hr-login-form label {
+  color: var(--text-secondary);
+}
+
+html[data-theme="dark"] .hr-login-form input {
+  border-color: var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+}
+
+html[data-theme="dark"] .hr-login-form input:focus {
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+html[data-theme="dark"] .hr-login-secondary {
+  border-color: var(--border-soft);
+  color: var(--text-secondary);
+  background: var(--surface-panel);
+}
+
 @keyframes hrLoginGlowFloat {
   0% {
     transform: translateY(0) scale(1);

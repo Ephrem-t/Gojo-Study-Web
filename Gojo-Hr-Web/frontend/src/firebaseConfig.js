@@ -1,11 +1,26 @@
-// Firebase web config
+// Firebase web config from environment variables
+// These values are safe to expose in client-side code
+// Firebase security is managed through Firebase Security Rules, not API key secrecy
 export const firebaseConfig = {
-  apiKey: "AIzaSyCXMU6x1UQpsLM9q11j6am6lj6zx9DtqB8",
-  authDomain: "gojo-education.firebaseapp.com",
-  databaseURL: "https://gojo-education-default-rtdb.firebaseio.com",
-  projectId: "gojo-education",
-  storageBucket: "gojo-education.firebasestorage.app",
-  messagingSenderId: "579247228743",
-  appId: "1:579247228743:web:fd2dcccf939c347a6f2e62",
-  measurementId: "G-Q45XN2W3FS"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+}
+
+// Validate Firebase configuration
+if (import.meta.env.DEV) {
+  const requiredKeys = ['apiKey', 'authDomain', 'databaseURL', 'projectId', 'storageBucket']
+  const missingKeys = requiredKeys.filter(key => !firebaseConfig[key])
+  
+  if (missingKeys.length > 0) {
+    console.error('❌ Missing Firebase configuration:', missingKeys)
+    console.error('Please check your .env.development file')
+  } else {
+    console.log('✅ Firebase configuration loaded successfully')
+  }
 }

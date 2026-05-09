@@ -10,6 +10,12 @@ import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import EthiopicCalendar from "ethiopic-calendar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  normalizeChatSummaryValue,
+} from "../utils/chatRtdb";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -318,10 +324,6 @@ const hasConversationUserSentMessage = (chatValue, userId) => {
   const normalizedUserId = String(userId || "").trim();
   if (!chatValue || !normalizedUserId) {
     return false;
-  }
-
-  if (String(chatValue?.lastMessage?.senderId || "").trim() === normalizedUserId) {
-    return true;
   }
 
   const messages = chatValue?.messages;
@@ -1478,13 +1480,21 @@ function Dashboard() {
         schoolScopeCode || schoolCode || admin.schoolCode || _storedAdmin.schoolCode || ""
       );
 
-      const [usersData, chatsData] = await Promise.all([
+      const [usersData, chatsData, ownerSummariesData] = await Promise.all([
         readMergedSchoolNode(schoolCodeCandidates, "Users", {}),
         readMergedSchoolNode(schoolCodeCandidates, "Chats", {}),
+        readMergedSchoolNode(schoolCodeCandidates, buildOwnerChatSummariesPath(adminUserId), {}),
       ]);
 
       const usersByKey = usersData && typeof usersData === "object" ? usersData : {};
       const chatsMap = chatsData && typeof chatsData === "object" ? chatsData : {};
+      const summariesByChatId = Object.entries(ownerSummariesData && typeof ownerSummariesData === "object" ? ownerSummariesData : {}).reduce(
+        (result, [chatId, summaryValue]) => {
+          result[chatId] = normalizeChatSummaryValue(summaryValue, { chatId });
+          return result;
+        },
+        {}
+      );
       const usersByUserId = {};
       const userKeyByUserId = {};
 
@@ -1556,14 +1566,14 @@ function Dashboard() {
             otherUserId,
             "User"
           );
-          const lastMessage = chat.lastMessage || {};
-          const lastMessageText = pickFirstNonEmpty(
-            lastMessage?.text,
-            String(lastMessage?.type || "").toLowerCase() === "image" ? "Image" : ""
-          );
-          const unreadForMe = Number(chat?.unread?.[adminUserId] || 0);
+          const summary = summariesByChatId[chatId] || normalizeChatSummaryValue({}, {
+            chatId,
+            otherUserId,
+          });
+          const lastMessageText = pickFirstNonEmpty(summary.lastMessageText);
+          const unreadForMe = Number(summary.unreadCount || 0);
           const lastMessageTime = getConversationSortTime(
-            lastMessage?.timeStamp || lastMessage?.time || chat?.updatedAt || chat?.createdAt || 0
+            summary.lastMessageTime || chat?.updatedAt || chat?.createdAt || 0
           );
 
           return {
@@ -1581,6 +1591,9 @@ function Dashboard() {
             lastMessageText,
             lastMessageTime,
             unreadForMe,
+            lastSenderId: summary.lastSenderId || "",
+            lastMessageSeen: Boolean(summary.lastMessageSeen),
+            lastMessageSeenAt: summary.lastMessageSeenAt ?? null,
           };
         })
         .filter(Boolean)
@@ -1622,13 +1635,35 @@ function Dashboard() {
     setConversations((prevConversations) =>
       prevConversations.map((conversationItem) =>
         conversationItem.chatId === conversation.chatId
-          ? { ...conversationItem, unreadForMe: 0 }
+          ? {
+              ...conversationItem,
+              unreadForMe: 0,
+              ...(String(conversation.lastSenderId || "") !== String(adminUserId || "")
+                ? {
+                    lastMessageSeen: true,
+                    lastMessageSeenAt: Date.now(),
+                  }
+                : {}),
+            }
           : conversationItem
       )
     );
 
     try {
-      await axios.put(`${DB_ROOT}/Chats/${conversation.chatId}/unread/${adminUserId}.json`, null);
+      await axios.patch(
+        `${DB_ROOT}/${buildChatSummaryPath(adminUserId, conversation.chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId: conversation.chatId,
+          otherUserId: contact.userId || contact.id || "",
+          unreadCount: 0,
+          ...(String(conversation.lastSenderId || "") !== String(adminUserId || "") && !conversation.lastMessageSeen
+            ? {
+                lastMessageSeen: true,
+                lastMessageSeenAt: Date.now(),
+              }
+            : {}),
+        })
+      );
     } catch (err) {
       console.error("Failed to clear admin unread state:", err);
     }
