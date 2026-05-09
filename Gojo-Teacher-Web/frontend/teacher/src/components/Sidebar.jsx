@@ -328,7 +328,7 @@ export default function Sidebar({
       return;
     }
 
-    localStorage.removeItem("teacher");
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
     navigate("/login", { replace: true });
   };
 

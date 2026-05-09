@@ -223,7 +223,7 @@ const getStoredTeacher = () => {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
-    localStorage.removeItem("teacher");
+    window.__gojoClearTeacherState?.();
     return null;
   }
 };
@@ -1021,8 +1021,8 @@ export default function MarksPage() {
   const handleLogout = async () => {
     const didFlush = await flushPendingMarks();
     if (!didFlush) return;
-    localStorage.removeItem("teacher");
-    navigate("/login");
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   useEffect(() => {

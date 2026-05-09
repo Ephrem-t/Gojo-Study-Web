@@ -1146,9 +1146,9 @@ export default function Dashboard() {
     );
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const totalUnreadMessages = conversations.reduce(

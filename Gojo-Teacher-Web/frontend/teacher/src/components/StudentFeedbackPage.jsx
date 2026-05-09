@@ -1159,8 +1159,8 @@ function StudentFeedbackPage() {
   }, [priorityGender, strongEntriesCount, topicRows, totalResponses]);
 
   const handleLogout = async () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   if (!teacher) return null;

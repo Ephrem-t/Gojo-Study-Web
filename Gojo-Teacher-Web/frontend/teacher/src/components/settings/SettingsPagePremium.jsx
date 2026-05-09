@@ -25,7 +25,6 @@ import { buildChatSummaryPath, buildChatSummaryUpdate } from "../../utils/chatRt
 import {
   clearCachedChatSummary,
   fetchTeacherConversationSummaries,
-  loadUserNodeByIdentifier,
   loadUserRecordsByIds,
 } from "../../utils/teacherData";
 
@@ -190,43 +189,6 @@ const optimizeProfileImageFile = async (
     type: "image/jpeg",
     lastModified: Date.now(),
   });
-};
-
-const resolveTeacherUserNode = async (teacher) => {
-  const directUserKey = String(teacher?.userId || "").trim();
-  const directUsername = String(teacher?.username || "").trim();
-
-  if (!directUserKey && !directUsername) {
-    throw new Error("Teacher user reference is missing.");
-  }
-
-  if (directUserKey) {
-    const directMatch = await loadUserNodeByIdentifier({
-      rtdbBase: RTDB_BASE,
-      schoolCode: teacher?.schoolCode,
-      identifier: directUserKey,
-      childPaths: ["userId", "teacherId"],
-    });
-
-    if (directMatch?.key && directMatch?.record) {
-      return directMatch;
-    }
-  }
-
-  if (directUsername) {
-    const usernameMatch = await loadUserNodeByIdentifier({
-      rtdbBase: RTDB_BASE,
-      schoolCode: teacher?.schoolCode,
-      identifier: directUsername,
-      childPaths: ["username"],
-    });
-
-    if (usernameMatch?.key && usernameMatch?.record) {
-      return usernameMatch;
-    }
-  }
-
-  throw new Error("Teacher user node not found.");
 };
 
 function SectionHeader({ kicker, title, description, icon, actions }) {
@@ -538,9 +500,12 @@ export default function SettingsPagePremium() {
   );
 
   const pendingPasswordScore = useMemo(() => scorePassword(password), [password]);
+  const hasConfiguredPassword = Boolean(teacher?.hasPasswordSet || teacher?.passwordUpdatedAt);
   const effectivePasswordScore = password
     ? pendingPasswordScore
-    : scorePassword(String(teacher?.password || ""));
+    : hasConfiguredPassword
+      ? 3
+      : 0;
   const hasProfileImage = Boolean(profilePreview && profilePreview !== "/default-profile.png");
 
   const securityScore = useMemo(() => {
@@ -653,6 +618,10 @@ export default function SettingsPagePremium() {
 
   const handlePasswordChange = async () => {
     if (!teacher?.userId) return;
+    if (!teacher?.username || !teacher?.schoolCode) {
+      flashMessage("error", "Teacher account context is incomplete. Please sign in again.");
+      return;
+    }
     if (!oldPassword || !password || !confirmPassword) {
       flashMessage("warning", "Fill old, new, and confirm password fields.");
       return;
@@ -673,21 +642,19 @@ export default function SettingsPagePremium() {
     setSavingSection("security");
 
     try {
-      const { key: userNodeKey, record: userRecord } = await resolveTeacherUserNode(teacher);
-      const savedPassword = String(userRecord?.password ?? teacher?.password ?? "");
+      const response = await axios.post(`${API_BASE}/teacher/change-password`, {
+        schoolCode: teacher.schoolCode,
+        userId: teacher.userId,
+        username: teacher.username,
+        oldPassword,
+        newPassword: password,
+      });
 
-      if (!savedPassword) {
-        flashMessage("error", "Current password could not be verified. Please log in again.");
-        return;
-      }
-
-      if (oldPassword !== savedPassword) {
-        flashMessage("error", "Old password is incorrect.");
-        return;
-      }
-
-      await axios.patch(`${RTDB_BASE}/Users/${encodeURIComponent(userNodeKey)}.json`, { password });
-      const updatedTeacher = { ...teacher, password };
+      const updatedTeacher = {
+        ...teacher,
+        hasPasswordSet: Boolean(response?.data?.hasPasswordSet ?? true),
+        passwordUpdatedAt: response?.data?.passwordUpdatedAt || new Date().toISOString(),
+      };
       localStorage.setItem("teacher", JSON.stringify(updatedTeacher));
       setTeacher(updatedTeacher);
       setOldPassword("");
@@ -696,7 +663,10 @@ export default function SettingsPagePremium() {
       flashMessage("success", "Password updated successfully.");
     } catch (error) {
       console.error("Error updating password:", error);
-      flashMessage("error", "Password update failed.");
+      flashMessage(
+        "error",
+        String(error?.response?.data?.message || "").trim() || "Password update failed."
+      );
     } finally {
       setSavingSection("");
     }
@@ -744,9 +714,9 @@ export default function SettingsPagePremium() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   if (!teacher) return null;

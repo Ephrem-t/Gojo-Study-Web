@@ -219,9 +219,9 @@ function Timetable() {
     fetchWorkspace();
   }, [teacher, schoolBaseResolved, rtdbBase]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const teacherClassKeys = useMemo(() => {

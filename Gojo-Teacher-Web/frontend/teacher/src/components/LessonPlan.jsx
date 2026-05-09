@@ -1,10 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
 import { useNavigate } from "react-router-dom";
 import { FaBookOpen, FaFileExcel, FaFilePdf, FaFilter } from "react-icons/fa";
-import * as XLSX from "xlsx";
 import Sidebar from "./Sidebar";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
@@ -24,6 +21,9 @@ const resolveAcademicYearFromNode = (yearsNode) => {
 const LESSON_PLAN_AUTOSAVE_STORAGE_KEY = "teacher_lesson_plan_auto_save_enabled";
 const LESSON_PLAN_AUTOSAVE_DELAY_MS = 900;
 const EMPTY_SAVE_META = { status: "idle", error: "", lastSavedAt: null };
+
+let xlsxModulePromise = null;
+let pdfExportToolsPromise = null;
 
 const getStoredAutoSaveEnabled = () => {
 	if (typeof window === "undefined") return true;
@@ -48,7 +48,29 @@ const sanitizeFileNamePart = (value) => {
 	return sanitizedValue || "lesson-plan";
 };
 
-const buildExportSheet = ({ title, contextRows = [], headers = [], bodyRows = [] }) => {
+const loadXlsxModule = async () => {
+	if (!xlsxModulePromise) {
+		xlsxModulePromise = import("xlsx");
+	}
+
+	return xlsxModulePromise;
+};
+
+const loadPdfExportTools = async () => {
+	if (!pdfExportToolsPromise) {
+		pdfExportToolsPromise = Promise.all([import("jspdf"), import("jspdf-autotable")]).then(
+			([jspdfModule, autoTableModule]) => ({
+				jsPDF: jspdfModule.jsPDF,
+				autoTable: autoTableModule.default || autoTableModule,
+			})
+		);
+	}
+
+	return pdfExportToolsPromise;
+};
+
+const buildExportSheet = async ({ title, contextRows = [], headers = [], bodyRows = [] }) => {
+	const XLSX = await loadXlsxModule();
 	const safeHeaders = headers.length ? headers : ["Details"];
 	const allRows = [[title], ...contextRows, [], safeHeaders, ...bodyRows];
 	const worksheet = XLSX.utils.aoa_to_sheet(allRows);
@@ -69,7 +91,8 @@ const buildExportSheet = ({ title, contextRows = [], headers = [], bodyRows = []
 	return worksheet;
 };
 
-const downloadPdfTable = ({ title, subtitleLines = [], headers = [], rows = [], fileName = "lesson-plan.pdf" }) => {
+const downloadPdfTable = async ({ title, subtitleLines = [], headers = [], rows = [], fileName = "lesson-plan.pdf" }) => {
+	const { jsPDF, autoTable } = await loadPdfExportTools();
 	const safeHeaders = headers.length ? headers : ["Details"];
 	const safeRows = Array.isArray(rows) ? rows : [];
 	const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
@@ -409,10 +432,11 @@ function LessonPlan() {
 		[logs, dailySubmittedSet]
 	);
 
-	const exportAnnualPlanExcel = () => {
+	const exportAnnualPlanExcel = async () => {
 		if (!annualExportRows.length) return;
+		const XLSX = await loadXlsxModule();
 		const workbook = XLSX.utils.book_new();
-		const worksheet = buildExportSheet({
+		const worksheet = await buildExportSheet({
 			title: "Annual Plan",
 			contextRows: [
 				["Course", selectedCourseLabel],
@@ -429,9 +453,9 @@ function LessonPlan() {
 		);
 	};
 
-	const exportAnnualPlanPdf = () => {
+	const exportAnnualPlanPdf = async () => {
 		if (!annualExportRows.length) return;
-		downloadPdfTable({
+		await downloadPdfTable({
 			title: "Annual Plan",
 			subtitleLines: [
 				`Course: ${selectedCourseLabel}`,
@@ -444,10 +468,11 @@ function LessonPlan() {
 		});
 	};
 
-	const exportDailyPlanExcel = () => {
+	const exportDailyPlanExcel = async () => {
 		if (!activeWeekLive || !dailyExportRows.length) return;
+		const XLSX = await loadXlsxModule();
 		const workbook = XLSX.utils.book_new();
-		const worksheet = buildExportSheet({
+		const worksheet = await buildExportSheet({
 			title: "Daily Plan",
 			contextRows: [
 				["Course", selectedCourseLabel],
@@ -464,9 +489,9 @@ function LessonPlan() {
 		);
 	};
 
-	const exportDailyPlanPdf = () => {
+	const exportDailyPlanPdf = async () => {
 		if (!activeWeekLive || !dailyExportRows.length) return;
-		downloadPdfTable({
+		await downloadPdfTable({
 			title: "Daily Plan",
 			subtitleLines: [
 				`Course: ${selectedCourseLabel}`,
@@ -482,8 +507,8 @@ function LessonPlan() {
 	const handleLogout = async () => {
 		const canLeave = await flushPendingDrafts();
 		if (canLeave === false) return;
-		localStorage.removeItem("teacher");
-		navigate("/login");
+		await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+		navigate("/login", { replace: true });
 	};
 
 	if (!teacher) return null;

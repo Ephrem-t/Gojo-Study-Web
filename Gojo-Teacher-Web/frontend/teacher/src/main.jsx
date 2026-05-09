@@ -3,7 +3,9 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles/global.css";
 import { installRtdbInterceptors } from "./api/rtdbScope";
+import { registerTeacherSessionGlobals } from "./utils/teacherSession";
 
+registerTeacherSessionGlobals();
 installRtdbInterceptors();
 
 ReactDOM.createRoot(document.getElementById("root")).render(

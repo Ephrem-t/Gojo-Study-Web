@@ -3,13 +3,13 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveProfileImage } from "../utils/profileImage";
 import {
   getStudentUserId,
   loadStudentRecordsByIds,
-  loadUserNodeByIdentifier,
   loadUserRecordsByIds,
 } from "../utils/teacherData";
 
@@ -971,9 +971,9 @@ function TeacherExam() {
     });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const handleFormField = (field, value) => {
@@ -1729,64 +1729,34 @@ function TeacherExam() {
 
   const verifyTeacherDeleteCredentials = useCallback(
     async (usernameInput, passwordInput) => {
-      const normalizedUsername = String(usernameInput || "").trim().toLowerCase();
+      const normalizedUsername = String(usernameInput || "").trim();
       const normalizedPassword = String(passwordInput || "");
-      if (!normalizedUsername || !normalizedPassword) return false;
+      const normalizedSchoolCode = String(
+        teacher?.schoolCode || teacherContext?.teacherRecord?.schoolCode || ""
+      ).trim();
+      const normalizedUserId = String(
+        teacher?.userId || teacherContext?.teacherRecord?.userId || ""
+      ).trim();
 
-      const teacherRefs = new Set(
-        [
-          teacher?.userId,
-          teacher?.teacherId,
-          teacher?.teacherKey,
-          teacherContext?.teacherKey,
-          teacherContext?.teacherRecord?.userId,
-          teacherContext?.teacherRecord?.teacherId,
-        ]
-          .filter(Boolean)
-          .map(normalizeTeacherRef)
-      );
-
-      const identifierCandidates = [...new Set(
-        [
-          teacher?.userId,
-          teacher?.teacherId,
-          teacher?.username,
-          teacherContext?.teacherRecord?.userId,
-          teacherContext?.teacherRecord?.teacherId,
-          teacherContext?.teacherRecord?.username,
-        ]
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-      )];
-
-      for (const identifier of identifierCandidates) {
-        const matchedTeacherUser = await loadUserNodeByIdentifier({
-          rtdbBase: RTDB_BASE,
-          identifier,
-          childPaths: ["userId", "teacherId", "username"],
-        });
-
-        const userKey = String(matchedTeacherUser?.key || "").trim();
-        const user = matchedTeacherUser?.record;
-        if (!userKey || !user || typeof user !== "object") {
-          continue;
-        }
-
-        const username = String(user?.username || "").trim().toLowerCase();
-        const password = String(user?.password || "");
-        if (username !== normalizedUsername || password !== normalizedPassword) {
-          continue;
-        }
-
-        const userRefs = [userKey, user?.userId, user?.teacherId].filter(Boolean).map(normalizeTeacherRef);
-        if (userRefs.some((ref) => teacherRefs.has(ref))) {
-          return true;
-        }
+      if (!normalizedUsername || !normalizedPassword || !normalizedSchoolCode || !normalizedUserId) {
+        return false;
       }
 
-      return false;
+      try {
+        const response = await axios.post(`${API_BASE}/teacher/verify-password`, {
+          schoolCode: normalizedSchoolCode,
+          userId: normalizedUserId,
+          username: normalizedUsername,
+          password: normalizedPassword,
+        });
+
+        return Boolean(response?.data?.success);
+      } catch (error) {
+        console.error("Teacher credential verification failed:", error);
+        return false;
+      }
     },
-    [RTDB_BASE, teacher, teacherContext]
+    [teacher?.schoolCode, teacher?.userId, teacherContext?.teacherRecord?.schoolCode, teacherContext?.teacherRecord?.userId]
   );
 
   const openDeleteAssessmentPopup = (record) => {

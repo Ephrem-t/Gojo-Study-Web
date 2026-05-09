@@ -258,6 +258,9 @@ export default function Register() {
   const validatePhone = (phone) =>
     /^[0-9+()\-\s]{6,20}$/.test(String(phone).trim());
 
+  const hasRequiredPasswordMix = (value) =>
+    /[A-Za-z]/.test(String(value || "")) && /[0-9]/.test(String(value || ""));
+
   const handleRegister = async (e) => {
     e.preventDefault();
     setMessage("");
@@ -278,6 +281,10 @@ export default function Register() {
     }
     if (!formData.name || !formData.password) {
       setMessage("Name and password are required.");
+      return;
+    }
+    if (String(formData.password || "").length < 8 || !hasRequiredPasswordMix(formData.password)) {
+      setMessage("Password must be at least 8 characters and include both letters and numbers.");
       return;
     }
     if (!schoolCode) {
@@ -337,7 +344,7 @@ export default function Register() {
     } catch (err) {
       console.error("Registration error:", err);
       if (err instanceof TypeError && /Failed to fetch/i.test(err.message || "")) {
-        setMessage("Teacher backend is not reachable on 127.0.0.1:5001. Start app.py and try again.");
+        setMessage("Teacher backend is not reachable. Start the backend and try again.");
       } else {
         setMessage("Server error. Check console.");
       }

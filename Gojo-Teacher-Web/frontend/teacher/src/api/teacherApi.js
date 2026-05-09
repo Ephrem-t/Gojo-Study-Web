@@ -458,6 +458,8 @@ export const loginTeacher = async (username, password) => {
     const res = await axios.post(`${API_BASE}/teacher_login`, {
       username,
       password,
+    }, {
+      withCredentials: true,
     });
     return res.data;
   } catch (err) {
@@ -493,6 +495,8 @@ export const loginTeacherWithSchool = async ({ username, password, schoolCode })
       username,
       password,
       schoolCode,
+    }, {
+      withCredentials: true,
     });
     return res.data;
   } catch (err) {

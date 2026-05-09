@@ -14,6 +14,7 @@ import {
   buildChatSummaryUpdate,
   filterChatMessageRows,
   getLastChatMessageKey,
+  mapInBatches,
 } from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
@@ -252,11 +253,12 @@ const pickFirstNonEmpty = (...values) => {
 };
 
 const CONTACTS_SESSION_TTL_MS = 5 * 60 * 1000;
-const UNREAD_SUMMARY_TTL_MS = 60 * 1000;
+const UNREAD_SUMMARY_TTL_MS = 3 * 60 * 1000;
 const CHAT_HISTORY_PAGE_SIZE = 50;
-const CHAT_MESSAGE_POLL_INTERVAL_MS = 45 * 1000;
+const CHAT_MESSAGE_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
 const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const PRESENCE_BATCH_SIZE = 12;
 
 const buildContactsSessionKey = (schoolCode, tab) => {
   return `all_chat_contacts_${String(schoolCode || "global").toUpperCase()}_${String(tab || "student").toLowerCase()}`;
@@ -1398,6 +1400,22 @@ export default function TeacherAllChat() {
   useEffect(() => {
     let cancelled = false;
 
+    const activeContacts = selectedTab === "student"
+      ? students
+      : selectedTab === "parent"
+        ? parents
+        : admins;
+
+    const presenceUserIds = [...new Set([
+      ...activeContacts.map((contact) => normalizeIdentifier(contact?.userId)).filter(Boolean),
+      normalizeIdentifier(selectedChatUser?.userId),
+    ].filter(Boolean))];
+
+    if (!presenceUserIds.length) {
+      setPresence({});
+      return undefined;
+    }
+
     const loadPresence = async ({ force = false } = {}) => {
       const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
       const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
@@ -1407,14 +1425,23 @@ export default function TeacherAllChat() {
       }
 
       try {
-        const data = await fetchCachedJson(buildRtdbUrl("Presence"), {
-          ttlMs: 60 * 1000,
-          fallbackValue: {},
-          force: true,
+        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
+          const data = await fetchCachedJson(buildRtdbUrl(`Presence/${encodeURIComponent(userId)}`), {
+            ttlMs: 60 * 1000,
+            fallbackValue: null,
+            force,
+          });
+
+          return [userId, data];
         });
 
+        const data = entries.reduce((result, [userId, value]) => {
+          result[userId] = value;
+          return result;
+        }, {});
+
         if (!cancelled) {
-          setPresence(data && typeof data === "object" ? data : {});
+          setPresence(data);
         }
       } catch (error) {
         console.warn("Presence polling unavailable:", error);
@@ -1447,7 +1474,7 @@ export default function TeacherAllChat() {
       window.removeEventListener("online", handleFocusedPresenceRefresh);
       document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
     };
-  }, [rtdbBase]);
+  }, [admins, parents, rtdbBase, selectedChatUser?.userId, selectedTab, students]);
 
   /* ================= SEND MESSAGE ================= */
   const sendMessage = async () => {

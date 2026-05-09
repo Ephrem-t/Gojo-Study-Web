@@ -56,7 +56,7 @@ const getChatId = (teacherUserId, parentUserId) => {
   return `${t}_${p}`;
 };
 const QUICK_CHAT_HISTORY_LIMIT = 50;
-const QUICK_CHAT_POLL_INTERVAL_MS = 45000;
+const QUICK_CHAT_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
@@ -375,9 +375,9 @@ const [children, setChildren] = useState([]);
     return getRtdbRoot();
   }, [resolvedSchoolCode]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   // safe teacher id for renders when `teacher` may be null briefly

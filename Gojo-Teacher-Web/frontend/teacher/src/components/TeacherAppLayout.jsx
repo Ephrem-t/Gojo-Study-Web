@@ -75,10 +75,10 @@ const normalizeToList = (value) => {
   return [];
 };
 
-const POSTS_SESSION_TTL_MS = 5 * 60 * 1000;
-const MESSAGES_SESSION_TTL_MS = 2 * 60 * 1000;
-const NOTIFICATION_PASSIVE_CHECK_MS = 60 * 1000;
-const NOTIFICATION_IDLE_GRACE_MS = 60 * 1000;
+const POSTS_SESSION_TTL_MS = 10 * 60 * 1000;
+const MESSAGES_SESSION_TTL_MS = 5 * 60 * 1000;
+const NOTIFICATION_PASSIVE_CHECK_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 const buildPostsCacheKey = (schoolCode, teacherUserId) => {
   return `layout:posts:${String(schoolCode || "global").toUpperCase()}:${String(teacherUserId || "").trim()}`;
@@ -506,8 +506,8 @@ export default function TeacherAppLayout() {
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
             teacher={teacher}
-            handleLogout={() => {
-              localStorage.removeItem("teacher");
+            handleLogout={async () => {
+              await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
               navigate("/login", { replace: true });
             }}
           />

@@ -48,7 +48,7 @@ import ProfileAvatar from "./ProfileAvatar";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import { schoolPath } from "../firebase";
 
-const STUDENT_CONVERSATIONS_SESSION_TTL_MS = 20 * 1000;
+const STUDENT_CONVERSATIONS_SESSION_TTL_MS = 5 * 60 * 1000;
 const EMPTY_TEACHER_COURSE_CONTEXT = {
   success: false,
   teacherKey: "",
@@ -65,7 +65,7 @@ const getChatId = (teacherUserId, otherUserId) => {
 };
 
 const QUICK_CHAT_HISTORY_LIMIT = 50;
-const QUICK_CHAT_POLL_INTERVAL_MS = 45000;
+const QUICK_CHAT_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
 const ATTENDANCE_RECENT_DATE_LIMITS = {
   daily: 45,
@@ -1851,9 +1851,9 @@ const toggleExpand = (key) => {
 };
 
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher"); // or "user", depending on your auth
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   // ---------------- FETCH PERFORMANCE (FIXED)

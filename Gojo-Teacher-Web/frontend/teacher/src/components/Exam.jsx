@@ -73,7 +73,7 @@ const getStoredTeacher = () => {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
-    localStorage.removeItem("teacher");
+    window.__gojoClearTeacherState?.();
     return null;
   }
 };
@@ -461,9 +461,9 @@ function Exam() {
           sidebarOpen={sidebarOpen}
           setSidebarOpen={setSidebarOpen}
           teacher={teacher}
-          handleLogout={() => {
-            localStorage.removeItem("teacher");
-            navigate("/login");
+          handleLogout={async () => {
+            await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+            navigate("/login", { replace: true });
           }}
         />
 

@@ -56,7 +56,7 @@ const formatDateLabel = (ts) => {
 };
 
 const QUICK_CHAT_HISTORY_LIMIT = 50;
-const QUICK_CHAT_POLL_INTERVAL_MS = 45000;
+const QUICK_CHAT_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
 
 const normalizeIdentifier = (value) => String(value || "").trim();
@@ -265,7 +265,7 @@ const getStoredTeacher = () => {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
-    localStorage.removeItem("teacher");
+    window.__gojoClearTeacherState?.();
     return null;
   }
 };
@@ -536,9 +536,9 @@ function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teacher]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const closeAdminQuickChat = () => {

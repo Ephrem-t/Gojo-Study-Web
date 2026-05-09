@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { loginTeacher } from "../api/teacherApi";
+import { writeTeacherToStorage } from "../utils/teacherSession";
 import "../styles/login.css";
 
 export default function Login() {
@@ -55,7 +56,7 @@ export default function Login() {
       const res = await loginTeacher(username.trim(), password);
 
       if (res.success) {
-        localStorage.setItem("teacher", JSON.stringify(res.teacher));
+        writeTeacherToStorage(res.teacher);
         navigate("/dashboard");
         return;
       }
