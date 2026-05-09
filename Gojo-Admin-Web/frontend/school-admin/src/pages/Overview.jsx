@@ -88,12 +88,8 @@ export default function OverviewPage() {
           setLoading(true);
         }
 
-        const [studentDirectoryObj, studentsObj, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
+        const [studentDirectoryObj, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
           fetchCachedJson(STUDENT_DIRECTORY_URL, {
-            ttlMs: NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchCachedJson(`${DB_URL}/Students.json`, {
             ttlMs: NODE_CACHE_TTL_MS,
             fallbackValue: {},
           }),
@@ -101,10 +97,11 @@ export default function OverviewPage() {
           fetchNodeCount("Posts"),
         ]);
 
+        // Only fall back to full Students node if Directory is empty (saves ~3MB per load)
         const rawStudentSource =
           studentDirectoryObj && Object.keys(studentDirectoryObj || {}).length > 0
             ? studentDirectoryObj
-            : studentsObj;
+            : await fetchCachedJson(`${DB_URL}/Students.json`, { ttlMs: NODE_CACHE_TTL_MS, fallbackValue: {} });
 
         const studentRows = Object.entries(rawStudentSource || {}).map(([studentId, studentNode]) => {
           const basicStudentInfo = studentNode?.basicStudentInformation || {};

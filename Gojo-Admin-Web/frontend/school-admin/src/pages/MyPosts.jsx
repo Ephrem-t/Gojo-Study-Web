@@ -329,57 +329,11 @@ const formatCompactDate = (dateValue) => {
   });
 };
 
-const SESSION_CACHE_TTL = 60 * 1000;
 const skeletonBaseStyle = {
   background: "linear-gradient(90deg, color-mix(in srgb, var(--surface-muted) 92%, white) 0%, color-mix(in srgb, var(--surface-panel) 72%, white) 50%, color-mix(in srgb, var(--surface-muted) 92%, white) 100%)",
   backgroundSize: "200% 100%",
   animation: "myPostsSkeletonPulse 1.2s ease-in-out infinite",
   borderRadius: 10,
-};
-
-const readSessionCache = (key, ttlMs = SESSION_CACHE_TTL) => {
-  try {
-    const rawValue = sessionStorage.getItem(key);
-    if (!rawValue) {
-      return null;
-    }
-
-    const parsedValue = JSON.parse(rawValue);
-    if (!parsedValue?.savedAt || Date.now() - parsedValue.savedAt > ttlMs) {
-      sessionStorage.removeItem(key);
-      return null;
-    }
-
-    return parsedValue.data ?? null;
-  } catch (error) {
-    return null;
-  }
-};
-
-const writeSessionCache = (key, data) => {
-  try {
-    sessionStorage.setItem(
-      key,
-      JSON.stringify({
-        savedAt: Date.now(),
-        data,
-      })
-    );
-  } catch (error) {
-    // Ignore cache write failures.
-  }
-};
-
-const getCachedJsonNode = async (cacheKey, requestFactory, ttlMs = SESSION_CACHE_TTL) => {
-  const cachedValue = readSessionCache(cacheKey, ttlMs);
-  if (cachedValue !== null) {
-    return cachedValue;
-  }
-
-  const response = await requestFactory();
-  const data = response?.data || {};
-  writeSessionCache(cacheKey, data);
-  return data;
 };
 
 function MyPosts() {
@@ -460,6 +414,8 @@ function MyPosts() {
   // loading states for edit/delete
   const [savingId, setSavingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
+  // Per-user record cache to avoid re-downloading the same user repeatedly
+  const notificationUserCacheRef = useRef(new Map());
   const navigate = useNavigate();
   const location = useLocation();
   const FEED_MAX_WIDTH = 760;
@@ -571,8 +527,7 @@ function MyPosts() {
     }
   }, [token]);
 
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const usersCacheKey = "my-posts:users";
+
   const renderSkeletonLine = (width, height = 12, extraStyle = {}) => (
     <div style={{ ...skeletonBaseStyle, width, height, ...extraStyle }} />
   );
@@ -684,13 +639,30 @@ function MyPosts() {
         return;
       }
 
-      const users = await getCachedJsonNode(
-        usersCacheKey,
-        () => axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }))
-      );
+      // Collect only the unique adminIds that aren't already cached
+      const uniqueAdminIds = [...new Set(notifications.map((n) => n.adminId).filter(Boolean))];
+      const userCache = notificationUserCacheRef.current;
+      const uncachedIds = uniqueAdminIds.filter((id) => !userCache.has(id));
 
-      const findAdminUser = (id) =>
-        Object.values(users).find((u) => u.userId === id || u.username === id);
+      // Fetch only the missing users from the school-scoped Users node
+      if (uncachedIds.length > 0 && DB_ROOT) {
+        await Promise.all(
+          uncachedIds.map(async (userId) => {
+            try {
+              const r = await axios.get(`${DB_ROOT}/Users/${userId}.json`);
+              if (r.data && typeof r.data === "object") {
+                userCache.set(userId, r.data);
+              } else {
+                userCache.set(userId, null);
+              }
+            } catch {
+              userCache.set(userId, null);
+            }
+          })
+        );
+      }
+
+      const findAdminUser = (id) => userCache.get(id) || null;
 
       const enriched = notifications.map((n) => {
         const posterUser = findAdminUser(n.adminId);

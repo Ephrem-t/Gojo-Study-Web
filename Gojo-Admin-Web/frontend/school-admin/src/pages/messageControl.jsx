@@ -7,14 +7,17 @@ import {
   buildChatSummaryUpdate,
   fetchJson,
   mapInBatches,
-  normalizeChatSummaryValue,
   parseChatParticipantIds,
 } from "../utils/chatRtdb";
+import { fetchCachedJson } from "../utils/rtdbCache";
+
+const ROLE_SET_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const RTDB_BASE = FIREBASE_DATABASE_URL;
 const DEFAULT_ALERT_KEYWORDS = ["abuse", "insult", "harass", "threat", "meeting outside", "money transfer"];
 const ALERT_KEYWORDS_STORAGE_KEY = "message_control_alert_keywords";
-const REFRESH_INTERVAL_MS = 60000;
+const REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+const REFRESH_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 const readStoredAdmin = () => {
   try {
@@ -125,6 +128,9 @@ export default function MessageControl() {
   const [draftKeywordsInput, setDraftKeywordsInput] = useState("");
   const [showKeywordModal, setShowKeywordModal] = useState(false);
   const hasLoadedRef = useRef(false);
+  const refreshPromiseRef = useRef(null);
+  const lastMonitorInteractionAtRef = useRef(Date.now());
+  const userRecordCacheRef = useRef(new Map());
   const [selectedConversationMessages, setSelectedConversationMessages] = useState([]);
   const [selectedConversationMessagesLoading, setSelectedConversationMessagesLoading] = useState(false);
   const [isCompactLayout, setIsCompactLayout] = useState(() => {
@@ -160,99 +166,187 @@ export default function MessageControl() {
   }, []);
 
   useEffect(() => {
+    const markInteraction = () => {
+      lastMonitorInteractionAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markInteraction();
+    };
+
+    window.addEventListener("focus", markInteraction);
+    window.addEventListener("online", markInteraction);
+    window.addEventListener("pointerdown", markInteraction, { passive: true });
+    window.addEventListener("touchstart", markInteraction, { passive: true });
+    window.addEventListener("keydown", markInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markInteraction);
+      window.removeEventListener("online", markInteraction);
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("touchstart", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     if (!schoolCode) {
       setConversations([]);
       setSelectedChatId("");
       setSelectedConversationMessages([]);
       hasLoadedRef.current = false;
+      refreshPromiseRef.current = null;
       return;
     }
 
-    const loadMonitorData = async () => {
-      setLoading(!hasLoadedRef.current);
-      setError("");
-      try {
-        const [
-          usersRes,
-          teachersRes,
-          studentsRes,
-          parentsRes,
-          managementRes,
-          hrRes,
-          registerersRes,
-          schoolAdminsRes,
-          chatIndex,
-          allChatSummariesRes,
-        ] = await Promise.all([
-          fetchJson(`${SCHOOL_DB_ROOT}/Users.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Teachers.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Students.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Parents.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Management.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/HR.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Registerers.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/School_Admins.json`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Chats.json?shallow=true`, {}),
-          fetchJson(`${SCHOOL_DB_ROOT}/Chat_Summaries.json`, {}),
-        ]);
+    const loadMonitorData = async ({ reason = "active" } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const recentInteraction = Date.now() - lastMonitorInteractionAtRef.current < REFRESH_IDLE_GRACE_MS;
+      const isUserDriven = reason !== "passive";
 
-        const users = usersRes || {};
-        const chatIds = Object.keys(chatIndex || {});
-        const conversationSummaryByChatId = Object.entries(allChatSummariesRes && typeof allChatSummariesRes === "object" ? allChatSummariesRes : {}).reduce(
-          (result, [, ownerSummaries]) => {
-            Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
-              const summary = normalizeChatSummaryValue(summaryValue, { chatId });
-              const existingSummary = result[chatId] || {
-                unreadTotal: 0,
-                lastMessageText: "",
-                lastMessageTime: 0,
-              };
+      if (!isUserDriven && (!isVisible || !isOnline || !recentInteraction)) {
+        return;
+      }
 
-              existingSummary.unreadTotal += Number(summary.unreadCount || 0);
-              if (Number(summary.lastMessageTime || 0) >= Number(existingSummary.lastMessageTime || 0)) {
-                existingSummary.lastMessageText = String(summary.lastMessageText || "").trim();
-                existingSummary.lastMessageTime = Number(summary.lastMessageTime || 0);
-              }
+      if (refreshPromiseRef.current) {
+        return refreshPromiseRef.current;
+      }
 
-              result[chatId] = existingSummary;
-            });
+      const requestPromise = (async () => {
+        setLoading(!hasLoadedRef.current);
+        setError("");
+        try {
+          const readUserRecord = async (userId) => {
+            const normalizedUserId = String(userId || "").trim();
+            if (!normalizedUserId) {
+              return {};
+            }
 
-            return result;
-          },
-          {}
-        );
+            const cacheKey = `${schoolCode}:${normalizedUserId}`;
+            if (userRecordCacheRef.current.has(cacheKey)) {
+              return userRecordCacheRef.current.get(cacheKey) || {};
+            }
 
-        const toUserSet = (source) =>
-          new Set(
-            Object.values(source || {})
-              .map((item) => String(item?.userId || "").trim())
-              .filter(Boolean)
-          );
+            let record = {};
+            try {
+              record = await fetchJson(
+                `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(normalizedUserId)}.json`,
+                {}
+              );
+            } catch {
+              record = {};
+            }
 
-        const roleSets = {
-          teachers: toUserSet(teachersRes),
-          students: toUserSet(studentsRes),
-          parents: toUserSet(parentsRes),
-          registerers: toUserSet(registerersRes),
-          finance: toUserSet(hrRes),
-          academic: new Set([...toUserSet(managementRes), ...toUserSet(schoolAdminsRes)]),
-        };
+            if (!record || typeof record !== "object" || Array.isArray(record)) {
+              record = {};
+            }
 
-        const parsedChats = (await mapInBatches(chatIds, 20, async (chatId) => {
-          const encodedChatId = encodeURIComponent(chatId);
-          const [participantsNode, messageKeys] = await Promise.all([
-            fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/participants.json`, {}),
-            fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?shallow=true`, {}),
-          ]);
-          const conversationSummary = conversationSummaryByChatId[chatId] || {
-            unreadTotal: 0,
-            lastMessageText: "",
-            lastMessageTime: 0,
+            if (!Object.keys(record).length) {
+              const orderByUserId = encodeURIComponent('"userId"');
+              const equalToUserId = encodeURIComponent(`"${normalizedUserId}"`);
+              const queriedUsers = await fetchJson(
+                `${SCHOOL_DB_ROOT}/Users.json?orderBy=${orderByUserId}&equalTo=${equalToUserId}&limitToFirst=1`,
+                {}
+              );
+              const firstMatch = Object.values(queriedUsers || {}).find(
+                (candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)
+              );
+              record = firstMatch || {};
+            }
+
+            userRecordCacheRef.current.set(cacheKey, record);
+            return record;
           };
 
-          const participantIds = parseChatParticipantIds(chatId, participantsNode);
-          const participants = participantIds.slice(0, 2).map((id) => {
-              const userNode = users[id] || {};
+          const [
+            teachersRes,
+            studentsRes,
+            parentsRes,
+            managementRes,
+            hrRes,
+            registerersRes,
+            schoolAdminsRes,
+            chatIndex,
+          ] = await Promise.all([
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/TeacherDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/StudentDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/ParentDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchJson(`${SCHOOL_DB_ROOT}/Management.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/HR.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/Registerers.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/School_Admins.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/Chats.json?shallow=true`, {}),
+          ]);
+
+          const chatIds = Object.keys(chatIndex || {});
+
+          const toUserSet = (source) =>
+            new Set(
+              Object.values(source || {})
+                .map((item) => String(item?.userId || "").trim())
+                .filter(Boolean)
+            );
+
+          const roleSets = {
+            teachers: toUserSet(teachersRes),
+            students: toUserSet(studentsRes),
+            parents: toUserSet(parentsRes),
+            registerers: toUserSet(registerersRes),
+            finance: toUserSet(hrRes),
+            academic: new Set([...toUserSet(managementRes), ...toUserSet(schoolAdminsRes)]),
+          };
+
+          const parsedChatMetadata = await mapInBatches(chatIds, 20, async (chatId) => {
+            const encodedChatId = encodeURIComponent(chatId);
+            const [participantsNode, messageKeys, lastMessageNode] = await Promise.all([
+              fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/participants.json`, {}),
+              fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?shallow=true`, {}),
+              fetchJson(
+                `${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?orderBy=${encodeURIComponent('"$key"')}&limitToLast=1`,
+                {}
+              ),
+            ]);
+            const participantIds = parseChatParticipantIds(chatId, participantsNode);
+            const lastMessageValue = Object.values(lastMessageNode || {})[0] || {};
+
+            return {
+              chatId,
+              participantIds,
+              messageCount: Object.keys(messageKeys || {}).length,
+              lastMessageText: String(lastMessageValue?.text || lastMessageValue?.message || "").trim(),
+              lastMessageTime: Number(
+                lastMessageValue?.timeStamp || lastMessageValue?.timestamp || lastMessageValue?.sentAt || 0
+              ),
+            };
+          });
+
+          const uniqueParticipantIds = Array.from(
+            new Set(
+              parsedChatMetadata
+                .flatMap((chat) => chat?.participantIds || [])
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            )
+          );
+
+          const usersById = new Map();
+          await mapInBatches(uniqueParticipantIds, 24, async (participantUserId) => {
+            const userRecord = await readUserRecord(participantUserId);
+            usersById.set(participantUserId, userRecord || {});
+            return null;
+          });
+
+          const parsedChats = parsedChatMetadata.map((chatMetadata) => {
+            const participants = (chatMetadata.participantIds || []).slice(0, 2).map((id) => {
+              const userNode = usersById.get(id) || {};
               const role = resolveUserRole(id, userNode, roleSets);
 
               return {
@@ -268,52 +362,85 @@ export default function MessageControl() {
             const category = getPairCategory(leftRole, rightRole);
 
             return {
-              chatId,
+              chatId: chatMetadata.chatId,
               participants,
               category,
               categoryLabel: pairCategoryLabel[category] || "Other",
-              messageCount: Object.keys(messageKeys || {}).length,
-              unreadTotal: Number(conversationSummary.unreadTotal || 0),
-              lastMessageText: String(conversationSummary.lastMessageText || "").trim(),
-              lastMessageTime: Number(conversationSummary.lastMessageTime || 0),
+              messageCount: Number(chatMetadata.messageCount || 0),
+              unreadTotal: 0,
+              lastMessageText: String(chatMetadata.lastMessageText || "").trim(),
+              lastMessageTime: Number(chatMetadata.lastMessageTime || 0),
               messages: [],
             };
-          }))
-          .filter(Boolean)
-          .sort((left, right) => Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0));
+          })
+            .filter(Boolean)
+            .sort((left, right) => Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0));
 
-        setConversations(parsedChats);
-        setSelectedChatId((previousChatId) => {
-          if (previousChatId && parsedChats.some((chat) => chat.chatId === previousChatId)) {
-            return previousChatId;
+          if (cancelled) {
+            return;
           }
-          return "";
-        });
-      } catch (requestError) {
-        setError("Failed to load chat monitor data.");
-      } finally {
-        hasLoadedRef.current = true;
-        setLoading(false);
-      }
+
+          setConversations(parsedChats);
+          setSelectedChatId((previousChatId) => {
+            if (previousChatId && parsedChats.some((chat) => chat.chatId === previousChatId)) {
+              return previousChatId;
+            }
+            return "";
+          });
+        } catch (requestError) {
+          if (!cancelled) {
+            setError("Failed to load chat monitor data.");
+          }
+        } finally {
+          if (!cancelled) {
+            hasLoadedRef.current = true;
+            setLoading(false);
+          }
+        }
+      })();
+
+      refreshPromiseRef.current = requestPromise;
+      requestPromise.finally(() => {
+        if (refreshPromiseRef.current === requestPromise) {
+          refreshPromiseRef.current = null;
+        }
+      });
+
+      return requestPromise;
     };
 
-    const runRefresh = () => {
+    const runFocusedRefresh = () => {
+      lastMonitorInteractionAtRef.current = Date.now();
+      void loadMonitorData({ reason: "active" });
+    };
+
+    const runPassiveRefresh = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
-      loadMonitorData();
+      void loadMonitorData({ reason: "passive" });
     };
 
-    runRefresh();
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
 
-    const intervalId = window.setInterval(runRefresh, REFRESH_INTERVAL_MS);
-    window.addEventListener("focus", runRefresh);
-    document.addEventListener("visibilitychange", runRefresh);
+    runFocusedRefresh();
+
+    const intervalId = window.setInterval(runPassiveRefresh, REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      cancelled = true;
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", runRefresh);
-      document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [SCHOOL_DB_ROOT, schoolCode]);
 

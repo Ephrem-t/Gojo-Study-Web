@@ -24,6 +24,145 @@ import {
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
 
+const normalizeCourseToken = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const buildGeneratedCourseId = (gradeValue, sectionValue, subjectToken) =>
+  `gm_${normalizeCourseToken(gradeValue)}_${normalizeCourseToken(sectionValue)}_${normalizeCourseToken(subjectToken)}`;
+
+const normalizeGradeSubjectEntries = (subjectsNode) => {
+  if (Array.isArray(subjectsNode)) {
+    return subjectsNode
+      .map((subjectItem) => {
+        if (!subjectItem) return null;
+        if (typeof subjectItem === "string") {
+          return { key: normalizeCourseToken(subjectItem), name: subjectItem };
+        }
+        if (typeof subjectItem === "object") {
+          const displayName = subjectItem.name || subjectItem.subject || subjectItem.code || "";
+          const subjectKey = normalizeCourseToken(subjectItem.key || subjectItem.id || displayName);
+          if (!subjectKey || !displayName) return null;
+          return { key: subjectKey, name: displayName };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  if (subjectsNode && typeof subjectsNode === "object") {
+    return Object.entries(subjectsNode)
+      .map(([subjectKey, subjectValue]) => {
+        if (subjectValue && typeof subjectValue === "object") {
+          const displayName = subjectValue.name || subjectValue.subject || subjectKey;
+          return {
+            key: normalizeCourseToken(subjectKey || displayName),
+            name: displayName,
+          };
+        }
+        if (typeof subjectValue === "string") {
+          return {
+            key: normalizeCourseToken(subjectKey || subjectValue),
+            name: subjectValue,
+          };
+        }
+        return {
+          key: normalizeCourseToken(subjectKey),
+          name: subjectKey,
+        };
+      })
+      .filter((entry) => entry.key && entry.name);
+  }
+
+  return [];
+};
+
+const buildGradeSubjectsByGrade = (gradesNode) => {
+  const result = {};
+  const gradeEntries = Array.isArray(gradesNode)
+    ? gradesNode
+    : Object.entries(gradesNode || {}).map(([gradeKey, gradeValue]) => ({
+        grade: gradeValue?.grade ?? gradeKey,
+        ...(gradeValue && typeof gradeValue === "object" ? gradeValue : {}),
+      }));
+
+  gradeEntries.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") return;
+
+    const grade = String(entry.grade ?? (Array.isArray(gradesNode) ? String(index + 1) : "")).trim();
+    if (!grade) return;
+
+    const subjectMap = new Map();
+    normalizeGradeSubjectEntries(entry.subjects).forEach((subjectEntry) => {
+      subjectMap.set(normalizeCourseToken(subjectEntry.key || subjectEntry.name), subjectEntry);
+    });
+
+    const sectionSubjectTeachers =
+      entry.sectionSubjectTeachers && typeof entry.sectionSubjectTeachers === "object"
+        ? entry.sectionSubjectTeachers
+        : {};
+
+    Object.values(sectionSubjectTeachers).forEach((sectionNode) => {
+      Object.entries(sectionNode || {}).forEach(([subjectKey, assignment]) => {
+        const displayName =
+          assignment && typeof assignment === "object" && (assignment.subject || assignment.name)
+            ? assignment.subject || assignment.name
+            : subjectKey;
+        const token = normalizeCourseToken(
+          assignment && typeof assignment === "object"
+            ? assignment.key || assignment.id || displayName || subjectKey
+            : displayName || subjectKey
+        );
+        if (!token) return;
+        subjectMap.set(token, {
+          key: token,
+          name: String(displayName || subjectKey || "").trim(),
+        });
+      });
+    });
+
+    result[grade] = [...subjectMap.values()].filter((entry) => entry?.key);
+  });
+
+  return result;
+};
+
+const getStudentCourseIds = ({ student = {}, gradeSubjectsByGrade = {} } = {}) => {
+  const grade = String(student?.grade || student?.basicStudentInformation?.grade || "").trim();
+  const section = String(student?.section || student?.secation || student?.basicStudentInformation?.section || "").trim().toUpperCase();
+  if (!grade || !section) return [];
+
+  return [...new Set(
+    (gradeSubjectsByGrade[grade] || [])
+      .map((subjectEntry) => buildGeneratedCourseId(grade, section, subjectEntry?.key || subjectEntry?.name))
+      .filter(Boolean)
+  )];
+};
+
+const findStudentScopedNode = (records = {}, student = {}) => {
+  const candidateKeys = new Set(uniqueNonEmptyValues([
+    student?.studentId,
+    student?.userId,
+    student?.userId ? `student_${student.userId}` : "",
+  ]));
+
+  for (const candidate of candidateKeys) {
+    if (records?.[candidate]) {
+      return records[candidate];
+    }
+  }
+
+  return Object.values(records || {}).find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      (candidateKeys.has(String(record.userId || "").trim()) || candidateKeys.has(String(record.studentId || "").trim()))
+  ) || null;
+};
+
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -49,6 +188,8 @@ function StudentsPage() {
   const [studentsLoading, setStudentsLoading] = useState(true);
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [gradeOptions, setGradeOptions] = useState([]);
+  const [gradeSubjectsByGrade, setGradeSubjectsByGrade] = useState({});
+  const [gradeSubjectsLoaded, setGradeSubjectsLoaded] = useState(false);
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -560,6 +701,10 @@ function StudentsPage() {
   };
 
   const [studentMarks, setStudentMarks] = useState({});
+  const selectedStudentCourseIds = useMemo(
+    () => getStudentCourseIds({ student: selectedStudent, gradeSubjectsByGrade }),
+    [gradeSubjectsByGrade, selectedStudent?.grade, selectedStudent?.section, selectedStudent?.secation]
+  );
   const studentMarksFlattened = useMemo(() => {
     const src = studentMarks || {};
     const out = {};
@@ -927,6 +1072,39 @@ function StudentsPage() {
 
 
 
+  useEffect(() => {
+    let cancelled = false;
+
+    setGradeSubjectsLoaded(false);
+
+    const loadGradeSubjects = async () => {
+      try {
+        const gradesData = await fetchCachedJson(`${DB_URL}/GradeManagement/grades.json`, {
+          ttlMs: BIG_NODE_CACHE_TTL_MS,
+          fallbackValue: {},
+        });
+
+        if (!cancelled) {
+          setGradeSubjectsByGrade(buildGradeSubjectsByGrade(gradesData));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setGradeSubjectsByGrade({});
+        }
+      } finally {
+        if (!cancelled) {
+          setGradeSubjectsLoaded(true);
+        }
+      }
+    };
+
+    loadGradeSubjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL]);
+
   // ------------------ FETCH STUDENTS ------------------
   useEffect(() => {
     const fetchStudents = async () => {
@@ -957,7 +1135,7 @@ function StudentsPage() {
         const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
 
-        const managedGrades = Object.keys(gradesData)
+        const managedGrades = Object.keys(gradesData || {})
           .filter((gradeKey) => isValidGradeKey(gradeKey))
           .sort((a, b) => Number(a) - Number(b));
         setGradeOptions(managedGrades);
@@ -983,7 +1161,7 @@ function StudentsPage() {
           fallbackValue: {},
         });
 
-        const studentKeys = Object.keys(studentsData);
+        const studentKeys = Object.keys(studentsData || {});
 
         const baseStudentList = studentKeys.map((id) => normalizeStudentSummary(id, studentsData[id]));
 
@@ -1088,27 +1266,45 @@ function StudentsPage() {
       return;
     }
 
+    if (!gradeSubjectsLoaded) {
+      return undefined;
+    }
+
     let cancelled = false;
 
     async function fetchMarks() {
       try {
-        const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
-          ttlMs: 2 * 60 * 1000,
-          fallbackValue: {},
-        });
-
         const marksObj = {};
-        Object.entries(classMarks || {}).forEach(([courseId, students]) => {
-          // Try direct key
-          if (students?.[selectedStudent.studentId]) {
-            marksObj[courseId] = students[selectedStudent.studentId];
-            return;
-          }
+        if (selectedStudentCourseIds.length > 0) {
+          const courseMarkEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseMarks = await fetchCachedJson(`${DB_URL}/ClassMarks/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseMarks];
+            })
+          );
 
-          // Fallback: try to find by userId inside student nodes
-          const found = Object.values(students || {}).find(s => s && (s.userId === selectedStudent.userId || s.studentId === selectedStudent.studentId));
-          if (found) marksObj[courseId] = found;
-        });
+          courseMarkEntries.forEach(([courseId, courseMarks]) => {
+            const found = findStudentScopedNode(courseMarks, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        } else {
+          const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(classMarks || {}).forEach(([courseId, students]) => {
+            const found = findStudentScopedNode(students, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        }
 
         if (!cancelled) {
           setStudentMarks(marksObj);
@@ -1124,36 +1320,68 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [DB_URL, selectedStudent?.studentId, selectedStudent?.userId, studentTab]);
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
 
   useEffect(() => {
-    if (studentTab !== "attendance" || !selectedStudent?.studentId) return;
+    if (studentTab !== "attendance" || !selectedStudent?.studentId) return undefined;
+
+    if (!gradeSubjectsLoaded) {
+      return undefined;
+    }
 
     let cancelled = false;
 
     const fetchAttendanceData = async () => {
       try {
-        const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
-          ttlMs: 2 * 60 * 1000,
-          fallbackValue: {},
-        });
-
         const attendanceData = [];
-        Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
-          Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-            const status = studentsObj?.[selectedStudent.studentId];
-            if (!status) {
-              return;
-            }
+        if (selectedStudentCourseIds.length > 0) {
+          const attendanceEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseAttendance = await fetchCachedJson(`${DB_URL}/Attendance/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseAttendance];
+            })
+          );
 
-            attendanceData.push({
-              courseId,
-              date,
-              status,
-              teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+          attendanceEntries.forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
             });
           });
-        });
+        } else {
+          const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
+            });
+          });
+        }
 
         if (cancelled) {
           return;
@@ -1182,7 +1410,7 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [DB_URL, selectedStudent?.studentId, selectedStudent?.userId, studentTab]);
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
 
   useEffect(() => {
     if (studentTab !== "payment" || !selectedStudent) return;

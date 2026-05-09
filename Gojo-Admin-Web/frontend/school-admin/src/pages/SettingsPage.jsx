@@ -4,6 +4,7 @@ import { FaCamera, FaLock, FaMoon, FaPalette, FaSave, FaUserCog } from "react-ic
 import axios from "axios";
 import useDarkMode from "../hooks/useDarkMode";
 import ProfileAvatar from "../components/ProfileAvatar";
+import { BACKEND_BASE } from "../config.js";
 
 function SettingsPage() {
   const [admin, setAdmin] = useState(
@@ -154,23 +155,40 @@ function SettingsPage() {
   }, [selectedFile, profilePreview]);
 
   const resolveUserRecordRef = async () => {
-    if (!admin?.userId && !admin?.username) return "";
+    if (!admin?.userId && !admin?.username) return { key: "", baseUrl: shellUsersBaseUrl };
     const bases = schoolCode ? [schoolUsersBaseUrl, globalUsersBaseUrl] : [globalUsersBaseUrl];
 
     for (const baseUrl of bases) {
-      const usersRes = await axios.get(`${baseUrl}.json`).catch(() => ({ data: {} }));
-      const usersData = usersRes.data || {};
-      const match = Object.entries(usersData).find(([, user]) => {
-        const userId = String(user?.userId || "").trim();
-        const uname = String(user?.username || "").trim();
-        return (
-          (admin?.userId && userId === String(admin.userId).trim()) ||
-          (admin?.username && uname && uname === String(admin.username).trim())
-        );
-      });
+      // 1. Try direct push-key lookup by userId (O(1), ~1KB)
+      if (admin?.userId) {
+        const directRes = await axios
+          .get(`${baseUrl}/${encodeURIComponent(admin.userId)}.json`)
+          .catch(() => ({ data: null }));
+        if (directRes.data && typeof directRes.data === "object" && !Array.isArray(directRes.data)) {
+          return { key: admin.userId, baseUrl };
+        }
+      }
 
-      if (match?.[0]) {
-        return { key: match[0], baseUrl };
+      // 2. Query-filter by userId field (avoids downloading all Users)
+      if (admin?.userId) {
+        const orderBy = encodeURIComponent('"userId"');
+        const equalTo = encodeURIComponent(`"${admin.userId}"`);
+        const qRes = await axios
+          .get(`${baseUrl}.json?orderBy=${orderBy}&equalTo=${equalTo}&limitToFirst=1`)
+          .catch(() => ({ data: {} }));
+        const firstKey = Object.keys(qRes.data || {})[0];
+        if (firstKey) return { key: firstKey, baseUrl };
+      }
+
+      // 3. Query-filter by username field as last resort
+      if (admin?.username) {
+        const orderBy = encodeURIComponent('"username"');
+        const equalTo = encodeURIComponent(`"${admin.username}"`);
+        const qRes = await axios
+          .get(`${baseUrl}.json?orderBy=${orderBy}&equalTo=${equalTo}&limitToFirst=1`)
+          .catch(() => ({ data: {} }));
+        const firstKey = Object.keys(qRes.data || {})[0];
+        if (firstKey) return { key: firstKey, baseUrl };
       }
     }
 
@@ -195,32 +213,39 @@ function SettingsPage() {
 
   const handleFileChange = (e) => setSelectedFile(e.target.files[0]);
 
-  const readFileAsDataUrl = (file) =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(new Error("Failed to read image file."));
-      reader.readAsDataURL(file);
-    });
-
   const handleProfileSubmit = async () => {
     if (!selectedFile) return setStatus({ type: "error", message: "Select an image first." });
     try {
       setSavingProfile(true);
       setStatus({ type: "", message: "" });
-      const resolved = userRecordRef.key ? userRecordRef : await resolveUserRecordRef();
-      if (!resolved.key) throw new Error("Unable to find user profile record.");
 
-      const base64Image = await readFileAsDataUrl(selectedFile);
-      await axios.patch(
-        `${resolved.baseUrl}/${resolved.key}.json`,
-        { profileImage: base64Image }
+      // Upload file to Firebase Storage via backend — no base64 in RTDB
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("userId", admin.userId || "");
+      formData.append("schoolCode", schoolCode || "");
+      // Pass old URL so backend can delete orphaned Storage object
+      if (admin.profileImage && admin.profileImage.startsWith("http")) {
+        formData.append("oldUrl", admin.profileImage);
+      }
+
+      const uploadRes = await axios.post(
+        `${BACKEND_BASE}/api/upload-profile-image`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
       );
-      const updatedAdmin = { ...admin, profileImage: base64Image };
+
+      if (!uploadRes.data?.success || !uploadRes.data?.url) {
+        throw new Error(uploadRes.data?.message || "Upload failed");
+      }
+
+      const imageUrl = uploadRes.data.url;
+
+      // The backend already patched RTDB. Just update localStorage and local state.
+      const updatedAdmin = { ...admin, profileImage: imageUrl };
       localStorage.setItem("admin", JSON.stringify(updatedAdmin));
       setAdmin(updatedAdmin);
-      setUserRecordRef(resolved);
-      setProfileImage(base64Image);
+      setProfileImage(imageUrl);
       setSelectedFile(null);
       setStatus({ type: "success", message: "Profile image updated successfully." });
     } catch (err) {

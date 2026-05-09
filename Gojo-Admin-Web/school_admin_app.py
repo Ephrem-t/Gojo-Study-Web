@@ -5,16 +5,44 @@ from firebase_admin import credentials, db, storage
 import os
 from werkzeug.utils import secure_filename
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import re
+import secrets
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
+APP_ENV = str(os.getenv("APP_ENV") or os.getenv("FLASK_ENV") or "development").strip().lower()
+
+
+def _parse_allowed_origins():
+    raw = str(os.getenv("ALLOWED_ORIGINS") or "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    # In development allow localhost frontends; in production this MUST be set via env
+    if APP_ENV == "production":
+        raise RuntimeError("ALLOWED_ORIGINS env var must be set in production (comma-separated list of allowed frontend origins).")
+    return ["http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://localhost:5173", "http://localhost:5174"]
+
+
+def _read_secret_key():
+    key = str(os.getenv("FLASK_SECRET_KEY") or os.getenv("APP_SECRET_KEY") or "").strip()
+    if key:
+        return key
+    if APP_ENV == "production":
+        raise RuntimeError("FLASK_SECRET_KEY or APP_SECRET_KEY must be set in production.")
+    return "gojo-admin-dev-secret-key-not-for-production"
 
 
 app = Flask(__name__)
-CORS(app)
+app.config.update(
+    SECRET_KEY=_read_secret_key(),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=APP_ENV == "production",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+CORS(app, resources={r"/*": {"origins": _parse_allowed_origins()}}, supports_credentials=True)
 
 # ---------------- FIREBASE ---------------- #
 firebase_json = require_firebase_credentials()
@@ -419,9 +447,68 @@ def upload_file_to_firebase(file, folder=""):
         return ""
 
 
+def _delete_old_profile_image(old_url):
+    """Delete a previous Storage profile image if the URL points to this bucket."""
+    if not old_url or not isinstance(old_url, str):
+        return
+    if "firebasestorage.googleapis.com" not in old_url and "storage.googleapis.com" not in old_url:
+        return
+    try:
+        from urllib.parse import urlparse, unquote
+        parsed = urlparse(old_url)
+        # public URL format: storage.googleapis.com/<bucket>/<object>
+        parts = parsed.path.lstrip("/").split("/", 1)
+        if len(parts) == 2:
+            object_name = unquote(parts[1])
+            blob = bucket.blob(object_name)
+            blob.delete()
+    except Exception:
+        pass  # Best-effort: never fail the upload because of old-file cleanup
 
 
-@app.route("/api/register", methods=["POST"])
+@app.route("/api/upload-profile-image", methods=["POST"])
+def upload_profile_image():
+    """Upload a profile image to Firebase Storage and return the public URL.
+    Also patches Users and optional directory nodes in RTDB with the URL.
+    """
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"success": False, "message": "No file provided"}), 400
+
+    allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+    if file.content_type not in allowed_types:
+        return jsonify({"success": False, "message": "Invalid file type. Use JPG, PNG, WEBP or GIF."}), 400
+
+    user_id = _norm_text(request.form.get("userId") or "")
+    school_code = _norm_text(request.form.get("schoolCode") or "")
+    old_url = _norm_text(request.form.get("oldUrl") or "")
+
+    folder = f"profile_images/{school_code}" if school_code else "profile_images"
+    public_url = upload_file_to_firebase(file, folder)
+    if not public_url:
+        return jsonify({"success": False, "message": "Storage upload failed"}), 500
+
+    # Best-effort: delete old Storage file to avoid orphaned blobs
+    _delete_old_profile_image(old_url)
+
+    # Best-effort: patch RTDB Users node with the new URL
+    if user_id and school_code:
+        try:
+            users_ref = school_node_ref(school_code, "Users")
+            # Try direct key first, then query by userId field
+            direct = users_ref.child(user_id).get()
+            if direct:
+                users_ref.child(user_id).update({"profileImage": public_url})
+            else:
+                matches = users_ref.order_by_child("userId").equal_to(user_id).limit_to_first(1).get()
+                for push_key in (matches or {}).keys():
+                    users_ref.child(push_key).update({"profileImage": public_url})
+        except Exception:
+            pass  # Don't fail the upload if the RTDB patch fails
+
+    return jsonify({"success": True, "url": public_url})
+
+
 def register_admin():
     data = request.form
     name = data.get("name")
@@ -1096,4 +1183,7 @@ def get_unread_messages(adminId):
 
 # ---------------- RUN ---------------- #
 if __name__ == "__main__":
-    app.run(debug=True)
+    debug_enabled = APP_ENV != "production" and str(os.getenv("FLASK_DEBUG") or "").strip().lower() not in ("0", "false", "no")
+    run_host = str(os.getenv("FLASK_RUN_HOST") or "127.0.0.1").strip()
+    run_port = int(os.getenv("FLASK_RUN_PORT") or 5001)
+    app.run(host=run_host, port=run_port, debug=debug_enabled)

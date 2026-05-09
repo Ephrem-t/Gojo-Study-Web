@@ -2,6 +2,9 @@ import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import ProfileAvatar from "../components/ProfileAvatar";
+import { fetchCachedJson } from "../utils/rtdbCache";
+
+const TEACHER_DIR_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function TeacherChatPage() {
   const location = useLocation();
@@ -23,23 +26,17 @@ function TeacherChatPage() {
   useEffect(() => {
     const fetchTeachers = async () => {
       try {
-        const teachersRes = await axios.get(`${BASE_URL}/Teachers.json`);
-        const usersRes = await axios.get(`${BASE_URL}/Users.json`);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map((id) => {
-          const teacher = teachersData[id];
-          const user = usersData[teacher.userId] || {};
-
-          return {
-            teacherId: id,
-            userId: teacher.userId, // used for chat
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
-          };
+        const directoryData = await fetchCachedJson(`${BASE_URL}/TeacherDirectory.json`, {
+          ttlMs: TEACHER_DIR_CACHE_TTL_MS,
+          fallbackValue: {},
         });
+
+        const teacherList = Object.entries(directoryData || {}).map(([id, entry]) => ({
+          teacherId: entry.teacherId || id,
+          userId: entry.userId || id,
+          name: entry.name || "No Name",
+          profileImage: entry.profileImage || "/default-profile.png",
+        }));
 
         setTeachers(teacherList);
         setRecentChats(teacherList.map((t) => t.teacherId));

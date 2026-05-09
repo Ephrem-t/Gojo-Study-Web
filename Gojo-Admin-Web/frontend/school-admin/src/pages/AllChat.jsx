@@ -15,11 +15,17 @@ import {
   normalizeChatSummaryValue,
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
+import { fetchCachedJson } from "../utils/rtdbCache";
 import ProfileAvatar from "../components/ProfileAvatar";
 import "../styles/global.css";
 
 const RTDB_BASE = FIREBASE_DATABASE_URL;
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
+const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const PRESENCE_BATCH_SIZE = 12;
+// Contact-list data changes rarely — cache for 15 minutes to avoid re-downloading on every navigation
+const CONTACT_LIST_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const sortedChatId = (id1, id2) => {
   const a = String(id1 || "").trim();
@@ -216,6 +222,7 @@ export default function AllChat() {
   const lastContactScrollTopRef = useRef(0);
   const suppressAutoCardToggleRef = useRef(false);
   const autoCardToggleTimeoutRef = useRef(null);
+  const lastChatActivityAtRef = useRef(Date.now());
 
   const admin = JSON.parse(localStorage.getItem("admin") || localStorage.getItem("gojo_admin") || "{}") || {};
   const adminUserId = String(admin.userId || "").trim();
@@ -383,6 +390,35 @@ export default function AllChat() {
   }, [schoolCode]);
 
   useEffect(() => {
+    const markChatActivity = () => {
+      lastChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markChatActivity();
+    };
+
+    window.addEventListener("focus", markChatActivity);
+    window.addEventListener("online", markChatActivity);
+    window.addEventListener("pointerdown", markChatActivity, { passive: true });
+    window.addEventListener("touchstart", markChatActivity, { passive: true });
+    window.addEventListener("keydown", markChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markChatActivity);
+      window.removeEventListener("online", markChatActivity);
+      window.removeEventListener("pointerdown", markChatActivity);
+      window.removeEventListener("touchstart", markChatActivity);
+      window.removeEventListener("keydown", markChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     if (selectedStudentSection === "All") return;
     if (!availableStudentSections.includes(selectedStudentSection)) {
       setSelectedStudentSection("All");
@@ -466,19 +502,19 @@ export default function AllChat() {
     const fetchUsers = async () => {
       setLoadingContacts(true);
       try {
-        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, usersRes, chatIndexRes, ownerSummariesRes] = await Promise.all([
-          fetchJson(`${schoolDbRoot}/Teachers.json`, {}),
-          fetchJson(`${schoolDbRoot}/Students.json`, {}),
-          fetchJson(`${schoolDbRoot}/Parents.json`, {}),
-          fetchJson(`${schoolDbRoot}/HR.json`, {}),
-          fetchJson(`${schoolDbRoot}/Finance.json`, {}),
-          fetchJson(`${schoolDbRoot}/Registerers.json`, {}),
-          fetchJson(`${schoolDbRoot}/Users.json`, {}),
+        // Use directory nodes (lightweight summaries) instead of full role nodes.
+        // Users.json is dropped — it's keyed by push-key so usersMap[userId] always
+        // returned {} anyway; role/directory nodes already carry name & profileImage.
+        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, chatIndexRes, ownerSummariesRes] = await Promise.all([
+          fetchCachedJson(`${schoolDbRoot}/TeacherDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(`${schoolDbRoot}/StudentDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(`${schoolDbRoot}/ParentDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(`${schoolDbRoot}/HR.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(`${schoolDbRoot}/Finance.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(`${schoolDbRoot}/Registerers.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
           fetchJson(`${schoolDbRoot}/Chats.json?shallow=true`, {}),
           fetchJson(`${schoolDbRoot}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {}),
         ]);
-
-        const usersMap = usersRes && typeof usersRes === "object" ? usersRes : {};
         const chatKeyIndex = new Set(Object.keys(chatIndexRes || {}));
         const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
         const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
@@ -518,20 +554,21 @@ export default function AllChat() {
           return hydratedRecords;
         };
 
+        // TeacherDirectory: each entry has { teacherId, userId, name, profileImage, isActive, ... }
         const teacherRecords = Object.entries(teachersRes || {})
           .map(([teacherId, teacherNode]) => {
             const userId = String(teacherNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
+            const name = pickFirstNonEmpty(teacherNode?.name, teacherId, "Teacher");
             return {
               id: teacherId,
               teacherId,
               userId,
               type: "teacher",
-              name: pickFirstNonEmpty(user?.name, teacherNode?.name, teacherId, "Teacher"),
-              profileImage: resolveAvatarSrc(user?.profileImage || teacherNode?.profileImage, pickFirstNonEmpty(user?.name, teacherNode?.name, "Teacher")),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...teacherNode, ...user }),
+              name,
+              profileImage: resolveAvatarSrc(teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.isActive !== false,
             };
           })
           .filter(Boolean)
@@ -539,24 +576,23 @@ export default function AllChat() {
 
         const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
 
+        // StudentDirectory: each entry has { studentId, userId, name, profileImage, grade, section, isActive, ... }
         const studentRecords = Object.entries(studentsRes || {})
           .map(([studentId, studentNode]) => {
-            const basic = studentNode?.basicStudentInformation || {};
-            const userId = String(studentNode?.userId || basic?.userId || "").trim();
+            const userId = String(studentNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
-            const name = pickFirstNonEmpty(basic?.name, studentNode?.name, user?.name, studentId, "Student");
+            const name = pickFirstNonEmpty(studentNode?.name, studentId, "Student");
             return {
               id: studentId,
               studentId,
               userId,
               type: "student",
               name,
-              grade: pickFirstNonEmpty(basic?.grade, studentNode?.grade),
-              section: pickFirstNonEmpty(basic?.section, studentNode?.section).toUpperCase(),
-              profileImage: resolveAvatarSrc(basic?.studentPhoto || studentNode?.studentPhoto || studentNode?.profileImage || user?.profileImage, name),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...studentNode, ...user, status: basic?.status || studentNode?.status || user?.status }),
+              grade: String(studentNode?.grade || "").trim(),
+              section: String(studentNode?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(studentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false,
             };
           })
           .filter(Boolean)
@@ -564,21 +600,21 @@ export default function AllChat() {
 
         const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
 
+        // ParentDirectory: each entry has { userId, name, profileImage, isActive, children, ... }
         const parentRecords = Object.entries(parentsRes || {})
           .map(([parentId, parentNode]) => {
             const userId = String(parentNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
-            const name = pickFirstNonEmpty(user?.name, parentNode?.name, parentId, "Parent");
+            const name = pickFirstNonEmpty(parentNode?.name, parentId, "Parent");
             return {
               id: parentId,
               parentId,
               userId,
               type: "parent",
               name,
-              profileImage: resolveAvatarSrc(user?.profileImage || parentNode?.profileImage, name),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...parentNode, ...user }),
+              profileImage: resolveAvatarSrc(parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false,
             };
           })
           .filter(Boolean)
@@ -591,8 +627,7 @@ export default function AllChat() {
             .map(([roleNodeId, roleNode]) => {
               const userId = String(roleNode?.userId || "").trim();
               if (!userId) return null;
-              const user = usersMap?.[userId] || {};
-              const name = pickFirstNonEmpty(user?.name, roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
+              const name = pickFirstNonEmpty(roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
               return {
                 id: roleNodeId,
                 roleNodeId,
@@ -600,9 +635,9 @@ export default function AllChat() {
                 type: "management",
                 officeRole,
                 name,
-                profileImage: resolveAvatarSrc(user?.profileImage || roleNode?.profileImage, name),
-                lastSeen: user?.lastSeen || null,
-                isActive: isActiveRecord({ ...roleNode, ...user }),
+                profileImage: resolveAvatarSrc(roleNode?.profileImage, name),
+                lastSeen: null,
+                isActive: isActiveRecord(roleNode),
               };
             })
             .filter(Boolean)
@@ -825,16 +860,85 @@ export default function AllChat() {
   }, [selectedChatUser, adminUserId, currentChatKey, schoolNodePrefix]);
 
   useEffect(() => {
-    try {
-      const presenceRef = ref(db, scopedPath("Presence"));
-      const unsubscribe = onValue(presenceRef, (snapshot) => {
-        setPresence(snapshot.val() || {});
-      });
-      return () => unsubscribe();
-    } catch (error) {
-      console.warn("Presence listener unavailable:", error);
+    let cancelled = false;
+
+    const activeContacts = selectedTab === "student"
+      ? students
+      : selectedTab === "parent"
+        ? parents
+        : selectedTab === "management"
+          ? managements
+          : teachers;
+
+    const presenceUserIds = [...new Set([
+      ...activeContacts.map((contact) => String(contact?.userId || "").trim()).filter(Boolean),
+      String(selectedChatUser?.userId || "").trim(),
+    ].filter(Boolean))];
+
+    if (!presenceUserIds.length) {
+      setPresence({});
+      return undefined;
     }
-  }, [schoolNodePrefix]);
+
+    const loadPresence = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
+
+      try {
+        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
+          const data = await fetchCachedJson(`${schoolDbRoot}/Presence/${encodeURIComponent(userId)}.json`, {
+            ttlMs: 60 * 1000,
+            fallbackValue: null,
+            force,
+          });
+
+          return [userId, data];
+        });
+
+        const nextPresence = entries.reduce((result, [userId, value]) => {
+          result[userId] = value;
+          return result;
+        }, {});
+
+        if (!cancelled) {
+          setPresence(nextPresence);
+        }
+      } catch (error) {
+        console.warn("Presence polling unavailable:", error);
+        if (!cancelled) {
+          setPresence({});
+        }
+      }
+    };
+
+    const handleFocusedPresenceRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastChatActivityAtRef.current = Date.now();
+      void loadPresence({ force: true });
+    };
+
+    void loadPresence({ force: true });
+    const intervalId = window.setInterval(() => {
+      void loadPresence();
+    }, PRESENCE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedPresenceRefresh);
+    window.addEventListener("online", handleFocusedPresenceRefresh);
+    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedPresenceRefresh);
+      window.removeEventListener("online", handleFocusedPresenceRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
+    };
+  }, [selectedTab, selectedChatUser?.userId, schoolDbRoot, teachers, students, parents, managements]);
 
   const getActiveChatKey = async () => {
     if (!selectedChatUser || !adminUserId) return null;

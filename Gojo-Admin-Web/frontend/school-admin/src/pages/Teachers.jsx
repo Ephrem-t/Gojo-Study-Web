@@ -44,7 +44,8 @@ import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbC
 
 
 
-const NOTIFICATION_REFRESH_MS = 60000;
+const NOTIFICATION_REFRESH_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 function TeachersPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -107,6 +108,7 @@ function TeachersPage() {
   const [popupInput, setPopupInput] = useState("");
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const lastNotificationInteractionAtRef = useRef(Date.now());
   const [typingUserId, setTypingUserId] = useState(null);
 
   useEffect(() => {
@@ -144,6 +146,42 @@ function TeachersPage() {
   const [adminVerifying, setAdminVerifying] = useState(false);
   const [pendingToggle, setPendingToggle] = useState(null); // { userId, curBool, newActive }
   const [teachersInitialized, setTeachersInitialized] = useState(Boolean(bootstrapCache));
+
+  const shouldRunPassiveNotificationRefresh = () => {
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+    const isRecentlyActive = Date.now() - lastNotificationInteractionAtRef.current < NOTIFICATION_IDLE_GRACE_MS;
+    return isVisible && isOnline && isRecentlyActive;
+  };
+
+  useEffect(() => {
+    const markNotificationInteraction = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markNotificationInteraction();
+    };
+
+    window.addEventListener("focus", markNotificationInteraction);
+    window.addEventListener("online", markNotificationInteraction);
+    window.addEventListener("pointerdown", markNotificationInteraction, { passive: true });
+    window.addEventListener("touchstart", markNotificationInteraction, { passive: true });
+    window.addEventListener("keydown", markNotificationInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markNotificationInteraction);
+      window.removeEventListener("online", markNotificationInteraction);
+      window.removeEventListener("pointerdown", markNotificationInteraction);
+      window.removeEventListener("touchstart", markNotificationInteraction);
+      window.removeEventListener("keydown", markNotificationInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   // open modal to confirm toggle and collect admin credentials
   const handleToggleActiveTeacher = async () => {
@@ -2713,23 +2751,37 @@ useEffect(() => {
   useEffect(() => {
     if (!adminId || !schoolCode) return undefined;
 
-    const runRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    const runFocusedRefresh = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+      fetchPostNotifications();
+    };
+
+    const runPassiveRefresh = () => {
+      if (!shouldRunPassiveNotificationRefresh()) {
         return;
       }
 
       fetchPostNotifications();
     };
 
-    runRefresh();
-    const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
-    window.addEventListener("focus", runRefresh);
-    document.addEventListener("visibilitychange", runRefresh);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+    const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("focus", runRefresh);
-      document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [adminId, schoolCode]);
 
@@ -2930,23 +2982,37 @@ useEffect(() => {
   useEffect(() => {
     if (!admin.userId) return undefined;
 
-    const runRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    const runFocusedRefresh = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+      fetchUnreadMessages();
+    };
+
+    const runPassiveRefresh = () => {
+      if (!shouldRunPassiveNotificationRefresh()) {
         return;
       }
 
       fetchUnreadMessages();
     };
 
-    runRefresh();
-    const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
-    window.addEventListener("focus", runRefresh);
-    document.addEventListener("visibilitychange", runRefresh);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+    const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("focus", runRefresh);
-      document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [admin.userId]);
 

@@ -12,7 +12,8 @@ import {
   uniqueNonEmptyValues,
 } from "../utils/chatRtdb";
 
-export const NOTIFICATION_POLL_MS = 60000;
+export const NOTIFICATION_POLL_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 const RECENT_POST_LIMIT = 25;
 
@@ -46,6 +47,37 @@ export default function useTopbarNotifications({
   const [unreadPosts, setUnreadPosts] = useState([]);
   const userCacheRef = useRef(new Map());
   const pendingUserLookupsRef = useRef(new Map());
+  const notificationRefreshPromiseRef = useRef(null);
+  const lastInteractionAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    const markInteraction = () => {
+      lastInteractionAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markInteraction();
+    };
+
+    window.addEventListener("focus", markInteraction);
+    window.addEventListener("online", markInteraction);
+    window.addEventListener("pointerdown", markInteraction, { passive: true });
+    window.addEventListener("touchstart", markInteraction, { passive: true });
+    window.addEventListener("keydown", markInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markInteraction);
+      window.removeEventListener("online", markInteraction);
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("touchstart", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   const resolveUserRecord = useCallback(
     async (userId) => {
@@ -191,37 +223,72 @@ export default function useTopbarNotifications({
     }
   }, [currentUserId, dbRoot, enabled]);
 
-  const refreshNotifications = useCallback(async () => {
+  const refreshNotifications = useCallback(async ({ reason = "active" } = {}) => {
     if (!dbRoot || !currentUserId) {
       return;
     }
 
-    await Promise.all([fetchUnreadMessages(), fetchUnreadPosts()]);
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+    const recentInteraction = Date.now() - lastInteractionAtRef.current < NOTIFICATION_IDLE_GRACE_MS;
+    const isUserDriven = reason !== "passive";
+
+    if (!isUserDriven && (!isVisible || !isOnline || !recentInteraction)) {
+      return;
+    }
+
+    if (notificationRefreshPromiseRef.current) {
+      return notificationRefreshPromiseRef.current;
+    }
+
+    const refreshPromise = Promise.all([fetchUnreadMessages(), fetchUnreadPosts()]).finally(() => {
+      if (notificationRefreshPromiseRef.current === refreshPromise) {
+        notificationRefreshPromiseRef.current = null;
+      }
+    });
+
+    notificationRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
   }, [currentUserId, dbRoot, fetchUnreadMessages, fetchUnreadPosts]);
 
   useEffect(() => {
     if (!enabled || !dbRoot || !currentUserId) return undefined;
 
-    const runRefresh = () => {
+    const runFocusedRefresh = () => {
+      lastInteractionAtRef.current = Date.now();
+      void refreshNotifications({ reason: "active" });
+    };
+
+    const runPassiveRefresh = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
 
-      refreshNotifications();
+      void refreshNotifications({ reason: "passive" });
     };
 
-    runRefresh();
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
 
-    const intervalId = pollMs > 0 ? window.setInterval(runRefresh, pollMs) : null;
-    window.addEventListener("focus", runRefresh);
-    document.addEventListener("visibilitychange", runRefresh);
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+
+    const intervalId = pollMs > 0 ? window.setInterval(runPassiveRefresh, pollMs) : null;
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       if (intervalId) {
         window.clearInterval(intervalId);
       }
-      window.removeEventListener("focus", runRefresh);
-      document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [currentUserId, dbRoot, enabled, pollMs, refreshNotifications]);
 

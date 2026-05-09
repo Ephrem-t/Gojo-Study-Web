@@ -44,7 +44,8 @@ const PERIODS = [
 
 const FREE_ID = "__FREE__";
 const FREE_SUBJECT = "Free Period";
-const NOTIFICATION_REFRESH_MS = 60000;
+const NOTIFICATION_REFRESH_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 const sanitizeForFirebase = (value) => {
   if (value === undefined) return null;
@@ -160,11 +161,19 @@ const [teacherChatOpen, setTeacherChatOpen] = useState(false);
 const [postNotifications, setPostNotifications] = useState([]);
 const [showPostDropdown, setShowPostDropdown] = useState(false);
 const [dragHint, setDragHint] = useState(null);
+const lastNotificationInteractionAtRef = useRef(Date.now());
 
 
 const adminId = admin.userId;
 
 const adminUserId = admin.userId;
+
+const shouldRunPassiveNotificationRefresh = () => {
+  const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+  const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+  const isRecentlyActive = Date.now() - lastNotificationInteractionAtRef.current < NOTIFICATION_IDLE_GRACE_MS;
+  return isVisible && isOnline && isRecentlyActive;
+};
 
 const MAX_TEACHER_PERIODS_PER_DAY = 4;
 
@@ -212,25 +221,69 @@ const fetchPostNotifications = async () => {
 
 
 useEffect(() => {
+  const markNotificationInteraction = () => {
+    lastNotificationInteractionAtRef.current = Date.now();
+  };
+
+  const handleVisibilityChange = () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") {
+      return;
+    }
+    markNotificationInteraction();
+  };
+
+  window.addEventListener("focus", markNotificationInteraction);
+  window.addEventListener("online", markNotificationInteraction);
+  window.addEventListener("pointerdown", markNotificationInteraction, { passive: true });
+  window.addEventListener("touchstart", markNotificationInteraction, { passive: true });
+  window.addEventListener("keydown", markNotificationInteraction);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+
+  return () => {
+    window.removeEventListener("focus", markNotificationInteraction);
+    window.removeEventListener("online", markNotificationInteraction);
+    window.removeEventListener("pointerdown", markNotificationInteraction);
+    window.removeEventListener("touchstart", markNotificationInteraction);
+    window.removeEventListener("keydown", markNotificationInteraction);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+  };
+}, []);
+
+
+useEffect(() => {
   if (!adminId || !schoolCode) return undefined;
 
-  const runRefresh = () => {
-    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+  const runFocusedRefresh = () => {
+    lastNotificationInteractionAtRef.current = Date.now();
+    fetchPostNotifications();
+  };
+
+  const runPassiveRefresh = () => {
+    if (!shouldRunPassiveNotificationRefresh()) {
       return;
     }
 
     fetchPostNotifications();
   };
 
-  runRefresh();
-  const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
-  window.addEventListener("focus", runRefresh);
-  document.addEventListener("visibilitychange", runRefresh);
+  const handleVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+      return;
+    }
+    runFocusedRefresh();
+  };
+
+  runFocusedRefresh();
+  const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+  window.addEventListener("focus", runFocusedRefresh);
+  window.addEventListener("online", runFocusedRefresh);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 
   return () => {
     window.clearInterval(interval);
-    window.removeEventListener("focus", runRefresh);
-    document.removeEventListener("visibilitychange", runRefresh);
+    window.removeEventListener("focus", runFocusedRefresh);
+    window.removeEventListener("online", runFocusedRefresh);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
   };
 }, [adminId, schoolCode]);
 
@@ -792,9 +845,6 @@ const getTeachersForCourse = (courseId) => {
             count: entry.unreadCount,
           };
         });
-            count: entry.unreadCount,
-          };
-        });
 
       setUnreadSenders(senders);
     } catch (err) {
@@ -817,23 +867,37 @@ const getTeachersForCourse = (courseId) => {
   useEffect(() => {
     if (!admin.userId) return undefined;
 
-    const runRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    const runFocusedRefresh = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+      fetchUnreadMessages();
+    };
+
+    const runPassiveRefresh = () => {
+      if (!shouldRunPassiveNotificationRefresh()) {
         return;
       }
 
       fetchUnreadMessages();
     };
 
-    runRefresh();
-    const interval = window.setInterval(runRefresh, NOTIFICATION_REFRESH_MS);
-    window.addEventListener("focus", runRefresh);
-    document.addEventListener("visibilitychange", runRefresh);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+    const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("focus", runRefresh);
-      document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [admin.userId]);
 

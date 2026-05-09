@@ -336,6 +336,23 @@ const hasConversationUserSentMessage = (chatValue, userId) => {
   );
 };
 
+const resolveConversationOtherUserId = (summary = {}, currentUserId = "") => {
+  const explicitOtherUserId = String(summary?.otherUserId || "").trim();
+  if (explicitOtherUserId) {
+    return explicitOtherUserId;
+  }
+
+  const normalizedCurrentUserId = String(currentUserId || "").trim();
+  if (!normalizedCurrentUserId) {
+    return "";
+  }
+
+  return String(summary?.chatId || "")
+    .split("_")
+    .map((value) => String(value || "").trim())
+    .find((participantId) => participantId && participantId !== normalizedCurrentUserId) || "";
+};
+
 const normalizeConversationContactType = (value) => {
   const normalizedValue = String(value || "").trim().toLowerCase();
   if (normalizedValue === "teacher" || normalizedValue === "teachers") {
@@ -895,6 +912,54 @@ function Dashboard() {
     return fallbackValue;
   };
 
+  const readMergedSchoolUserRecord = async (candidateCodes, userId) => {
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedUserId) {
+      return {};
+    }
+
+    const cacheKey = `${uniqueNonEmptyValues(candidateCodes).join("|")}::${normalizedUserId}`;
+    if (conversationUserCacheRef.current.has(cacheKey)) {
+      return conversationUserCacheRef.current.get(cacheKey) || {};
+    }
+
+    const encodedUserId = encodeURIComponent(normalizedUserId);
+
+    const readUserFromRoot = async (dbRoot) => {
+      const directRecord = await axios
+        .get(`${dbRoot}/Users/${encodedUserId}.json`, { timeout: 3500 })
+        .then((response) => response.data)
+        .catch(() => null);
+
+      if (directRecord && typeof directRecord === "object" && !Array.isArray(directRecord) && Object.keys(directRecord).length > 0) {
+        return directRecord;
+      }
+
+      const queriedUsers = await axios
+        .get(`${dbRoot}/Users.json?orderBy=%22userId%22&equalTo=%22${encodedUserId}%22&limitToFirst=1`, { timeout: 3500 })
+        .then((response) => response.data)
+        .catch(() => null);
+
+      if (queriedUsers && typeof queriedUsers === "object" && !Array.isArray(queriedUsers)) {
+        return Object.values(queriedUsers).find(
+          (userRecord) => userRecord && typeof userRecord === "object"
+        ) || null;
+      }
+
+      return null;
+    };
+
+    const schoolDbRoots = buildSchoolDbRoots(candidateCodes);
+    const candidateRecords = await Promise.all(schoolDbRoots.map((schoolDbRoot) => readUserFromRoot(schoolDbRoot)));
+    const resolvedRecord =
+      candidateRecords.find((userRecord) => userRecord && typeof userRecord === "object") ||
+      (await readUserFromRoot(DB_URL)) ||
+      {};
+
+    conversationUserCacheRef.current.set(cacheKey, resolvedRecord);
+    return resolvedRecord;
+  };
+
   const [posts, setPosts] = useState(initialCachedPosts);
   const [postsLoading, setPostsLoading] = useState(initialCachedPosts.length === 0 && Boolean(initialSchoolCode));
   const [postsInitialized, setPostsInitialized] = useState(initialCachedPosts.length > 0);
@@ -909,6 +974,7 @@ function Dashboard() {
   const postsFetchRequestIdRef = useRef(0);
   const schoolScopeCacheRef = useRef(new Map());
   const schoolScopePromiseCacheRef = useRef(new Map());
+  const conversationUserCacheRef = useRef(new Map());
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -1480,65 +1546,24 @@ function Dashboard() {
         schoolScopeCode || schoolCode || admin.schoolCode || _storedAdmin.schoolCode || ""
       );
 
-      const [usersData, chatsData, ownerSummariesData] = await Promise.all([
-        readMergedSchoolNode(schoolCodeCandidates, "Users", {}),
-        readMergedSchoolNode(schoolCodeCandidates, "Chats", {}),
-        readMergedSchoolNode(schoolCodeCandidates, buildOwnerChatSummariesPath(adminUserId), {}),
-      ]);
-
-      const usersByKey = usersData && typeof usersData === "object" ? usersData : {};
-      const chatsMap = chatsData && typeof chatsData === "object" ? chatsData : {};
-      const summariesByChatId = Object.entries(ownerSummariesData && typeof ownerSummariesData === "object" ? ownerSummariesData : {}).reduce(
-        (result, [chatId, summaryValue]) => {
-          result[chatId] = normalizeChatSummaryValue(summaryValue, { chatId });
-          return result;
-        },
+      const ownerSummariesData = await readMergedSchoolNode(
+        schoolCodeCandidates,
+        buildOwnerChatSummariesPath(adminUserId),
         {}
       );
-      const usersByUserId = {};
-      const userKeyByUserId = {};
 
-      Object.entries(usersByKey).forEach(([userKey, userNode]) => {
-        const normalizedUserId = String(userNode?.userId || userKey || "").trim();
-        if (!normalizedUserId) {
-          return;
-        }
+      const summaryEntries = Object.entries(ownerSummariesData && typeof ownerSummariesData === "object" ? ownerSummariesData : {})
+        .map(([chatId, summaryValue]) => normalizeChatSummaryValue(summaryValue, { chatId }))
+        .filter((summary) => String(summary?.chatId || "").trim());
 
-        usersByUserId[normalizedUserId] = userNode;
-        userKeyByUserId[normalizedUserId] = userKey;
-      });
-
-      const nextConversations = Object.entries(chatsMap)
-        .map(([chatId, chatValue]) => {
-          const chat = chatValue && typeof chatValue === "object" ? chatValue : null;
-          if (!chat) {
-            return null;
-          }
-
-          const participants = chat.participants || {};
-          const participantKeys = Object.keys(participants || {});
-          if (!participantKeys.includes(adminUserId)) {
-            return null;
-          }
-
-          if (!hasConversationUserSentMessage(chat, adminUserId)) {
-            return null;
-          }
-
-          const otherParticipantKey = participantKeys.find(
-            (participantKey) => String(participantKey || "").trim() !== String(adminUserId).trim()
-          );
-          if (!otherParticipantKey) {
-            return null;
-          }
-
-          const userPushKey = userKeyByUserId[otherParticipantKey];
-          const fallbackUserRecord = usersByUserId[otherParticipantKey] || usersByKey[otherParticipantKey] || usersByKey[userPushKey] || {};
-          const otherUserId = String(fallbackUserRecord?.userId || otherParticipantKey || "").trim();
+      const nextConversations = (await Promise.all(
+        summaryEntries.map(async (summary) => {
+          const otherUserId = resolveConversationOtherUserId(summary, adminUserId);
           if (!otherUserId) {
             return null;
           }
 
+          const fallbackUserRecord = await readMergedSchoolUserRecord(schoolCodeCandidates, otherUserId);
           if (Object.keys(fallbackUserRecord).length > 0 && !isActiveEntity(fallbackUserRecord)) {
             return null;
           }
@@ -1546,9 +1571,7 @@ function Dashboard() {
           const normalizedRole = String(
             fallbackUserRecord?.role || fallbackUserRecord?.userType || ""
           ).trim().toLowerCase();
-          const inferredType = normalizeConversationContactType(
-            normalizedRole
-          ) || "teacher";
+          const inferredType = normalizeConversationContactType(normalizedRole) || "teacher";
           const officeRole = ["hr", "finance", "registerer", "registerers", "registrar"].includes(normalizedRole)
             ? normalizeConversationContactType(normalizedRole) === "management"
               ? normalizedRole === "registerers" || normalizedRole === "registrar"
@@ -1566,18 +1589,14 @@ function Dashboard() {
             otherUserId,
             "User"
           );
-          const summary = summariesByChatId[chatId] || normalizeChatSummaryValue({}, {
-            chatId,
-            otherUserId,
-          });
           const lastMessageText = pickFirstNonEmpty(summary.lastMessageText);
           const unreadForMe = Number(summary.unreadCount || 0);
           const lastMessageTime = getConversationSortTime(
-            summary.lastMessageTime || chat?.updatedAt || chat?.createdAt || 0
+            summary.lastMessageTime || summary.updatedAt || 0
           );
 
           return {
-            chatId,
+            chatId: summary.chatId,
             contact: {
               id: otherUserId,
               userId: otherUserId,
@@ -1596,6 +1615,7 @@ function Dashboard() {
             lastMessageSeenAt: summary.lastMessageSeenAt ?? null,
           };
         })
+      ))
         .filter(Boolean)
         .sort((leftConversation, rightConversation) => {
           if ((rightConversation?.lastMessageTime || 0) !== (leftConversation?.lastMessageTime || 0)) {

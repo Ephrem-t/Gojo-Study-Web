@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
-const GRADE_CACHE_TTL_MS = 45 * 1000;
-const TEACHER_CACHE_TTL_MS = 45 * 1000;
+const GRADE_CACHE_TTL_MS = 15 * 60 * 1000;
+const TEACHER_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const readSessionCache = (key, ttlMs) => {
   try {
@@ -222,30 +223,22 @@ export default function SubjectManagementPage() {
     });
   };
 
-  const normalizeTeacherList = (teachersNode, usersNode) => {
-    const users = usersNode && typeof usersNode === "object" ? usersNode : {};
-    const teachersRaw = teachersNode && typeof teachersNode === "object" ? teachersNode : {};
+  const normalizeTeacherList = (directoryNode) => {
+    const dir = directoryNode && typeof directoryNode === "object" ? directoryNode : {};
 
-    return Object.entries(teachersRaw)
-      .map(([teacherRecordKey, teacherValue]) => {
-        const row = teacherValue && typeof teacherValue === "object" ? teacherValue : {};
-        const user = users[row.userId] || {};
-        const teacherId = String(row.teacherId || teacherRecordKey || "").trim();
-        const name = String(user.name || teacherId || "Teacher").trim();
-
+    return Object.entries(dir)
+      .map(([key, entry]) => {
+        if (!entry) return null;
+        const teacherId = String(entry.teacherId || key || "").trim();
+        const name = String(entry.name || teacherId || "Teacher").trim();
         if (!teacherId) return null;
-        const userIsActive = user?.isActive;
-        const rowIsActive = row?.isActive;
-        const isActive = !(
-          userIsActive === false || userIsActive === "false" ||
-          rowIsActive === false || String(rowIsActive) === "false"
-        );
+        const isActive = entry.isActive !== false;
 
         return {
-          teacherRecordKey: String(teacherRecordKey),
+          teacherRecordKey: key,
           teacherId,
           teacherName: name,
-          userId: String(row.userId || ""),
+          userId: String(entry.userId || ""),
           isActive,
         };
       })
@@ -330,20 +323,19 @@ export default function SubjectManagementPage() {
       }
 
       try {
-        const [teachersNode, usersNode, studentsNode] = await Promise.all([
-          readSchoolNode("Teachers"),
-          readSchoolNode("Users"),
-          readSchoolNode("Students"),
+        const [directoryNode, studentDirectoryNode] = await Promise.all([
+          fetchCachedJson(getSchoolNodeUrl("TeacherDirectory"), { ttlMs: TEACHER_CACHE_TTL_MS, fallbackValue: {} }),
+          fetchCachedJson(getSchoolNodeUrl("StudentDirectory"), { ttlMs: TEACHER_CACHE_TTL_MS, fallbackValue: {} }),
         ]);
 
-        const teacherList = normalizeTeacherList(teachersNode, usersNode);
+        const teacherList = normalizeTeacherList(directoryNode);
 
         setTeachers(teacherList);
-        setGrades((prev) => mergeSectionsFromStudents(prev, studentsNode));
+        setGrades((prev) => mergeSectionsFromStudents(prev, studentDirectoryNode));
 
         writeSessionCache(TEACHER_CACHE_KEY, {
           teachers: teacherList,
-          students: studentsNode && typeof studentsNode === "object" ? studentsNode : {},
+          students: studentDirectoryNode && typeof studentDirectoryNode === "object" ? studentDirectoryNode : {},
         });
       } catch (teacherError) {
         setTeachers([]);
