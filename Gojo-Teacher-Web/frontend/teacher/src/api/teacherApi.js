@@ -1,6 +1,4 @@
 import axios from "axios";
-import { equalTo, get, orderByChild, query as dbQuery, ref as dbRef } from "firebase/database";
-import { db, schoolPath } from "../firebase";
 import { getRtdbRoot } from "./rtdbScope";
 import { API_BASE } from "./apiConfig";
 import { fetchCachedJson } from "../utils/rtdbCache";
@@ -62,25 +60,54 @@ const isRecordObject = (value) => {
 
 const normalizeIdentifier = (value) => String(value || "").trim();
 
-const queryScopedCollection = async ({ nodePath, schoolCode, childPath, matchValue }) => {
+const readRecordChildValue = (recordKey, record, childPath) => {
+  if (!childPath) {
+    return "";
+  }
+
+  if (childPath === "$key") {
+    return normalizeIdentifier(recordKey);
+  }
+
+  const segments = String(childPath || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  let currentValue = record;
+  for (const segment of segments) {
+    currentValue = currentValue?.[segment];
+  }
+
+  return normalizeIdentifier(currentValue);
+};
+
+const queryScopedCollection = async ({ base, nodePath, childPath, matchValue, ttlMs = TEACHER_NODE_TTL_MS }) => {
   const normalizedValue = normalizeIdentifier(matchValue);
-  if (!normalizedValue) {
+  const normalizedBase = String(base || "").trim();
+  if (!normalizedBase || !normalizedValue) {
     return {};
   }
 
-  try {
-    const snapshot = await get(
-      dbQuery(
-        dbRef(db, schoolPath(nodePath, schoolCode)),
-        orderByChild(childPath),
-        equalTo(normalizedValue)
-      )
-    );
+  const collectionNode = await fetchCachedJson(`${normalizedBase}/${nodePath}.json`, {
+    ttlMs,
+    fallbackValue: {},
+  });
 
-    return snapshot.exists() ? snapshot.val() || {} : {};
-  } catch {
-    return {};
-  }
+  return Object.entries(collectionNode || {}).reduce((result, [recordKey, record]) => {
+    if (!isRecordObject(record)) {
+      return result;
+    }
+
+    if (
+      normalizeIdentifier(recordKey) === normalizedValue ||
+      readRecordChildValue(recordKey, record, childPath) === normalizedValue
+    ) {
+      result[recordKey] = record;
+    }
+
+    return result;
+  }, {});
 };
 
 const resolveTeacherEntrySelective = async (base, schoolCode, teacher = {}) => {
@@ -109,10 +136,11 @@ const resolveTeacherEntrySelective = async (base, schoolCode, teacher = {}) => {
     const values = [...new Set((spec.values || []).map(normalizeIdentifier).filter(Boolean))];
     for (const value of values) {
       const records = await queryScopedCollection({
+        base,
         nodePath: "Teachers",
-        schoolCode,
         childPath: spec.childPath,
         matchValue: value,
+        ttlMs: TEACHER_NODE_TTL_MS,
       });
       const [recordKey, record] = Object.entries(records || {})[0] || [];
       if (isRecordObject(record)) {
@@ -124,7 +152,7 @@ const resolveTeacherEntrySelective = async (base, schoolCode, teacher = {}) => {
   return ["", {}];
 };
 
-const loadTeacherAssignmentsSelective = async (schoolCode, teacherRefs) => {
+const loadTeacherAssignmentsSelective = async (base, teacherRefs) => {
   const assignments = {};
   const querySpecs = ["teacherId", "teacherUserId", "userId", "teacherRecordKey"];
   const normalizedRefs = [...new Set((teacherRefs || []).map(normalizeTeacherRef).filter(Boolean))];
@@ -132,10 +160,11 @@ const loadTeacherAssignmentsSelective = async (schoolCode, teacherRefs) => {
   for (const childPath of querySpecs) {
     for (const teacherRef of normalizedRefs) {
       const records = await queryScopedCollection({
+        base,
         nodePath: "TeacherAssignments",
-        schoolCode,
         childPath,
         matchValue: teacherRef,
+        ttlMs: TEACHER_NODE_TTL_MS,
       });
 
       Object.entries(records || {}).forEach(([recordKey, record]) => {
@@ -283,7 +312,7 @@ export const getTeacherCourseContext = async ({ teacher, rtdbBase } = {}) => {
       const seenCourseIds = new Set();
       const courseIds = [];
 
-      const selectiveAssignments = await loadTeacherAssignmentsSelective(schoolCode, [...teacherRefs]);
+      const selectiveAssignments = await loadTeacherAssignmentsSelective(base, [...teacherRefs]);
       Object.values(selectiveAssignments || {}).forEach((assignment) => {
         const teacherId = normalizeTeacherRef(
           assignment?.teacherId || assignment?.teacherUserId || assignment?.userId || assignment?.teacherRecordKey

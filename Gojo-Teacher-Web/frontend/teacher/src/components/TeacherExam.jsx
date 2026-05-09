@@ -6,6 +6,12 @@ import "../styles/global.css";
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveProfileImage } from "../utils/profileImage";
+import {
+  getStudentUserId,
+  loadStudentRecordsByIds,
+  loadUserNodeByIdentifier,
+  loadUserRecordsByIds,
+} from "../utils/teacherData";
 
 const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
 
@@ -145,6 +151,65 @@ const createInitialFormState = () => ({
   timeLimitMinutes: "",
 });
 
+const toCourseTitle = (value) =>
+  String(value || "")
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const parseCourseIdDefaults = (courseId) => {
+  const normalized = String(courseId || "").trim();
+  if (!normalized.startsWith("course_")) {
+    return {
+      id: normalized,
+      subject: normalized,
+      name: normalized,
+      grade: "",
+      section: "",
+    };
+  }
+
+  const body = normalized.slice("course_".length);
+  const parts = body.split("_").filter(Boolean);
+  const gradeSection = parts.at(-1) || "";
+  const match = gradeSection.match(/^(\d+)([A-Za-z].*)$/);
+  const subject = toCourseTitle(parts.slice(0, -1).join(" "));
+
+  return {
+    id: normalized,
+    subject: subject || normalized,
+    name: subject || normalized,
+    grade: match?.[1] || "",
+    section: String(match?.[2] || "").trim().toUpperCase(),
+  };
+};
+
+const buildResolvedCourseRecord = (courseId, storedCourse = {}) => {
+  const defaults = parseCourseIdDefaults(courseId);
+  return {
+    id: String(courseId || defaults.id || "").trim(),
+    subject: String(storedCourse?.subject || storedCourse?.name || defaults.subject || courseId || "").trim(),
+    name: String(storedCourse?.name || storedCourse?.subject || defaults.name || courseId || "").trim(),
+    grade: String(storedCourse?.grade || defaults.grade || "").trim(),
+    section: String(storedCourse?.section || storedCourse?.secation || defaults.section || "")
+      .trim()
+      .toUpperCase(),
+  };
+};
+
+const toSubmissionEntries = (submissionsNode = {}) => {
+  return Object.entries(submissionsNode || {}).map(([studentId, item]) => ({
+    studentId,
+    submittedAt: item?.submittedAt || item?.updatedAt || item?.createdAt || "",
+    score: item?.score,
+    percent: item?.percent,
+    status: item?.status || "submitted",
+  }));
+};
+
+const isObjectNode = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+
 function TeacherExam() {
   const [teacher, setTeacher] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -204,23 +269,15 @@ function TeacherExam() {
       const normalizedIds = [...new Set((studentIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
       if (!normalizedIds.length) return {};
 
-      const [studentsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} })),
-      ]);
+      const studentsMap = await loadStudentRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        studentIds: normalizedIds,
+      });
 
-      const studentsMap = studentsRes.data || {};
-      const usersMap = usersRes.data || {};
-
-      const getUserRecordById = (userId) => {
-        const normalizedUserId = String(userId || "").trim();
-        if (!normalizedUserId) return null;
-        if (usersMap?.[normalizedUserId]) return usersMap[normalizedUserId];
-        const found = Object.values(usersMap).find(
-          (userRecord) => String(userRecord?.userId || "").trim() === normalizedUserId
-        );
-        return found || null;
-      };
+      const usersMap = await loadUserRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        userIds: [...new Set(Object.values(studentsMap).map((studentRecord) => getStudentUserId(studentRecord)).filter(Boolean))],
+      });
 
       const getDisplayNameFromRecord = (record) => {
         if (!record || typeof record !== "object") return "";
@@ -237,27 +294,18 @@ function TeacherExam() {
       const resolvedProfileMap = {};
 
       normalizedIds.forEach((studentId) => {
-        let studentRecord = studentsMap?.[studentId] || null;
-
-        if (!studentRecord) {
-          const foundEntry = Object.entries(studentsMap).find(([studentKey, item]) => {
-            return (
-              String(studentKey || "").trim() === studentId ||
-              String(item?.studentId || "").trim() === studentId ||
-              String(item?.userId || "").trim() === studentId
-            );
-          });
-          studentRecord = foundEntry?.[1] || null;
-        }
+        const studentRecord = studentsMap?.[studentId] || null;
 
         const studentName = getDisplayNameFromRecord(studentRecord);
-        const userRecord = getUserRecordById(studentRecord?.userId || studentId);
+        const userRecord = usersMap?.[getStudentUserId(studentRecord)] || null;
         const userName = getDisplayNameFromRecord(userRecord);
         const resolvedName = studentName || userName;
         const resolvedProfileImage = resolveProfileImage(
           studentRecord?.profileImage,
           studentRecord?.profile,
           studentRecord?.avatar,
+          studentRecord?.basicStudentInformation?.studentPhoto,
+          studentRecord?.studentPhoto,
           userRecord?.profileImage,
           userRecord?.profile,
           userRecord?.avatar
@@ -364,34 +412,22 @@ function TeacherExam() {
       let resolvedCourses = context.courses || [];
 
       if (!resolvedCourses.length) {
-        const [coursesRes, classMarksRes, courseStatsRes] = await Promise.all([
+        const [coursesRes, courseStatsRes] = await Promise.all([
           axios.get(`${RTDB_BASE}/Courses.json`).catch(() => ({ data: {} })),
-          axios.get(`${RTDB_BASE}/ClassMarks.json`).catch(() => ({ data: {} })),
           axios.get(`${RTDB_BASE}/SchoolExams/CourseStats.json`).catch(() => ({ data: {} })),
         ]);
 
         const coursesMap = coursesRes.data || {};
-        const classMarks = classMarksRes.data || {};
         const courseStats = courseStatsRes.data || {};
 
         const fallbackCourseIds = new Set([
           ...Object.keys(coursesMap),
-          ...Object.keys(classMarks),
           ...Object.keys(courseStats),
         ]);
 
         resolvedCourses = Array.from(fallbackCourseIds)
           .filter(Boolean)
-          .map((courseId) => {
-            const stored = coursesMap?.[courseId] || {};
-            return {
-              id: String(courseId || "").trim(),
-              subject: String(stored.subject || stored.name || courseId || "").trim(),
-              name: String(stored.name || stored.subject || courseId || "").trim(),
-              grade: String(stored.grade || "").trim(),
-              section: String(stored.section || stored.secation || "").trim().toUpperCase(),
-            };
-          });
+          .map((courseId) => buildResolvedCourseRecord(courseId, coursesMap?.[courseId] || {}));
       }
 
       const teacherRefs = new Set(
@@ -407,59 +443,150 @@ function TeacherExam() {
           .map(normalizeTeacherRef)
       );
 
-      const [assessmentsRes, submissionsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
-      ]);
-
-      const assessments = assessmentsRes.data || {};
-      const submissionIndex = submissionsRes.data || {};
       const courseIdSet = new Set(resolvedCourses.map((course) => course.id));
 
-      const records = Object.entries(assessments)
-        .map(([assessmentId, assessment]) => {
-          const courseId = String(assessment?.courseId || "").trim();
-          const assessmentTeacherId = normalizeTeacherRef(assessment?.teacherId);
-          const submissions = submissionIndex?.[assessmentId] || {};
-          const submissionEntries = Object.entries(submissions).map(([studentId, item]) => ({
-            studentId,
-            submittedAt: item?.submittedAt || item?.updatedAt || item?.createdAt || "",
-            score: item?.score,
-            percent: item?.percent,
-            status: item?.status || "submitted",
-          }));
-
-          if (!courseId) return null;
-          if (!courseIdSet.has(courseId) && !teacherRefs.has(assessmentTeacherId)) return null;
-
-          const questionRefs = assessment?.questionRefs || {};
-          const calculatedQuestionCount = Number(assessment?.questionCount || Object.keys(questionRefs).length || 0);
-
-          return {
-            id: assessmentId,
-            raw: assessment,
-            courseId,
-            title: assessment?.title || "Untitled assessment",
-            type: assessment?.type || "Exam",
-            status: assessment?.status || "draft",
-            published: assessment?.status === "active",
-            totalPoints: Number(assessment?.totalPoints || 0),
-            passPercent: Number(assessment?.passPercent || 0),
-            timeLimitMinutes: Number(assessment?.timeLimitMinutes || 0),
-            questionCount: calculatedQuestionCount,
-            submissionCount: submissionEntries.length,
-            submissionEntries,
-            dueDate: assessment?.dueDate,
-            createdAt: assessment?.createdAt,
-            updatedAt: assessment?.updatedAt,
-          };
+      const courseFeedResults = await Promise.all(
+        resolvedCourses.map(async (course) => {
+          const response = await axios
+            .get(`${RTDB_BASE}/SchoolExams/CourseFeed/${encodeURIComponent(course.id)}.json`)
+            .catch(() => ({ data: {} }));
+          return [course.id, isObjectNode(response.data) ? response.data : {}];
         })
-        .filter(Boolean)
-        .sort((left, right) => {
-          const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
-          const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
-          return rightTime - leftTime;
-        });
+      );
+
+      const courseFeedEntries = courseFeedResults.flatMap(([courseId, feedNode]) => {
+        return Object.entries(feedNode || {}).map(([assessmentId, feedEntry]) => ({
+          courseId,
+          assessmentId: String(feedEntry?.assessmentId || assessmentId || "").trim(),
+          feedEntry: isObjectNode(feedEntry) ? feedEntry : {},
+        }));
+      }).filter((entry) => entry.assessmentId);
+
+      const buildRecordsFromFeed = async () => {
+        if (!courseFeedEntries.length) {
+          return [];
+        }
+
+        const uniqueAssessmentIds = [...new Set(courseFeedEntries.map((entry) => entry.assessmentId))];
+        const assessmentDetails = await Promise.all(
+          uniqueAssessmentIds.map(async (assessmentId) => {
+            const [assessmentRes, submissionsRes] = await Promise.all([
+              axios.get(`${RTDB_BASE}/SchoolExams/Assessments/${encodeURIComponent(assessmentId)}.json`).catch(() => ({ data: null })),
+              axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex/${encodeURIComponent(assessmentId)}.json`).catch(() => ({ data: {} })),
+            ]);
+
+            return [
+              assessmentId,
+              isObjectNode(assessmentRes.data) ? assessmentRes.data : null,
+              isObjectNode(submissionsRes.data) ? submissionsRes.data : {},
+            ];
+          })
+        );
+
+        const assessmentMap = new Map(
+          assessmentDetails.map(([assessmentId, assessment, submissionsNode]) => [
+            assessmentId,
+            {
+              assessment,
+              submissionsNode,
+            },
+          ])
+        );
+        return courseFeedEntries
+          .map(({ courseId, assessmentId, feedEntry }) => {
+            const assessmentDetail = assessmentMap.get(assessmentId) || {};
+            const rawAssessment = isObjectNode(assessmentDetail.assessment) ? assessmentDetail.assessment : null;
+            const submissionsNode = isObjectNode(assessmentDetail.submissionsNode)
+              ? assessmentDetail.submissionsNode
+              : {};
+            const effectiveAssessment = rawAssessment || feedEntry || {};
+            const effectiveCourseId = String(effectiveAssessment?.courseId || courseId || "").trim();
+            const assessmentTeacherId = normalizeTeacherRef(effectiveAssessment?.teacherId);
+            if (!effectiveCourseId) return null;
+            if (!courseIdSet.has(effectiveCourseId) && !teacherRefs.has(assessmentTeacherId)) return null;
+
+            const questionRefs = effectiveAssessment?.questionRefs || {};
+            const submissionEntries = toSubmissionEntries(submissionsNode);
+            const calculatedQuestionCount = Number(
+              effectiveAssessment?.questionCount || Object.keys(questionRefs).length || feedEntry?.questionCount || 0
+            );
+
+            return {
+              id: String(assessmentId || "").trim(),
+              raw: rawAssessment || { ...feedEntry, assessmentId },
+              courseId: effectiveCourseId,
+              title: effectiveAssessment?.title || feedEntry?.title || "Untitled assessment",
+              type: effectiveAssessment?.type || feedEntry?.type || "Exam",
+              status: effectiveAssessment?.status || feedEntry?.status || "draft",
+              published: String(effectiveAssessment?.status || feedEntry?.status || "draft").toLowerCase() === "active",
+              totalPoints: Number(effectiveAssessment?.totalPoints || 0),
+              passPercent: Number(effectiveAssessment?.passPercent || 0),
+              timeLimitMinutes: Number(effectiveAssessment?.timeLimitMinutes || 0),
+              questionCount: calculatedQuestionCount,
+              submissionCount: submissionEntries.length,
+              submissionEntries,
+              dueDate: effectiveAssessment?.dueDate || feedEntry?.dueDate,
+              createdAt: effectiveAssessment?.createdAt || feedEntry?.createdAt,
+              updatedAt: effectiveAssessment?.updatedAt || feedEntry?.updatedAt,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => {
+            const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
+            const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
+            return rightTime - leftTime;
+          });
+      };
+
+      let records = await buildRecordsFromFeed();
+
+      if (!records.length) {
+        const [assessmentsRes, submissionsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const assessments = assessmentsRes.data || {};
+        const submissionIndex = submissionsRes.data || {};
+
+        records = Object.entries(assessments)
+          .map(([assessmentId, assessment]) => {
+            const courseId = String(assessment?.courseId || "").trim();
+            const assessmentTeacherId = normalizeTeacherRef(assessment?.teacherId);
+            const submissionEntries = toSubmissionEntries(submissionIndex?.[assessmentId] || {});
+
+            if (!courseId) return null;
+            if (!courseIdSet.has(courseId) && !teacherRefs.has(assessmentTeacherId)) return null;
+
+            const questionRefs = assessment?.questionRefs || {};
+            const calculatedQuestionCount = Number(assessment?.questionCount || Object.keys(questionRefs).length || 0);
+
+            return {
+              id: assessmentId,
+              raw: assessment,
+              courseId,
+              title: assessment?.title || "Untitled assessment",
+              type: assessment?.type || "Exam",
+              status: assessment?.status || "draft",
+              published: assessment?.status === "active",
+              totalPoints: Number(assessment?.totalPoints || 0),
+              passPercent: Number(assessment?.passPercent || 0),
+              timeLimitMinutes: Number(assessment?.timeLimitMinutes || 0),
+              questionCount: calculatedQuestionCount,
+              submissionCount: submissionEntries.length,
+              submissionEntries,
+              dueDate: assessment?.dueDate,
+              createdAt: assessment?.createdAt,
+              updatedAt: assessment?.updatedAt,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => {
+            const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
+            const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
+            return rightTime - leftTime;
+          });
+      }
 
       const submissionStudentIds = records
         .flatMap((record) => (record.submissionEntries || []).map((entry) => String(entry.studentId || "").trim()))
@@ -1284,31 +1411,59 @@ function TeacherExam() {
     if (!normalizedCourseId) return false;
 
     try {
-      const [assessmentsRes, submissionsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
-      ]);
+      const courseFeedRes = await axios
+        .get(`${RTDB_BASE}/SchoolExams/CourseFeed/${encodeURIComponent(normalizedCourseId)}.json`)
+        .catch(() => ({ data: {} }));
+      const courseFeed = isObjectNode(courseFeedRes.data) ? courseFeedRes.data : {};
+      const feedEntries = Object.entries(courseFeed || {})
+        .map(([assessmentId, feedEntry]) => [String(feedEntry?.assessmentId || assessmentId || "").trim(), feedEntry])
+        .filter(([assessmentId]) => assessmentId);
 
-      const allAssessments = assessmentsRes.data || {};
-      const submissionIndex = submissionsRes.data || {};
-
-      const assessmentsByCourse = Object.entries(allAssessments).filter(([, assessment]) => {
-        return String(assessment?.courseId || "").trim() === normalizedCourseId;
-      });
-
-      const activeAssessments = assessmentsByCourse.filter(([, assessment]) => {
-        return String(assessment?.status || "").trim().toLowerCase() === "active";
+      let totalAssessments = feedEntries.length;
+      let activeAssessments = feedEntries.filter(([, feedEntry]) => {
+        return String(feedEntry?.status || "").trim().toLowerCase() === "active";
       }).length;
+      let totalSubmissions = 0;
 
-      const totalSubmissions = assessmentsByCourse.reduce((sum, [assessmentId]) => {
-        return sum + Object.keys(submissionIndex?.[assessmentId] || {}).length;
-      }, 0);
+      if (feedEntries.length) {
+        const submissionNodes = await Promise.all(
+          feedEntries.map(async ([assessmentId]) => {
+            const response = await axios
+              .get(`${RTDB_BASE}/SchoolExams/SubmissionIndex/${encodeURIComponent(assessmentId)}.json`)
+              .catch(() => ({ data: {} }));
+            return isObjectNode(response.data) ? response.data : {};
+          })
+        );
+
+        totalSubmissions = submissionNodes.reduce((sum, submissionNode) => {
+          return sum + Object.keys(submissionNode || {}).length;
+        }, 0);
+      } else {
+        const [assessmentsRes, submissionsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const allAssessments = assessmentsRes.data || {};
+        const submissionIndex = submissionsRes.data || {};
+        const assessmentsByCourse = Object.entries(allAssessments).filter(([, assessment]) => {
+          return String(assessment?.courseId || "").trim() === normalizedCourseId;
+        });
+
+        totalAssessments = assessmentsByCourse.length;
+        activeAssessments = assessmentsByCourse.filter(([, assessment]) => {
+          return String(assessment?.status || "").trim().toLowerCase() === "active";
+        }).length;
+        totalSubmissions = assessmentsByCourse.reduce((sum, [assessmentId]) => {
+          return sum + Object.keys(submissionIndex?.[assessmentId] || {}).length;
+        }, 0);
+      }
 
       await axios.put(`${RTDB_BASE}/SchoolExams/CourseStats/${normalizedCourseId}.json`, {
         courseId: normalizedCourseId,
-        totalAssessments: assessmentsByCourse.length,
+        totalAssessments,
         activeAssessments,
-        draftAssessments: Math.max(0, assessmentsByCourse.length - activeAssessments),
+        draftAssessments: Math.max(0, totalAssessments - activeAssessments),
         totalSubmissions,
         updatedAt: new Date().toISOString(),
       });
@@ -1591,20 +1746,45 @@ function TeacherExam() {
           .map(normalizeTeacherRef)
       );
 
-      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }));
-      const usersMap = usersRes.data || {};
+      const identifierCandidates = [...new Set(
+        [
+          teacher?.userId,
+          teacher?.teacherId,
+          teacher?.username,
+          teacherContext?.teacherRecord?.userId,
+          teacherContext?.teacherRecord?.teacherId,
+          teacherContext?.teacherRecord?.username,
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      )];
 
-      const matchedTeacherUser = Object.entries(usersMap).find(([userKey, user]) => {
+      for (const identifier of identifierCandidates) {
+        const matchedTeacherUser = await loadUserNodeByIdentifier({
+          rtdbBase: RTDB_BASE,
+          identifier,
+          childPaths: ["userId", "teacherId", "username"],
+        });
+
+        const userKey = String(matchedTeacherUser?.key || "").trim();
+        const user = matchedTeacherUser?.record;
+        if (!userKey || !user || typeof user !== "object") {
+          continue;
+        }
+
         const username = String(user?.username || "").trim().toLowerCase();
         const password = String(user?.password || "");
-        if (!username || !password) return false;
-        if (username !== normalizedUsername || password !== normalizedPassword) return false;
+        if (username !== normalizedUsername || password !== normalizedPassword) {
+          continue;
+        }
 
         const userRefs = [userKey, user?.userId, user?.teacherId].filter(Boolean).map(normalizeTeacherRef);
-        return userRefs.some((ref) => teacherRefs.has(ref));
-      });
+        if (userRefs.some((ref) => teacherRefs.has(ref))) {
+          return true;
+        }
+      }
 
-      return Boolean(matchedTeacherUser);
+      return false;
     },
     [RTDB_BASE, teacher, teacherContext]
   );

@@ -16,23 +16,15 @@ import {
 import Sidebar from "./Sidebar";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  ref as dbRef,
-  get,
-  onValue,
-  update,
-  push,
-  runTransaction,
-  query as dbQuery,
-  orderByChild,
-  limitToLast,
-  endAt,
-  equalTo,
-} from "firebase/database";
-import { db, schoolPath } from "../firebase"; // adjust path if needed
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { resolveProfileImage } from "../utils/profileImage";
-import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
+import {
+  buildChatMessageQuery,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  filterChatMessageRows,
+  getLastChatMessageKey,
+} from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
   extractAllowedGradeSectionsFromCourseContext,
@@ -43,6 +35,7 @@ import {
   normalizeIdentifier as normalizeScopedIdentifier,
   resolveTeacherSchoolCode,
 } from "../utils/teacherData";
+import { schoolPath } from "../firebase"; // adjust path if needed
 import "../styles/global.css";
 
 /**
@@ -63,6 +56,8 @@ const getChatId = (teacherUserId, parentUserId) => {
   return `${t}_${p}`;
 };
 const QUICK_CHAT_HISTORY_LIMIT = 50;
+const QUICK_CHAT_POLL_INTERVAL_MS = 45000;
+const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 
@@ -114,6 +109,22 @@ const mergeChatMessages = (...groups) => {
 };
 
 const normalizeIdentifier = (value) => String(value || "").trim();
+
+const createQuickChatMessageId = () =>
+  `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+const buildQuickChatMessageRows = (messagesNode = {}, teacherUserId = "") =>
+  Object.entries(messagesNode || {})
+    .map(([id, message]) => ({
+      id,
+      messageId: id,
+      ...message,
+      isTeacher: String(message?.senderId || "") === String(teacherUserId || ""),
+    }))
+    .sort(
+      (leftMessage, rightMessage) =>
+        Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+    );
 
 const findUserByUserId = (usersObj, userId) => {
   if (!usersObj || !userId) return null;
@@ -277,7 +288,9 @@ const [activeTab, setActiveTab] = useState("Details"); // default tab
   const messagesEndRef = useRef(null);
   const quickChatMessagesRef = useRef(null);
   const quickChatScrollRestoreRef = useRef(null);
-    const userRecordCacheRef = useRef(new Map());
+  const lastQuickChatActivityAtRef = useRef(Date.now());
+  const lastQuickChatMessageKeyRef = useRef("");
+  const userRecordCacheRef = useRef(new Map());
 const [children, setChildren] = useState([]);
  const [notifications, setNotifications] = useState([]);
  const [showNotifications, setShowNotifications] = useState(false);
@@ -370,7 +383,64 @@ const [children, setChildren] = useState([]);
   // safe teacher id for renders when `teacher` may be null briefly
   const teacherId = teacher?.userId || "";
   const teacherSchoolCode = String(teacher?.schoolCode || "").trim();
-  const scopedParentPath = (path) => schoolPath(path, resolvedSchoolCode || teacherSchoolCode);
+  const buildRtdbUrl = (path) => `${RTDB_BASE}/${String(path || "").replace(/^\/+/, "")}.json`;
+
+  const fetchQuickChatMessagesPage = async ({ chatId, beforeMessageKey, afterMessageKey } = {}) => {
+    if (!chatId) {
+      return { messages: [], overflowed: false };
+    }
+
+    const response = await axios.get(buildRtdbUrl(`Chats/${chatId}/messages`), {
+      params: buildChatMessageQuery({
+        pageSize: QUICK_CHAT_HISTORY_LIMIT,
+        beforeMessageKey,
+        afterMessageKey,
+      }),
+    });
+    const messagesNode = response?.data && typeof response.data === "object" ? response.data : {};
+    const messageList = filterChatMessageRows(buildQuickChatMessageRows(messagesNode, teacherId), {
+      beforeMessageKey,
+      afterMessageKey,
+    });
+
+    return {
+      messages: messageList,
+      overflowed: Boolean(afterMessageKey) && messageList.length > QUICK_CHAT_HISTORY_LIMIT,
+    };
+  };
+
+  const patchQuickChatSummary = async (ownerUserId, chatId, patch) => {
+    const normalizedOwnerUserId = normalizeIdentifier(ownerUserId);
+    if (!normalizedOwnerUserId || !chatId || !patch || typeof patch !== "object") {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(buildChatSummaryPath(normalizedOwnerUserId, chatId)), patch);
+  };
+
+  const updateQuickChatParticipants = async (chatId, participantIds = []) => {
+    const participantPatch = (participantIds || []).reduce((result, participantId) => {
+      const normalizedParticipantId = normalizeIdentifier(participantId);
+      if (normalizedParticipantId) {
+        result[normalizedParticipantId] = true;
+      }
+      return result;
+    }, {});
+
+    if (!Object.keys(participantPatch).length) {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(`Chats/${chatId}/participants`), participantPatch);
+  };
+
+  const syncQuickChatSummaryCache = (chatId) => {
+    clearCachedChatSummary({
+      rtdbBase: RTDB_BASE,
+      chatId,
+      teacherUserId: teacherId,
+    });
+  };
 
   const cacheUserRecord = (recordKey, userRecord) => {
     if (!userRecord || typeof userRecord !== "object") return;
@@ -381,91 +451,6 @@ const [children, setChildren] = useState([]);
       .forEach((key) => {
         userRecordCacheRef.current.set(key, userRecord);
       });
-  };
-
-  const loadUsersByIds = async (userIds = []) => {
-    const normalizedUserIds = [...new Set(userIds.map(normalizeIdentifier).filter(Boolean))];
-    if (!normalizedUserIds.length) return {};
-
-    const cachedUsers = {};
-    const missingUserIds = [];
-
-    normalizedUserIds.forEach((userId) => {
-      const cachedRecord = userRecordCacheRef.current.get(userId) || null;
-      if (cachedRecord) {
-        cachedUsers[userId] = cachedRecord;
-        cacheUserRecord(userId, cachedRecord);
-        return;
-      }
-      missingUserIds.push(userId);
-    });
-
-    if (!missingUserIds.length) return cachedUsers;
-
-    const fetchedEntries = await Promise.all(
-      missingUserIds.map(async (userId) => {
-        try {
-          const directSnapshot = await get(dbRef(db, scopedParentPath(`Users/${userId}`)));
-          if (directSnapshot.exists()) {
-            return [userId, directSnapshot.val()];
-          }
-        } catch (error) {
-          // fall through to indexed lookup
-        }
-
-        try {
-          const lookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedParentPath("Users")), orderByChild("userId"), equalTo(userId))
-          );
-          if (lookupSnapshot.exists()) {
-            return [userId, Object.values(lookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // ignore missing indexed lookup support and return null below
-        }
-
-        return [userId, null];
-      })
-    );
-
-    const fetchedUsers = {};
-    fetchedEntries.forEach(([userId, userRecord]) => {
-      if (!userRecord) return;
-      fetchedUsers[userId] = userRecord;
-      cacheUserRecord(userId, userRecord);
-    });
-
-    return {
-      ...cachedUsers,
-      ...fetchedUsers,
-    };
-  };
-
-  const fetchTeacherChats = async (teacherUserId) => {
-    const normalizedTeacherUserId = normalizeIdentifier(teacherUserId);
-    if (!normalizedTeacherUserId) return {};
-
-    const chatsRootRef = dbRef(db, scopedParentPath("Chats"));
-
-    for (const expectedValue of [true, "true"]) {
-      try {
-        const snapshot = await get(
-          dbQuery(
-            chatsRootRef,
-            orderByChild(`participants/${normalizedTeacherUserId}`),
-            equalTo(expectedValue)
-          )
-        );
-
-        if (snapshot.exists()) {
-          return snapshot.val() || {};
-        }
-      } catch (error) {
-        // try the next supported participant marker shape
-      }
-    }
-
-    return {};
   };
 
   const loadUnreadConversationSummaries = async (currentTeacher = teacher) => {
@@ -729,9 +714,43 @@ const [children, setChildren] = useState([]);
     scrollToBottom(messages.length > QUICK_CHAT_HISTORY_LIMIT ? "auto" : "smooth");
   }, [messages, chatOpen]);
 
-  // Fetch recent messages for the selected parent with a capped live listener.
+  // Poll recent messages for the selected parent with a bounded page size.
+  useEffect(() => {
+    if (!chatOpen) {
+      return undefined;
+    }
+
+    const markQuickChatActivity = () => {
+      lastQuickChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markQuickChatActivity();
+    };
+
+    window.addEventListener("focus", markQuickChatActivity);
+    window.addEventListener("online", markQuickChatActivity);
+    window.addEventListener("pointerdown", markQuickChatActivity, { passive: true });
+    window.addEventListener("touchstart", markQuickChatActivity, { passive: true });
+    window.addEventListener("keydown", markQuickChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markQuickChatActivity);
+      window.removeEventListener("online", markQuickChatActivity);
+      window.removeEventListener("pointerdown", markQuickChatActivity);
+      window.removeEventListener("touchstart", markQuickChatActivity);
+      window.removeEventListener("keydown", markQuickChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [chatOpen]);
+
   useEffect(() => {
     if (!chatOpen || !teacherId || !selectedParent?.userId) {
+      lastQuickChatMessageKeyRef.current = "";
       setLiveQuickChatMessages([]);
       setOlderQuickChatMessages([]);
       setQuickChatLoading(false);
@@ -742,46 +761,155 @@ const [children, setChildren] = useState([]);
     }
 
     const chatId = getChatId(teacherId, selectedParent.userId);
-    const messagesRef = dbQuery(
-      dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)),
-      orderByChild("timeStamp"),
-      limitToLast(QUICK_CHAT_HISTORY_LIMIT)
-    );
 
     setLiveQuickChatMessages([]);
     setOlderQuickChatMessages([]);
+    lastQuickChatMessageKeyRef.current = "";
     setQuickChatHasOlder(false);
     setQuickChatLoadingOlder(false);
     quickChatScrollRestoreRef.current = null;
     setQuickChatLoading(true);
+    let cancelled = false;
+    let syncInFlight = false;
 
-    const unsubscribe = onValue(
-      messagesRef,
-      (snapshot) => {
-        const data = snapshot.val() || {};
-        const msgs = Object.entries(data)
-          .map(([id, msg]) => ({
-            id,
-            messageId: id,
-            ...msg,
-          }))
-          .sort((a, b) => Number(a?.timeStamp || 0) - Number(b?.timeStamp || 0));
-
-        setLiveQuickChatMessages(msgs);
-        setQuickChatHasOlder((previousValue) => previousValue || msgs.length >= QUICK_CHAT_HISTORY_LIMIT);
-        setQuickChatLoading(false);
-      },
-      (error) => {
-        console.error("Failed to load quick chat messages:", error);
-        setLiveQuickChatMessages([]);
-        setOlderQuickChatMessages([]);
-        setQuickChatHasOlder(false);
-        setQuickChatLoading(false);
+    const syncLatestMessages = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastQuickChatActivityAtRef.current <= QUICK_CHAT_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
       }
-    );
 
-    return () => unsubscribe();
-  }, [chatOpen, teacherId, selectedParent?.userId, resolvedSchoolCode, teacherSchoolCode]);
+      if (syncInFlight) return;
+      syncInFlight = true;
+
+      try {
+        const afterMessageKey = !force ? lastQuickChatMessageKeyRef.current : "";
+        let replaceMessages = !afterMessageKey;
+        let appliedMessages = [];
+
+        if (afterMessageKey) {
+          const incrementalResult = await fetchQuickChatMessagesPage({
+            chatId,
+            afterMessageKey,
+          });
+
+          if (incrementalResult.overflowed) {
+            const snapshotResult = await fetchQuickChatMessagesPage({ chatId });
+            appliedMessages = snapshotResult.messages;
+            replaceMessages = true;
+          } else {
+            appliedMessages = incrementalResult.messages;
+            replaceMessages = false;
+          }
+        } else {
+          const snapshotResult = await fetchQuickChatMessagesPage({ chatId });
+          appliedMessages = snapshotResult.messages;
+        }
+
+        if (cancelled) return;
+
+        if (replaceMessages) {
+          lastQuickChatMessageKeyRef.current = getLastChatMessageKey(appliedMessages);
+          setLiveQuickChatMessages(appliedMessages);
+          setQuickChatHasOlder((previousValue) => previousValue || appliedMessages.length >= QUICK_CHAT_HISTORY_LIMIT);
+        } else if (appliedMessages.length) {
+          setLiveQuickChatMessages((previousMessages) => {
+            const nextMessages = mergeChatMessages(previousMessages, appliedMessages);
+            lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+            return nextMessages;
+          });
+        }
+        setQuickChatLoading(false);
+
+        const unseenMessages = appliedMessages.filter(
+          (message) => String(message?.receiverId || "") === String(teacherId) && !message?.seen
+        );
+        if (!unseenMessages.length) return;
+
+        const seenAt = Date.now();
+        const seenPatch = unseenMessages.reduce((result, message) => {
+          const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+          if (!messageKey) return result;
+          result[`messages/${messageKey}/seen`] = true;
+          result[`messages/${messageKey}/seenAt`] = seenAt;
+          return result;
+        }, {});
+
+        try {
+          await Promise.all([
+            axios.patch(buildRtdbUrl(`Chats/${chatId}`), seenPatch),
+            patchQuickChatSummary(
+              teacherId,
+              chatId,
+              buildChatSummaryUpdate({
+                chatId,
+                otherUserId: selectedParent.userId,
+                unreadCount: 0,
+                lastMessageSeen: true,
+                lastMessageSeenAt: seenAt,
+              })
+            ),
+          ]);
+
+          if (cancelled) return;
+
+          setLiveQuickChatMessages((previousMessages) =>
+            previousMessages.map((message) => {
+              const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+              if (!messageKey || !seenPatch[`messages/${messageKey}/seen`]) {
+                return message;
+              }
+
+              return {
+                ...message,
+                seen: true,
+                seenAt,
+              };
+            })
+          );
+          syncQuickChatSummaryCache(chatId);
+        } catch (error) {
+          console.error("Failed to mark messages seen:", error);
+        }
+      } catch (error) {
+        console.error("Failed to load quick chat messages:", error);
+        if (!cancelled) {
+          lastQuickChatMessageKeyRef.current = "";
+          setLiveQuickChatMessages([]);
+          setOlderQuickChatMessages([]);
+          setQuickChatHasOlder(false);
+          setQuickChatLoading(false);
+        }
+      } finally {
+        syncInFlight = false;
+      }
+    };
+
+    const handleFocusedRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastQuickChatActivityAtRef.current = Date.now();
+      void syncLatestMessages({ force: true });
+    };
+
+    void syncLatestMessages({ force: true });
+    const intervalId = window.setInterval(() => {
+      void syncLatestMessages();
+    }, QUICK_CHAT_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedRefresh);
+    window.addEventListener("online", handleFocusedRefresh);
+    document.addEventListener("visibilitychange", handleFocusedRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedRefresh);
+      window.removeEventListener("online", handleFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedRefresh);
+    };
+  }, [chatOpen, teacherId, selectedParent?.userId, RTDB_BASE]);
 
   const loadOlderMessages = async () => {
     if (
@@ -795,8 +923,8 @@ const [children, setChildren] = useState([]);
       return;
     }
 
-    const oldestMessageTimeStamp = Number(messages[0]?.timeStamp || 0);
-    if (!oldestMessageTimeStamp) {
+    const oldestMessageKey = normalizeIdentifier(messages[0]?.id || messages[0]?.messageId);
+    if (!oldestMessageKey) {
       setQuickChatHasOlder(false);
       return;
     }
@@ -813,25 +941,10 @@ const [children, setChildren] = useState([]);
 
     try {
       const chatId = getChatId(teacherId, selectedParent.userId);
-      const olderMessagesRef = dbQuery(
-        dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)),
-        orderByChild("timeStamp"),
-        endAt(oldestMessageTimeStamp - 1),
-        limitToLast(QUICK_CHAT_HISTORY_LIMIT)
-      );
-
-      const snapshot = await get(olderMessagesRef);
-      const data = snapshot.val() || {};
-      const olderMessagesPage = Object.entries(data)
-        .map(([id, message]) => ({
-          id,
-          messageId: id,
-          ...message,
-        }))
-        .sort(
-          (leftMessage, rightMessage) =>
-            Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
-        );
+      const { messages: olderMessagesPage } = await fetchQuickChatMessagesPage({
+        chatId,
+        beforeMessageKey: oldestMessageKey,
+      });
 
       if (!olderMessagesPage.length) {
         setQuickChatHasOlder(false);
@@ -851,44 +964,6 @@ const [children, setChildren] = useState([]);
     }
   };
 
-  // Mark parent messages as seen when the quick chat is open.
-  useEffect(() => {
-    if (!chatOpen || !selectedParent?.userId || !teacherId) return;
-    if (!messages.length) return;
-
-    const unseenMessages = messages.filter(
-      (message) => String(message?.receiverId || "") === String(teacherId) && !message?.seen
-    );
-    if (!unseenMessages.length) return;
-
-    const chatId = getChatId(teacherId, selectedParent.userId);
-    const seenAt = Date.now();
-    const payload = {};
-
-    unseenMessages.forEach((message) => {
-      const messageKey = normalizeIdentifier(message?.id || message?.messageId);
-      if (!messageKey) return;
-      payload[`messages/${messageKey}/seen`] = true;
-      payload[`messages/${messageKey}/seenAt`] = seenAt;
-    });
-
-    Promise.all([
-      update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), payload),
-      update(
-        dbRef(db, scopedParentPath(buildChatSummaryPath(teacherId, chatId))),
-        buildChatSummaryUpdate({
-          chatId,
-          otherUserId: selectedParent.userId,
-          unreadCount: 0,
-          lastMessageSeen: true,
-          lastMessageSeenAt: seenAt,
-        })
-      ),
-    ]).catch((error) => {
-      console.error("Failed to mark messages seen:", error);
-    });
-  }, [chatOpen, messages, selectedParent?.userId, teacherId, resolvedSchoolCode, teacherSchoolCode]);
-
   const sendMessage = async (textOverride = "") => {
     const text = String(textOverride || newMessageText || "").trim();
     const receiverId = normalizeIdentifier(selectedParent?.userId);
@@ -898,6 +973,7 @@ const [children, setChildren] = useState([]);
     const chatId = getChatId(senderId, receiverId);
     const timeStamp = Date.now();
     const message = {
+      messageId: createQuickChatMessageId(),
       senderId,
       receiverId,
       type: "text",
@@ -909,16 +985,18 @@ const [children, setChildren] = useState([]);
     };
 
     try {
-      await push(dbRef(db, scopedParentPath(`Chats/${chatId}/messages`)), message);
+      const receiverSummaryResponse = await axios
+        .get(buildRtdbUrl(buildChatSummaryPath(receiverId, chatId)))
+        .catch(() => ({ data: {} }));
+      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
 
-      await update(dbRef(db, scopedParentPath(`Chats/${chatId}`)), {
-        [`participants/${senderId}`]: true,
-        [`participants/${receiverId}`]: true,
-      });
+      await axios.put(buildRtdbUrl(`Chats/${chatId}/messages/${message.messageId}`), message);
+      await updateQuickChatParticipants(chatId, [senderId, receiverId]);
 
       await Promise.all([
-        update(
-          dbRef(db, scopedParentPath(buildChatSummaryPath(senderId, chatId))),
+        patchQuickChatSummary(
+          senderId,
+          chatId,
           buildChatSummaryUpdate({
             chatId,
             otherUserId: receiverId,
@@ -931,11 +1009,13 @@ const [children, setChildren] = useState([]);
             lastMessageSeenAt: null,
           })
         ),
-        update(
-          dbRef(db, scopedParentPath(buildChatSummaryPath(receiverId, chatId))),
+        patchQuickChatSummary(
+          receiverId,
+          chatId,
           buildChatSummaryUpdate({
             chatId,
             otherUserId: senderId,
+            unreadCount: nextUnreadCount,
             lastMessageText: text,
             lastMessageType: "text",
             lastMessageTime: timeStamp,
@@ -946,12 +1026,19 @@ const [children, setChildren] = useState([]);
         ),
       ]);
 
+      syncQuickChatSummaryCache(chatId);
+      setLiveQuickChatMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [
+          {
+            id: message.messageId,
+            ...message,
+            isTeacher: true,
+          },
+        ]);
+        lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
+      });
       setNewMessageText("");
-
-      await runTransaction(
-        dbRef(db, scopedParentPath(`${buildChatSummaryPath(receiverId, chatId)}/unreadCount`)),
-        (current) => (Number(current) || 0) + 1
-      );
     } catch (err) {
       console.error("Failed to send quick chat message:", err);
     }
@@ -1059,8 +1146,9 @@ const [children, setChildren] = useState([]);
     const { chatId, contact } = conv;
     navigate("/all-chat", { state: { contact, chatId, tab: "parent" } });
     try {
-      await update(
-        dbRef(db, scopedParentPath(buildChatSummaryPath(teacherId, chatId))),
+      await patchQuickChatSummary(
+        teacherId,
+        chatId,
         buildChatSummaryUpdate({
           chatId,
           otherUserId: contact?.userId,
@@ -1069,11 +1157,7 @@ const [children, setChildren] = useState([]);
           lastMessageSeenAt: Date.now(),
         })
       );
-      clearCachedChatSummary({
-        rtdbBase: RTDB_BASE,
-        chatId,
-        teacherUserId: teacherId,
-      });
+      syncQuickChatSummaryCache(chatId);
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { clearCachedJson, fetchCachedJson, writeCachedJson } from "../../utils/rtdbCache";
+import {
+  clearSessionResource,
+  readSessionResource,
+  writeSessionResource,
+} from "../../utils/teacherData";
 
 export const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -18,6 +24,9 @@ export const ETHIOPIAN_MONTHS = [
 ];
 
 const DEFAULT_SEMESTER_IDS = ["SEM1", "SEM2"];
+const templateObjectCache = new Map();
+const migratedLessonPlanSemesters = new Set();
+const migratedLessonPlanWeeks = new Set();
 
 const getSemesterNumber = (value) => {
   const rawValue = String(value || "").trim();
@@ -165,6 +174,163 @@ const rootsMatch = (left = {}, right = {}) =>
   left.submissionsRoot === right.submissionsRoot &&
   left.dailyLogsRoot === right.dailyLogsRoot;
 
+const dedupeRootVariants = (variants = []) => {
+  const seen = new Set();
+
+  return (variants || []).filter((variant) => {
+    const variantKey = [
+      variant?.templatesRoot,
+      variant?.plansRoot,
+      variant?.submissionsRoot,
+      variant?.dailyLogsRoot,
+    ].join("|");
+
+    if (seen.has(variantKey)) {
+      return false;
+    }
+
+    seen.add(variantKey);
+    return true;
+  });
+};
+
+const buildPlansSemesterBaseUrl = (plansRoot, teacherId, courseId, semesterId) =>
+  `${plansRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(courseId)}/${encodeURIComponent(semesterId)}`;
+
+const buildPlansSemesterMonthsUrl = (plansRoot, teacherId, courseId, semesterId) =>
+  `${buildPlansSemesterBaseUrl(plansRoot, teacherId, courseId, semesterId)}/months.json`;
+
+const buildPlansSemesterNodeUrl = (plansRoot, teacherId, courseId, semesterId) =>
+  `${buildPlansSemesterBaseUrl(plansRoot, teacherId, courseId, semesterId)}.json`;
+
+const buildSubmissionsSemesterUrl = (submissionsRoot, teacherId, courseId, semesterId) =>
+  `${submissionsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(courseId)}/${encodeURIComponent(semesterId)}.json`;
+
+const buildDailyLogsWeekUrl = (dailyLogsRoot, teacherId, courseId, semesterId, monthId, weekId) =>
+  `${dailyLogsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(courseId)}/${encodeURIComponent(semesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
+
+const buildLessonPlanReadCacheKey = (url) => `lesson_plan_read:${String(url || "").trim()}`;
+
+const fetchLessonPlanJson = async (url, options = {}) => {
+  const normalizedUrl = String(url || "").trim();
+  const ttlMs = Number(options?.ttlMs || 0);
+  const force = Boolean(options?.force);
+  const fallbackValue = Object.prototype.hasOwnProperty.call(options || {}, "fallbackValue")
+    ? options.fallbackValue
+    : null;
+
+  if (!normalizedUrl) {
+    return fallbackValue;
+  }
+
+  const sessionEntry = !force
+    ? readSessionResource(buildLessonPlanReadCacheKey(normalizedUrl), { ttlMs })
+    : null;
+  if (
+    sessionEntry &&
+    typeof sessionEntry === "object" &&
+    Object.prototype.hasOwnProperty.call(sessionEntry, "hasValue")
+  ) {
+    return sessionEntry.data;
+  }
+
+  const data = await fetchCachedJson(normalizedUrl, {
+    ttlMs,
+    fallbackValue,
+    force,
+  });
+  writeSessionResource(buildLessonPlanReadCacheKey(normalizedUrl), {
+    hasValue: true,
+    data,
+  });
+
+  return data;
+};
+
+const writeLessonPlanJsonCache = (url, data) => {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    return data;
+  }
+
+  writeCachedJson(normalizedUrl, data);
+  writeSessionResource(buildLessonPlanReadCacheKey(normalizedUrl), {
+    hasValue: true,
+    data,
+  });
+  return data;
+};
+
+const clearLessonPlanJsonCache = (url) => {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    return;
+  }
+
+  clearCachedJson(normalizedUrl);
+  clearSessionResource(buildLessonPlanReadCacheKey(normalizedUrl));
+};
+
+const buildLessonPlanRootsCacheKey = ({ rtdbBase, academicYear, teacherId, courseId, semesterId }) => (
+  [
+    "lesson_plan_roots",
+    String(rtdbBase || "").trim(),
+    String(academicYear || "legacy").trim(),
+    String(teacherId || "").trim(),
+    String(courseId || "").trim(),
+    String(semesterId || "").trim(),
+  ].join(":")
+);
+
+const readPreferredLessonPlanRoots = (params) => {
+  const cacheKey = buildLessonPlanRootsCacheKey(params || {});
+  const value = readSessionResource(cacheKey, {
+    ttlMs: 12 * 60 * 60 * 1000,
+  });
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const nextValue = {
+    templatesRoot: String(value.templatesRoot || ""),
+    plansRoot: String(value.plansRoot || ""),
+    submissionsRoot: String(value.submissionsRoot || ""),
+    dailyLogsRoot: String(value.dailyLogsRoot || ""),
+  };
+
+  return hasResolvedRoots(nextValue) ? nextValue : null;
+};
+
+const writePreferredLessonPlanRoots = (params, roots) => {
+  if (!hasResolvedRoots(roots)) {
+    return;
+  }
+
+  writeSessionResource(buildLessonPlanRootsCacheKey(params || {}), {
+    templatesRoot: String(roots.templatesRoot || ""),
+    plansRoot: String(roots.plansRoot || ""),
+    submissionsRoot: String(roots.submissionsRoot || ""),
+    dailyLogsRoot: String(roots.dailyLogsRoot || ""),
+  });
+};
+
+const clearSemesterPlanCaches = (plansRoot, teacherId, courseId, semesterId) => {
+  if (!plansRoot || !teacherId || !courseId || !semesterId) return;
+  clearLessonPlanJsonCache(buildPlansSemesterMonthsUrl(plansRoot, teacherId, courseId, semesterId));
+  clearLessonPlanJsonCache(buildPlansSemesterNodeUrl(plansRoot, teacherId, courseId, semesterId));
+};
+
+const clearSemesterSubmissionCache = (submissionsRoot, teacherId, courseId, semesterId) => {
+  if (!submissionsRoot || !teacherId || !courseId || !semesterId) return;
+  clearLessonPlanJsonCache(buildSubmissionsSemesterUrl(submissionsRoot, teacherId, courseId, semesterId));
+};
+
+const clearWeekDailyLogsCache = (dailyLogsRoot, teacherId, courseId, semesterId, monthId, weekId) => {
+  if (!dailyLogsRoot || !teacherId || !courseId || !semesterId || !monthId || !weekId) return;
+  clearLessonPlanJsonCache(buildDailyLogsWeekUrl(dailyLogsRoot, teacherId, courseId, semesterId, monthId, weekId));
+};
+
 export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course }) {
   const [semesterIds, setSemesterIds] = useState(DEFAULT_SEMESTER_IDS);
   const [selectedSemesterId, setSelectedSemesterId] = useState(DEFAULT_SEMESTER_IDS[0]);
@@ -182,91 +348,226 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     dailyLogsRoot: "",
   });
 
-  const baseYearPath = useMemo(() => {
-    if (!rtdbBase || !academicYear) return "";
-    return `${rtdbBase}/academicYears/${encodeURIComponent(academicYear)}`;
-  }, [rtdbBase, academicYear]);
+  const encodedAcademicYear = useMemo(
+    () => encodeURIComponent(academicYear || ""),
+    [academicYear]
+  );
+
+  const canonicalRoots = useMemo(() => {
+    if (!rtdbBase) {
+      return {
+        templatesRoot: "",
+        plansRoot: "",
+        submissionsRoot: "",
+        dailyLogsRoot: "",
+      };
+    }
+
+    if (!academicYear) {
+      return {
+        templatesRoot: `${rtdbBase}/AssessmentTemplates`,
+        plansRoot: `${rtdbBase}/LessonPlans/TeachersLessonPlans`,
+        submissionsRoot: `${rtdbBase}/LessonPlans/LessonSubmissions`,
+        dailyLogsRoot: `${rtdbBase}/LessonPlans/LessonDailyLogs`,
+      };
+    }
+
+    return {
+      templatesRoot: `${rtdbBase}/AssessmentTemplates`,
+      plansRoot: `${rtdbBase}/AcademicYears/${encodedAcademicYear}/LessonPlans/TeachersLessonPlans`,
+      submissionsRoot: `${rtdbBase}/AcademicYears/${encodedAcademicYear}/LessonPlans/LessonSubmissions`,
+      dailyLogsRoot: `${rtdbBase}/AcademicYears/${encodedAcademicYear}/LessonPlans/LessonDailyLogs`,
+    };
+  }, [rtdbBase, academicYear, encodedAcademicYear]);
+
+  const templateRoots = useMemo(() => {
+    if (!rtdbBase) return [];
+
+    return [...new Set([
+      `${rtdbBase}/AssessmentTemplates`,
+      `${rtdbBase}/AssesmentTemplates`,
+    ].filter(Boolean))];
+  }, [rtdbBase]);
+
+  const legacyRoots = useMemo(() => {
+    if (!rtdbBase) {
+      return [];
+    }
+
+    return dedupeRootVariants([
+      canonicalRoots,
+      {
+        templatesRoot: `${rtdbBase}/AssessmentTemplates`,
+        plansRoot: `${rtdbBase}/LessonPlans/TeachersLessonPlans`,
+        submissionsRoot: `${rtdbBase}/LessonPlans/LessonSubmissions`,
+        dailyLogsRoot: `${rtdbBase}/LessonPlans/LessonDailyLogs`,
+      },
+    ].filter(Boolean));
+  }, [canonicalRoots, rtdbBase]);
 
   const pathVariants = useMemo(() => {
-    if (!rtdbBase) return [];
-    const year = encodeURIComponent(academicYear || "");
-
-    return [
-      {
-        templatesRoot: `${rtdbBase}/AssesmentTemplates`,
-        plansRoot: `${rtdbBase}/LessonPlans/TeachersLessonPlans`,
-        submissionsRoot: `${rtdbBase}/LessonPlans/LessonSubmissions`,
-        dailyLogsRoot: `${rtdbBase}/LessonPlans/LessonDailyLogs`,
-      },
-      {
-        templatesRoot: `${rtdbBase}/AssessmentTemplates`,
-        plansRoot: `${rtdbBase}/LessonPlans/TeachersLessonPlans`,
-        submissionsRoot: `${rtdbBase}/LessonPlans/LessonSubmissions`,
-        dailyLogsRoot: `${rtdbBase}/LessonPlans/LessonDailyLogs`,
-      },
-      {
-        templatesRoot: academicYear ? `${rtdbBase}/academicYears/${year}/AssessmentTemplates` : "",
-        plansRoot: academicYear ? `${rtdbBase}/academicYears/${year}/LessonPlans` : "",
-        submissionsRoot: academicYear ? `${rtdbBase}/academicYears/${year}/LessonSubmissions` : "",
-        dailyLogsRoot: academicYear ? `${rtdbBase}/academicYears/${year}/LessonDailyLogs` : "",
-      },
-      {
-        templatesRoot: academicYear ? `${rtdbBase}/AcademicYears/${year}/AssessmentTemplates` : "",
-        plansRoot: academicYear ? `${rtdbBase}/AcademicYears/${year}/LessonPlans` : "",
-        submissionsRoot: academicYear ? `${rtdbBase}/AcademicYears/${year}/LessonSubmissions` : "",
-        dailyLogsRoot: academicYear ? `${rtdbBase}/AcademicYears/${year}/LessonDailyLogs` : "",
-      },
-      {
-        templatesRoot: `${rtdbBase}/AssessmentTemplates`,
-        plansRoot: `${rtdbBase}/LessonPlans`,
-        submissionsRoot: `${rtdbBase}/LessonSubmissions`,
-        dailyLogsRoot: `${rtdbBase}/LessonDailyLogs`,
-      },
-    ];
-  }, [rtdbBase, academicYear]);
+    return legacyRoots;
+  }, [legacyRoots]);
 
   const firstObjectFromUrls = useCallback(async (urls) => {
     const normalizedUrls = (urls || []).filter(Boolean);
     if (!normalizedUrls.length) return { data: null, url: "" };
 
-    const results = await Promise.all(
-      normalizedUrls.map(async (url) => {
-        try {
-          const response = await axios.get(url);
-          if (response?.data && typeof response.data === "object") {
-            return { data: response.data, url };
-          }
-        } catch {
-          // try next result
-        }
+    for (const url of normalizedUrls) {
+      if (!templateObjectCache.has(url)) {
+        const request = fetchLessonPlanJson(url, {
+          ttlMs: 15 * 60 * 1000,
+          fallbackValue: null,
+        })
+          .then((data) => {
+            if (data && typeof data === "object") {
+              return { data, url };
+            }
+            return { data: null, url: "" };
+          })
+          .catch(() => ({ data: null, url: "" }));
+        templateObjectCache.set(url, request);
+      }
 
-        return { data: null, url: "" };
-      })
-    );
+      const result = await templateObjectCache.get(url);
+      if (result?.data && result?.url) {
+        return result;
+      }
+    }
 
-    const match = results.find((result) => result.data && result.url);
-    if (match) return match;
     return { data: null, url: "" };
   }, []);
 
   const fetchMonthMapForVariant = useCallback(async ({ variant, semesterId }) => {
-    const baseNode = `${variant.plansRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(semesterId)}`;
-    const candidates = [`${baseNode}/months.json`, `${baseNode}.json`];
-    const results = await Promise.all(
-      candidates.map(async (url) => {
-        try {
-          const response = await axios.get(url);
-          const node = response?.data && typeof response.data === "object" ? response.data : null;
-          if (!node) return { monthMap: {}, matchedUrl: "" };
-          return { monthMap: extractMonthMap(node), matchedUrl: url };
-        } catch {
-          return { monthMap: {}, matchedUrl: "" };
-        }
-      })
-    );
+    const candidates = [
+      buildPlansSemesterMonthsUrl(variant.plansRoot, teacherId, course.id, semesterId),
+      buildPlansSemesterNodeUrl(variant.plansRoot, teacherId, course.id, semesterId),
+    ];
 
-    return results.find((result) => Object.keys(result.monthMap).length) || { monthMap: {}, matchedUrl: "" };
+    for (const url of candidates) {
+      try {
+        const data = await fetchLessonPlanJson(url, {
+          ttlMs: 30 * 1000,
+          fallbackValue: null,
+        });
+        const node = data && typeof data === "object" ? data : null;
+        if (!node) continue;
+
+        const monthMap = extractMonthMap(node);
+        if (Object.keys(monthMap).length) {
+          return { monthMap, matchedUrl: url };
+        }
+      } catch {
+        // try next result
+      }
+    }
+
+    return { monthMap: {}, matchedUrl: "" };
   }, [teacherId, course?.id]);
+
+  const fetchSubmissionMapForVariant = useCallback(async ({ variant, semesterId }) => {
+    if (!variant?.submissionsRoot) {
+      return {};
+    }
+
+    try {
+      const submissionsUrl = buildSubmissionsSemesterUrl(
+        variant.submissionsRoot,
+        teacherId,
+        course.id,
+        semesterId
+      );
+      const data = await fetchLessonPlanJson(submissionsUrl, {
+        ttlMs: 30 * 1000,
+        fallbackValue: {},
+      });
+      return data && typeof data === "object"
+        ? data
+        : {};
+    } catch {
+      return {};
+    }
+  }, [teacherId, course?.id]);
+
+  const migrateSemesterToCanonical = useCallback(async ({ sourceVariant, semesterId, monthMap, submissionMap }) => {
+    if (
+      !academicYear ||
+      !teacherId ||
+      !course?.id ||
+      !semesterId ||
+      !canonicalRoots?.plansRoot ||
+      !sourceVariant ||
+      rootsMatch(sourceVariant, canonicalRoots)
+    ) {
+      return false;
+    }
+
+    const migrationKey = [canonicalRoots.plansRoot, teacherId, course.id, semesterId].join("|");
+    if (migratedLessonPlanSemesters.has(migrationKey)) {
+      return true;
+    }
+
+    const requests = [];
+    if (monthMap && Object.keys(monthMap).length) {
+      const canonicalMonthsUrl = buildPlansSemesterMonthsUrl(
+        canonicalRoots.plansRoot,
+        teacherId,
+        course.id,
+        semesterId
+      );
+      const canonicalSemesterUrl = buildPlansSemesterNodeUrl(
+        canonicalRoots.plansRoot,
+        teacherId,
+        course.id,
+        semesterId
+      );
+      requests.push(
+        axios.put(
+          canonicalMonthsUrl,
+          monthMap
+        )
+          .then(() => {
+            writeLessonPlanJsonCache(canonicalMonthsUrl, monthMap);
+            writeLessonPlanJsonCache(canonicalSemesterUrl, { months: monthMap });
+            return true;
+          })
+          .catch(() => false)
+      );
+    }
+
+    if (submissionMap && Object.keys(submissionMap).length && canonicalRoots?.submissionsRoot) {
+      const canonicalSubmissionsUrl = buildSubmissionsSemesterUrl(
+        canonicalRoots.submissionsRoot,
+        teacherId,
+        course.id,
+        semesterId
+      );
+      requests.push(
+        axios.put(
+          canonicalSubmissionsUrl,
+          submissionMap
+        )
+          .then(() => {
+            writeLessonPlanJsonCache(canonicalSubmissionsUrl, submissionMap);
+            return true;
+          })
+          .catch(() => false)
+      );
+    }
+
+    if (!requests.length) {
+      return false;
+    }
+
+    const results = await Promise.all(requests);
+
+    if (results.some(Boolean)) {
+      migratedLessonPlanSemesters.add(migrationKey);
+      return true;
+    }
+
+    return false;
+  }, [academicYear, canonicalRoots, teacherId, course?.id]);
 
   useEffect(() => {
     const loadSemesterIds = async () => {
@@ -281,17 +582,14 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
 
       try {
         const gradeKey = encodeURIComponent(course.grade);
-        const templateCandidates = pathVariants
-          .map((variant) => (variant.templatesRoot ? `${variant.templatesRoot}/${gradeKey}.json` : ""))
+        const templateCandidates = templateRoots
+          .map((templateRoot) => `${templateRoot}/${gradeKey}.json`)
           .filter(Boolean);
 
-        const { data: templateData, url } = await firstObjectFromUrls(templateCandidates);
-        if (templateData && url) {
-          const matched = pathVariants.find((variant) => url.startsWith(variant.templatesRoot));
-          if (matched) {
-            setResolvedRoots((previousRoots) => (rootsMatch(previousRoots, matched) ? previousRoots : matched));
-          }
-        }
+        const { data: templateData } = await firstObjectFromUrls(templateCandidates);
+        setResolvedRoots((previousRoots) =>
+          rootsMatch(previousRoots, canonicalRoots) ? previousRoots : canonicalRoots
+        );
 
         const nextSemesters = extractSemesterIds(templateData || {}, course);
         setSemesterIds(nextSemesters);
@@ -308,7 +606,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     };
 
     void loadSemesterIds();
-  }, [rtdbBase, pathVariants, firstObjectFromUrls, course?.id, course?.grade, course?.subject, course?.name]);
+  }, [rtdbBase, templateRoots, canonicalRoots, firstObjectFromUrls, course?.id, course?.grade, course?.subject, course?.name]);
 
   const refreshWeeks = useCallback(async () => {
     if (!rtdbBase || !teacherId || !course?.id || !selectedSemesterId) {
@@ -320,31 +618,71 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     setError("");
 
     try {
-      const variantResults = await Promise.all(
-        pathVariants.map(async (variant) => ({
-          variant,
-          ...(await fetchMonthMapForVariant({ variant, semesterId: selectedSemesterId })),
-        }))
-      );
+      const preferredRoots = readPreferredLessonPlanRoots({
+        rtdbBase,
+        academicYear,
+        teacherId,
+        courseId: course.id,
+        semesterId: selectedSemesterId,
+      });
 
-      const matchedResult = variantResults.find((result) => Object.keys(result.monthMap).length);
-      const monthMap = matchedResult?.monthMap || {};
-      const matchedVariant = matchedResult?.variant || null;
-      const activeVariant = matchedVariant || (hasResolvedRoots(resolvedRoots) ? resolvedRoots : (pathVariants[0] || null));
+      const prioritizedVariants = hasResolvedRoots(preferredRoots || {})
+        ? dedupeRootVariants([preferredRoots, resolvedRoots, canonicalRoots, ...pathVariants])
+        : hasResolvedRoots(resolvedRoots)
+          ? dedupeRootVariants([resolvedRoots, canonicalRoots, ...pathVariants])
+          : pathVariants;
 
-      if (matchedVariant && !rootsMatch(resolvedRoots, matchedVariant)) {
-        setResolvedRoots((previousRoots) => (rootsMatch(previousRoots, matchedVariant) ? previousRoots : matchedVariant));
+      let matchedResult = null;
+      for (const variant of prioritizedVariants) {
+        const result = await fetchMonthMapForVariant({ variant, semesterId: selectedSemesterId });
+        if (Object.keys(result.monthMap).length) {
+          matchedResult = { variant, ...result };
+          break;
+        }
       }
 
+      const monthMap = matchedResult?.monthMap || {};
+      const matchedVariant = matchedResult?.variant || null;
+      let activeVariant = matchedVariant
+        || preferredRoots
+        || (hasResolvedRoots(resolvedRoots) ? resolvedRoots : (prioritizedVariants[0] || null));
+
       let submissionMap = {};
-      if (activeVariant?.submissionsRoot) {
-        try {
-          const submissionsUrl = `${activeVariant.submissionsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}.json`;
-          const submissionsRes = await axios.get(submissionsUrl);
-          submissionMap = submissionsRes?.data && typeof submissionsRes.data === "object" ? submissionsRes.data : {};
-        } catch {
-          submissionMap = {};
-        }
+      if (matchedVariant?.submissionsRoot) {
+        submissionMap = await fetchSubmissionMapForVariant({
+          variant: matchedVariant,
+          semesterId: selectedSemesterId,
+        });
+      } else if (activeVariant?.submissionsRoot) {
+        submissionMap = await fetchSubmissionMapForVariant({
+          variant: activeVariant,
+          semesterId: selectedSemesterId,
+        });
+      }
+
+      const migratedToCanonical = await migrateSemesterToCanonical({
+        sourceVariant: matchedVariant,
+        semesterId: selectedSemesterId,
+        monthMap,
+        submissionMap,
+      });
+
+      if (migratedToCanonical) {
+        activeVariant = canonicalRoots;
+      }
+
+      if (activeVariant) {
+        writePreferredLessonPlanRoots({
+          rtdbBase,
+          academicYear,
+          teacherId,
+          courseId: course.id,
+          semesterId: selectedSemesterId,
+        }, activeVariant);
+      }
+
+      if (activeVariant && !rootsMatch(resolvedRoots, activeVariant)) {
+        setResolvedRoots((previousRoots) => (rootsMatch(previousRoots, activeVariant) ? previousRoots : activeVariant));
       }
 
       const rows = [];
@@ -364,7 +702,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setLoading(false);
     }
-  }, [rtdbBase, pathVariants, resolvedRoots, selectedSemesterId, fetchMonthMapForVariant, teacherId, course?.id]);
+  }, [rtdbBase, academicYear, pathVariants, canonicalRoots, resolvedRoots, selectedSemesterId, fetchMonthMapForVariant, fetchSubmissionMapForVariant, migrateSemesterToCanonical, teacherId, course?.id]);
 
   useEffect(() => {
     refreshWeeks();
@@ -393,13 +731,14 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
 
     setSaving(true);
     try {
-      const plansRoot = resolvedRoots.plansRoot || `${baseYearPath}/LessonPlans`;
+      const plansRoot = canonicalRoots.plansRoot || resolvedRoots.plansRoot;
       await Promise.all(
         normalizedEntries.map((entry) => {
           const weekUrl = `${plansRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/months/${encodeURIComponent(entry.monthId)}/weeks/${encodeURIComponent(entry.weekId)}.json`;
           return axios.patch(weekUrl, entry.payload);
         })
       );
+      clearSemesterPlanCaches(plansRoot, teacherId, course.id, selectedSemesterId);
       const updatesByRowId = new Map(
         normalizedEntries.map((entry) => [
           entry.rowId || `${entry.monthId}__${entry.weekId}`,
@@ -424,7 +763,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.plansRoot, baseYearPath, teacherId, course?.id, selectedSemesterId]);
+  }, [canonicalRoots.plansRoot, resolvedRoots.plansRoot, teacherId, course?.id, selectedSemesterId]);
 
   const updateWeekPlan = useCallback(async (rowId, changes) => {
     const target = weeks.find((row) => row.id === rowId);
@@ -453,10 +792,93 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     setDailyLogsLoadingKey(cacheKey);
 
     try {
-      const dailyRoot = resolvedRoots.dailyLogsRoot || `${baseYearPath}/LessonDailyLogs`;
-      const url = `${dailyRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
-      const response = await axios.get(url);
-      const node = response?.data && typeof response.data === "object" ? response.data : {};
+      const preferredRoots = readPreferredLessonPlanRoots({
+        rtdbBase,
+        academicYear,
+        teacherId,
+        courseId: course.id,
+        semesterId: selectedSemesterId,
+      });
+
+      const prioritizedVariants = hasResolvedRoots(preferredRoots || {})
+        ? dedupeRootVariants([preferredRoots, resolvedRoots, canonicalRoots, ...pathVariants])
+        : hasResolvedRoots(resolvedRoots)
+          ? dedupeRootVariants([resolvedRoots, canonicalRoots, ...pathVariants])
+          : pathVariants;
+
+      let node = {};
+      let matchedVariant = null;
+
+      for (const variant of prioritizedVariants) {
+        if (!variant?.dailyLogsRoot) continue;
+
+        try {
+          const url = buildDailyLogsWeekUrl(
+            variant.dailyLogsRoot,
+            teacherId,
+            course.id,
+            selectedSemesterId,
+            monthId,
+            weekId
+          );
+          const data = await fetchLessonPlanJson(url, {
+            ttlMs: 30 * 1000,
+            fallbackValue: {},
+          });
+          const candidateNode = data && typeof data === "object" ? data : {};
+          if (Object.keys(candidateNode).length) {
+            node = candidateNode;
+            matchedVariant = variant;
+            break;
+          }
+        } catch {
+          // try next location
+        }
+      }
+
+      if (
+        matchedVariant &&
+        !rootsMatch(matchedVariant, canonicalRoots) &&
+        canonicalRoots?.dailyLogsRoot &&
+        Object.keys(node).length
+      ) {
+        const migrationKey = [canonicalRoots.dailyLogsRoot, teacherId, course.id, selectedSemesterId, monthId, weekId].join("|");
+        if (!migratedLessonPlanWeeks.has(migrationKey)) {
+          const canonicalDailyLogsUrl = buildDailyLogsWeekUrl(
+            canonicalRoots.dailyLogsRoot,
+            teacherId,
+            course.id,
+            selectedSemesterId,
+            monthId,
+            weekId
+          );
+          await axios.put(
+            canonicalDailyLogsUrl,
+            node
+          ).then(() => {
+            writeLessonPlanJsonCache(canonicalDailyLogsUrl, node);
+          }).catch(() => null);
+          migratedLessonPlanWeeks.add(migrationKey);
+        }
+        writePreferredLessonPlanRoots({
+          rtdbBase,
+          academicYear,
+          teacherId,
+          courseId: course.id,
+          semesterId: selectedSemesterId,
+        }, canonicalRoots);
+        setResolvedRoots((previousRoots) => (rootsMatch(previousRoots, canonicalRoots) ? previousRoots : canonicalRoots));
+      } else if (matchedVariant && !rootsMatch(resolvedRoots, matchedVariant)) {
+        writePreferredLessonPlanRoots({
+          rtdbBase,
+          academicYear,
+          teacherId,
+          courseId: course.id,
+          semesterId: selectedSemesterId,
+        }, matchedVariant);
+        setResolvedRoots((previousRoots) => (rootsMatch(previousRoots, matchedVariant) ? previousRoots : matchedVariant));
+      }
+
       const logs = Object.entries(node)
         .map(([date, value]) => ({
           date,
@@ -474,12 +896,12 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setDailyLogsLoadingKey("");
     }
-  }, [resolvedRoots.dailyLogsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId]);
+  }, [rtdbBase, academicYear, resolvedRoots, canonicalRoots, pathVariants, teacherId, course?.id, selectedSemesterId]);
 
   const saveDailyLog = useCallback(async ({ monthId, weekId, date, log }) => {
     if (!teacherId || !course?.id || !selectedSemesterId || !monthId || !weekId || !date) return;
 
-    const dailyRoot = resolvedRoots.dailyLogsRoot || `${baseYearPath}/LessonDailyLogs`;
+    const dailyRoot = canonicalRoots.dailyLogsRoot || resolvedRoots.dailyLogsRoot;
 
     const logUrl = `${dailyRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}/${encodeURIComponent(date)}.json`;
 
@@ -496,6 +918,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     setSaving(true);
     try {
       await axios.put(logUrl, payload);
+      clearWeekDailyLogsCache(dailyRoot, teacherId, course.id, selectedSemesterId, monthId, weekId);
       const cacheKey = `${monthId}__${weekId}`;
       const normalizedLog = {
         date,
@@ -515,7 +938,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.dailyLogsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId]);
+  }, [canonicalRoots.dailyLogsRoot, resolvedRoots.dailyLogsRoot, teacherId, course?.id, selectedSemesterId]);
 
   const submitLessonEntries = useCallback(async ({ monthId, weekId, dates }) => {
     if (!teacherId || !course?.id || !selectedSemesterId || !monthId || !weekId) return [];
@@ -528,7 +951,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
 
     if (!normalizedDates.length) return [];
 
-    const submissionsRoot = resolvedRoots.submissionsRoot || `${baseYearPath}/LessonSubmissions`;
+    const submissionsRoot = canonicalRoots.submissionsRoot || resolvedRoots.submissionsRoot;
     const submissionUrl = `${submissionsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
 
     setSaving(true);
@@ -554,6 +977,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
         status: nextStatus,
         lastSubmittedAt,
       });
+      clearSemesterSubmissionCache(submissionsRoot, teacherId, course.id, selectedSemesterId);
 
       setWeeks((previousWeeks) =>
         sortWeeks(
@@ -575,7 +999,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.submissionsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId, weeks]);
+  }, [canonicalRoots.submissionsRoot, resolvedRoots.submissionsRoot, teacherId, course?.id, selectedSemesterId, weeks]);
 
   const submitDailyLog = useCallback(async ({ monthId, weekId, date }) => {
     return submitLessonEntries({ monthId, weekId, dates: [date] });
@@ -590,23 +1014,24 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     if (!week) return false;
     if (week.submittedCount < week.expectedDays) return false;
 
-    const submissionsRoot = resolvedRoots.submissionsRoot || `${baseYearPath}/LessonSubmissions`;
+    const submissionsRoot = canonicalRoots.submissionsRoot || resolvedRoots.submissionsRoot;
     const submissionUrl = `${submissionsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
 
     setSaving(true);
     try {
       await axios.patch(submissionUrl, { status: "complete", lastSubmittedAt: Date.now() });
+      clearSemesterSubmissionCache(submissionsRoot, teacherId, course.id, selectedSemesterId);
       await refreshWeeks();
       return true;
     } finally {
       setSaving(false);
     }
-  }, [weeks, resolvedRoots.submissionsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId, refreshWeeks]);
+  }, [weeks, canonicalRoots.submissionsRoot, resolvedRoots.submissionsRoot, teacherId, course?.id, selectedSemesterId, refreshWeeks]);
 
   const createWeekPlan = useCallback(async ({ monthId, weekId, payload }) => {
     if (!teacherId || !course?.id || !selectedSemesterId || !monthId || !weekId) return;
 
-    const plansRoot = resolvedRoots.plansRoot || `${baseYearPath}/LessonPlans`;
+    const plansRoot = canonicalRoots.plansRoot || resolvedRoots.plansRoot;
     const weekUrl = `${plansRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/months/${encodeURIComponent(monthId)}/weeks/${encodeURIComponent(weekId)}.json`;
 
     const body = {
@@ -622,6 +1047,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     setSaving(true);
     try {
       await axios.put(weekUrl, body);
+      clearSemesterPlanCaches(plansRoot, teacherId, course.id, selectedSemesterId);
       setWeeks((previousWeeks) =>
         sortWeeks([
           ...previousWeeks.filter((row) => row.id !== `${monthId}__${weekId}`),
@@ -632,14 +1058,14 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.plansRoot, baseYearPath, teacherId, course?.id, selectedSemesterId]);
+  }, [canonicalRoots.plansRoot, resolvedRoots.plansRoot, teacherId, course?.id, selectedSemesterId]);
 
   const deleteWeekPlan = useCallback(async ({ monthId, weekId }) => {
     if (!teacherId || !course?.id || !selectedSemesterId || !monthId || !weekId) return;
 
-    const plansRoot = resolvedRoots.plansRoot || `${baseYearPath}/LessonPlans`;
-    const dailyRoot = resolvedRoots.dailyLogsRoot || `${baseYearPath}/LessonDailyLogs`;
-    const submissionsRoot = resolvedRoots.submissionsRoot || `${baseYearPath}/LessonSubmissions`;
+    const plansRoot = canonicalRoots.plansRoot || resolvedRoots.plansRoot;
+    const dailyRoot = canonicalRoots.dailyLogsRoot || resolvedRoots.dailyLogsRoot;
+    const submissionsRoot = canonicalRoots.submissionsRoot || resolvedRoots.submissionsRoot;
 
     const weekUrl = `${plansRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/months/${encodeURIComponent(monthId)}/weeks/${encodeURIComponent(weekId)}.json`;
     const weekLogsUrl = `${dailyRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
@@ -652,17 +1078,20 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
         axios.delete(weekLogsUrl).catch(() => null),
         axios.delete(weekSubmissionUrl).catch(() => null),
       ]);
+      clearSemesterPlanCaches(plansRoot, teacherId, course.id, selectedSemesterId);
+      clearSemesterSubmissionCache(submissionsRoot, teacherId, course.id, selectedSemesterId);
+      clearWeekDailyLogsCache(dailyRoot, teacherId, course.id, selectedSemesterId, monthId, weekId);
       await refreshWeeks();
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.plansRoot, resolvedRoots.dailyLogsRoot, resolvedRoots.submissionsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId, refreshWeeks]);
+  }, [canonicalRoots.plansRoot, canonicalRoots.dailyLogsRoot, canonicalRoots.submissionsRoot, resolvedRoots.plansRoot, resolvedRoots.dailyLogsRoot, resolvedRoots.submissionsRoot, teacherId, course?.id, selectedSemesterId, refreshWeeks]);
 
   const deleteDailyLog = useCallback(async ({ monthId, weekId, date }) => {
     if (!teacherId || !course?.id || !selectedSemesterId || !monthId || !weekId || !date) return;
 
-    const dailyRoot = resolvedRoots.dailyLogsRoot || `${baseYearPath}/LessonDailyLogs`;
-    const submissionsRoot = resolvedRoots.submissionsRoot || `${baseYearPath}/LessonSubmissions`;
+    const dailyRoot = canonicalRoots.dailyLogsRoot || resolvedRoots.dailyLogsRoot;
+    const submissionsRoot = canonicalRoots.submissionsRoot || resolvedRoots.submissionsRoot;
 
     const logUrl = `${dailyRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}/${encodeURIComponent(date)}.json`;
     const submissionUrl = `${submissionsRoot}/${encodeURIComponent(teacherId)}/${encodeURIComponent(course.id)}/${encodeURIComponent(selectedSemesterId)}/${encodeURIComponent(monthId)}/${encodeURIComponent(weekId)}.json`;
@@ -670,6 +1099,7 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
     setSaving(true);
     try {
       await axios.delete(logUrl);
+      clearWeekDailyLogsCache(dailyRoot, teacherId, course.id, selectedSemesterId, monthId, weekId);
 
       const week = weeks.find((item) => item.monthId === monthId && item.weekId === weekId);
       const expectedDays = Number(week?.expectedDays || 0);
@@ -687,13 +1117,14 @@ export function useLessonPlanData({ rtdbBase, academicYear, teacherId, course })
         status: nextStatus,
         lastSubmittedAt: Date.now(),
       }).catch(() => null);
+      clearSemesterSubmissionCache(submissionsRoot, teacherId, course.id, selectedSemesterId);
 
       await loadWeekDailyLogs({ monthId, weekId });
       await refreshWeeks();
     } finally {
       setSaving(false);
     }
-  }, [resolvedRoots.dailyLogsRoot, resolvedRoots.submissionsRoot, baseYearPath, teacherId, course?.id, selectedSemesterId, weeks, loadWeekDailyLogs, refreshWeeks]);
+  }, [canonicalRoots.dailyLogsRoot, canonicalRoots.submissionsRoot, resolvedRoots.dailyLogsRoot, resolvedRoots.submissionsRoot, teacherId, course?.id, selectedSemesterId, weeks, loadWeekDailyLogs, refreshWeeks]);
 
   return {
     semesterIds,

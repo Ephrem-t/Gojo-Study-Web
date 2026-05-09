@@ -3,11 +3,14 @@ import os
 import re
 import sys
 from datetime import datetime
+from time import time
+from urllib.parse import unquote, urlparse
 from flask import Flask, request, jsonify, render_template, has_request_context
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
+from werkzeug.utils import secure_filename
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -47,6 +50,11 @@ SCOPED_ROOTS = {
     "counters",
     "Users_counters",
 }
+
+COURSE_STUDENTS_CACHE_TTL_SECONDS = 5 * 60
+STUDENT_ROSTER_CACHE_TTL_SECONDS = 60 * 60
+student_grade_cache = {}
+parent_lookup_cache = {}
 
 
 def _read_school_code_from_request():
@@ -92,6 +100,340 @@ def school_reference(path, school_code=None):
         normalized = f"Platform1/Schools/{resolved_school}/{normalized}"
 
     return _raw_db_reference(normalized)
+
+
+def _resolve_requested_school_code(explicit_school_code=None):
+    resolved_school = str(explicit_school_code or _read_school_code_from_request() or "").strip()
+
+    if resolved_school and not resolved_school.startswith("ET-"):
+        mapped_school = _resolve_school_code_by_short_name(resolved_school)
+        if mapped_school:
+            resolved_school = mapped_school
+
+    return resolved_school
+
+
+def _read_student_grade(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("grade")
+        or (student_record.get("basicStudentInformation") or {}).get("grade")
+        or (student_record.get("academicSetup") or {}).get("grade")
+        or ""
+    ).strip()
+
+
+def _read_student_section(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("section")
+        or (student_record.get("basicStudentInformation") or {}).get("section")
+        or (student_record.get("academicSetup") or {}).get("section")
+        or ""
+    ).strip().upper()
+
+
+def _read_student_user_id(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("userId")
+        or (student_record.get("systemAccountInformation") or {}).get("userId")
+        or (student_record.get("account") or {}).get("userId")
+        or ""
+    ).strip()
+
+
+def _is_active_record(record):
+    if not isinstance(record, dict):
+        return False
+
+    raw_value = record.get("status")
+    if raw_value is None:
+        raw_value = record.get("isActive")
+
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    normalized_value = str(raw_value or "active").strip().lower()
+    return normalized_value in {"active", "true", "1"}
+
+
+def _cache_get(cache_store, cache_key, ttl_seconds):
+    cache_entry = cache_store.get(cache_key)
+    if not cache_entry:
+        return None
+
+    if time() - float(cache_entry.get("cached_at") or 0) > float(ttl_seconds or 0):
+        cache_store.pop(cache_key, None)
+        return None
+
+    return cache_entry.get("value")
+
+
+def _cache_set(cache_store, cache_key, value):
+    cache_store[cache_key] = {
+        "value": value,
+        "cached_at": time(),
+    }
+    return value
+
+
+def _first_snapshot_record(snapshot):
+    if isinstance(snapshot, dict):
+        for record_key, record_value in snapshot.items():
+            if isinstance(record_value, dict):
+                return str(record_key or "").strip(), record_value
+
+    return "", {}
+
+
+def _build_student_roster_cache_key(school_code):
+    return str(school_code or "__default__").strip() or "__default__"
+
+
+def _clear_student_roster_cache(school_code):
+    student_grade_cache.pop(_build_student_roster_cache_key(school_code), None)
+
+
+def _get_cached_student_grade_sections(school_code):
+    cache_key = _build_student_roster_cache_key(school_code)
+    cached_value = _cache_get(student_grade_cache, cache_key, STUDENT_ROSTER_CACHE_TTL_SECONDS)
+    if isinstance(cached_value, dict):
+        return cached_value
+
+    students_node = school_reference("Students", school_code=school_code).get() or {}
+    if not isinstance(students_node, dict):
+        students_node = {}
+
+    grade_section_index = {}
+    for student_key, student_record in students_node.items():
+        if not isinstance(student_record, dict):
+            continue
+
+        grade_section_key = f"{_read_student_grade(student_record)}|{_read_student_section(student_record)}"
+        if grade_section_key == "|":
+            continue
+
+        grade_section_index.setdefault(grade_section_key, {})[str(student_key or "").strip()] = student_record
+
+    return _cache_set(student_grade_cache, cache_key, grade_section_index)
+
+
+def _load_students_for_grade_sections(school_code, allowed_grade_sections, include_inactive=False):
+    normalized_allowed = {
+        str(value or "").strip()
+        for value in (allowed_grade_sections or set())
+        if str(value or "").strip()
+    }
+    if not school_code or not normalized_allowed:
+        return []
+
+    grade_section_index = _get_cached_student_grade_sections(school_code)
+    user_cache = {}
+    rows = []
+    seen_student_keys = set()
+
+    for grade_section_key in normalized_allowed:
+        for student_key, student_record in (grade_section_index.get(grade_section_key) or {}).items():
+            if not isinstance(student_record, dict):
+                continue
+
+            normalized_student_key = str(student_key or "").strip()
+            if not normalized_student_key or normalized_student_key in seen_student_keys:
+                continue
+
+            student_user_id = _read_student_user_id(student_record)
+            if not student_user_id:
+                continue
+
+            if not include_inactive and not _is_active_record(student_record):
+                continue
+
+            student_section = _read_student_section(student_record)
+
+            if student_user_id not in user_cache:
+                user_record = school_reference(f"Users/{student_user_id}", school_code=school_code).get() or {}
+                user_cache[student_user_id] = user_record if isinstance(user_record, dict) else {}
+
+            seen_student_keys.add(normalized_student_key)
+            rows.append({
+                "studentKey": normalized_student_key,
+                "studentId": str(student_record.get("studentId") or student_key or "").strip(),
+                "userId": student_user_id,
+                "grade": _read_student_grade(student_record),
+                "section": student_section,
+                "raw": student_record,
+                "user": user_cache.get(student_user_id) or {},
+            })
+
+    return rows
+
+
+def _load_parent_record_by_identifier(school_code, parent_identifier):
+    normalized_identifier = str(parent_identifier or "").strip()
+    if not school_code or not normalized_identifier:
+        return "", {}
+
+    cache_key = f"{str(school_code or '__default__').strip() or '__default__'}::{normalized_identifier}"
+    cached_value = _cache_get(parent_lookup_cache, cache_key, COURSE_STUDENTS_CACHE_TTL_SECONDS)
+    if isinstance(cached_value, dict):
+        record_key = str(cached_value.get("recordKey") or "").strip()
+        record = cached_value.get("record") or {}
+        return record_key, record if isinstance(record, dict) else {}
+
+    parents_ref = school_reference("Parents", school_code=school_code)
+    direct_record = parents_ref.child(normalized_identifier).get() or {}
+    if isinstance(direct_record, dict) and direct_record:
+        enriched_direct_record = {
+            **direct_record,
+            "parentId": str(direct_record.get("parentId") or normalized_identifier).strip(),
+        }
+        payload = {
+            "recordKey": normalized_identifier,
+            "record": enriched_direct_record,
+        }
+        _cache_set(parent_lookup_cache, cache_key, payload)
+        return normalized_identifier, enriched_direct_record
+
+    try:
+        record_key, record = _first_snapshot_record(
+            parents_ref.order_by_child("userId").equal_to(normalized_identifier).limit_to_first(1).get() or {}
+        )
+    except Exception:
+        record_key, record = "", {}
+
+    if not isinstance(record, dict) or not record:
+        return "", {}
+
+    enriched_record = {
+        **record,
+        "parentId": str(record.get("parentId") or record_key or normalized_identifier).strip(),
+    }
+    payload = {
+        "recordKey": record_key,
+        "record": enriched_record,
+    }
+    _cache_set(parent_lookup_cache, cache_key, payload)
+    if record_key:
+        _cache_set(
+            parent_lookup_cache,
+            f"{str(school_code or '__default__').strip() or '__default__'}::{record_key}",
+            payload,
+        )
+    parent_user_id = str(enriched_record.get("userId") or "").strip()
+    if parent_user_id:
+        _cache_set(
+            parent_lookup_cache,
+            f"{str(school_code or '__default__').strip() or '__default__'}::{parent_user_id}",
+            payload,
+        )
+
+    return record_key, enriched_record
+
+
+def _normalize_rtdb_proxy_path(path_value):
+    normalized = str(path_value or "").strip().lstrip("/")
+    if normalized.endswith(".json"):
+        normalized = normalized[:-5]
+    return normalized.strip("/")
+
+
+def _parse_rtdb_query_value(raw_value):
+    if raw_value is None:
+        return None
+
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        return None
+
+    try:
+        return json.loads(normalized)
+    except Exception:
+        return normalized
+
+
+def _apply_rtdb_proxy_query(reference):
+    order_by = request.args.get("orderBy")
+    if order_by is not None:
+        normalized_order_by = _parse_rtdb_query_value(order_by)
+        if normalized_order_by == "$key":
+            reference = reference.order_by_key()
+        elif normalized_order_by == "$value":
+            reference = reference.order_by_value()
+        elif normalized_order_by:
+            reference = reference.order_by_child(str(normalized_order_by))
+
+    if request.args.get("startAt") is not None:
+        reference = reference.start_at(_parse_rtdb_query_value(request.args.get("startAt")))
+
+    if request.args.get("endAt") is not None:
+        reference = reference.end_at(_parse_rtdb_query_value(request.args.get("endAt")))
+
+    if request.args.get("equalTo") is not None:
+        reference = reference.equal_to(_parse_rtdb_query_value(request.args.get("equalTo")))
+
+    if request.args.get("limitToFirst") is not None:
+        try:
+            reference = reference.limit_to_first(int(str(request.args.get("limitToFirst") or "0")))
+        except (TypeError, ValueError):
+            pass
+
+    if request.args.get("limitToLast") is not None:
+        try:
+            reference = reference.limit_to_last(int(str(request.args.get("limitToLast") or "0")))
+        except (TypeError, ValueError):
+            pass
+
+    return reference
+
+
+@app.route("/api/rtdb-proxy/<path:node_path>", methods=["GET", "PUT", "PATCH", "POST", "DELETE"])
+def rtdb_proxy(node_path):
+    normalized_path = _normalize_rtdb_proxy_path(node_path)
+    if not normalized_path:
+        return jsonify({"success": False, "message": "RTDB path is required"}), 400
+
+    try:
+        reference = school_reference(normalized_path)
+        raw_body = request.get_data(cache=True, as_text=True)
+
+        if request.method == "GET":
+            queried_reference = _apply_rtdb_proxy_query(reference)
+            return jsonify(queried_reference.get())
+
+        if request.method == "DELETE":
+            reference.delete()
+            return jsonify(None)
+
+        payload = request.get_json(silent=True)
+
+        if request.method == "PUT":
+            if str(raw_body or "").strip().lower() == "null":
+                reference.delete()
+                return jsonify(None)
+
+            if payload is None and str(raw_body or "").strip():
+                return jsonify({"success": False, "message": "Invalid JSON payload"}), 400
+
+            reference.set(payload)
+            return jsonify(payload)
+
+        if request.method == "PATCH":
+            if not isinstance(payload, dict):
+                return jsonify({"success": False, "message": "PATCH payload must be a JSON object"}), 400
+            reference.update(payload)
+            return jsonify(payload)
+
+        new_ref = reference.push(payload)
+        return jsonify({"name": new_ref.key}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 def _normalize_short_name(value):
@@ -580,6 +922,109 @@ def _get_default_academic_year(school_code=None):
 bucket = storage.bucket()
 
 
+def _sanitize_storage_object_name(value, fallback="user"):
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
+    return normalized or fallback
+
+
+def _upload_profile_image_to_storage(profile_file, folder, identifier):
+    if not profile_file:
+        return ""
+
+    safe_identifier = _sanitize_storage_object_name(identifier, "user")
+    original_name = secure_filename(profile_file.filename or "profile.jpg") or "profile.jpg"
+    storage_name = f"{folder}/{safe_identifier}_{int(datetime.utcnow().timestamp())}_{original_name}"
+    blob = bucket.blob(storage_name)
+    blob.upload_from_file(profile_file, content_type=profile_file.content_type)
+    blob.make_public()
+    return blob.public_url
+
+
+def _extract_storage_object_name_from_url(public_url):
+    normalized_url = str(public_url or "").strip()
+    if not normalized_url:
+        return ""
+
+    parsed = urlparse(normalized_url)
+    bucket_name = str(getattr(bucket, "name", "") or "").strip()
+    if not bucket_name:
+        return ""
+
+    normalized_path = parsed.path.lstrip("/")
+    if parsed.netloc in {"storage.googleapis.com", "storage.cloud.google.com"}:
+        bucket_prefix = f"{bucket_name}/"
+        if normalized_path.startswith(bucket_prefix):
+            return unquote(normalized_path[len(bucket_prefix):])
+        return ""
+
+    if parsed.netloc == f"{bucket_name}.storage.googleapis.com":
+        return unquote(normalized_path)
+
+    if "firebasestorage.googleapis.com" in parsed.netloc:
+        marker = f"/b/{bucket_name}/o/"
+        if marker in parsed.path:
+            return unquote(parsed.path.split(marker, 1)[1])
+
+    return ""
+
+
+def _delete_storage_object_by_public_url(public_url):
+    object_name = _extract_storage_object_name_from_url(public_url)
+    if not object_name:
+        return False
+
+    try:
+        stale_blob = bucket.blob(object_name)
+        if stale_blob.exists():
+            stale_blob.delete()
+            return True
+    except Exception:
+        return False
+
+    return False
+
+
+@app.route('/api/storage/delete-by-url', methods=['POST'])
+def delete_storage_object_by_url():
+    try:
+        payload = request.get_json(silent=True) or {}
+        public_url = str(payload.get('publicUrl') or payload.get('url') or '').strip()
+        if not public_url:
+            return jsonify({"success": False, "message": "publicUrl is required", "deleted": False}), 400
+
+        deleted = _delete_storage_object_by_public_url(public_url)
+        return jsonify({
+            "success": True,
+            "deleted": bool(deleted),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e), "deleted": False}), 500
+
+
+def _find_user_node(users_ref, user_identifier):
+    normalized_identifier = str(user_identifier or "").strip()
+    if not normalized_identifier:
+        return None, None
+
+    direct_ref = users_ref.child(normalized_identifier)
+    direct_payload = direct_ref.get()
+    if isinstance(direct_payload, dict):
+        return normalized_identifier, direct_payload
+
+    for child_path in ("userId", "username"):
+        matched_users = (
+            users_ref.order_by_child(child_path).equal_to(normalized_identifier).limit_to_first(1).get() or {}
+        )
+        if not isinstance(matched_users, dict):
+            continue
+
+        for node_key, payload in matched_users.items():
+            if isinstance(payload, dict):
+                return str(node_key or "").strip(), payload
+
+    return None, None
+
+
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
@@ -605,6 +1050,69 @@ def get_school_grades(school_code):
         return jsonify({"success": True, "grades": grades})
     except Exception as e:
         return jsonify({"success": False, "message": str(e), "grades": []}), 500
+
+
+@app.route('/api/users/<user_id>/profile-image', methods=['POST'])
+def upload_user_profile_image(user_id):
+    try:
+        users_ref = school_reference('Users')
+        user_node_key, user_payload = _find_user_node(users_ref, user_id)
+        if not user_node_key or not isinstance(user_payload, dict):
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        profile_file = request.files.get('profile')
+        if not profile_file:
+            return jsonify({"success": False, "message": "Profile image file is required"}), 400
+
+        role = str(user_payload.get('role') or 'teacher').strip().lower()
+        if role == 'school_admins':
+            role = 'school_admin'
+        folder = {
+            'teacher': 'teachers',
+            'school_admin': 'school_admins',
+            'management': 'school_admins',
+            'hr': 'hr',
+            'finance': 'finance',
+            'parent': 'parents',
+            'student': 'students',
+        }.get(role, 'users')
+
+        identifier = (
+            user_payload.get('teacherId')
+            or user_payload.get('schoolAdminId')
+            or user_payload.get('managementId')
+            or user_payload.get('hrId')
+            or user_payload.get('financeId')
+            or user_payload.get('studentId')
+            or user_payload.get('username')
+            or user_payload.get('userId')
+            or user_node_key
+        )
+        previous_profile_url = str(user_payload.get('profileImage') or '').strip()
+        profile_url = _upload_profile_image_to_storage(profile_file, folder, identifier)
+
+        users_ref.child(user_node_key).update({
+            'profileImage': profile_url,
+        })
+
+        teacher_user_id = str(user_payload.get('userId') or user_node_key).strip()
+        teacher_matches = (
+            school_reference('Teachers').order_by_child('userId').equal_to(teacher_user_id).limit_to_first(1).get() or {}
+        )
+        if isinstance(teacher_matches, dict):
+            for teacher_key in teacher_matches.keys():
+                school_reference('Teachers').child(teacher_key).update({'profileImage': profile_url})
+
+        if previous_profile_url and previous_profile_url != profile_url:
+            _delete_storage_object_by_public_url(previous_profile_url)
+
+        return jsonify({
+            'success': True,
+            'profileImage': profile_url,
+            'userId': user_node_key,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 # New endpoint: reserve & return the next studentId
 @app.route("/generate/student_id", methods=["GET"])
@@ -830,6 +1338,7 @@ def register_student():
         'status': 'active',
     }
     students_ref.child(student_id).set(student_data)
+    _clear_student_roster_cache(_resolve_requested_school_code())
 
     return jsonify({
         'success': True,
@@ -1315,41 +1824,110 @@ def get_teacher_students(user_id):
     return jsonify({"courses": course_students})
 
 
+@app.route('/api/students/by-grade-sections', methods=['GET'])
+def get_students_by_grade_sections():
+    resolved_school_code = _resolve_requested_school_code()
+    allowed_grade_sections = {
+        str(value or '').strip()
+        for value in request.args.getlist('gradeSection')
+        if str(value or '').strip()
+    }
+    include_inactive = str(request.args.get('includeInactive') or '').strip().lower() in {'1', 'true', 'yes'}
+
+    if not resolved_school_code or not allowed_grade_sections:
+        return jsonify([])
+
+    return jsonify(_load_students_for_grade_sections(
+        resolved_school_code,
+        allowed_grade_sections,
+        include_inactive=include_inactive,
+    ))
+
+
+@app.route('/api/parents/by-ids', methods=['GET'])
+def get_parents_by_ids():
+    resolved_school_code = _resolve_requested_school_code()
+    parent_identifiers = []
+    seen_identifiers = set()
+
+    for raw_identifier in request.args.getlist('parentId'):
+        normalized_identifier = str(raw_identifier or '').strip()
+        if not normalized_identifier or normalized_identifier in seen_identifiers:
+            continue
+        seen_identifiers.add(normalized_identifier)
+        parent_identifiers.append(normalized_identifier)
+
+    if not resolved_school_code or not parent_identifiers:
+        return jsonify({})
+
+    records_by_identifier = {}
+    for parent_identifier in parent_identifiers:
+        _, parent_record = _load_parent_record_by_identifier(resolved_school_code, parent_identifier)
+        if isinstance(parent_record, dict) and parent_record:
+            records_by_identifier[parent_identifier] = parent_record
+
+    return jsonify(records_by_identifier)
+
+
 # ===================== GET STUDENTS OF A COURSE =====================
 @app.route('/api/course/<course_id>/students', methods=['GET'])
 def get_course_students(course_id):
-    courses_ref = school_reference('Courses')
-    students_ref = school_reference('Students')
-    users_ref = school_reference('Users')
-    marks_ref = school_reference('ClassMarks')
+    resolved_school_code = _resolve_requested_school_code()
+    courses_ref = school_reference('Courses', school_code=resolved_school_code)
+    include_marks = str(request.args.get('includeMarks') or '').strip().lower() in {'1', 'true', 'yes'}
 
     course = courses_ref.child(course_id).get()
     if not course:
         return jsonify({'students': [], 'course': None})
 
-    grade = course.get('grade')
-    section = course.get('section')
+    grade = str(course.get('grade') or '').strip()
+    section = str(course.get('section') or course.get('secation') or '').strip().upper()
 
-    all_students = students_ref.get() or {}
-    all_users = users_ref.get() or {}
+    grade_section_key = f'{grade}|{section}'
     course_students = []
 
-    for student_id, student in all_students.items():
-        if student.get('grade') == grade and student.get('section') == section:
-            user_data = all_users.get(student.get('userId'))
-            if user_data:
-                student_marks = marks_ref.child(course_id).child(student_id).get() or {}
-                course_students.append({
-                    'studentId': student_id,
-                    'name': user_data.get('name'),
-                    'username': user_data.get('username'),
-                    'marks': {
-                        'mark20': student_marks.get('mark20', 0),
-                        'mark30': student_marks.get('mark30', 0),
-                        'mark50': student_marks.get('mark50', 0),
-                        'mark100': student_marks.get('mark100', 0)
-                    }
-                })
+    for row in _load_students_for_grade_sections(
+        resolved_school_code,
+        {grade_section_key},
+        include_inactive=True,
+    ):
+        student_id = str(row.get('studentId') or '').strip()
+        student = row.get('raw') or {}
+        user_data = row.get('user') or {}
+
+        student_name = str(
+            user_data.get('name')
+            or student.get('name')
+            or (student.get('basicStudentInformation') or {}).get('name')
+            or 'Student'
+        ).strip() or 'Student'
+
+        course_student = {
+            'studentId': student_id,
+            'userId': str(row.get('userId') or '').strip(),
+            'name': student_name,
+            'username': user_data.get('username') or '',
+            'profileImage': (
+                user_data.get('profileImage')
+                or student.get('profileImage')
+                or (student.get('basicStudentInformation') or {}).get('studentPhoto')
+                or student.get('studentPhoto')
+                or ''
+            ),
+        }
+
+        if include_marks:
+            student_marks = school_reference(f'ClassMarks/{course_id}/{student_id}', school_code=resolved_school_code).get() or {}
+            course_student['marks'] = {
+                'mark20': student_marks.get('mark20', 0),
+                'mark30': student_marks.get('mark30', 0),
+                'mark50': student_marks.get('mark50', 0),
+                'mark100': student_marks.get('mark100', 0)
+            }
+
+        course_students.append(course_student)
+
+    course_students.sort(key=lambda item: str(item.get('name') or '').lower())
 
     return jsonify({
         'students': course_students,
@@ -1670,6 +2248,8 @@ def register_parent():
         students_ref.child(student_id).child("parents").child(parent_id).set({
             "relationship": relationship
         })
+
+    _clear_student_roster_cache(_resolve_requested_school_code())
 
     return jsonify({
         "success": True,

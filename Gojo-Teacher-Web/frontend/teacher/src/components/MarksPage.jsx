@@ -395,18 +395,15 @@ export default function MarksPage() {
         });
 
         if (!teacherCourses.length) {
-          const [coursesRes, classMarksRes, courseStatsRes] = await Promise.all([
+          const [coursesRes, courseStatsRes] = await Promise.all([
             axios.get(`${rtdbBase}/Courses.json`).catch(() => ({ data: {} })),
-            axios.get(`${rtdbBase}/ClassMarks.json`).catch(() => ({ data: {} })),
             axios.get(`${rtdbBase}/SchoolExams/CourseStats.json`).catch(() => ({ data: {} })),
           ]);
 
           const coursesMap = coursesRes.data || {};
-          const classMarks = classMarksRes.data || {};
           const courseStats = courseStatsRes.data || {};
           const fallbackCourseIds = new Set([
             ...Object.keys(coursesMap || {}),
-            ...Object.keys(classMarks || {}),
             ...Object.keys(courseStats || {}),
           ]);
 
@@ -415,7 +412,11 @@ export default function MarksPage() {
             .map((courseId) => {
               const stored = coursesMap?.[courseId] || {};
               const virtual = parseVirtualCourseFromId(courseId);
-              const marksCount = Object.keys(classMarks?.[courseId] || {}).length;
+              const activityScore = Math.max(
+                0,
+                Number(courseStats?.[courseId]?.totalSubmissions || 0),
+                Number(courseStats?.[courseId]?.totalAssessments || 0)
+              );
               return {
                 ...virtual,
                 id: courseId,
@@ -424,11 +425,11 @@ export default function MarksPage() {
                 grade: String(stored.grade || virtual.grade || "").trim(),
                 section: String(stored.section || stored.secation || virtual.section || "").trim().toUpperCase(),
                 virtual: !stored || !Object.keys(stored).length,
-                _marksCount: marksCount,
+                _activityScore: activityScore,
               };
             })
-            .sort((a, b) => (b._marksCount || 0) - (a._marksCount || 0))
-            .map(({ _marksCount, ...rest }) => rest);
+            .sort((a, b) => (b._activityScore || 0) - (a._activityScore || 0))
+            .map(({ _activityScore, ...rest }) => rest);
         }
 
         setCourses((prev) => {

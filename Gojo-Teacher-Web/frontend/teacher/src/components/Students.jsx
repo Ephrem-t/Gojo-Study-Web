@@ -26,31 +26,27 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getTeacherContext, getTeacherCourseContext } from "../api/teacherApi";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
-import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
+import {
+  buildChatMessageQuery,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  filterChatMessageRows,
+  getLastChatMessageKey,
+} from "../utils/chatRtdb";
 import { resolveProfileImage } from "../utils/profileImage";
 import {
   clearCachedChatSummary,
   fetchTeacherConversationSummaries,
+  loadParentRecordsByIds,
+  loadStudentsByGradeSections,
+  loadUserRecordsByIds,
   readSessionResource,
   resolveTeacherSchoolCode,
   writeSessionResource,
 } from "../utils/teacherData";
 import ProfileAvatar from "./ProfileAvatar";
-
-import {
-  ref as dbRef,
-  get,
-  onValue,
-  update,
-  push,
-  runTransaction,
-  query as dbQuery,
-  orderByChild,
-  limitToLast,
-  endAt,
-  equalTo,
-} from "firebase/database";
-import { db, schoolPath } from "../firebase";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { schoolPath } from "../firebase";
 
 const STUDENT_CONVERSATIONS_SESSION_TTL_MS = 20 * 1000;
 const EMPTY_TEACHER_COURSE_CONTEXT = {
@@ -69,6 +65,29 @@ const getChatId = (teacherUserId, otherUserId) => {
 };
 
 const QUICK_CHAT_HISTORY_LIMIT = 50;
+const QUICK_CHAT_POLL_INTERVAL_MS = 45000;
+const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
+const ATTENDANCE_RECENT_DATE_LIMITS = {
+  daily: 45,
+  weekly: 90,
+  monthly: 180,
+};
+
+const createQuickChatMessageId = () =>
+  `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+const buildQuickChatMessageRows = (messagesNode = {}, teacherUserId = "") =>
+  Object.entries(messagesNode || {})
+    .map(([id, message]) => ({
+      id,
+      messageId: id,
+      ...message,
+      isTeacher: String(message?.senderId || "") === String(teacherUserId || ""),
+    }))
+    .sort(
+      (leftMessage, rightMessage) =>
+        Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+    );
 
 const normalizeGrade = (value) => String(value ?? "").trim();
 const normalizeSection = (value) => String(value ?? "").trim().toUpperCase();
@@ -169,16 +188,16 @@ const mergeChatMessages = (...groups) => {
         id: key,
         messageId: key,
       });
-
-      const buildStudentConversationsSessionKey = (schoolCode, teacherUserId) => {
-        return `students_unread_conversations_${String(schoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
-      };
     });
 
   return [...merged.values()].sort(
     (leftMessage, rightMessage) =>
       Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
   );
+};
+
+const buildStudentConversationsSessionKey = (schoolCode, teacherUserId) => {
+  return `students_unread_conversations_${String(schoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
 };
 
 // find user by userId in Users node object
@@ -555,6 +574,8 @@ function StudentsPage() {
   const messagesEndRef = useRef(null);
   const quickChatMessagesRef = useRef(null);
   const quickChatScrollRestoreRef = useRef(null);
+  const lastQuickChatActivityAtRef = useRef(Date.now());
+  const lastQuickChatMessageKeyRef = useRef("");
   const userRecordCacheRef = useRef(new Map());
   const parentRecordCacheRef = useRef(new Map());
   const teacherRecordCacheRef = useRef(new Map());
@@ -639,6 +660,65 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   }, [resolvedSchoolCode]);
 
   const scopedStudentPath = (path) => schoolPath(path, resolvedSchoolCode || teacherSchoolCode);
+  const buildRtdbUrl = (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`;
+
+  const fetchQuickChatMessagesPage = async ({ chatId, beforeMessageKey, afterMessageKey } = {}) => {
+    if (!chatId) {
+      return { messages: [], overflowed: false };
+    }
+
+    const response = await axios.get(buildRtdbUrl(`Chats/${chatId}/messages`), {
+      params: buildChatMessageQuery({
+        pageSize: QUICK_CHAT_HISTORY_LIMIT,
+        beforeMessageKey,
+        afterMessageKey,
+      }),
+    });
+    const messagesNode = response?.data && typeof response.data === "object" ? response.data : {};
+    const messageList = filterChatMessageRows(buildQuickChatMessageRows(messagesNode, teacherUserId), {
+      beforeMessageKey,
+      afterMessageKey,
+    });
+
+    return {
+      messages: messageList,
+      overflowed: Boolean(afterMessageKey) && messageList.length > QUICK_CHAT_HISTORY_LIMIT,
+    };
+  };
+
+  const patchQuickChatSummary = async (ownerUserId, chatId, patch) => {
+    const normalizedOwnerUserId = normalizeIdentifier(ownerUserId);
+    if (!normalizedOwnerUserId || !chatId || !patch || typeof patch !== "object") {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(buildChatSummaryPath(normalizedOwnerUserId, chatId)), patch);
+  };
+
+  const updateQuickChatParticipants = async (chatId, participantIds = []) => {
+    const participantPatch = (participantIds || []).reduce((result, participantId) => {
+      const normalizedParticipantId = normalizeIdentifier(participantId);
+      if (normalizedParticipantId) {
+        result[normalizedParticipantId] = true;
+      }
+      return result;
+    }, {});
+
+    if (!Object.keys(participantPatch).length) {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(`Chats/${chatId}/participants`), participantPatch);
+  };
+
+  const syncQuickChatSummaryCache = (chatId) => {
+    clearCachedChatSummary({
+      rtdbBase,
+      chatId,
+      teacherUserId,
+    });
+  };
+
   const messages = useMemo(
     () => mergeChatMessages(olderQuickChatMessages, liveQuickChatMessages),
     [olderQuickChatMessages, liveQuickChatMessages]
@@ -700,6 +780,8 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     const normalizedUserIds = [...new Set(userIds.map(normalizeIdentifier).filter(Boolean))];
     if (!normalizedUserIds.length) return {};
 
+    const schoolCode = resolvedSchoolCode || teacherSchoolCode;
+
     const cachedUsers = {};
     const missingUserIds = [];
 
@@ -715,36 +797,14 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     if (!missingUserIds.length) return cachedUsers;
 
-    const fetchedEntries = await Promise.all(
-      missingUserIds.map(async (userId) => {
-        try {
-          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Users/${userId}`)));
-          if (directSnapshot.exists()) {
-            return [userId, directSnapshot.val()];
-          }
-        } catch (error) {
-          // fall through to indexed lookup
-        }
+    const fetchedUsers = await loadUserRecordsByIds({
+      rtdbBase,
+      schoolCode,
+      userIds: missingUserIds,
+    });
 
-        try {
-          const lookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedStudentPath("Users")), orderByChild("userId"), equalTo(userId))
-          );
-          if (lookupSnapshot.exists()) {
-            return [userId, Object.values(lookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // ignore missing indexed lookup support and return null below
-        }
-
-        return [userId, null];
-      })
-    );
-
-    const fetchedUsers = {};
-    fetchedEntries.forEach(([userId, userRecord]) => {
+    Object.entries(fetchedUsers || {}).forEach(([userId, userRecord]) => {
       if (!userRecord) return;
-      fetchedUsers[userId] = userRecord;
       cacheUserRecord(userId, userRecord);
     });
 
@@ -780,40 +840,29 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     if (!missingTeacherIds.length) return cachedTeachers;
 
+    const fullTeachersNode = await fetchCachedJson(`${rtdbBase}/Teachers.json`, {
+      ttlMs: 5 * 60 * 1000,
+      fallbackValue: {},
+    });
+
     const fetchedEntries = await Promise.all(
       missingTeacherIds.map(async (teacherId) => {
-        try {
-          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Teachers/${teacherId}`)));
-          if (directSnapshot.exists()) {
-            return [teacherId, directSnapshot.val()];
-          }
-        } catch (error) {
-          // fall through to indexed lookups
+        const directRecord = await fetchCachedJson(`${rtdbBase}/Teachers/${encodeURIComponent(teacherId)}.json`, {
+          ttlMs: 5 * 60 * 1000,
+          fallbackValue: null,
+        });
+        if (directRecord && typeof directRecord === "object" && !Array.isArray(directRecord)) {
+          return [teacherId, directRecord];
         }
 
-        try {
-          const teacherLookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedStudentPath("Teachers")), orderByChild("teacherId"), equalTo(teacherId))
-          );
-          if (teacherLookupSnapshot.exists()) {
-            return [teacherId, Object.values(teacherLookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // continue to userId lookup below
-        }
+        const matchedTeacher = Object.entries(fullTeachersNode || {}).find(([recordKey, teacherRecord]) => {
+          const refs = [recordKey, teacherRecord?.teacherId, teacherRecord?.teacherKey, teacherRecord?.userId]
+            .map(normalizeIdentifier)
+            .filter(Boolean);
+          return refs.includes(teacherId);
+        });
 
-        try {
-          const userLookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedStudentPath("Teachers")), orderByChild("userId"), equalTo(teacherId))
-          );
-          if (userLookupSnapshot.exists()) {
-            return [teacherId, Object.values(userLookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // ignore missing indexed lookup support and return null below
-        }
-
-        return [teacherId, null];
+        return [teacherId, matchedTeacher?.[1] || null];
       })
     );
 
@@ -840,6 +889,8 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
   const loadParentsForStudent = async (student, usersObj = {}) => {
     if (!student) return {};
 
+    const schoolCode = resolvedSchoolCode || teacherSchoolCode;
+
     const parentLinks = collectStudentParentLinks(
       student,
       findUserByIdentifiers({ ...(usersData || {}), ...(usersObj || {}) }, student?.userId) || null
@@ -865,47 +916,14 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     if (!missingParentIdentifiers.length) return cachedParents;
 
-    const fetchedEntries = await Promise.all(
-      missingParentIdentifiers.map(async (parentIdentifier) => {
-        try {
-          const directSnapshot = await get(dbRef(db, scopedStudentPath(`Parents/${parentIdentifier}`)));
-          if (directSnapshot.exists()) {
-            return [parentIdentifier, directSnapshot.val()];
-          }
-        } catch (error) {
-          // fall through to indexed lookups
-        }
+    const fetchedParents = await loadParentRecordsByIds({
+      rtdbBase,
+      schoolCode,
+      parentIds: missingParentIdentifiers,
+    });
 
-        try {
-          const parentIdLookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedStudentPath("Parents")), orderByChild("parentId"), equalTo(parentIdentifier))
-          );
-          if (parentIdLookupSnapshot.exists()) {
-            return [parentIdentifier, Object.values(parentIdLookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // continue to userId lookup below
-        }
-
-        try {
-          const userLookupSnapshot = await get(
-            dbQuery(dbRef(db, scopedStudentPath("Parents")), orderByChild("userId"), equalTo(parentIdentifier))
-          );
-          if (userLookupSnapshot.exists()) {
-            return [parentIdentifier, Object.values(userLookupSnapshot.val() || {})[0] || null];
-          }
-        } catch (error) {
-          // ignore missing indexed lookup support and return null below
-        }
-
-        return [parentIdentifier, null];
-      })
-    );
-
-    const fetchedParents = {};
-    fetchedEntries.forEach(([parentIdentifier, parentRecord]) => {
+    Object.entries(fetchedParents || {}).forEach(([parentIdentifier, parentRecord]) => {
       if (!parentRecord) return;
-      fetchedParents[parentIdentifier] = parentRecord;
       cacheParentRecord(parentIdentifier, parentRecord);
     });
 
@@ -927,11 +945,12 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     if (!normalizedCourseIds.length) return {};
 
     const schoolScopeKey = normalizeIdentifier(resolvedSchoolCode || teacherSchoolCode || "default");
+    const attendanceDateLimit = ATTENDANCE_RECENT_DATE_LIMITS[attendanceView] || ATTENDANCE_RECENT_DATE_LIMITS.weekly;
     const cachedAttendance = {};
     const missingCourseIds = [];
 
     normalizedCourseIds.forEach((courseId) => {
-      const cacheKey = `${schoolScopeKey}::${courseId}`;
+      const cacheKey = `${schoolScopeKey}::${courseId}::${attendanceDateLimit}`;
       if (attendanceCourseCacheRef.current.has(cacheKey)) {
         cachedAttendance[courseId] = attendanceCourseCacheRef.current.get(cacheKey) || {};
         return;
@@ -943,18 +962,20 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
     const fetchedEntries = await Promise.all(
       missingCourseIds.map(async (courseId) => {
-        try {
-          const courseAttendanceSnapshot = await get(dbRef(db, scopedStudentPath(`Attendance/${courseId}`)));
-          return [courseId, courseAttendanceSnapshot.exists() ? courseAttendanceSnapshot.val() || {} : {}];
-        } catch (error) {
-          return [courseId, {}];
-        }
+        const response = await axios.get(`${rtdbBase}/Attendance/${encodeURIComponent(courseId)}.json`, {
+          params: {
+            orderBy: JSON.stringify("$key"),
+            limitToLast: attendanceDateLimit,
+          },
+        }).catch(() => ({ data: {} }));
+        const courseAttendance = response?.data && typeof response.data === "object" ? response.data : {};
+        return [courseId, courseAttendance || {}];
       })
     );
 
     const fetchedAttendance = {};
     fetchedEntries.forEach(([courseId, courseAttendance]) => {
-      const cacheKey = `${schoolScopeKey}::${courseId}`;
+      const cacheKey = `${schoolScopeKey}::${courseId}::${attendanceDateLimit}`;
       attendanceCourseCacheRef.current.set(cacheKey, courseAttendance || {});
       fetchedAttendance[courseId] = courseAttendance || {};
     });
@@ -1210,6 +1231,7 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
       setLoading(true);
       try {
         const courseContext = teacherCourseContext || EMPTY_TEACHER_COURSE_CONTEXT;
+        const schoolCode = resolvedSchoolCode || teacherSchoolCode;
 
         const allowedGradeSections = new Set(
           (courseContext?.courses || [])
@@ -1239,63 +1261,36 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
           return;
         }
 
-        const allowedGrades = [...new Set(
-          [...allowedGradeSections]
-            .map((gradeSectionKey) => String(gradeSectionKey || "").split("|")[0])
-            .filter(Boolean)
-        )];
-
-        const studentSnapshots = await Promise.all(
-          allowedGrades.flatMap((gradeValue) => [
-            get(
-              dbQuery(
-                dbRef(db, scopedStudentPath("Students")),
-                orderByChild("grade"),
-                equalTo(gradeValue)
-              )
-            ).catch(() => null),
-            get(
-              dbQuery(
-                dbRef(db, scopedStudentPath("Students")),
-                orderByChild("basicStudentInformation/grade"),
-                equalTo(gradeValue)
-              )
-            ).catch(() => null),
-          ])
-        );
-
-        const allStudentsNode = {};
-        studentSnapshots.forEach((snapshot) => {
-          if (!snapshot?.exists()) return;
-          Object.assign(allStudentsNode, snapshot.val() || {});
+        const studentRows = await loadStudentsByGradeSections({
+          rtdbBase,
+          schoolCode,
+          allowedGradeSections,
         });
 
-        if (!Object.keys(allStudentsNode).length) {
-          const fallbackStudentsSnapshot = await get(dbRef(db, scopedStudentPath("Students"))).catch(() => null);
-          Object.assign(allStudentsNode, fallbackStudentsSnapshot?.exists() ? fallbackStudentsSnapshot.val() || {} : {});
-        }
+        const fetchedUsers = (studentRows || []).reduce((result, studentRow) => {
+          if (studentRow?.userId && studentRow?.user) {
+            result[studentRow.userId] = studentRow.user;
+          }
+          return result;
+        }, {});
 
-        const filteredStudentEntries = Object.entries(allStudentsNode)
-          .filter(([, studentRecord]) => {
-            const studentUserId = getStudentUserId(studentRecord);
-            if (!studentUserId) return false;
-            if (!isActiveRecord(studentRecord)) return false;
-
-            const key = buildGradeSectionKey(
-              studentRecord.grade || studentRecord?.basicStudentInformation?.grade,
-              studentRecord.section || studentRecord?.basicStudentInformation?.section
-            );
-
-            return allowedGradeSections.has(key);
+        if (Object.keys(fetchedUsers).length) {
+          Object.entries(fetchedUsers).forEach(([userId, userRecord]) => {
+            cacheUserRecord(userId, userRecord);
           });
 
-        const usersObj = await loadUsersByIds(filteredStudentEntries.map(([, studentRecord]) => getStudentUserId(studentRecord)));
-        const findUser = (userId) => findUserByUserId({ ...(usersData || {}), ...(usersObj || {}) }, userId);
+          setUsersData((previousUsers) => ({
+            ...(previousUsers || {}),
+            ...fetchedUsers,
+          }));
+        }
 
-        const studentsArr = filteredStudentEntries
-          .map(([studentId, s]) => {
-            const studentUserId = getStudentUserId(s);
-            const user = findUser(studentUserId);
+        const studentsArr = (studentRows || [])
+          .map((studentRow) => {
+            const studentId = studentRow?.studentId || studentRow?.studentKey || studentRow?.userId;
+            const s = studentRow?.raw || {};
+            const studentUserId = studentRow?.userId || getStudentUserId(s);
+            const user = studentRow?.user || fetchedUsers?.[studentUserId] || usersData?.[studentUserId] || null;
 
             const normalizedStudentGrade = normalizeGrade(s.grade || s.basicStudentInformation?.grade);
             const normalizedStudentSection = normalizeSection(s.section || s.basicStudentInformation?.section);
@@ -1321,9 +1316,10 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
               ...s,
               studentId: s.studentId || studentId,
               userId: studentUserId,
-              name: user?.name || s.name || s?.basicStudentInformation?.name || "Unknown",
+              name: studentRow?.name || user?.name || s.name || s?.basicStudentInformation?.name || "Unknown",
               email: user?.email || s.email || "",
               profileImage: resolveProfileImage(
+                studentRow?.profileImage,
                 user?.profileImage,
                 user?.profile,
                 user?.avatar,
@@ -1804,7 +1800,7 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
-}, [selectedStudent, rtdbBase, teacherInfo, teacherCourseContext, teacherCourseContextReady, usersData]);
+}, [selectedStudent, attendanceView, rtdbBase, teacherInfo, teacherCourseContext, teacherCourseContextReady, usersData]);
 
 // Derived data used by the UI (attendanceBySubject, getProgress, etc.)
 const attendanceData = React.useMemo(() => {
@@ -1863,7 +1859,7 @@ const toggleExpand = (key) => {
   // ---------------- FETCH PERFORMANCE (FIXED)
   useEffect(() => {
     // we only need to fetch marks when a student is selected
-    if (!selectedStudent || !resolvedSchoolCode) {
+    if (!selectedStudent || !resolvedSchoolCode || !rtdbBase || !teacherCourseContextReady) {
       setStudentMarksFlattened({});
       return;
     }
@@ -1871,17 +1867,29 @@ const toggleExpand = (key) => {
     const fetchMarksForStudent = async () => {
       setMarksLoading(true);
       try {
-        const scopedSnapshot = await get(dbRef(db, schoolPath("ClassMarks", resolvedSchoolCode)));
-        const legacySnapshot = scopedSnapshot.exists() ? null : await get(dbRef(db, "ClassMarks"));
-        const snapshot = scopedSnapshot.exists() ? scopedSnapshot : legacySnapshot;
+        const flattened = {};
 
-        if (!snapshot || !snapshot.exists()) {
+        const selectedGradeKey = normalizeGrade(selectedStudent?.grade || selectedStudent?.raw?.basicStudentInformation?.grade);
+        const selectedSectionKey = normalizeSection(selectedStudent?.section || selectedStudent?.raw?.basicStudentInformation?.section);
+        const relevantCourses = (teacherCourseContext?.courses || []).filter((course) => {
+          const courseGrade = normalizeGrade(course?.grade);
+          const courseSection = normalizeSection(course?.section || course?.secation);
+
+          if (selectedGradeKey && courseGrade && selectedGradeKey !== courseGrade) return false;
+          if (selectedSectionKey && courseSection && selectedSectionKey !== courseSection) return false;
+          return true;
+        });
+
+        const relevantCourseIds = [...new Set(
+          (relevantCourses.length ? relevantCourses : teacherCourseContext?.courses || [])
+            .map((course) => normalizeIdentifier(course?.id || course?.courseId))
+            .filter(Boolean)
+        )];
+
+        if (!relevantCourseIds.length) {
           setStudentMarksFlattened({});
           return;
         }
-
-        const data = snapshot.val(); // object where keys are course_* and values are student maps
-        const flattened = {};
 
         const candidates = new Set(
           [
@@ -1892,7 +1900,18 @@ const toggleExpand = (key) => {
           ].filter(Boolean)
         );
 
-        Object.entries(data).forEach(([courseKey, studentsMap]) => {
+        const marksByCourse = await Promise.all(
+          relevantCourseIds.map(async (courseId) => {
+            const studentsMap = await fetchCachedJson(`${rtdbBase}/ClassMarks/${encodeURIComponent(courseId)}.json`, {
+              ttlMs: 30 * 1000,
+              fallbackValue: {},
+              force: true,
+            });
+            return [courseId, studentsMap];
+          })
+        );
+
+        marksByCourse.forEach(([courseKey, studentsMap]) => {
           if (!studentsMap || typeof studentsMap !== "object") return;
 
           const foundEntry = Object.entries(studentsMap).find(([studentKey, studentData]) => {
@@ -1920,7 +1939,7 @@ const toggleExpand = (key) => {
     };
 
     fetchMarksForStudent();
-  }, [selectedStudent, resolvedSchoolCode]);
+  }, [selectedStudent, resolvedSchoolCode, rtdbBase, teacherCourseContext, teacherCourseContextReady]);
 
   const availableSemesters = useMemo(() => {
     const semesters = new Set();
@@ -2044,9 +2063,43 @@ const toggleExpand = (key) => {
     scrollToBottom(messages.length > QUICK_CHAT_HISTORY_LIMIT ? "auto" : "smooth");
   }, [messages]);
 
-  // Fetch messages for the selected student
+  // Poll recent messages for the selected student with a bounded page size.
+  useEffect(() => {
+    if (!chatOpen) {
+      return undefined;
+    }
+
+    const markQuickChatActivity = () => {
+      lastQuickChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markQuickChatActivity();
+    };
+
+    window.addEventListener("focus", markQuickChatActivity);
+    window.addEventListener("online", markQuickChatActivity);
+    window.addEventListener("pointerdown", markQuickChatActivity, { passive: true });
+    window.addEventListener("touchstart", markQuickChatActivity, { passive: true });
+    window.addEventListener("keydown", markQuickChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markQuickChatActivity);
+      window.removeEventListener("online", markQuickChatActivity);
+      window.removeEventListener("pointerdown", markQuickChatActivity);
+      window.removeEventListener("touchstart", markQuickChatActivity);
+      window.removeEventListener("keydown", markQuickChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [chatOpen]);
+
   useEffect(() => {
     if (!chatOpen || !teacherUserId || !quickChatTarget?.userId) {
+      lastQuickChatMessageKeyRef.current = "";
       setLiveQuickChatMessages([]);
       setOlderQuickChatMessages([]);
       setQuickChatLoading(false);
@@ -2057,42 +2110,150 @@ const toggleExpand = (key) => {
     }
 
     const chatKey = getChatId(teacherUserId, quickChatTarget.userId);
-    const messagesRef = dbQuery(
-      dbRef(db, scopedStudentPath(`Chats/${chatKey}/messages`)),
-      orderByChild("timeStamp"),
-      limitToLast(QUICK_CHAT_HISTORY_LIMIT)
-    );
 
     setQuickChatLoading(true);
+  lastQuickChatMessageKeyRef.current = "";
+    let cancelled = false;
+    let syncInFlight = false;
 
-    const unsubscribe = onValue(
-      messagesRef,
-      (snapshot) => {
-        const data = snapshot.val() || {};
-        const msgs = Object.entries(data)
-          .map(([id, m]) => ({
-            id,
-            messageId: id,
-            ...m,
-            isTeacher: String(m?.senderId || "") === String(teacherUserId),
-          }))
-          .sort((a, b) => Number(a?.timeStamp || 0) - Number(b?.timeStamp || 0));
-
-        setLiveQuickChatMessages(msgs);
-        setQuickChatHasOlder((previousValue) => previousValue || msgs.length >= QUICK_CHAT_HISTORY_LIMIT);
-        setQuickChatLoading(false);
-      },
-      (error) => {
-        console.error("Failed to load quick chat messages:", error);
-        setLiveQuickChatMessages([]);
-        setOlderQuickChatMessages([]);
-        setQuickChatHasOlder(false);
-        setQuickChatLoading(false);
+    const syncLatestMessages = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastQuickChatActivityAtRef.current <= QUICK_CHAT_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
       }
-    );
 
-    return () => unsubscribe();
-  }, [chatOpen, teacherUserId, quickChatTarget?.userId, resolvedSchoolCode, teacherSchoolCode]);
+      if (syncInFlight) return;
+      syncInFlight = true;
+
+      try {
+        const afterMessageKey = !force ? lastQuickChatMessageKeyRef.current : "";
+        let replaceMessages = !afterMessageKey;
+        let appliedMessages = [];
+
+        if (afterMessageKey) {
+          const incrementalResult = await fetchQuickChatMessagesPage({
+            chatId: chatKey,
+            afterMessageKey,
+          });
+
+          if (incrementalResult.overflowed) {
+            const snapshotResult = await fetchQuickChatMessagesPage({ chatId: chatKey });
+            appliedMessages = snapshotResult.messages;
+            replaceMessages = true;
+          } else {
+            appliedMessages = incrementalResult.messages;
+            replaceMessages = false;
+          }
+        } else {
+          const snapshotResult = await fetchQuickChatMessagesPage({ chatId: chatKey });
+          appliedMessages = snapshotResult.messages;
+        }
+
+        if (cancelled) return;
+
+        if (replaceMessages) {
+          lastQuickChatMessageKeyRef.current = getLastChatMessageKey(appliedMessages);
+          setLiveQuickChatMessages(appliedMessages);
+          setQuickChatHasOlder((previousValue) => previousValue || appliedMessages.length >= QUICK_CHAT_HISTORY_LIMIT);
+        } else if (appliedMessages.length) {
+          setLiveQuickChatMessages((previousMessages) => {
+            const nextMessages = mergeChatMessages(previousMessages, appliedMessages);
+            lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+            return nextMessages;
+          });
+        }
+        setQuickChatLoading(false);
+
+        const unseenMessages = appliedMessages.filter(
+          (message) => String(message?.receiverId || "") === String(teacherUserId) && !message?.seen
+        );
+        if (!unseenMessages.length) return;
+
+        const seenAt = Date.now();
+        const seenPatch = unseenMessages.reduce((result, message) => {
+          const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+          if (!messageKey) return result;
+          result[`messages/${messageKey}/seen`] = true;
+          result[`messages/${messageKey}/seenAt`] = seenAt;
+          return result;
+        }, {});
+
+        try {
+          await Promise.all([
+            axios.patch(buildRtdbUrl(`Chats/${chatKey}`), seenPatch),
+            patchQuickChatSummary(
+              teacherUserId,
+              chatKey,
+              buildChatSummaryUpdate({
+                chatId: chatKey,
+                otherUserId: quickChatTarget.userId,
+                unreadCount: 0,
+                lastMessageSeen: true,
+                lastMessageSeenAt: seenAt,
+              })
+            ),
+          ]);
+
+          if (cancelled) return;
+
+          setLiveQuickChatMessages((previousMessages) =>
+            previousMessages.map((message) => {
+              const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+              if (!messageKey || !seenPatch[`messages/${messageKey}/seen`]) {
+                return message;
+              }
+
+              return {
+                ...message,
+                seen: true,
+                seenAt,
+              };
+            })
+          );
+          syncQuickChatSummaryCache(chatKey);
+        } catch (error) {
+          console.error("Failed to mark messages seen:", error);
+        }
+      } catch (error) {
+        console.error("Failed to load quick chat messages:", error);
+        if (!cancelled) {
+          lastQuickChatMessageKeyRef.current = "";
+          setLiveQuickChatMessages([]);
+          setOlderQuickChatMessages([]);
+          setQuickChatHasOlder(false);
+          setQuickChatLoading(false);
+        }
+      } finally {
+        syncInFlight = false;
+      }
+    };
+
+    const handleFocusedRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastQuickChatActivityAtRef.current = Date.now();
+      void syncLatestMessages({ force: true });
+    };
+
+    void syncLatestMessages({ force: true });
+    const intervalId = window.setInterval(() => {
+      void syncLatestMessages();
+    }, QUICK_CHAT_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedRefresh);
+    window.addEventListener("online", handleFocusedRefresh);
+    document.addEventListener("visibilitychange", handleFocusedRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedRefresh);
+      window.removeEventListener("online", handleFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedRefresh);
+    };
+  }, [chatOpen, teacherUserId, quickChatTarget?.userId, rtdbBase]);
 
   const loadOlderMessages = async () => {
     if (
@@ -2106,8 +2267,8 @@ const toggleExpand = (key) => {
       return;
     }
 
-    const oldestMessageTimeStamp = Number(messages[0]?.timeStamp || 0);
-    if (!oldestMessageTimeStamp) {
+    const oldestMessageKey = normalizeIdentifier(messages[0]?.id || messages[0]?.messageId);
+    if (!oldestMessageKey) {
       setQuickChatHasOlder(false);
       return;
     }
@@ -2124,23 +2285,10 @@ const toggleExpand = (key) => {
 
     try {
       const chatId = getChatId(teacherUserId, quickChatTarget.userId);
-      const olderMessagesRef = dbQuery(
-        dbRef(db, scopedStudentPath(`Chats/${chatId}/messages`)),
-        orderByChild("timeStamp"),
-        endAt(oldestMessageTimeStamp - 1),
-        limitToLast(QUICK_CHAT_HISTORY_LIMIT)
-      );
-
-      const snapshot = await get(olderMessagesRef);
-      const data = snapshot.val() || {};
-      const olderMessagesPage = Object.entries(data)
-        .map(([id, message]) => ({
-          id,
-          messageId: id,
-          ...message,
-          isTeacher: String(message?.senderId || "") === String(teacherUserId),
-        }))
-        .sort((leftMessage, rightMessage) => Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0));
+      const { messages: olderMessagesPage } = await fetchQuickChatMessagesPage({
+        chatId,
+        beforeMessageKey: oldestMessageKey,
+      });
 
       if (!olderMessagesPage.length) {
         setQuickChatHasOlder(false);
@@ -2160,42 +2308,6 @@ const toggleExpand = (key) => {
     }
   };
 
-  // Mark messages as seen when chat popup is open and there are unseen messages for this teacher
-  useEffect(() => {
-    if (!chatOpen || !quickChatTarget?.userId || !teacherUserId) return;
-    if (!messages || messages.length === 0) return;
-
-    const unseen = messages.filter(
-      (m) => String(m?.receiverId || "") === String(teacherUserId) && !m?.seen
-    );
-    if (unseen.length === 0) return;
-
-    const chatId = getChatId(teacherUserId, quickChatTarget.userId);
-    const ts = Date.now();
-
-    const payload = {};
-    unseen.forEach((m) => {
-      payload[`messages/${m.id}/seen`] = true;
-      payload[`messages/${m.id}/seenAt`] = ts;
-    });
-
-    Promise.all([
-      update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), payload),
-      update(
-        dbRef(db, scopedStudentPath(buildChatSummaryPath(teacherUserId, chatId))),
-        buildChatSummaryUpdate({
-          chatId,
-          otherUserId: quickChatTarget.userId,
-          unreadCount: 0,
-          lastMessageSeen: true,
-          lastMessageSeenAt: ts,
-        })
-      ),
-    ])
-      .catch((err) => console.error("Failed to mark messages seen:", err));
-
-  }, [chatOpen, messages, quickChatTarget?.userId, teacherUserId, resolvedSchoolCode, teacherSchoolCode]);
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -2211,6 +2323,7 @@ const toggleExpand = (key) => {
     const timeStamp = Date.now();
 
     const message = {
+      messageId: createQuickChatMessageId(),
       senderId,
       receiverId,
       type: "text",
@@ -2222,16 +2335,18 @@ const toggleExpand = (key) => {
     };
 
     try {
-      await push(dbRef(db, scopedStudentPath(`Chats/${chatId}/messages`)), message);
+      const receiverSummaryResponse = await axios
+        .get(buildRtdbUrl(buildChatSummaryPath(receiverId, chatId)))
+        .catch(() => ({ data: {} }));
+      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
 
-      await update(dbRef(db, scopedStudentPath(`Chats/${chatId}`)), {
-        [`participants/${senderId}`]: true,
-        [`participants/${receiverId}`]: true,
-      });
+      await axios.put(buildRtdbUrl(`Chats/${chatId}/messages/${message.messageId}`), message);
+      await updateQuickChatParticipants(chatId, [senderId, receiverId]);
 
       await Promise.all([
-        update(
-          dbRef(db, scopedStudentPath(buildChatSummaryPath(senderId, chatId))),
+        patchQuickChatSummary(
+          senderId,
+          chatId,
           buildChatSummaryUpdate({
             chatId,
             otherUserId: receiverId,
@@ -2244,11 +2359,13 @@ const toggleExpand = (key) => {
             lastMessageSeenAt: null,
           })
         ),
-        update(
-          dbRef(db, scopedStudentPath(buildChatSummaryPath(receiverId, chatId))),
+        patchQuickChatSummary(
+          receiverId,
+          chatId,
           buildChatSummaryUpdate({
             chatId,
             otherUserId: senderId,
+            unreadCount: nextUnreadCount,
             lastMessageText: text,
             lastMessageType: "text",
             lastMessageTime: timeStamp,
@@ -2259,12 +2376,19 @@ const toggleExpand = (key) => {
         ),
       ]);
 
+      syncQuickChatSummaryCache(chatId);
+      setLiveQuickChatMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [
+          {
+            id: message.messageId,
+            ...message,
+            isTeacher: true,
+          },
+        ]);
+        lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
+      });
       setNewMessageText("");
-
-      await runTransaction(
-        dbRef(db, scopedStudentPath(`${buildChatSummaryPath(receiverId, chatId)}/unreadCount`)),
-        (current) => (Number(current) || 0) + 1
-      );
     } catch (err) {
       console.error("Failed to send quick chat message:", err);
     }

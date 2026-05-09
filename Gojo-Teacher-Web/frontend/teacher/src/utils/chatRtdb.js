@@ -36,6 +36,60 @@ export const fetchJson = async (url, fallbackValue = null) => {
   }
 };
 
+const normalizeChatMessageKey = (value) => String(value || "").trim();
+
+export const getChatMessageKey = (message = {}) => {
+  return normalizeChatMessageKey(message?.id || message?.messageId);
+};
+
+export const getLastChatMessageKey = (messages = []) => {
+  const sourceMessages = Array.isArray(messages) ? messages : [];
+  return getChatMessageKey(sourceMessages[sourceMessages.length - 1]);
+};
+
+export const buildChatMessageQuery = ({ pageSize = 50, beforeMessageKey = "", afterMessageKey = "" } = {}) => {
+  const normalizedPageSize = Math.max(1, Number(pageSize) || 50);
+  const normalizedBeforeKey = normalizeChatMessageKey(beforeMessageKey);
+  const normalizedAfterKey = normalizeChatMessageKey(afterMessageKey);
+
+  if (normalizedBeforeKey) {
+    return {
+      orderBy: JSON.stringify("$key"),
+      endAt: JSON.stringify(normalizedBeforeKey),
+      limitToLast: normalizedPageSize + 1,
+    };
+  }
+
+  if (normalizedAfterKey) {
+    return {
+      orderBy: JSON.stringify("$key"),
+      startAt: JSON.stringify(normalizedAfterKey),
+      limitToFirst: normalizedPageSize + 2,
+    };
+  }
+
+  return {
+    orderBy: JSON.stringify("$key"),
+    limitToLast: normalizedPageSize,
+  };
+};
+
+export const filterChatMessageRows = (messages = [], { beforeMessageKey = "", afterMessageKey = "" } = {}) => {
+  const sourceMessages = Array.isArray(messages) ? messages : [];
+  const normalizedBeforeKey = normalizeChatMessageKey(beforeMessageKey);
+  const normalizedAfterKey = normalizeChatMessageKey(afterMessageKey);
+
+  if (normalizedBeforeKey) {
+    return sourceMessages.filter((message) => getChatMessageKey(message) !== normalizedBeforeKey);
+  }
+
+  if (normalizedAfterKey) {
+    return sourceMessages.filter((message) => getChatMessageKey(message) !== normalizedAfterKey);
+  }
+
+  return sourceMessages;
+};
+
 export const buildChatKeyCandidates = (currentUserId, otherUserId) => {
   const leftId = String(currentUserId || "").trim();
   const rightId = String(otherUserId || "").trim();

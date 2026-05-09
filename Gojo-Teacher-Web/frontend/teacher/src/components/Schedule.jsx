@@ -36,6 +36,19 @@ const parseGradeSection = (rawValue) => {
 
 const toClassKey = (grade, section) => `${String(grade || "").trim()}_${String(section || "").trim().toUpperCase()}`;
 
+const buildGradeLabelCandidates = (grade, section) => {
+  const normalizedGrade = String(grade || "").trim();
+  const normalizedSection = String(section || "").trim().toUpperCase();
+  if (!normalizedGrade) return [];
+
+  return [...new Set([
+    `Grade ${normalizedGrade}${normalizedSection}`,
+    `Grade ${normalizedGrade}${normalizedSection ? ` ${normalizedSection}` : ""}`.trim(),
+    `${normalizedGrade}${normalizedSection}`,
+    `${normalizedGrade}${normalizedSection ? ` ${normalizedSection}` : ""}`.trim(),
+  ].filter(Boolean))];
+};
+
 function Timetable() {
   const navigate = useNavigate();
 
@@ -148,13 +161,54 @@ function Timetable() {
       setLoading(true);
       setError("");
       try {
-        const [scheduleRes, courseContext] = await Promise.all([
-          axios.get(`${rtdbBase}/Schedules.json`).catch(() => ({ data: {} })),
-          getTeacherCourseContext({ teacher, rtdbBase }),
-        ]);
+        const courseContext = await getTeacherCourseContext({ teacher, rtdbBase });
+        const resolvedCourses = Array.isArray(courseContext?.courses) ? courseContext.courses : [];
+        const gradeLabelCandidateGroups = [...new Map(
+          resolvedCourses
+            .map((course) => {
+              const candidates = buildGradeLabelCandidates(course?.grade, course?.section || course?.secation);
+              const classKey = toClassKey(course?.grade, course?.section || course?.secation);
+              return [classKey || candidates.join("|"), candidates];
+            })
+            .filter(([, candidates]) => candidates.length)
+        ).values()];
 
-        setSchedule(scheduleRes.data || {});
-        setTeacherCourses(courseContext?.courses || []);
+        let nextSchedule = {};
+
+        if (gradeLabelCandidateGroups.length) {
+          const dayEntries = await Promise.all(
+            DAYS.map(async (day) => {
+              const classEntries = await Promise.all(
+                gradeLabelCandidateGroups.map(async (gradeLabels) => {
+                  for (const gradeLabel of gradeLabels) {
+                    const response = await axios
+                      .get(`${rtdbBase}/Schedules/${encodeURIComponent(day)}/${encodeURIComponent(gradeLabel)}.json`)
+                      .catch(() => ({ data: null }));
+                    const periods = response?.data && typeof response.data === "object" ? response.data : null;
+                    if (periods) {
+                      return [gradeLabel, periods];
+                    }
+                  }
+
+                  return null;
+                })
+              );
+
+              const scopedClasses = Object.fromEntries(classEntries.filter(Boolean));
+              return [day, scopedClasses];
+            })
+          );
+
+          nextSchedule = Object.fromEntries(
+            dayEntries.filter(([, classes]) => Object.keys(classes || {}).length)
+          );
+        } else {
+          const scheduleRes = await axios.get(`${rtdbBase}/Schedules.json`).catch(() => ({ data: {} }));
+          nextSchedule = scheduleRes.data || {};
+        }
+
+        setSchedule(nextSchedule);
+        setTeacherCourses(resolvedCourses);
       } catch {
         setError("Failed to load timetable workspace.");
       } finally {

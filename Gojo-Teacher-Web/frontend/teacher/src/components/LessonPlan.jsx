@@ -8,6 +8,7 @@ import * as XLSX from "xlsx";
 import Sidebar from "./Sidebar";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
+import { fetchAcademicYearsNode } from "../utils/teacherData";
 import LessonPlanTable from "./lessonPlan/LessonPlanTable";
 import DailyLogsPanel from "./lessonPlan/DailyLogsPanel";
 import { ETHIOPIAN_MONTHS, useLessonPlanData } from "./lessonPlan/useLessonPlanData";
@@ -237,10 +238,9 @@ function LessonPlan() {
 			setCoursesLoading(true);
 
 			try {
-				const [courseContext, yearLowerRes, yearUpperRes] = await Promise.all([
+				const [courseContext, yearsNode] = await Promise.all([
 					getTeacherCourseContext({ teacher, rtdbBase }),
-					axios.get(`${rtdbBase}/academicYears.json`).catch(() => ({ data: {} })),
-					axios.get(`${rtdbBase}/AcademicYears.json`).catch(() => ({ data: {} })),
+					fetchAcademicYearsNode(rtdbBase),
 				]);
 
 				const resolvedCourses = Array.isArray(courseContext?.courses) ? courseContext.courses : [];
@@ -248,9 +248,6 @@ function LessonPlan() {
 				setTeacherKey(String(courseContext?.teacherKey || teacher?.teacherId || teacher?.teacherKey || ""));
 				setSelectedCourseId((prev) => (prev && resolvedCourses.some((item) => item.id === prev) ? prev : (resolvedCourses[0]?.id || "")));
 
-				const yearsNodeLower = yearLowerRes?.data && typeof yearLowerRes.data === "object" ? yearLowerRes.data : {};
-				const yearsNodeUpper = yearUpperRes?.data && typeof yearUpperRes.data === "object" ? yearUpperRes.data : {};
-				const yearsNode = Object.keys(yearsNodeLower).length ? yearsNodeLower : yearsNodeUpper;
 				const years = Object.keys(yearsNode);
 				setAcademicYearOptions(years);
 

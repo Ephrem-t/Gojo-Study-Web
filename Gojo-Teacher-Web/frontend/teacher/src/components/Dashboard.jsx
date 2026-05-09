@@ -225,6 +225,64 @@ const buildDefaultCalendarEvents = (ethiopianYear) =>
     };
   });
 
+const formatIsoDate = (year, month, day) => {
+  if (!year || !month || !day) return "";
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+};
+
+const toCalendarBucketKey = (isoDate) => {
+  const match = String(isoDate || "").trim().match(/^(\d{4}-\d{2})-/);
+  return match?.[1] || "";
+};
+
+const collectCalendarBucketKeysBetween = (startIsoDate, endIsoDate) => {
+  const startMatch = String(startIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
+  const endMatch = String(endIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
+  if (!startMatch || !endMatch) return [];
+
+  let currentYear = Number(startMatch[1]);
+  let currentMonth = Number(startMatch[2]);
+  const endYear = Number(endMatch[1]);
+  const endMonth = Number(endMatch[2]);
+  const keys = [];
+
+  while (currentYear < endYear || (currentYear === endYear && currentMonth <= endMonth)) {
+    keys.push(`${currentYear}-${String(currentMonth).padStart(2, "0")}`);
+    currentMonth += 1;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear += 1;
+    }
+  }
+
+  return keys;
+};
+
+const buildCalendarBucketKeys = ({
+  visibleMonthStartIsoDate,
+  visibleMonthEndIsoDate,
+  todayIsoDate,
+  deadlineEndIsoDate,
+}) => {
+  return [...new Set([
+    ...collectCalendarBucketKeysBetween(visibleMonthStartIsoDate, visibleMonthEndIsoDate),
+    ...collectCalendarBucketKeysBetween(todayIsoDate, deadlineEndIsoDate),
+  ])];
+};
+
+const toCalendarStoragePayload = (eventValue = {}) => ({
+  title: String(eventValue?.title || "").trim(),
+  type: String(eventValue?.type || "").trim(),
+  category: String(eventValue?.category || "no-class").trim(),
+  subType: String(eventValue?.subType || "general").trim(),
+  notes: String(eventValue?.notes || "").trim(),
+  gregorianDate: String(eventValue?.gregorianDate || "").trim(),
+  ethiopianDate: eventValue?.ethiopianDate || null,
+  createdAt: eventValue?.createdAt || "",
+  createdBy: eventValue?.createdBy || "",
+  showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
+});
+
 function getSafeProfileImage(profileImage) {
   if (!profileImage) return "/default-profile.png";
   if (
@@ -432,8 +490,8 @@ export default function Dashboard() {
     `dashboard_posts_${String(candidateSchoolCode || "global").toUpperCase()}`;
   const getDashboardConversationsSessionKey = (candidateSchoolCode, teacherUserId) =>
     `dashboard_conversations_${String(candidateSchoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
-  const getDashboardCalendarSessionKey = (candidateSchoolCode) =>
-    `dashboard_calendar_${String(candidateSchoolCode || "global").toUpperCase()}`;
+  const getDashboardCalendarSessionKey = (candidateSchoolCode, bucketKeys = []) =>
+    `dashboard_calendar_${String(candidateSchoolCode || "global").toUpperCase()}_${(bucketKeys || []).filter(Boolean).join("_") || "none"}`;
 
   const MESSAGE_PREVIEW_LIMIT = 220;
 
@@ -627,6 +685,11 @@ export default function Dashboard() {
       isDefault: false,
     };
   };
+
+  const normalizeCalendarEventsFromNode = (calendarNode = {}) =>
+    Object.entries(calendarNode || {})
+      .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
+      .filter((eventItem) => eventItem.gregorianDate);
 
   const sortCalendarEvents = (events) =>
     [...events].sort((leftEvent, rightEvent) => {
@@ -1169,6 +1232,16 @@ export default function Dashboard() {
     calendarViewDate.month,
     calendarDaysInMonth
   );
+  const calendarMonthStartIsoDate = formatIsoDate(
+    calendarMonthStartGregorian.year,
+    calendarMonthStartGregorian.month,
+    calendarMonthStartGregorian.day
+  );
+  const calendarMonthEndIsoDate = formatIsoDate(
+    calendarMonthEndGregorian.year,
+    calendarMonthEndGregorian.month,
+    calendarMonthEndGregorian.day
+  );
   const calendarFirstWeekday = new Date(
     calendarMonthStartGregorian.year,
     calendarMonthStartGregorian.month - 1,
@@ -1236,12 +1309,22 @@ export default function Dashboard() {
 
   const deadlineWindowEnd = new Date(calendarNow);
   deadlineWindowEnd.setDate(deadlineWindowEnd.getDate() + 30);
-  const deadlineWindowEndIsoDate = `${deadlineWindowEnd.getFullYear()}-${String(
-    deadlineWindowEnd.getMonth() + 1
-  ).padStart(2, "0")}-${String(deadlineWindowEnd.getDate()).padStart(2, "0")}`;
-  const calendarTodayIsoDate = `${calendarNow.getFullYear()}-${String(
-    calendarNow.getMonth() + 1
-  ).padStart(2, "0")}-${String(calendarNow.getDate()).padStart(2, "0")}`;
+  const deadlineWindowEndIsoDate = formatIsoDate(
+    deadlineWindowEnd.getFullYear(),
+    deadlineWindowEnd.getMonth() + 1,
+    deadlineWindowEnd.getDate()
+  );
+  const calendarTodayIsoDate = formatIsoDate(
+    calendarNow.getFullYear(),
+    calendarNow.getMonth() + 1,
+    calendarNow.getDate()
+  );
+  const calendarBucketKeys = buildCalendarBucketKeys({
+    visibleMonthStartIsoDate: calendarMonthStartIsoDate,
+    visibleMonthEndIsoDate: calendarMonthEndIsoDate,
+    todayIsoDate: calendarTodayIsoDate,
+    deadlineEndIsoDate: deadlineWindowEndIsoDate,
+  });
 
   const upcomingDeadlineEvents = calendarEvents
     .filter(
@@ -1290,7 +1373,10 @@ export default function Dashboard() {
     const forceRefresh = Boolean(options?.force);
     setCalendarEventsLoading(true);
     try {
-      const sessionCacheKey = getDashboardCalendarSessionKey(effectiveSchoolCode);
+      const sessionCacheKey = getDashboardCalendarSessionKey(
+        effectiveSchoolCode,
+        calendarBucketKeys
+      );
       const cachedCalendarEvents = !forceRefresh
         ? readSessionResource(sessionCacheKey, {
             ttlMs: 5 * 60 * 1000,
@@ -1300,14 +1386,49 @@ export default function Dashboard() {
         setCalendarEvents(cachedCalendarEvents);
       }
 
-      const rawEvents = await fetchCachedJson(`${DB_ROOT}/CalendarEvents.json`, {
-        ttlMs: 5 * 60 * 1000,
-        fallbackValue: {},
-        force: forceRefresh,
-      });
-      const normalizedEvents = Object.entries(rawEvents)
-        .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
-        .filter((eventItem) => eventItem.gregorianDate);
+      const bucketNodes = await Promise.all(
+        calendarBucketKeys.map((bucketKey) =>
+          fetchCachedJson(`${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}.json`, {
+            ttlMs: 5 * 60 * 1000,
+            fallbackValue: {},
+            force: forceRefresh,
+          })
+        )
+      );
+
+      let normalizedEvents = bucketNodes.flatMap((bucketNode) =>
+        normalizeCalendarEventsFromNode(bucketNode)
+      );
+
+      if (!normalizedEvents.length) {
+        const rawEvents = await fetchCachedJson(`${DB_ROOT}/CalendarEvents.json`, {
+          ttlMs: 5 * 60 * 1000,
+          fallbackValue: {},
+          force: forceRefresh,
+        });
+
+        normalizedEvents = normalizeCalendarEventsFromNode(rawEvents).filter((eventItem) =>
+          calendarBucketKeys.includes(toCalendarBucketKey(eventItem.gregorianDate))
+        );
+
+        if (normalizedEvents.length) {
+          await Promise.all(
+            normalizedEvents
+              .map((eventItem) => {
+                const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
+                if (!bucketKey || !eventItem.id) return null;
+
+                return axios
+                  .put(
+                    `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`,
+                    toCalendarStoragePayload(eventItem)
+                  )
+                  .catch(() => null);
+              })
+              .filter(Boolean)
+          );
+        }
+      }
 
       const sortedEvents = sortCalendarEvents(normalizedEvents);
       writeSessionResource(sessionCacheKey, sortedEvents);
@@ -1338,6 +1459,9 @@ export default function Dashboard() {
 
     setCalendarEventSaving(true);
     try {
+      const existingEvent = editingCalendarEventId
+        ? calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId) || null
+        : null;
       const normalizedCategory =
         calendarModalContext === "deadline" ? "academic" : calendarEventForm.category;
       const selectedEventMeta = getCalendarEventMeta(normalizedCategory);
@@ -1349,10 +1473,7 @@ export default function Dashboard() {
         notes: calendarEventForm.notes.trim(),
         showInUpcomingDeadlines:
           calendarModalContext === "deadline" ||
-          Boolean(
-            calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId)
-              ?.showInUpcomingDeadlines
-          ),
+          Boolean(existingEvent?.showInUpcomingDeadlines),
         gregorianDate: selectedCalendarDay.isoDate,
         ethiopianDate: {
           year: calendarViewDate.year,
@@ -1362,12 +1483,35 @@ export default function Dashboard() {
         createdAt: new Date().toISOString(),
         createdBy: teacherId || "",
       };
+      const nextBucketKey = toCalendarBucketKey(payload.gregorianDate);
 
       if (editingCalendarEventId) {
         await axios.patch(`${DB_ROOT}/CalendarEvents/${editingCalendarEventId}.json`, payload);
+        if (nextBucketKey) {
+          await axios.put(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`,
+            payload
+          );
+        }
+
+        const previousBucketKey = toCalendarBucketKey(existingEvent?.gregorianDate);
+        if (previousBucketKey && previousBucketKey !== nextBucketKey) {
+          await axios
+            .delete(
+              `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(previousBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`
+            )
+            .catch(() => null);
+        }
         setCalendarActionMessage("Calendar event updated successfully.");
       } else {
-        await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        const createRes = await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        const createdEventId = String(createRes?.data?.name || "").trim();
+        if (createdEventId && nextBucketKey) {
+          await axios.put(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(createdEventId)}.json`,
+            payload
+          );
+        }
         setCalendarActionMessage("Calendar event saved successfully.");
       }
 
@@ -1434,6 +1578,14 @@ export default function Dashboard() {
     setCalendarEventSaving(true);
     try {
       await axios.delete(`${DB_ROOT}/CalendarEvents/${eventItem.id}.json`);
+      const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
+      if (bucketKey) {
+        await axios
+          .delete(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`
+          )
+          .catch(() => null);
+      }
       if (editingCalendarEventId === eventItem.id) {
         setEditingCalendarEventId("");
         setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
@@ -1488,7 +1640,7 @@ export default function Dashboard() {
   useEffect(() => {
     setShowAllUpcomingDeadlines(false);
     loadCalendarEvents();
-  }, [effectiveSchoolCode]);
+  }, [effectiveSchoolCode, calendarViewDate.year, calendarViewDate.month]);
 
   return (
     <div

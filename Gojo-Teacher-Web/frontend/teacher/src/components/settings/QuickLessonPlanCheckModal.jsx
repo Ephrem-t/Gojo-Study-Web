@@ -11,6 +11,7 @@ import {
 } from "react-icons/fa";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../../api/rtdbScope";
 import { getTeacherCourseContext } from "../../api/teacherApi";
+import { fetchAcademicYearsNode } from "../../utils/teacherData";
 import { formatSemesterLabel, normalizeSemesterId, useLessonPlanData } from "../lessonPlan/useLessonPlanData";
 import "../../styles/settingsPage.css";
 
@@ -191,10 +192,9 @@ export default function QuickLessonPlanCheckModal({
       setCoursesLoading(true);
 
       try {
-        const [courseContext, yearLowerRes, yearUpperRes] = await Promise.all([
+        const [courseContext, yearsNode] = await Promise.all([
           getTeacherCourseContext({ teacher, rtdbBase }),
-          axios.get(`${rtdbBase}/academicYears.json`).catch(() => ({ data: {} })),
-          axios.get(`${rtdbBase}/AcademicYears.json`).catch(() => ({ data: {} })),
+          fetchAcademicYearsNode(rtdbBase),
         ]);
 
         const resolvedCourses = Array.isArray(courseContext?.courses) ? courseContext.courses : [];
@@ -209,9 +209,6 @@ export default function QuickLessonPlanCheckModal({
           return resolvedCourses[0]?.id || "";
         });
 
-        const yearsNodeLower = yearLowerRes?.data && typeof yearLowerRes.data === "object" ? yearLowerRes.data : {};
-        const yearsNodeUpper = yearUpperRes?.data && typeof yearUpperRes.data === "object" ? yearUpperRes.data : {};
-        const yearsNode = Object.keys(yearsNodeLower).length ? yearsNodeLower : yearsNodeUpper;
         const years = Object.keys(yearsNode);
         setAcademicYearOptions(years);
 

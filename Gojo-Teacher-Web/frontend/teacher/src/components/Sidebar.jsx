@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import axios from "axios";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaBookOpen,
@@ -20,6 +19,7 @@ import {
 import ProfileAvatar from "./ProfileAvatar";
 import { resolveProfileImage } from "../utils/profileImage";
 import { getRtdbRoot } from "../api/rtdbScope";
+import { loadUserRecordById } from "../utils/teacherData";
 
 const TEACHER_BEFORE_APP_NAVIGATION_HANDLER = "__teacherBeforeAppNavigation";
 
@@ -128,18 +128,6 @@ const writeCachedTeacherProfileImage = (teacherUserId, imageUrl) => {
   }
 };
 
-const buildUsersLookupUrls = (rtdbBase, schoolCode) => {
-  const urls = [`${rtdbBase}/Users.json`];
-  const scopedPrefix = schoolCode ? `/Platform1/Schools/${schoolCode}` : "";
-  const alreadyScoped = scopedPrefix && rtdbBase.includes(scopedPrefix);
-
-  if (schoolCode && !alreadyScoped) {
-    urls.push(`${rtdbBase}/Platform1/Schools/${schoolCode}/Users.json`);
-  }
-
-  return [...new Set(urls)];
-};
-
 export default function Sidebar({
   active,
   sidebarOpen,
@@ -153,8 +141,6 @@ export default function Sidebar({
   if (hasPersistentSidebar && !persistent) {
     return null;
   }
-
-  const RTDB_BASE = getRtdbRoot();
   const location = useLocation();
   const navigate = useNavigate();
   const [sectionsOpen, setSectionsOpen] = useState(() => readStoredSections());
@@ -195,35 +181,18 @@ export default function Sidebar({
   }, [baseProfileImage]);
 
   useEffect(() => {
-    const schoolCode = String(teacher?.schoolCode || "").trim();
+    const schoolCode = String(teacher?.schoolCode || staticTeacherSnapshot?.schoolCode || "").trim();
     if (!effectiveTeacherUserId) return;
 
     let cancelled = false;
 
     const hydrateProfileFromUsers = async () => {
       try {
-        const urls = buildUsersLookupUrls(RTDB_BASE, schoolCode);
-
-        let matchedUser = null;
-
-        for (const url of urls) {
-          try {
-            const response = await axios.get(url);
-            const usersObj = response.data || {};
-            if (usersObj && typeof usersObj === "object") {
-              matchedUser =
-                usersObj[teacherUserId] ||
-                Object.entries(usersObj).find(([userKey, userItem]) =>
-                  String(userKey || "").trim() === effectiveTeacherUserId ||
-                  String(userItem?.userId || "").trim() === effectiveTeacherUserId
-                )?.[1] ||
-                null;
-            }
-            if (matchedUser) break;
-          } catch (error) {
-            // try next URL
-          }
-        }
+        const matchedUser = await loadUserRecordById({
+          rtdbBase: getRtdbRoot(),
+          schoolCode,
+          userId: effectiveTeacherUserId,
+        });
 
         if (!matchedUser || cancelled) return;
 
@@ -267,12 +236,12 @@ export default function Sidebar({
       cancelled = true;
     };
   }, [
-    RTDB_BASE,
     effectiveTeacherUserId,
     teacher?.schoolCode,
     teacher?.profileImage,
     teacher?.profile,
     teacher?.avatar,
+    staticTeacherSnapshot?.schoolCode,
     staticTeacherSnapshot?.profileImage,
     staticTeacherSnapshot?.profile,
     staticTeacherSnapshot?.avatar,

@@ -15,10 +15,10 @@ import {
 import Sidebar from "./Sidebar";
 import ProfileAvatar from "./ProfileAvatar";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
-import { resolveProfileImage } from "../utils/profileImage";
-import { loadStudentsByGradeSections, resolveTeacherSchoolCode } from "../utils/teacherData";
+import { resolveTeacherSchoolCode } from "../utils/teacherData";
 const RTDB_BASE = getRtdbRoot();
 const TEACHER_BEFORE_APP_NAVIGATION_HANDLER = "__teacherBeforeAppNavigation";
 
@@ -247,20 +247,6 @@ export default function AttendancePage() {
           };
         });
 
-        if (!teacherCourses.length) {
-          const coursesRes = await axios.get(`${rtdbBase}/Courses.json`).catch(() => ({ data: {} }));
-          const coursesMap = coursesRes.data || {};
-          teacherCourses = Object.entries(coursesMap)
-            .map(([id, c]) => ({
-              id,
-              ...c,
-              subject: c?.subject || c?.name || "Course",
-              grade: String(c?.grade || "").trim(),
-              section: String(c?.section || c?.secation || "").trim().toUpperCase(),
-            }))
-            .filter((c) => c.id);
-        }
-
         setCourses(teacherCourses);
         if (teacherCourses.length > 0) {
           setSelectedCourseId((prev) => {
@@ -296,15 +282,23 @@ export default function AttendancePage() {
     const fetchStudents = async () => {
       setLoading(true);
       try {
-        const normalizedCourseGrade = String(selectedCourse?.grade || "").trim();
-        const normalizedCourseSection = String(selectedCourse?.section || "").trim().toUpperCase();
-        const filtered = await loadStudentsByGradeSections({
-          rtdbBase,
-          schoolCode: teacher?.schoolCode,
-          allowedGradeSections: new Set([`${normalizedCourseGrade}|${normalizedCourseSection}`]),
+        const response = await axios.get(`${API_BASE}/course/${encodeURIComponent(selectedCourse.id)}/students`, {
+          params: {
+            schoolCode: teacher?.schoolCode || "",
+            includeMarks: false,
+          },
         });
 
-        setStudents(filtered);
+        const filtered = Array.isArray(response?.data?.students) ? response.data.students : [];
+
+        setStudents(
+          filtered.map((student) => ({
+            studentId: String(student?.studentId || "").trim(),
+            userId: String(student?.userId || "").trim(),
+            name: String(student?.name || student?.username || "Student").trim() || "Student",
+            profileImage: student?.profileImage || "",
+          }))
+        );
         setError("");
       } catch (err) {
         setError("Failed to fetch students. Please try again.");

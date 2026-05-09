@@ -1,14 +1,22 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
+import axios from "axios";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck, FaImage, FaTimes, FaFilter } from "react-icons/fa";
-import { ref, onValue, push, runTransaction, update } from "firebase/database";
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { db, schoolPath, storage } from "../firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { storage } from "../firebase";
+import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { fetchCachedJson } from "../utils/rtdbCache";
-import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
+  buildChatMessageQuery,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  filterChatMessageRows,
+  getLastChatMessageKey,
+} from "../utils/chatRtdb";
+import {
+  clearCachedChatSummary,
   buildUnreadConversationMap,
   extractAllowedGradeSectionsFromCourseContext,
   fetchTeacherConversationSummaries,
@@ -244,7 +252,11 @@ const pickFirstNonEmpty = (...values) => {
 };
 
 const CONTACTS_SESSION_TTL_MS = 5 * 60 * 1000;
-const UNREAD_SUMMARY_TTL_MS = 20 * 1000;
+const UNREAD_SUMMARY_TTL_MS = 60 * 1000;
+const CHAT_HISTORY_PAGE_SIZE = 50;
+const CHAT_MESSAGE_POLL_INTERVAL_MS = 45 * 1000;
+const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
+const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
 
 const buildContactsSessionKey = (schoolCode, tab) => {
   return `all_chat_contacts_${String(schoolCode || "global").toUpperCase()}_${String(tab || "student").toLowerCase()}`;
@@ -252,6 +264,31 @@ const buildContactsSessionKey = (schoolCode, tab) => {
 
 const buildUnreadSessionKey = (schoolCode, teacherUserId, tab) => {
   return `all_chat_unread_${String(schoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}_${String(tab || "student").toLowerCase()}`;
+};
+
+const mergeChatMessages = (...groups) => {
+  const merged = new Map();
+
+  groups
+    .flat()
+    .filter(Boolean)
+    .forEach((message) => {
+      const key = String(message?.id || message?.messageId || "").trim();
+      if (!key) return;
+
+      const previous = merged.get(key) || {};
+      merged.set(key, {
+        ...previous,
+        ...message,
+        id: key,
+        messageId: key,
+      });
+    });
+
+  return [...merged.values()].sort(
+    (leftMessage, rightMessage) =>
+      Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+  );
 };
 
 const collectStudentParentLinks = (student = {}) => {
@@ -321,6 +358,8 @@ export default function TeacherAllChat() {
   const navigate = useNavigate();
   const location = useLocation();
   const chatEndRef = useRef(null);
+  const chatMessagesRef = useRef(null);
+  const chatScrollRestoreRef = useRef(null);
   const imageInputRef = useRef(null);
   const contactScrollRef = useRef(null);
   const longPressTimerRef = useRef(null);
@@ -328,6 +367,8 @@ export default function TeacherAllChat() {
   const lastContactScrollTopRef = useRef(0);
   const suppressAutoCardToggleRef = useRef(false);
   const autoCardToggleTimeoutRef = useRef(null);
+  const lastChatActivityAtRef = useRef(Date.now());
+  const lastSyncedChatMessageKeyRef = useRef("");
 
   const teacher = JSON.parse(localStorage.getItem("teacher")) || {};
   const teacherUserId = String(teacher.userId || "");
@@ -357,6 +398,35 @@ export default function TeacherAllChat() {
   }, [teacherSchoolCode]);
 
   useEffect(() => {
+    const markChatActivity = () => {
+      lastChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markChatActivity();
+    };
+
+    window.addEventListener("focus", markChatActivity);
+    window.addEventListener("online", markChatActivity);
+    window.addEventListener("pointerdown", markChatActivity, { passive: true });
+    window.addEventListener("touchstart", markChatActivity, { passive: true });
+    window.addEventListener("keydown", markChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markChatActivity);
+      window.removeEventListener("online", markChatActivity);
+      window.removeEventListener("pointerdown", markChatActivity);
+      window.removeEventListener("touchstart", markChatActivity);
+      window.removeEventListener("keydown", markChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!resolvedSchoolCode) return;
     const current = JSON.parse(localStorage.getItem("teacher") || "{}");
     if (String(current?.schoolCode || "") === resolvedSchoolCode) return;
@@ -378,7 +448,8 @@ export default function TeacherAllChat() {
   const [students, setStudents] = useState([]);
   const [parents, setParents] = useState([]);
   const [admins, setAdmins] = useState([]);
-  const [messages, setMessages] = useState([]);
+  const [liveMessages, setLiveMessages] = useState([]);
+  const [olderMessages, setOlderMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [presence, setPresence] = useState({}); // userId -> presence info (bool or object)
@@ -391,6 +462,9 @@ export default function TeacherAllChat() {
   const [selectedStudentSection, setSelectedStudentSection] = useState("All");
   const [showStudentFilters, setShowStudentFilters] = useState(false);
   const [showSearchFilterCard, setShowSearchFilterCard] = useState(true);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
+  const [chatHasOlder, setChatHasOlder] = useState(false);
 
   // incoming navigation state (support both { contact } and { user })
   const locationState = location.state || {};
@@ -410,7 +484,119 @@ export default function TeacherAllChat() {
   const [imageMenu, setImageMenu] = useState({ open: false, message: null });
   const [textMenu, setTextMenu] = useState({ open: false, message: null });
 
-  const scopedPath = (path) => schoolPath(path, resolvedSchoolCode || teacherSchoolCode);
+  const messages = useMemo(
+    () => mergeChatMessages(olderMessages, liveMessages),
+    [olderMessages, liveMessages]
+  );
+
+  const updateLocalMessage = (messageId, updater) => {
+    const normalizedMessageId = String(messageId || "").trim();
+    if (!normalizedMessageId || typeof updater !== "function") {
+      return;
+    }
+
+    const applyUpdate = (messageList) =>
+      messageList.map((message) => {
+        const currentMessageId = String(message?.id || message?.messageId || "").trim();
+        return currentMessageId === normalizedMessageId ? updater(message) : message;
+      });
+
+    setLiveMessages(applyUpdate);
+    setOlderMessages(applyUpdate);
+  };
+
+  const buildRtdbUrl = (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`;
+
+  const deleteStorageObjectByUrl = async (publicUrl) => {
+    const normalizedUrl = String(publicUrl || "").trim();
+    if (!normalizedUrl) {
+      return false;
+    }
+
+    try {
+      const response = await axios.post(`${API_BASE}/storage/delete-by-url`, {
+        publicUrl: normalizedUrl,
+      });
+      return Boolean(response?.data?.success);
+    } catch {
+      return false;
+    }
+  };
+
+  const buildChatMessageRows = (messagesNode = {}) => {
+    return Object.entries(messagesNode || {})
+      .map(([id, message]) => ({
+        id,
+        messageId: id,
+        ...message,
+        isTeacher: message?.senderId === teacherUserId,
+      }))
+      .sort(
+        (leftMessage, rightMessage) =>
+          Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+      );
+  };
+
+  const createMessageId = () => {
+    return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  };
+
+  const fetchChatMessagesPage = async ({ chatKey, beforeMessageKey, afterMessageKey } = {}) => {
+    if (!chatKey) {
+      return { messages: [], overflowed: false };
+    }
+
+    const response = await axios.get(buildRtdbUrl(`Chats/${chatKey}/messages`), {
+      params: buildChatMessageQuery({
+        pageSize: CHAT_HISTORY_PAGE_SIZE,
+        beforeMessageKey,
+        afterMessageKey,
+      }),
+    });
+    const messagesNode = response?.data && typeof response.data === "object" ? response.data : {};
+    const messageList = filterChatMessageRows(buildChatMessageRows(messagesNode), {
+      beforeMessageKey,
+      afterMessageKey,
+    });
+
+    return {
+      messages: messageList,
+      overflowed: Boolean(afterMessageKey) && messageList.length > CHAT_HISTORY_PAGE_SIZE,
+    };
+  };
+
+  const patchChatSummary = async (ownerUserId, chatKey, patch) => {
+    const normalizedOwnerUserId = String(ownerUserId || "").trim();
+    if (!normalizedOwnerUserId || !chatKey || !patch || typeof patch !== "object") {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(buildChatSummaryPath(normalizedOwnerUserId, chatKey)), patch);
+  };
+
+  const updateChatParticipants = async (chatKey, participantIds = []) => {
+    const participantPatch = (participantIds || []).reduce((result, participantId) => {
+      const normalizedParticipantId = String(participantId || "").trim();
+      if (normalizedParticipantId) {
+        result[normalizedParticipantId] = true;
+      }
+      return result;
+    }, {});
+
+    if (!Object.keys(participantPatch).length) {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(`Chats/${chatKey}/participants`), participantPatch);
+  };
+
+  const syncTeacherSummaryCache = (chatKey) => {
+    clearCachedChatSummary({
+      rtdbBase,
+      chatId: chatKey,
+      teacherUserId,
+    });
+  };
 
   const getProfileImage = (user = {}) =>
     sanitizeProfileImage(user.profileImage || user.profile || user.avatar || DEFAULT_PROFILE_IMAGE);
@@ -823,9 +1009,12 @@ export default function TeacherAllChat() {
     if (!selectedChatUser?.userId) return;
     if (!loadedTabs[normalizeTab(selectedTab) || "student"]) return;
     if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
+      lastSyncedChatMessageKeyRef.current = "";
       setSelectedChatUser(null);
       setCurrentChatKey(null);
-      setMessages([]);
+      setLiveMessages([]);
+      setOlderMessages([]);
+      setChatHasOlder(false);
     }
   }, [allowedUserIds, loadedTabs, selectedChatUser, selectedTab]);
 
@@ -853,7 +1042,13 @@ export default function TeacherAllChat() {
 
     let cancelled = false;
 
-    const refreshUnreadCounts = async () => {
+    const refreshUnreadCounts = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      if (!force && (!isVisible || !isOnline)) {
+        return;
+      }
+
       try {
         const summaries = await fetchTeacherConversationSummaries({
           rtdbBase,
@@ -887,12 +1082,27 @@ export default function TeacherAllChat() {
       }
     };
 
-    refreshUnreadCounts();
-    const intervalId = window.setInterval(refreshUnreadCounts, UNREAD_SUMMARY_TTL_MS);
+    const handleVisibleRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      void refreshUnreadCounts({ force: true });
+    };
+
+    void refreshUnreadCounts({ force: true });
+    const intervalId = window.setInterval(() => {
+      void refreshUnreadCounts();
+    }, UNREAD_SUMMARY_TTL_MS);
+    window.addEventListener("focus", handleVisibleRefresh);
+    window.addEventListener("online", handleVisibleRefresh);
+    document.addEventListener("visibilitychange", handleVisibleRefresh);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleVisibleRefresh);
+      window.removeEventListener("online", handleVisibleRefresh);
+      document.removeEventListener("visibilitychange", handleVisibleRefresh);
     };
   }, [admins, parents, resolvedSchoolCode, rtdbBase, selectedTab, students, teacherSchoolCode, teacherUserId]);
 
@@ -954,57 +1164,227 @@ export default function TeacherAllChat() {
 
   /* ================= CHAT LISTENER ================= */
   useEffect(() => {
-    if (!selectedChatUser || !teacherUserId) return;
+    if (!selectedChatUser || !teacherUserId) {
+      lastSyncedChatMessageKeyRef.current = "";
+      setLiveMessages([]);
+      setOlderMessages([]);
+      setChatHasOlder(false);
+      setChatLoading(false);
+      setChatLoadingOlder(false);
+      chatScrollRestoreRef.current = null;
+      return undefined;
+    }
 
     const chatKey =
       currentChatKey ||
       getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId);
     setCurrentChatKey(chatKey); // ensure state is in sync
 
-    const chatRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
-    const unsubscribe = onValue(chatRef, (snap) => {
-      const data = snap.val() || {};
-      const list = Object.entries(data)
-        .map(([id, m]) => ({
-          id,
-          ...m,
-          isTeacher: m.senderId === teacherUserId,
-        }))
-        .sort((a, b) => a.timeStamp - b.timeStamp);
+    setLiveMessages([]);
+    setOlderMessages([]);
+  lastSyncedChatMessageKeyRef.current = "";
+    setChatHasOlder(false);
+    setChatLoading(true);
+    setChatLoadingOlder(false);
+    chatScrollRestoreRef.current = null;
+    let cancelled = false;
+    let syncInFlight = false;
 
-      setMessages(list);
+    const syncLatestMessages = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
 
-      const hasUnseenIncomingMessages = Object.values(data).some(
-        (message) => message && !message.seen && message.receiverId === teacherUserId
-      );
-      const seenAt = Date.now();
+      if (syncInFlight) return;
+      syncInFlight = true;
 
-      // mark as seen where teacher is receiver
-      Object.entries(data).forEach(([id, m]) => {
-        if (m && !m.seen && m.receiverId === teacherUserId) {
-          update(ref(db, scopedPath(`Chats/${chatKey}/messages/${id}`)), { seen: true }).catch(console.error);
+      try {
+        const afterMessageKey = !force ? lastSyncedChatMessageKeyRef.current : "";
+        let replaceMessages = !afterMessageKey;
+        let appliedMessages = [];
+
+        if (afterMessageKey) {
+          const incrementalResult = await fetchChatMessagesPage({
+            chatKey,
+            afterMessageKey,
+          });
+
+          if (incrementalResult.overflowed) {
+            const snapshotResult = await fetchChatMessagesPage({ chatKey });
+            appliedMessages = snapshotResult.messages;
+            replaceMessages = true;
+          } else {
+            appliedMessages = incrementalResult.messages;
+            replaceMessages = false;
+          }
+        } else {
+          const snapshotResult = await fetchChatMessagesPage({ chatKey });
+          appliedMessages = snapshotResult.messages;
         }
+
+        if (cancelled) return;
+
+        if (replaceMessages) {
+          lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(appliedMessages);
+          setLiveMessages(appliedMessages);
+          setChatHasOlder((previousValue) => previousValue || appliedMessages.length >= CHAT_HISTORY_PAGE_SIZE);
+        } else if (appliedMessages.length) {
+          setLiveMessages((previousMessages) => {
+            const nextMessages = mergeChatMessages(previousMessages, appliedMessages);
+            lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+            return nextMessages;
+          });
+        }
+        setChatLoading(false);
+
+        const unseenIncomingMessages = appliedMessages.filter(
+          (message) => message && !message.seen && message.receiverId === teacherUserId
+        );
+
+        if (unseenIncomingMessages.length) {
+          const seenAt = Date.now();
+          const seenPatch = unseenIncomingMessages.reduce((result, message) => {
+            const messageId = String(message?.id || message?.messageId || "").trim();
+            if (!messageId) return result;
+            result[`messages/${messageId}/seen`] = true;
+            result[`messages/${messageId}/seenAt`] = seenAt;
+            return result;
+          }, {});
+
+          await Promise.all([
+            axios.patch(buildRtdbUrl(`Chats/${chatKey}`), seenPatch),
+            patchChatSummary(
+              teacherUserId,
+              chatKey,
+              buildChatSummaryUpdate({
+                chatId: chatKey,
+                otherUserId: selectedChatUser.userId,
+                unreadCount: 0,
+                lastMessageSeen: true,
+                lastMessageSeenAt: seenAt,
+              })
+            ),
+          ]);
+
+          if (cancelled) return;
+
+          setLiveMessages((previousMessages) =>
+            previousMessages.map((message) => {
+              const messageId = String(message?.id || message?.messageId || "").trim();
+              if (!messageId || !seenPatch[`messages/${messageId}/seen`]) {
+                return message;
+              }
+
+              return {
+                ...message,
+                seen: true,
+                seenAt,
+              };
+            })
+          );
+          syncTeacherSummaryCache(chatKey);
+        }
+
+        setUnreadCounts((previousCounts) => ({
+          ...previousCounts,
+          [selectedChatUser.userId]: 0,
+        }));
+      } catch (error) {
+        console.error("Chat listener failed:", error);
+        if (!cancelled) {
+          lastSyncedChatMessageKeyRef.current = "";
+          setLiveMessages([]);
+          setOlderMessages([]);
+          setChatHasOlder(false);
+          setChatLoading(false);
+        }
+      } finally {
+        syncInFlight = false;
+      }
+    };
+
+    const handleFocusedRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastChatActivityAtRef.current = Date.now();
+      void syncLatestMessages({ force: true });
+    };
+
+    void syncLatestMessages({ force: true });
+    const intervalId = window.setInterval(() => {
+      void syncLatestMessages();
+    }, CHAT_MESSAGE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedRefresh);
+    window.addEventListener("online", handleFocusedRefresh);
+    document.addEventListener("visibilitychange", handleFocusedRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedRefresh);
+      window.removeEventListener("online", handleFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedRefresh);
+    };
+  }, [selectedChatUser, teacherUserId, currentChatKey, selectedTab, resolvedSchoolCode, teacherSchoolCode]);
+
+  const loadOlderMessages = async () => {
+    if (
+      chatLoading ||
+      chatLoadingOlder ||
+      !selectedChatUser ||
+      !teacherUserId ||
+      messages.length === 0
+    ) {
+      return;
+    }
+
+    const oldestMessageKey = String(messages[0]?.id || messages[0]?.messageId || "").trim();
+    if (!oldestMessageKey) {
+      setChatHasOlder(false);
+      return;
+    }
+
+    const scrollContainer = chatMessagesRef.current;
+    if (scrollContainer) {
+      chatScrollRestoreRef.current = {
+        previousScrollHeight: scrollContainer.scrollHeight,
+        previousScrollTop: scrollContainer.scrollTop,
+      };
+    }
+
+    setChatLoadingOlder(true);
+
+    try {
+      const chatKey = getActiveChatKey();
+      if (!chatKey) {
+        chatScrollRestoreRef.current = null;
+        return;
+      }
+
+      const { messages: olderMessagesPage } = await fetchChatMessagesPage({
+        chatKey,
+        beforeMessageKey: oldestMessageKey,
       });
 
-      update(
-        ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
-        buildChatSummaryUpdate({
-          chatId: chatKey,
-          otherUserId: selectedChatUser.userId,
-          unreadCount: 0,
-          ...(hasUnseenIncomingMessages
-            ? { lastMessageSeen: true, lastMessageSeenAt: seenAt }
-            : {}),
-        })
-      ).catch(console.error);
-      setUnreadCounts((previousCounts) => ({
-        ...previousCounts,
-        [selectedChatUser.userId]: 0,
-      }));
-    });
+      if (!olderMessagesPage.length) {
+        setChatHasOlder(false);
+        chatScrollRestoreRef.current = null;
+        return;
+      }
 
-    return () => unsubscribe();
-  }, [selectedChatUser, teacherUserId, currentChatKey]);
+      setOlderMessages((previousMessages) => mergeChatMessages(olderMessagesPage, previousMessages));
+      setChatHasOlder(olderMessagesPage.length >= CHAT_HISTORY_PAGE_SIZE);
+    } catch (error) {
+      console.error("Failed to load older messages:", error);
+      chatScrollRestoreRef.current = null;
+    } finally {
+      setChatLoadingOlder(false);
+    }
+  };
 
   const getActiveChatKey = () => {
     if (!selectedChatUser || !teacherUserId) return null;
@@ -1016,20 +1396,58 @@ export default function TeacherAllChat() {
 
   /* ================= PRESENCE LISTENER ================= */
   useEffect(() => {
-    // Listen to presence node in RTDB. If your backend uses a different path, change it.
-    try {
-      const presenceRef = ref(db, scopedPath(`Presence`));
-      const unsub = onValue(presenceRef, (snap) => {
-        const data = snap.val() || {};
-        setPresence(data);
-      });
+    let cancelled = false;
 
-      return () => unsub();
-    } catch (e) {
-      // If realtime presence isn't configured, keep presence empty
-      console.warn("Presence listener unavailable:", e);
-    }
-  }, []);
+    const loadPresence = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
+
+      try {
+        const data = await fetchCachedJson(buildRtdbUrl("Presence"), {
+          ttlMs: 60 * 1000,
+          fallbackValue: {},
+          force: true,
+        });
+
+        if (!cancelled) {
+          setPresence(data && typeof data === "object" ? data : {});
+        }
+      } catch (error) {
+        console.warn("Presence polling unavailable:", error);
+        if (!cancelled) {
+          setPresence({});
+        }
+      }
+    };
+
+    const handleFocusedPresenceRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastChatActivityAtRef.current = Date.now();
+      void loadPresence({ force: true });
+    };
+
+    void loadPresence({ force: true });
+    const intervalId = window.setInterval(() => {
+      void loadPresence();
+    }, PRESENCE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedPresenceRefresh);
+    window.addEventListener("online", handleFocusedPresenceRefresh);
+    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedPresenceRefresh);
+      window.removeEventListener("online", handleFocusedPresenceRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
+    };
+  }, [rtdbBase]);
 
   /* ================= SEND MESSAGE ================= */
   const sendMessage = async () => {
@@ -1042,17 +1460,25 @@ export default function TeacherAllChat() {
 
     if (editingId) {
       // Update existing message
-      await update(ref(db, scopedPath(`Chats/${chatKey}/messages/${editingId}`)), {
+      await axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${editingId}`), {
         text: input,
         edited: true,
       });
+      setLiveMessages((previousMessages) =>
+        previousMessages.map((message) =>
+          String(message?.id || "") === String(editingId)
+            ? { ...message, text: input, edited: true }
+            : message
+        )
+      );
       setEditingMessages({});
       setClickedMessageId(null);
       setInput("");
     } else {
       // Send new message
-      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
+      const messageId = createMessageId();
       const messageData = {
+        messageId,
         senderId: teacherUserId,
         receiverId: selectedChatUser.userId,
         type: "text",
@@ -1063,16 +1489,18 @@ export default function TeacherAllChat() {
         timeStamp: Date.now(),
       };
 
-      await push(messagesRef, messageData);
+      const receiverSummaryResponse = await axios.get(
+        buildRtdbUrl(buildChatSummaryPath(selectedChatUser.userId, chatKey))
+      ).catch(() => ({ data: {} }));
+      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
-        [teacherUserId]: true,
-        [selectedChatUser.userId]: true,
-      });
+      await axios.put(buildRtdbUrl(`Chats/${chatKey}/messages/${messageId}`), messageData);
+      await updateChatParticipants(chatKey, [teacherUserId, selectedChatUser.userId]);
 
       await Promise.all([
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
+        patchChatSummary(
+          teacherUserId,
+          chatKey,
           buildChatSummaryUpdate({
             chatId: chatKey,
             otherUserId: selectedChatUser.userId,
@@ -1085,8 +1513,9 @@ export default function TeacherAllChat() {
             lastMessageSeenAt: null,
           })
         ),
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+        patchChatSummary(
+          selectedChatUser.userId,
+          chatKey,
           buildChatSummaryUpdate({
             chatId: chatKey,
             otherUserId: teacherUserId,
@@ -1094,21 +1523,19 @@ export default function TeacherAllChat() {
             lastMessageType: "text",
             lastMessageTime: messageData.timeStamp,
             lastSenderId: teacherUserId,
+            unreadCount: nextUnreadCount,
             lastMessageSeen: false,
             lastMessageSeenAt: null,
           })
         ),
       ]);
 
-      // increment unread for receiver
-      try {
-        await runTransaction(
-          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
-          (current) => (Number(current) || 0) + 1
-        );
-      } catch (e) {
-        // ignore
-      }
+      syncTeacherSummaryCache(chatKey);
+      setLiveMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
+        lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
+      });
 
       setInput("");
     }
@@ -1133,6 +1560,11 @@ export default function TeacherAllChat() {
 
     try {
       setImageSending(true);
+      let uploadedImageRef = null;
+      let uploadedImageUrl = "";
+
+      const messageId = createMessageId();
+      const timeStamp = Date.now();
 
       const compressedBlob = await compressImageToJpeg(file, {
         maxWidth: 1280,
@@ -1140,14 +1572,9 @@ export default function TeacherAllChat() {
         quality: 0.72,
       });
 
-      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
-      const messageRef = push(messagesRef);
-      const messageId = messageRef.key;
-      const timeStamp = Date.now();
-
-      const uploadRef = storageRef(storage, `chatImages/${chatKey}/${messageId}.jpg`);
-      await uploadBytes(uploadRef, compressedBlob, { contentType: "image/jpeg" });
-      const imageUrl = await getDownloadURL(uploadRef);
+      uploadedImageRef = storageRef(storage, `chatImages/${chatKey}/${messageId}.jpg`);
+      await uploadBytes(uploadedImageRef, compressedBlob, { contentType: "image/jpeg" });
+      uploadedImageUrl = await getDownloadURL(uploadedImageRef);
 
       const messageData = {
         messageId,
@@ -1155,23 +1582,25 @@ export default function TeacherAllChat() {
         receiverId: selectedChatUser.userId,
         type: "image",
         text: "",
-        imageUrl,
+        imageUrl: uploadedImageUrl,
         seen: false,
         edited: false,
         deleted: false,
         timeStamp,
       };
 
-      await update(messageRef, messageData);
+      const receiverSummaryResponse = await axios.get(
+        buildRtdbUrl(buildChatSummaryPath(selectedChatUser.userId, chatKey))
+      ).catch(() => ({ data: {} }));
+      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
-        [teacherUserId]: true,
-        [selectedChatUser.userId]: true,
-      });
+      await axios.put(buildRtdbUrl(`Chats/${chatKey}/messages/${messageId}`), messageData);
+      await updateChatParticipants(chatKey, [teacherUserId, selectedChatUser.userId]);
 
       await Promise.all([
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(teacherUserId, chatKey))),
+        patchChatSummary(
+          teacherUserId,
+          chatKey,
           buildChatSummaryUpdate({
             chatId: chatKey,
             otherUserId: selectedChatUser.userId,
@@ -1184,8 +1613,9 @@ export default function TeacherAllChat() {
             lastMessageSeenAt: null,
           })
         ),
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+        patchChatSummary(
+          selectedChatUser.userId,
+          chatKey,
           buildChatSummaryUpdate({
             chatId: chatKey,
             otherUserId: teacherUserId,
@@ -1193,22 +1623,30 @@ export default function TeacherAllChat() {
             lastMessageType: "image",
             lastMessageTime: timeStamp,
             lastSenderId: teacherUserId,
+            unreadCount: nextUnreadCount,
             lastMessageSeen: false,
             lastMessageSeenAt: null,
           })
         ),
       ]);
 
-      try {
-        await runTransaction(
-          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
-          (current) => (Number(current) || 0) + 1
-        );
-      } catch (error) {
-        // ignore unread transaction errors
-      }
+      syncTeacherSummaryCache(chatKey);
+      setLiveMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
+        lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
+      });
     } catch (error) {
       console.error("Image send failed:", error);
+      try {
+        if (typeof uploadedImageUrl === "string" && uploadedImageUrl.trim()) {
+          await deleteStorageObjectByUrl(uploadedImageUrl);
+        } else if (uploadedImageRef) {
+          await deleteObject(uploadedImageRef);
+        }
+      } catch {
+        // ignore cleanup failures after a failed message send
+      }
     } finally {
       setImageSending(false);
       if (event?.target) event.target.value = "";
@@ -1219,9 +1657,11 @@ export default function TeacherAllChat() {
   const handleEditMessage = (id, newText) => {
     const chatKey = getActiveChatKey();
     if (!chatKey) return;
-    update(ref(db, scopedPath(`Chats/${chatKey}/messages/${id}`)), {
+    axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${id}`), {
       text: newText,
       edited: true,
+    }).then(() => {
+      updateLocalMessage(id, (message) => ({ ...message, text: newText, edited: true }));
     }).catch(console.error);
     setEditingMessages((prev) => ({ ...prev, [id]: false }));
   };
@@ -1229,7 +1669,20 @@ export default function TeacherAllChat() {
   const handleDeleteMessage = (id) => {
     const chatKey = getActiveChatKey();
     if (!chatKey) return;
-    update(ref(db, scopedPath(`Chats/${chatKey}/messages/${id}`)), { deleted: true }).catch(console.error);
+    const targetMessage = messages.find(
+      (message) => String(message?.id || message?.messageId || "").trim() === String(id || "").trim()
+    );
+    const imageUrl = String(targetMessage?.imageUrl || "").trim();
+
+    axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${id}`), { deleted: true }).then(() => {
+      updateLocalMessage(id, (message) => ({ ...message, deleted: true, imageUrl: "" }));
+
+      if (imageUrl) {
+        deleteStorageObjectByUrl(imageUrl).catch(() => {
+          // ignore stale image cleanup failures
+        });
+      }
+    }).catch(console.error);
   };
 
   const startEditing = (id, text) => {
@@ -1339,7 +1792,18 @@ export default function TeacherAllChat() {
   }, []);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const restoreSnapshot = chatScrollRestoreRef.current;
+    const scrollContainer = chatMessagesRef.current;
+
+    if (restoreSnapshot && scrollContainer) {
+      scrollContainer.scrollTop =
+        restoreSnapshot.previousScrollTop +
+        (scrollContainer.scrollHeight - restoreSnapshot.previousScrollHeight);
+      chatScrollRestoreRef.current = null;
+      return;
+    }
+
+    chatEndRef.current?.scrollIntoView({ behavior: messages.length > CHAT_HISTORY_PAGE_SIZE ? "auto" : "smooth" });
   }, [messages]);
 
   const list = useMemo(() => {
@@ -1968,6 +2432,7 @@ export default function TeacherAllChat() {
 
             {/* ===== CHAT MESSAGES ===== */}
             <div
+              ref={chatMessagesRef}
               style={{
                 flex: 1,
                 overflowY: "auto",
@@ -1979,6 +2444,34 @@ export default function TeacherAllChat() {
                 border: "1px solid #e2e8f0",
               }}
             >
+              {chatLoading && !messages.length ? (
+                <div style={{ alignSelf: "center", marginBottom: 12, fontSize: 12, color: "#64748b" }}>
+                  Loading messages...
+                </div>
+              ) : null}
+
+              {chatHasOlder || chatLoadingOlder ? (
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+                  <button
+                    onClick={loadOlderMessages}
+                    disabled={chatLoadingOlder}
+                    style={{
+                      borderRadius: 999,
+                      border: "1px solid #cbd5e1",
+                      background: "#f8fafc",
+                      color: "#334155",
+                      padding: "7px 14px",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: chatLoadingOlder ? "not-allowed" : "pointer",
+                      opacity: chatLoadingOlder ? 0.7 : 1,
+                    }}
+                  >
+                    {chatLoadingOlder ? "Loading older messages..." : "Load older messages"}
+                  </button>
+                </div>
+              ) : null}
+
               {displayItems.map((item, index) => {
                 if (item.type === "date") {
                   return (

@@ -1,5 +1,4 @@
-import { equalTo, get, orderByChild, query as dbQuery, ref as dbRef } from "firebase/database";
-import { db, schoolPath } from "../firebase";
+import { API_BASE } from "../api/apiConfig";
 import { RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveAvatarImage } from "./profileImage";
 import {
@@ -17,6 +16,7 @@ import { clearCachedJson, fetchCachedJson, readCachedJson, writeCachedJson } fro
 
 const USER_RECORD_TTL_MS = 15 * 60 * 1000;
 const PARENT_RECORD_TTL_MS = 15 * 60 * 1000;
+const STUDENT_RECORD_TTL_MS = 15 * 60 * 1000;
 const STUDENT_QUERY_TTL_MS = 5 * 60 * 1000;
 const CHAT_INDEX_TTL_MS = 20 * 1000;
 const CHAT_SUMMARY_TTL_MS = 15 * 1000;
@@ -24,7 +24,9 @@ const SCHOOL_CODE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const sessionValuePrefix = "teacher_session_cache_v1";
 const userRecordCache = new Map();
+const userNodeCache = new Map();
 const parentRecordCache = new Map();
+const studentRecordCache = new Map();
 const schoolCodeInflight = new Map();
 
 const readStorageJson = (storage, key) => {
@@ -126,37 +128,108 @@ export const clearSessionResource = (cacheKey) => {
   }
 };
 
+export const fetchAcademicYearsNode = async (rtdbBase, { ttlMs = 15 * 60 * 1000 } = {}) => {
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase) {
+    return {};
+  }
+
+  const cacheKey = `academic_years:${normalizedBase}`;
+  const cachedValue = readSessionResource(cacheKey, { ttlMs });
+  if (cachedValue && typeof cachedValue === "object") {
+    return cachedValue;
+  }
+
+  const upperUrl = `${normalizedBase}/AcademicYears.json`;
+  const upperData = await fetchCachedJson(upperUrl, {
+    ttlMs,
+    fallbackValue: {},
+  }).catch(() => ({}));
+  const upperNode = upperData && typeof upperData === "object" ? upperData : {};
+  if (Object.keys(upperNode).length) {
+    writeSessionResource(cacheKey, upperNode);
+    return upperNode;
+  }
+
+  const lowerUrl = `${normalizedBase}/academicYears.json`;
+  const lowerData = await fetchCachedJson(lowerUrl, {
+    ttlMs,
+    fallbackValue: {},
+  }).catch(() => ({}));
+  const lowerNode = lowerData && typeof lowerData === "object" ? lowerData : {};
+  writeSessionResource(cacheKey, lowerNode);
+  return lowerNode;
+};
+
 const buildScopedCacheKey = (rtdbBase, entityName, identifier) => {
   return `${String(rtdbBase || "").trim()}|${entityName}|${normalizeIdentifier(identifier)}`;
 };
 
-const querySingleScopedRecord = async ({ nodePath, schoolCode, childPath, matchValue }) => {
+const readRecordChildValue = (recordKey, record, childPath) => {
+  if (!childPath) {
+    return "";
+  }
+  if (childPath === "$key") {
+    return normalizeIdentifier(recordKey);
+  }
+
+  const segments = String(childPath || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  let currentValue = record;
+  for (const segment of segments) {
+    currentValue = currentValue?.[segment];
+  }
+
+  return normalizeIdentifier(currentValue);
+};
+
+const fetchScopedCollectionNode = async ({ rtdbBase, nodePath, ttlMs, force = false }) => {
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !nodePath) {
+    return {};
+  }
+
+  const collectionNode = await fetchCachedJson(`${normalizedBase}/${nodePath}.json`, {
+    ttlMs,
+    fallbackValue: {},
+    force,
+  });
+
+  return collectionNode && typeof collectionNode === "object" ? collectionNode : {};
+};
+
+const querySingleScopedRecord = async ({ rtdbBase, nodePath, childPath, matchValue, ttlMs = USER_RECORD_TTL_MS, force = false }) => {
   const normalizedValue = normalizeIdentifier(matchValue);
-  if (!normalizedValue) {
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !normalizedValue) {
     return { recordKey: "", record: null };
   }
 
-  try {
-    const snapshot = await get(
-      dbQuery(
-        dbRef(db, schoolPath(nodePath, schoolCode)),
-        orderByChild(childPath),
-        equalTo(normalizedValue)
-      )
-    );
+  const collectionNode = await fetchScopedCollectionNode({
+    rtdbBase: normalizedBase,
+    nodePath,
+    ttlMs,
+    force,
+  });
 
-    if (!snapshot.exists()) {
-      return { recordKey: "", record: null };
+  const [recordKey, record] = Object.entries(collectionNode || {}).find(([entryKey, entryValue]) => {
+    if (!isRecordObject(entryValue)) {
+      return false;
     }
 
-    const [recordKey, record] = Object.entries(snapshot.val() || {})[0] || [];
-    return {
-      recordKey: String(recordKey || "").trim(),
-      record: isRecordObject(record) ? record : null,
-    };
-  } catch {
-    return { recordKey: "", record: null };
-  }
+    return (
+      normalizeIdentifier(entryKey) === normalizedValue ||
+      readRecordChildValue(entryKey, entryValue, childPath) === normalizedValue
+    );
+  }) || [];
+
+  return {
+    recordKey: String(recordKey || "").trim(),
+    record: isRecordObject(record) ? record : null,
+  };
 };
 
 export const resolveTeacherSchoolCode = async (rawSchoolCode) => {
@@ -278,10 +351,12 @@ export const loadUserRecordById = async ({ rtdbBase, schoolCode, userId, force =
 
   for (const childPath of ["userId", "username"]) {
     const { recordKey, record } = await querySingleScopedRecord({
+      rtdbBase: normalizedBase,
       nodePath: "Users",
-      schoolCode: scopedSchoolCode,
       childPath,
       matchValue: normalizedUserId,
+      ttlMs: USER_RECORD_TTL_MS,
+      force,
     });
 
     if (!isRecordObject(record)) {
@@ -297,6 +372,68 @@ export const loadUserRecordById = async ({ rtdbBase, schoolCode, userId, force =
   }
 
   return null;
+};
+
+export const loadUserNodeByIdentifier = async ({
+  rtdbBase,
+  schoolCode,
+  identifier,
+  childPaths = ["userId", "username", "teacherId"],
+  force = false,
+} = {}) => {
+  const normalizedIdentifier = normalizeIdentifier(identifier);
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !normalizedIdentifier) {
+    return { key: "", record: null };
+  }
+
+  const scopedSchoolCode = normalizeIdentifier(schoolCode || extractSchoolCodeFromRtdbBase(normalizedBase));
+  const cacheKey = buildScopedCacheKey(normalizedBase, "Users:node", normalizedIdentifier);
+  if (!force && userNodeCache.has(cacheKey)) {
+    return userNodeCache.get(cacheKey) || { key: "", record: null };
+  }
+
+  const directUrl = `${normalizedBase}/Users/${encodeURIComponent(normalizedIdentifier)}.json`;
+  const directRecord = await fetchCachedJson(directUrl, {
+    ttlMs: USER_RECORD_TTL_MS,
+    fallbackValue: null,
+    force,
+  });
+  if (isRecordObject(directRecord)) {
+    const directMatch = { key: normalizedIdentifier, record: directRecord };
+    userNodeCache.set(cacheKey, directMatch);
+    userRecordCache.set(buildScopedCacheKey(normalizedBase, "Users", normalizedIdentifier), directRecord);
+    return directMatch;
+  }
+
+  for (const childPath of [...new Set((childPaths || []).map((value) => String(value || "").trim()).filter(Boolean))]) {
+    const { recordKey, record } = await querySingleScopedRecord({
+      rtdbBase: normalizedBase,
+      nodePath: "Users",
+      childPath,
+      matchValue: normalizedIdentifier,
+      ttlMs: USER_RECORD_TTL_MS,
+      force,
+    });
+
+    if (!isRecordObject(record)) {
+      continue;
+    }
+
+    const resolvedMatch = {
+      key: String(recordKey || "").trim(),
+      record,
+    };
+    userNodeCache.set(cacheKey, resolvedMatch);
+    userRecordCache.set(buildScopedCacheKey(normalizedBase, "Users", normalizedIdentifier), record);
+    writeCachedJson(directUrl, record);
+    if (recordKey) {
+      writeCachedJson(`${normalizedBase}/Users/${encodeURIComponent(recordKey)}.json`, record);
+    }
+    return resolvedMatch;
+  }
+
+  return { key: "", record: null };
 };
 
 export const loadUserRecordsByIds = async ({ rtdbBase, schoolCode, userIds, force = false } = {}) => {
@@ -325,44 +462,14 @@ export const loadParentRecordById = async ({ rtdbBase, schoolCode, parentId, for
     return null;
   }
 
-  const scopedSchoolCode = normalizeIdentifier(schoolCode || extractSchoolCodeFromRtdbBase(normalizedBase));
-  const cacheKey = buildScopedCacheKey(normalizedBase, "Parents", normalizedParentId);
-  if (!force && parentRecordCache.has(cacheKey)) {
-    return parentRecordCache.get(cacheKey) || null;
-  }
-
-  const directUrl = `${normalizedBase}/Parents/${encodeURIComponent(normalizedParentId)}.json`;
-  const directRecord = await fetchCachedJson(directUrl, {
-    ttlMs: PARENT_RECORD_TTL_MS,
-    fallbackValue: null,
+  const recordsById = await loadParentRecordsByIds({
+    rtdbBase: normalizedBase,
+    schoolCode,
+    parentIds: [normalizedParentId],
     force,
   });
-  if (isRecordObject(directRecord)) {
-    parentRecordCache.set(cacheKey, directRecord);
-    return directRecord;
-  }
 
-  for (const childPath of ["parentId", "userId"]) {
-    const { recordKey, record } = await querySingleScopedRecord({
-      nodePath: "Parents",
-      schoolCode: scopedSchoolCode,
-      childPath,
-      matchValue: normalizedParentId,
-    });
-
-    if (!isRecordObject(record)) {
-      continue;
-    }
-
-    parentRecordCache.set(cacheKey, record);
-    writeCachedJson(directUrl, record);
-    if (recordKey) {
-      writeCachedJson(`${normalizedBase}/Parents/${encodeURIComponent(recordKey)}.json`, record);
-    }
-    return record;
-  }
-
-  return null;
+  return recordsById[normalizedParentId] || null;
 };
 
 export const loadParentRecordsByIds = async ({ rtdbBase, schoolCode, parentIds, force = false } = {}) => {
@@ -371,46 +478,173 @@ export const loadParentRecordsByIds = async ({ rtdbBase, schoolCode, parentIds, 
     return {};
   }
 
-  const records = await mapInBatches(normalizedParentIds, 8, async (parentId) => {
-    const record = await loadParentRecordById({ rtdbBase, schoolCode, parentId, force });
-    return [parentId, record];
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase) {
+    return {};
+  }
+
+  const scopedSchoolCode = normalizeIdentifier(schoolCode || extractSchoolCodeFromRtdbBase(normalizedBase));
+  const cachedRecords = {};
+  const missingParentIds = [];
+
+  normalizedParentIds.forEach((parentId) => {
+    const cacheKey = buildScopedCacheKey(normalizedBase, "Parents", parentId);
+    if (!force && parentRecordCache.has(cacheKey)) {
+      const cachedRecord = parentRecordCache.get(cacheKey) || null;
+      if (cachedRecord) {
+        cachedRecords[parentId] = cachedRecord;
+      }
+      return;
+    }
+
+    missingParentIds.push(parentId);
   });
 
-  return records.reduce((result, [parentId, record]) => {
-    if (record) {
+  if (!missingParentIds.length) {
+    return cachedRecords;
+  }
+
+  const queryParams = new URLSearchParams();
+  if (scopedSchoolCode) {
+    queryParams.set("schoolCode", scopedSchoolCode);
+  }
+  missingParentIds.forEach((parentId) => {
+    queryParams.append("parentId", parentId);
+  });
+
+  const parentRecordsUrl = `${API_BASE}/parents/by-ids?${queryParams.toString()}`;
+  const fetchedParentRecords = await fetchCachedJson(parentRecordsUrl, {
+    ttlMs: PARENT_RECORD_TTL_MS,
+    fallbackValue: {},
+    force,
+  }).catch(() => ({}));
+
+  const fetchedRecords = Object.entries(fetchedParentRecords || {}).reduce((result, [parentId, record]) => {
+    if (isRecordObject(record)) {
       result[parentId] = record;
+      parentRecordCache.set(buildScopedCacheKey(normalizedBase, "Parents", parentId), record);
+
+      const resolvedParentId = normalizeIdentifier(record?.parentId);
+      if (resolvedParentId) {
+        parentRecordCache.set(buildScopedCacheKey(normalizedBase, "Parents", resolvedParentId), record);
+      }
+
+      const resolvedUserId = normalizeIdentifier(record?.userId);
+      if (resolvedUserId) {
+        parentRecordCache.set(buildScopedCacheKey(normalizedBase, "Parents", resolvedUserId), record);
+      }
+    }
+    return result;
+  }, {});
+
+  return {
+    ...cachedRecords,
+    ...fetchedRecords,
+  };
+};
+
+export const loadStudentRecordById = async ({ rtdbBase, schoolCode, studentId, force = false } = {}) => {
+  const normalizedStudentId = normalizeIdentifier(studentId);
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !normalizedStudentId) {
+    return null;
+  }
+
+  const scopedSchoolCode = normalizeIdentifier(schoolCode || extractSchoolCodeFromRtdbBase(normalizedBase));
+  const cacheKey = buildScopedCacheKey(normalizedBase, "Students", normalizedStudentId);
+  if (!force && studentRecordCache.has(cacheKey)) {
+    return studentRecordCache.get(cacheKey) || null;
+  }
+
+  const directUrl = `${normalizedBase}/Students/${encodeURIComponent(normalizedStudentId)}.json`;
+  const directRecord = await fetchCachedJson(directUrl, {
+    ttlMs: STUDENT_RECORD_TTL_MS,
+    fallbackValue: null,
+    force,
+  });
+  if (isRecordObject(directRecord)) {
+    studentRecordCache.set(cacheKey, directRecord);
+    return directRecord;
+  }
+
+  for (const childPath of [
+    "studentId",
+    "userId",
+    "basicStudentInformation/studentId",
+    "systemAccountInformation/userId",
+    "account/userId",
+  ]) {
+    const { recordKey, record } = await querySingleScopedRecord({
+      rtdbBase: normalizedBase,
+      nodePath: "Students",
+      childPath,
+      matchValue: normalizedStudentId,
+      ttlMs: STUDENT_RECORD_TTL_MS,
+      force,
+    });
+
+    if (!isRecordObject(record)) {
+      continue;
+    }
+
+    studentRecordCache.set(cacheKey, record);
+    writeCachedJson(directUrl, record);
+    if (recordKey) {
+      writeCachedJson(`${normalizedBase}/Students/${encodeURIComponent(recordKey)}.json`, record);
+    }
+    return record;
+  }
+
+  return null;
+};
+
+export const loadStudentRecordsByIds = async ({ rtdbBase, schoolCode, studentIds, force = false } = {}) => {
+  const normalizedStudentIds = [...new Set((studentIds || []).map(normalizeIdentifier).filter(Boolean))];
+  if (!normalizedStudentIds.length) {
+    return {};
+  }
+
+  const records = await mapInBatches(normalizedStudentIds, 8, async (studentId) => {
+    const record = await loadStudentRecordById({ rtdbBase, schoolCode, studentId, force });
+    return [studentId, record];
+  });
+
+  return records.reduce((result, [studentId, record]) => {
+    if (record) {
+      result[studentId] = record;
     }
     return result;
   }, {});
 };
 
-const fetchStudentsByGrade = async ({ schoolCode, gradeValue }) => {
+const fetchStudentsByGrade = async ({ rtdbBase, gradeValue, force = false }) => {
   const normalizedGrade = normalizeGrade(gradeValue);
-  if (!normalizedGrade) {
+  const normalizedBase = String(rtdbBase || "").trim();
+  if (!normalizedBase || !normalizedGrade) {
     return {};
   }
 
-  const [directGradeSnapshot, nestedGradeSnapshot] = await Promise.all([
-    get(
-      dbQuery(
-        dbRef(db, schoolPath("Students", schoolCode)),
-        orderByChild("grade"),
-        equalTo(normalizedGrade)
-      )
-    ).catch(() => null),
-    get(
-      dbQuery(
-        dbRef(db, schoolPath("Students", schoolCode)),
-        orderByChild("basicStudentInformation/grade"),
-        equalTo(normalizedGrade)
-      )
-    ).catch(() => null),
-  ]);
+  const fullStudentsNode = await fetchScopedCollectionNode({
+    rtdbBase: normalizedBase,
+    nodePath: "Students",
+    ttlMs: STUDENT_QUERY_TTL_MS,
+    force,
+  });
 
-  return {
-    ...(directGradeSnapshot?.exists() ? directGradeSnapshot.val() || {} : {}),
-    ...(nestedGradeSnapshot?.exists() ? nestedGradeSnapshot.val() || {} : {}),
-  };
+  return Object.entries(fullStudentsNode || {}).reduce((result, [studentKey, studentRecord]) => {
+    if (!isRecordObject(studentRecord)) {
+      return result;
+    }
+
+    const directGrade = normalizeGrade(studentRecord?.grade);
+    const nestedGrade = normalizeGrade(studentRecord?.basicStudentInformation?.grade);
+    if (directGrade !== normalizedGrade && nestedGrade !== normalizedGrade) {
+      return result;
+    }
+
+    result[studentKey] = studentRecord;
+    return result;
+  }, {});
 };
 
 export const loadStudentsByGradeSections = async ({
@@ -427,6 +661,59 @@ export const loadStudentsByGradeSections = async ({
     return [];
   }
 
+  const queryParams = new URLSearchParams();
+  if (scopedSchoolCode) {
+    queryParams.set("schoolCode", scopedSchoolCode);
+  }
+  if (includeInactive) {
+    queryParams.set("includeInactive", "true");
+  }
+  [...allowedKeys].sort((leftKey, rightKey) => leftKey.localeCompare(rightKey)).forEach((gradeSectionKey) => {
+    queryParams.append("gradeSection", gradeSectionKey);
+  });
+
+  const scopedRowsUrl = `${API_BASE}/students/by-grade-sections?${queryParams.toString()}`;
+  const scopedRows = await fetchCachedJson(scopedRowsUrl, {
+    ttlMs: STUDENT_QUERY_TTL_MS,
+    fallbackValue: null,
+  });
+
+  if (Array.isArray(scopedRows)) {
+    return scopedRows
+      .map((row) => {
+        const rawRecord = row?.raw && typeof row.raw === "object" && !Array.isArray(row.raw) ? row.raw : {};
+        const userRecord = row?.user && typeof row.user === "object" && !Array.isArray(row.user) ? row.user : null;
+        const name =
+          userRecord?.name ||
+          rawRecord?.name ||
+          rawRecord?.basicStudentInformation?.name ||
+          "Student";
+        const resolvedStudentId = normalizeIdentifier(row?.studentId || row?.studentKey || row?.userId);
+
+        return {
+          ...row,
+          raw: rawRecord,
+          user: userRecord,
+          id: resolvedStudentId,
+          studentId: resolvedStudentId,
+          userId: normalizeIdentifier(row?.userId),
+          grade: normalizeGrade(row?.grade || rawRecord?.grade || rawRecord?.basicStudentInformation?.grade),
+          section: normalizeSection(row?.section || rawRecord?.section || rawRecord?.basicStudentInformation?.section),
+          name,
+          profileImage: resolveAvatarImage(
+            name,
+            userRecord?.profileImage,
+            userRecord?.profile,
+            userRecord?.avatar,
+            rawRecord?.profileImage,
+            rawRecord?.basicStudentInformation?.studentPhoto,
+            rawRecord?.studentPhoto
+          ),
+        };
+      })
+      .sort((leftRow, rightRow) => String(leftRow?.name || "").localeCompare(String(rightRow?.name || "")));
+  }
+
   const uniqueGrades = [...new Set(allowedKeys.map((value) => String(value || "").split("|")[0]).filter(Boolean))];
   const studentNodes = {};
 
@@ -441,7 +728,11 @@ export const loadStudentsByGradeSections = async ({
       return cachedGradeNode;
     }
 
-    const gradeNode = await fetchStudentsByGrade({ schoolCode: scopedSchoolCode, gradeValue });
+    const gradeNode = await fetchStudentsByGrade({
+      rtdbBase: normalizedBase,
+      gradeValue,
+      force: false,
+    });
     writeCachedJson(cacheUrl, gradeNode || {});
     Object.assign(studentNodes, gradeNode || {});
     return gradeNode;

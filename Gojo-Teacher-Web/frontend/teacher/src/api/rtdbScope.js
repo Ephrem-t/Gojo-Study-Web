@@ -3,6 +3,7 @@ import { API_BASE } from "./apiConfig";
 import { RTDB_BASE_RAW } from "../config/firebaseClientConfig";
 
 const API_ROOT = API_BASE.replace(/\/api\/?$/, "");
+const RTDB_PROXY_BASE = `${API_BASE}/rtdb-proxy`;
 
 const SCOPED_ROOTS = new Set([
   "Users",
@@ -86,8 +87,28 @@ function scopeRtdbUrl(url) {
   }
 }
 
+function isRawRtdbUrl(url) {
+  return typeof url === "string" && url.startsWith(RTDB_BASE_RAW);
+}
+
+function rewriteRtdbUrl(url) {
+  if (!isRawRtdbUrl(url)) return url;
+
+  try {
+    const scopedUrl = scopeRtdbUrl(url);
+    const parsed = new URL(scopedUrl);
+    const scopedPath = parsed.pathname.replace(/^\/+/, "");
+    return `${RTDB_PROXY_BASE}/${scopedPath}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
 function isBackendApiUrl(url) {
-  return typeof url === "string" && url.startsWith(API_ROOT);
+  if (typeof url !== "string") return false;
+  if (url.startsWith("/api")) return true;
+  if (url.startsWith(API_BASE)) return true;
+  return Boolean(API_ROOT) && url.startsWith(API_ROOT);
 }
 
 export { RTDB_BASE_RAW };
@@ -109,8 +130,8 @@ export function installRtdbInterceptors() {
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
       const url = typeof input === "string" ? input : input?.url;
-      const nextUrl = scopeRtdbUrl(url);
-      const attachSchoolHeader = isBackendApiUrl(url);
+      const nextUrl = rewriteRtdbUrl(url);
+      const attachSchoolHeader = isRawRtdbUrl(url) || isBackendApiUrl(nextUrl) || isBackendApiUrl(url);
 
       if (typeof input === "string") {
         const nextInit = attachSchoolHeader
@@ -135,8 +156,9 @@ export function installRtdbInterceptors() {
   if (!window.__gojoAxiosScoped) {
     axios.interceptors.request.use((config) => {
       if (config && typeof config.url === "string") {
-        config.url = scopeRtdbUrl(config.url);
-        if (isBackendApiUrl(config.url)) {
+        const originalUrl = config.url;
+        config.url = rewriteRtdbUrl(config.url);
+        if (isRawRtdbUrl(originalUrl) || isBackendApiUrl(config.url) || isBackendApiUrl(originalUrl)) {
           config.headers = {
             ...(config.headers || {}),
             "X-School-Code": getSchoolCode(),
