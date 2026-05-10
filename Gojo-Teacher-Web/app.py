@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from time import time
 from urllib.parse import unquote, urlparse
@@ -12,6 +13,27 @@ from firebase_config import get_firebase_options, require_firebase_credentials
 from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash, generate_password_hash
 
+
+# ---- server-side posts cache (shared across all teacher sessions) ----
+_POSTS_CACHE: dict = {}
+_POSTS_CACHE_LOCK = threading.Lock()
+_POSTS_CACHE_TTL = 2 * 60  # seconds
+
+def _pc_get(key: str):
+    with _POSTS_CACHE_LOCK:
+        entry = _POSTS_CACHE.get(key)
+        if entry and (time() - entry["ts"]) < _POSTS_CACHE_TTL:
+            return entry["data"]
+        return None
+
+def _pc_set(key: str, data):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE[key] = {"data": data, "ts": time()}
+
+def _pc_invalidate(key: str):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE.pop(key, None)
+# -----------------------------------------------------------------------
 
 APP_ENV = str(os.getenv("APP_ENV") or os.getenv("FLASK_ENV") or "development").strip().lower()
 DEFAULT_ALLOWED_ORIGINS = (
@@ -2671,7 +2693,11 @@ def get_posts():
     users_ref = school_reference("Users")
     school_admins_ref = school_reference("School_Admins")
 
-    all_posts = _limited_posts_snapshot(posts_ref)
+    _cache_key = f"posts:{_read_school_code_from_request()}"
+    all_posts = _pc_get(_cache_key)
+    if all_posts is None:
+        all_posts = _limited_posts_snapshot(posts_ref)
+        _pc_set(_cache_key, all_posts)
     users_cache = {}
     school_admin_cache = {}
 

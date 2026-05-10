@@ -3,6 +3,8 @@ from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
 import os
+import threading
+import time as _time
 from werkzeug.utils import secure_filename
 import uuid
 from datetime import datetime, timedelta
@@ -11,6 +13,27 @@ import re
 import secrets
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
+
+# ---- server-side posts cache (shared across all admin sessions) ----
+_POSTS_CACHE: dict = {}
+_POSTS_CACHE_LOCK = threading.Lock()
+_POSTS_CACHE_TTL = 2 * 60  # seconds
+
+def _pc_get(key: str):
+    with _POSTS_CACHE_LOCK:
+        entry = _POSTS_CACHE.get(key)
+        if entry and (_time.monotonic() - entry["ts"]) < _POSTS_CACHE_TTL:
+            return entry["data"]
+        return None
+
+def _pc_set(key: str, data):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE[key] = {"data": data, "ts": _time.monotonic()}
+
+def _pc_invalidate(key: str):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE.pop(key, None)
+# --------------------------------------------------------------------
 
 APP_ENV = str(os.getenv("APP_ENV") or os.getenv("FLASK_ENV") or "development").strip().lower()
 
@@ -88,11 +111,19 @@ def read_recent_posts_for_school(school_code, limit=60):
     if not code:
         return {}
 
+    cache_key = f"posts:{code}:{limit}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         posts = school_node_ref(code, "Posts").order_by_key().limit_to_last(limit).get() or {}
-        return posts if isinstance(posts, dict) else {}
+        result = posts if isinstance(posts, dict) else {}
     except Exception:
-        return {}
+        result = {}
+
+    _pc_set(cache_key, result)
+    return result
 
 
 def resolve_school_code_alias(school_code):
@@ -729,6 +760,7 @@ def create_post():
             }
         })
 
+        _pc_invalidate(f"posts:{school_code}:60")
         return jsonify({"success": True, "message": "Post created successfully"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -1030,7 +1062,7 @@ def edit_post(postId):
         "updatedAt": datetime.now().strftime("%I:%M %p, %b %d %Y"),
         "edited": True
     })
-
+    _pc_invalidate(f"posts:{school_code}:60")
     return jsonify({"success": True, "message": "Post updated"})
 
 
@@ -1063,7 +1095,7 @@ def delete_post(postId):
         return jsonify({"success": False, "message": "Unauthorized"}), 403
 
     post_ref.delete()
-
+    _pc_invalidate(f"posts:{school_code}:60")
     return jsonify({"success": True, "message": "Post deleted"})
 
 

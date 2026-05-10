@@ -6,8 +6,8 @@ import { loadScopedPosts } from "../utils/postData";
 
 const FinanceShellContext = createContext(null);
 
-const ACTIVE_REFRESH_MS = 60 * 1000;
-const ACTIVE_GRACE_MS = 60 * 1000;
+const ACTIVE_REFRESH_MS = 3 * 60 * 1000;
+const ACTIVE_GRACE_MS = 5 * 60 * 1000;
 
 function buildUnreadSenderMap(summaries) {
   const nextMap = {};
@@ -205,12 +205,12 @@ export function FinanceShellProvider({ children }) {
     const handleVisibilityChange = () => {
       if (document.hidden) return;
       lastInteractionAtRef.current = Date.now();
-      refreshShell({ force: true });
+      refreshShell({ force: false });
     };
 
     const handleFocus = () => {
       lastInteractionAtRef.current = Date.now();
-      refreshShell({ force: true });
+      refreshShell({ force: false });
     };
 
     const intervalId = window.setInterval(refreshIfActive, ACTIVE_REFRESH_MS);

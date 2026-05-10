@@ -1,6 +1,7 @@
 import axios from "axios";
 import { buildChatKey, normalizeUserType } from "./financeSession";
 import { clearCachedValue, getOrLoad } from "./requestCache";
+import { BACKEND_BASE } from "../config";
 
 const CHAT_LIST_TTL_MS = 45 * 1000;
 const USER_TTL_MS = 5 * 60 * 1000;
@@ -63,6 +64,18 @@ function findUserRecord(usersNode, userId) {
   );
 }
 
+function buildUserLookupByUserId(users) {
+  const nextMap = {};
+
+  (users || []).forEach((user) => {
+    const key = String(user?.userId || "").trim();
+    if (!key) return;
+    nextMap[key] = user;
+  });
+
+  return nextMap;
+}
+
 function sortGradeValuesInternal(values) {
   return Array.from(new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))).sort(
     (left, right) => {
@@ -84,38 +97,39 @@ function sortGradeValuesInternal(values) {
   );
 }
 
-function toStudentContact(studentId, studentNode, usersNode) {
+function toStudentContact(studentId, studentNode) {
   const userId = studentNode?.userId || studentNode?.use || studentNode?.user || "";
-  const user = findUserRecord(usersNode, userId) || {};
+  const basicInfo = studentNode?.basicStudentInformation || {};
 
   return {
     id: studentId,
     studentId,
     userId,
-    role: user?.role || "student",
-    type: normalizeUserType(user?.role || "student"),
-    name: user?.name || user?.username || studentNode?.name || studentNode?.username || `Student ${studentId}`,
-    username: user?.username || studentNode?.username || "",
-    email: user?.email || studentNode?.email || "",
-    phone: user?.phone || user?.phoneNumber || studentNode?.phone || "",
-    profileImage: user?.profileImage || studentNode?.profileImage || "/default-profile.png",
-    grade: studentNode?.grade || "",
-    section: studentNode?.section || "",
+    role: "student",
+    type: normalizeUserType("student"),
+    name: studentNode?.name || basicInfo?.name || studentNode?.username || `Student ${studentId}`,
+    username: studentNode?.username || "",
+    email: studentNode?.email || basicInfo?.email || "",
+    phone: studentNode?.phone || basicInfo?.phone || "",
+    profileImage:
+      studentNode?.profileImage ||
+      basicInfo?.studentPhoto ||
+      basicInfo?.profileImage ||
+      "/default-profile.png",
+    grade: studentNode?.grade || basicInfo?.grade || "",
+    section: studentNode?.section || basicInfo?.section || "",
     parentLinks: studentNode?.parents || {},
   };
 }
 
-function toParentContact(parentId, parentNode, usersNode, studentsNode) {
+function toParentContact(parentId, parentNode, parentUsersById, studentsNode) {
   const userId = parentNode?.userId || "";
-  const user = findUserRecord(usersNode, userId) || {};
+  const user = parentUsersById?.[userId] || {};
   const childLinks = Object.values(parentNode?.children || {});
   const firstChild = childLinks[0] || null;
   const childStudentId = String(firstChild?.studentId || "");
   const childStudent = studentsNode?.[childStudentId] || null;
-  const childUser = findUserRecord(
-    usersNode,
-    childStudent?.userId || childStudent?.use || childStudent?.user || ""
-  ) || {};
+  const childBasicInfo = childStudent?.basicStudentInformation || {};
 
   return {
     id: parentId,
@@ -129,7 +143,7 @@ function toParentContact(parentId, parentNode, usersNode, studentsNode) {
     phone: user?.phone || user?.phoneNumber || parentNode?.phone || "",
     profileImage: user?.profileImage || parentNode?.profileImage || "/default-profile.png",
     childName:
-      childUser?.name || childUser?.username || childStudent?.name || childStudent?.username || "N/A",
+      childStudent?.name || childBasicInfo?.name || childStudent?.username || "N/A",
     childRelationship: firstChild?.relationship || "N/A",
     children: parentNode?.children || {},
   };
@@ -213,28 +227,41 @@ export async function loadSchoolPeople(dbRoot, role, { force = false } = {}) {
   const isParent = normalizedRole === "parent";
   const recordsNode = isParent ? "Parents" : "Students";
 
+  // Extract schoolCode from dbRoot (format: .../Platform1/Schools/<schoolCode>)
+  const schoolCode = String(dbRoot || "").split("/Platform1/Schools/")[1] || "";
+
   return getOrLoad(
     getSchoolPeopleKey(dbRoot, normalizedRole),
     async () => {
-      const [usersResponse, recordsResponse, studentsResponse] = await Promise.all([
-        axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} })),
-        axios.get(`${dbRoot}/${recordsNode}.json`).catch(() => ({ data: {} })),
-        isParent
-          ? axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} }))
-          : Promise.resolve({ data: {} }),
+      // Route large-node reads through the backend proxy so 100 finance users
+      // share one server-side cache instead of each downloading 10 MB directly.
+      const recordsFetch = schoolCode
+        ? axios.get(`${BACKEND_BASE}/api/nodes/${recordsNode}`, { params: { schoolCode } }).catch(() => ({ data: {} }))
+        : axios.get(`${dbRoot}/${recordsNode}.json`).catch(() => ({ data: {} }));
+
+      const studentsFetch = isParent
+        ? (schoolCode
+            ? axios.get(`${BACKEND_BASE}/api/nodes/Students`, { params: { schoolCode } }).catch(() => ({ data: {} }))
+            : axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} })))
+        : Promise.resolve({ data: {} });
+
+      const [recordsResponse, studentsResponse, parentUsers] = await Promise.all([
+        recordsFetch,
+        studentsFetch,
+        isParent ? loadUsersByRole(dbRoot, "parent", { force }) : Promise.resolve([]),
       ]);
 
-      const usersNode = usersResponse.data || {};
       const recordsNodeData = recordsResponse.data || {};
       const studentsNode = studentsResponse.data || {};
+      const parentUsersById = buildUserLookupByUserId(parentUsers);
 
       return Object.entries(recordsNodeData)
         .map(([recordId, recordNode]) => {
           if (isParent) {
-            return toParentContact(recordId, recordNode || {}, usersNode, studentsNode);
+            return toParentContact(recordId, recordNode || {}, parentUsersById, studentsNode);
           }
 
-          return toStudentContact(recordId, recordNode || {}, usersNode);
+          return toStudentContact(recordId, recordNode || {});
         })
         .filter((person) => Boolean(person?.userId || person?.id))
         .sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));

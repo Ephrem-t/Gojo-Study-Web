@@ -267,10 +267,10 @@ function MyPosts() {
 
     fetchMyPosts({ force: false });
 
-    const refreshOnFocus = () => fetchMyPosts({ force: true });
+    const refreshOnFocus = () => fetchMyPosts({ force: false });
     const refreshOnVisible = () => {
       if (document.hidden) return;
-      fetchMyPosts({ force: true });
+      fetchMyPosts({ force: false });
     };
 
     window.addEventListener("focus", refreshOnFocus);

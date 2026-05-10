@@ -20,7 +20,7 @@ import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import { getOrLoad } from "../utils/requestCache";
-import { loadSchoolPeople } from "../utils/chatRtdb";
+import { loadSchoolPeople, loadUserProfile } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -131,109 +131,21 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [users, parentsData, studentsData, parentContacts] = await Promise.all([
-          getOrLoad(
-            `finance:parents:users:${DB}`,
-            async () => {
-              const response = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
-          getOrLoad(
-            `finance:parents:list:${DB}`,
-            async () => {
-              const response = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
-          getOrLoad(
-            `finance:parents:students:${DB}`,
-            async () => {
-              const response = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-              return response.data || {};
-            },
-            { ttlMs: 5 * 60 * 1000 }
-          ),
-          loadSchoolPeople(DB, "parent"),
-        ]);
-
-        const getUserByKeyOrUserId = (maybeUserId) => {
-          if (!maybeUserId) return null;
-          return (
-            users[maybeUserId] ||
-            Object.values(users).find((u) => String(u?.userId) === String(maybeUserId)) ||
-            null
-          );
-        };
-
-        const findParentRecordByUserId = (canonicalUserId) => {
-          if (!canonicalUserId) return null;
-          return (
-            parentsData?.[canonicalUserId] ||
-            Object.entries(parentsData || {}).find(
-              ([parentKey, p]) =>
-                String(parentKey) === String(canonicalUserId) ||
-                String(p?.userId) === String(canonicalUserId)
-            )?.[1] ||
-            null
-          );
-        };
-
-        const findStudentRecordById = (maybeStudentId) => {
-          if (!maybeStudentId) return null;
-          return (
-            studentsData?.[maybeStudentId] ||
-            Object.entries(studentsData || {}).find(
-              ([studentKey, s]) =>
-                String(studentKey) === String(maybeStudentId) ||
-                String(s?.studentId || s?.id || "") === String(maybeStudentId)
-            )?.[1] ||
-            null
-          );
-        };
-
-        const resolveFirstChildPreview = (canonicalUserId) => {
-          const parentRecord = findParentRecordByUserId(canonicalUserId);
-          const childLinks = Object.values(parentRecord?.children || {});
-          if (!childLinks.length) return null;
-
-          const firstLink = childLinks[0] || {};
-          const studentRecord = findStudentRecordById(firstLink.studentId);
-          if (!studentRecord) return null;
-          const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
-          const studentUser = getUserByKeyOrUserId(studentUserId);
-          const name =
-            studentUser?.name ||
-            studentUser?.username ||
-            studentRecord?.name ||
-            studentRecord?.username ||
-            null;
-          const relationship = firstLink.relationship || null;
-          return { name, relationship };
-        };
-
-        const parentList = (parentContacts || []).map((parentContact) => {
-          const u = getUserByKeyOrUserId(parentContact.userId) || {};
-          const firstChild = resolveFirstChildPreview(parentContact.userId);
-
-          return {
-            parentId: parentContact.parentId || parentContact.id,
-            userId: parentContact.userId,
-            name: parentContact.name || u.name || u.username || "No Name",
-            email: parentContact.email || u.email || "N/A",
-            childName: firstChild?.name || parentContact.childName || "N/A",
-            childRelationship: firstChild?.relationship || parentContact.childRelationship || "N/A",
-            profileImage: parentContact.profileImage || u.profileImage || "/default-profile.png",
-            phone: parentContact.phone || u.phone || u.phoneNumber || "N/A",
-            age: u.age || null,
-            city: u.city || (u.address && u.address.city) || null,
-            citizenship: u.citizenship || null,
-            job: u.job || null,
-            address: u.address || null,
-          };
-        });
+        const parentContacts = await loadSchoolPeople(DB, "parent");
+        const parentList = (parentContacts || []).map((parentContact) => ({
+          ...parentContact,
+          parentId: parentContact.parentId || parentContact.id,
+          email: parentContact.email || "N/A",
+          childName: parentContact.childName || "N/A",
+          childRelationship: parentContact.childRelationship || "N/A",
+          profileImage: parentContact.profileImage || "/default-profile.png",
+          phone: parentContact.phone || "N/A",
+          age: parentContact.age || null,
+          city: parentContact.city || null,
+          citizenship: parentContact.citizenship || null,
+          job: parentContact.job || null,
+          address: parentContact.address || null,
+        }));
         setParents(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
@@ -295,24 +207,7 @@ function Parent() {
           ) ||
           []
         )[1];
-        const usersData = await getOrLoad(
-          `finance:parents:users:${DB}`,
-          async () => {
-            const response = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-            return response.data || {};
-          },
-          { ttlMs: 5 * 60 * 1000 }
-        );
-        const getUserByKeyOrUserId = (maybeUserId) => {
-          if (!maybeUserId) return null;
-          return (
-            usersData[maybeUserId] ||
-            Object.values(usersData).find((u) => String(u?.userId) === String(maybeUserId)) ||
-            null
-          );
-        };
-
-        const userInfo = getUserByKeyOrUserId(selectedParent.userId) || {};
+        const userInfo = (await loadUserProfile(DB, selectedParent.userId).catch(() => null)) || {};
 
         // compute age from possible DOB fields or explicit age field
         const dobRaw = userInfo?.dob || userInfo?.birthDate || parentRecord?.dob || parentRecord?.birthDate || null;
@@ -363,8 +258,8 @@ function Parent() {
           },
           { ttlMs: 5 * 60 * 1000 }
         );
-        const childrenList = Object.values(parentRecord?.children || {})
-          .map((childLink) => {
+        const childrenList = await Promise.all(
+          Object.values(parentRecord?.children || {}).map(async (childLink) => {
             const studentRecord =
               studentsData?.[childLink.studentId] ||
               Object.entries(studentsData || {}).find(
@@ -375,20 +270,27 @@ function Parent() {
               )?.[1];
             if (!studentRecord) return null;
             const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
-            const studentUser = getUserByKeyOrUserId(studentUserId) || {};
+            const studentUser = studentUserId
+              ? (await loadUserProfile(DB, studentUserId).catch(() => null)) || {}
+              : {};
+            const basicInfo = studentRecord?.basicStudentInformation || {};
             return {
               studentId: childLink.studentId,
-              name: studentUser.name || studentUser.username || studentRecord.name || studentRecord.username || "N/A",
-              email: studentUser.email || "N/A",
-              grade: studentRecord.grade || "N/A",
-              section: studentRecord.section || "N/A",
+              name: studentUser.name || studentRecord.name || basicInfo.name || studentRecord.username || "N/A",
+              email: studentUser.email || studentRecord.email || basicInfo.email || "N/A",
+              grade: studentRecord.grade || basicInfo.grade || "N/A",
+              section: studentRecord.section || basicInfo.section || "N/A",
               parentPhone: parentRecord.phone || "N/A",
               relationship: childLink.relationship || "N/A",
-              profileImage: studentUser.profileImage || studentRecord.profileImage || "/default-profile.png",
+              profileImage:
+                studentUser.profileImage ||
+                studentRecord.profileImage ||
+                basicInfo.studentPhoto ||
+                "/default-profile.png",
             };
           })
-          .filter(Boolean);
-        setChildren(childrenList);
+        );
+        setChildren(childrenList.filter(Boolean));
       } catch (err) {
         console.error("Error fetching parent info and children:", err);
         setParentInfo(null);

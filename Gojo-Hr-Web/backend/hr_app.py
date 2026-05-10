@@ -200,7 +200,36 @@ SCHOOL_ADMIN_ROLE = 'school_admins'
 SCHOOL_ADMINS_NODE = 'School_Admins'
 LEGACY_MANAGEMENT_NODE = 'Management'
 SCHOOL_ADMIN_ID_KEYS = ('schoolAdminId', 'managementId')
-EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS = max(5, int(os.getenv('EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS') or '60'))
+# Increased default from 60 s → 1800 s (30 min). 100 HR users polling every
+# minute → 1 Firebase read per 30 min instead of 100 reads per minute.
+EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS = max(5, int(os.getenv('EMPLOYEE_SUMMARY_CACHE_TTL_SECONDS') or '1800'))
+
+# ---------------------------------------------------------------------------
+# Generic lightweight cache — shared across ALL HR users hitting this server.
+# Covers Departments, Positions (change rarely) and Posts (2-min TTL).
+# ---------------------------------------------------------------------------
+import threading as _threading
+_SIMPLE_CACHE: dict = {}        # key → {"data": ..., "ts": float}
+_SIMPLE_CACHE_LOCK = _threading.Lock()
+
+
+def _sc_get(key, ttl):
+    with _SIMPLE_CACHE_LOCK:
+        entry = _SIMPLE_CACHE.get(key)
+        if entry and (time.monotonic() - entry["ts"]) < ttl:
+            return entry["data"], True
+    return None, False
+
+
+def _sc_set(key, data):
+    with _SIMPLE_CACHE_LOCK:
+        _SIMPLE_CACHE[key] = {"data": data, "ts": time.monotonic()}
+
+
+def _sc_invalidate(key):
+    with _SIMPLE_CACHE_LOCK:
+        _SIMPLE_CACHE.pop(key, None)
+
 
 _EMPLOYEE_SUMMARY_CACHE = {
     'data': None,
@@ -1793,6 +1822,9 @@ def upload_user_profile_image(user_id):
 @app.route('/departments', methods=['GET'])
 def list_departments():
     try:
+        cached, hit = _sc_get('hr:departments', 30 * 60)
+        if hit:
+            return jsonify(cached), 200
         raw = departments_ref().get() or {}
         items = []
         if isinstance(raw, dict):
@@ -1805,6 +1837,7 @@ def list_departments():
                     'status': item.get('status') or 'active',
                 })
         items.sort(key=lambda item: str(item.get('name') or '').lower())
+        _sc_set('hr:departments', items)
         return jsonify(items), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1821,6 +1854,7 @@ def create_department():
         if not name:
             return jsonify({'error': 'Department name is required.'}), 400
 
+        _sc_invalidate('hr:departments')  # evict so next GET returns fresh list
         raw = departments_ref().get() or {}
         raw = raw if isinstance(raw, dict) else {}
 
@@ -1840,6 +1874,7 @@ def create_department():
             'status': status,
         }
         departments_ref().child(department_id).set(department_payload)
+        _sc_invalidate('hr:departments')  # refresh cache after write
         return jsonify({
             'id': department_id,
             **department_payload,
@@ -1851,6 +1886,9 @@ def create_department():
 @app.route('/positions', methods=['GET'])
 def list_positions():
     try:
+        cached, hit = _sc_get('hr:positions', 30 * 60)
+        if hit:
+            return jsonify(cached), 200
         raw = positions_ref().get() or {}
         items = []
         if isinstance(raw, dict):
@@ -1862,6 +1900,7 @@ def list_positions():
                     'departmentId': item.get('departmentId') or '',
                 })
         items.sort(key=lambda item: str(item.get('name') or '').lower())
+        _sc_set('hr:positions', items)
         return jsonify(items), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1904,6 +1943,7 @@ def create_position():
             'departmentId': department_id,
         }
         positions_ref().child(position_id).set(position_payload)
+        _sc_invalidate('hr:positions')  # evict so next GET returns fresh list
         return jsonify({
             'id': position_id,
             **position_payload,
@@ -2238,6 +2278,7 @@ def create_post():
         post_obj['postId'] = post_id
         new_post_ref.update({'postId': post_id})
 
+        _sc_invalidate('hr:posts')  # evict so next poll returns the new post
         return jsonify({'success': True, 'message': 'Post created successfully', 'post': post_obj}), 201
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -2334,6 +2375,7 @@ def update_post(post_id):
         }
 
         post_ref.update(updated_post)
+        _sc_invalidate('hr:posts')  # evict so next poll sees the edit
         return jsonify({'success': True, 'message': 'Post updated successfully', 'post': updated_post}), 200
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -2596,6 +2638,16 @@ def get_posts():
         before_time = str(request.args.get('beforeTime') or '').strip()
         before_post_id = str(request.args.get('beforePostId') or '').strip()
 
+        # Only cache the simple (no pagination) full-feed case — paginated
+        # calls are cheap per-user and have varying parameters.
+        use_simple_cache = not limit and not before_time and not before_post_id and not include_meta
+        cache_key = 'hr:posts'
+
+        if use_simple_cache:
+            cached, hit = _sc_get(cache_key, 2 * 60)
+            if hit:
+                return jsonify(cached), 200
+
         try:
             if limit:
                 query = posts_ref().order_by_child('time')
@@ -2637,6 +2689,9 @@ def get_posts():
                     'beforeTime': str(last_post.get('time') or ''),
                     'beforePostId': str(last_post.get('postId') or last_post.get('id') or ''),
                 }
+
+        if use_simple_cache:
+            _sc_set(cache_key, posts)
 
         if include_meta:
             return jsonify({'posts': posts, 'hasMore': has_more, 'nextCursor': next_cursor}), 200
@@ -2749,6 +2804,7 @@ def delete_post(post_id):
             return jsonify({'success': False, 'message': 'Unauthorized'}), 403
 
         post_ref.delete()
+        _sc_invalidate('hr:posts')  # evict so next poll reflects the deletion
         return jsonify({'success': True, 'message': 'Post deleted'}), 200
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
