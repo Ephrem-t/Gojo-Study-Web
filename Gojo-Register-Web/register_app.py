@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import uuid
+import time
+import threading
 from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
@@ -26,6 +28,51 @@ bucket = storage.bucket()
 
 PLATFORM_SCHOOLS_REF = "Platform1/Schools"
 ROLLOVER_ALLOWED_DELAYS = {3600, 21600, 43200, 86400}
+
+# ---------------------------------------------------------------------------
+# Server-side node cache — shared across ALL registerers hitting this server.
+# With 100 registerers each re-downloading 10 MB every 30 min, this reduces
+# 100 RTDB reads → 1 RTDB read per cache window per node per school.
+# ---------------------------------------------------------------------------
+_NODE_CACHE: dict = {}           # key → {"data": ..., "ts": float}
+_NODE_CACHE_LOCK = threading.Lock()
+NODE_CACHE_TTL = 30 * 60        # 30 minutes (seconds)
+
+
+def _cache_key(school_code: str, node: str) -> str:
+    return f"{school_code}:{node}"
+
+
+def _get_cached_node(school_code: str, node: str):
+    key = _cache_key(school_code, node)
+    with _NODE_CACHE_LOCK:
+        entry = _NODE_CACHE.get(key)
+        if entry and (time.monotonic() - entry["ts"]) < NODE_CACHE_TTL:
+            return entry["data"], True          # (data, cache_hit)
+    return None, False
+
+
+def _set_cached_node(school_code: str, node: str, data) -> None:
+    key = _cache_key(school_code, node)
+    with _NODE_CACHE_LOCK:
+        _NODE_CACHE[key] = {"data": data, "ts": time.monotonic()}
+
+
+def _invalidate_cached_node(school_code: str, node: str) -> None:
+    """Call after write mutations so the next read fetches fresh data."""
+    key = _cache_key(school_code, node)
+    with _NODE_CACHE_LOCK:
+        _NODE_CACHE.pop(key, None)
+
+
+def get_school_node_cached(school_code: str, node: str):
+    """Fetch a school sub-node, returning the cached copy when fresh."""
+    data, hit = _get_cached_node(school_code, node)
+    if hit:
+        return data
+    data = school_ref(school_code).child(node).get() or {}
+    _set_cached_node(school_code, node, data)
+    return data
 
 
 def schools_data():
@@ -78,7 +125,8 @@ def find_school_code_for_user(user_id=None, finance_id=None):
 
 
 def generate_parent_id(school_code):
-    parents = school_ref(school_code).child("Parents").get() or {}
+    # Use shallow=True to download only keys (~50 KB) instead of full node data (~10 MB)
+    parents = school_ref(school_code).child("Parents").get(shallow=True) or {}
     year_suffix = datetime.utcnow().strftime("%y")
     prefix = "GPR"
     max_seq = 0
@@ -99,7 +147,8 @@ def generate_parent_id(school_code):
 
 
 def generate_scoped_id(school_code, node_name, prefix):
-    node = school_ref(school_code).child(node_name).get() or {}
+    # Use shallow=True to download only keys (~50 KB) instead of full node data (~10 MB)
+    node = school_ref(school_code).child(node_name).get(shallow=True) or {}
     year_suffix = datetime.utcnow().strftime("%y")
     max_seq = 0
 
@@ -403,6 +452,11 @@ def register_parent():
                 "parentId": parent_id,
                 "linkedAt": datetime.utcnow().isoformat(),
             })
+
+        # Invalidate server-side cache after parent write
+        _invalidate_cached_node(school_code, "Parents")
+        _invalidate_cached_node(school_code, "Students")
+        _invalidate_cached_node(school_code, "Users")
 
         return jsonify({"success": True, "message": "Parent registered successfully", "parentId": parent_id, "userId": user_id}), 200
     except Exception as e:
@@ -774,6 +828,11 @@ def register_student():
 
         if finalized_parent_guardian_info:
             students_ref.child(f"{student_id}/parentGuardianInformation/parents").set(finalized_parent_guardian_info)
+
+        # Invalidate server-side cache so the next registerer gets fresh data
+        _invalidate_cached_node(school_code, "Students")
+        _invalidate_cached_node(school_code, "Parents")
+        _invalidate_cached_node(school_code, "Users")
 
         return jsonify({
             "success": True,
@@ -1285,7 +1344,9 @@ def get_students():
         if not school_code:
             return jsonify({"success": False, "message": "schoolCode is required"}), 400
 
-        students = school_ref(school_code).child("Students").get() or {}
+        # Reuse the shared server-side cache so ParentRegister does not bypass
+        # the large-node proxy and trigger a fresh 10 MB Students read per user.
+        students = get_school_node_cached(school_code, "Students") or {}
         result = []
         if isinstance(students, dict):
             for key, val in students.items():
@@ -1296,6 +1357,63 @@ def get_students():
         return jsonify(result), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Cached node proxy endpoints — all 100 registerers share a single RTDB read
+# per 30-minute window instead of each triggering their own 10 MB download.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/nodes/Students", methods=["GET"])
+def proxy_students_node():
+    """Return the full Students node for a school, served from server cache."""
+    try:
+        school_code = request.args.get("schoolCode")
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+        data = get_school_node_cached(school_code, "Students")
+        return jsonify({"success": True, "data": data}), 200
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/nodes/Parents", methods=["GET"])
+def proxy_parents_node():
+    """Return the full Parents node for a school, served from server cache."""
+    try:
+        school_code = request.args.get("schoolCode")
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+        data = get_school_node_cached(school_code, "Parents")
+        return jsonify({"success": True, "data": data}), 200
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/nodes/Teachers", methods=["GET"])
+def proxy_teachers_node():
+    """Return the full Teachers node for a school, served from server cache."""
+    try:
+        school_code = request.args.get("schoolCode")
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+        data = get_school_node_cached(school_code, "Teachers")
+        return jsonify({"success": True, "data": data}), 200
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/nodes/Users", methods=["GET"])
+def proxy_users_node():
+    """Return the full Users node for a school, served from server cache."""
+    try:
+        school_code = request.args.get("schoolCode")
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+        data = get_school_node_cached(school_code, "Users")
+        return jsonify({"success": True, "data": data}), 200
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
 
 
 @app.route("/academic-years", methods=["GET"])

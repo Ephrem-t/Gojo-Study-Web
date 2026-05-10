@@ -22,7 +22,7 @@ import { BACKEND_BASE } from "../config";
 import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildUserLookupFromNode, loadSchoolInfoNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { loadSchoolInfoNode, loadSchoolStudentsNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
@@ -103,7 +103,6 @@ export default function DocumentGeneration() {
   const [schoolInfo, setSchoolInfo] = useState({});
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [studentsMap, setStudentsMap] = useState({});
-  const [usersMap, setUsersMap] = useState({});
   const [yearHistoryMap, setYearHistoryMap] = useState({});
 
   const [search, setSearch] = useState("");
@@ -193,18 +192,29 @@ export default function DocumentGeneration() {
 
     setLoading(true);
     try {
-      const [nextSchoolInfo, studentsData, usersNode, yearHistoryData] = await Promise.all([
-        loadSchoolInfoNode({ rtdbBase: DB_URL, force: true }),
-        loadSchoolStudentsNode({ rtdbBase: DB_URL, force: true }),
-        loadSchoolUsersNode({ rtdbBase: DB_URL, force: true }),
-        fetchCachedJson(`${DB_URL}/YearHistory.json`, { ttlMs: 60000 }).catch(() => ({})),
+      const [nextSchoolInfo, studentsData] = await Promise.all([
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
       ]);
 
       setSchoolInfo(nextSchoolInfo || {});
       setCurrentAcademicYear(String(nextSchoolInfo?.currentAcademicYear || "").trim());
       setStudentsMap(studentsData || {});
-      setUsersMap(buildUserLookupFromNode(usersNode));
-      setYearHistoryMap(yearHistoryData || {});
+
+      // Load YearHistory using a shallow index to discover year keys, then fetch only the Students sub-node
+      // per year — avoids downloading the full 15 MB YearHistory blob (which includes Parents, metadata etc.)
+      const yearIndex = await fetchCachedJson(`${DB_URL}/YearHistory.json?shallow=true`, { ttlMs: 10 * 60 * 1000 }).catch(() => ({}));
+      const yearKeys = Object.keys(yearIndex || {});
+      const yearStudentsFetches = yearKeys.map((yk) =>
+        fetchCachedJson(`${DB_URL}/YearHistory/${yk}/Students.json`, { ttlMs: 10 * 60 * 1000 })
+          .then((s) => [yk, s || {}])
+          .catch(() => [yk, {}])
+      );
+      const yearStudentsEntries = await Promise.all(yearStudentsFetches);
+      const compactYearHistory = Object.fromEntries(
+        yearStudentsEntries.map(([yk, students]) => [yk, { Students: students }])
+      );
+      setYearHistoryMap(compactYearHistory);
       notify("", "");
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to load document generation data.");
@@ -327,24 +337,16 @@ export default function DocumentGeneration() {
     if (!selectedStudent) return "";
 
     const row = selectedStudent.row || {};
-    const users = usersMap || {};
 
-    const userById = row.userId ? users[row.userId] : null;
-    const userByStudentId = Object.values(users).find((u) => {
-      return String(u?.role || "").toLowerCase() === "student"
-        && (u?.studentId === selectedStudent.studentId || u?.username === selectedStudent.studentId);
-    });
-
+    // Read profileImage directly from the student record — no Users node needed
     const url = firstFilled(
-      userById?.profileImage,
-      userByStudentId?.profileImage,
       row.profileImage,
       row.basicStudentInformation?.studentPhoto,
       row.basicStudentInformation?.profileImage
     );
 
     return url === "/default-profile.png" ? "" : url;
-  }, [selectedStudent, usersMap]);
+  }, [selectedStudent]);
 
   const loadImageAsDataUrl = async (url) => {
     if (!url) return "";

@@ -4,7 +4,7 @@ import { getSafeProfileImage } from "../utils/chatRtdb";
 import { fetchConversationSummaries, loadUserRecordById, normalizeIdentifier } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
 
-export const NOTIFICATION_POLL_MS = 60000;
+export const NOTIFICATION_POLL_MS = 180000; // 3 minutes – reduced from 60 s to cut RTDB reads ~3×
 
 const RECENT_POST_LIMIT = 25;
 
@@ -143,26 +143,40 @@ export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs =
   useEffect(() => {
     if (!shouldUseLocalFetcher || !dbRoot || !currentUserId) return undefined;
 
+    const IDLE_GRACE_MS = 5 * 60 * 1000; // stop polling after 5 min inactivity
+    let lastActivityAt = Date.now();
+
+    const recordActivity = () => { lastActivityAt = Date.now(); };
+    window.addEventListener("mousemove", recordActivity, { passive: true });
+    window.addEventListener("keydown", recordActivity, { passive: true });
+    window.addEventListener("pointerdown", recordActivity, { passive: true });
+
     const runRefresh = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
-
+      if (Date.now() - lastActivityAt > IDLE_GRACE_MS) {
+        return; // user is idle – skip this poll cycle
+      }
       refreshNotifications();
     };
 
     runRefresh();
 
     const intervalId = pollMs > 0 ? window.setInterval(runRefresh, pollMs) : null;
-    window.addEventListener("focus", runRefresh);
+    const onFocus = () => { recordActivity(); runRefresh(); };
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", runRefresh);
 
     return () => {
       if (intervalId) {
         window.clearInterval(intervalId);
       }
-      window.removeEventListener("focus", runRefresh);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", runRefresh);
+      window.removeEventListener("mousemove", recordActivity);
+      window.removeEventListener("keydown", recordActivity);
+      window.removeEventListener("pointerdown", recordActivity);
     };
   }, [currentUserId, dbRoot, pollMs, refreshNotifications, shouldUseLocalFetcher]);
 

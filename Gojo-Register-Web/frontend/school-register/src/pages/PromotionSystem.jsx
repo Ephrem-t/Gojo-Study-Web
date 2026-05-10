@@ -930,19 +930,27 @@ export default function PromotionSystem() {
 
       await axios.patch(`${DB_URL}/Students/${reRegisterDraft.studentId}.json`, merged);
 
-  const usersMap = await loadSchoolUsersNode({ rtdbBase: DB_URL });
+      // Lazy-load the Users node only when a student/parent lacks a stored userId.
+      // In the common case (userId already set on both records) the 22 MB node is never downloaded.
+      let lazyUsersMap = null;
+      const getUsersMap = async () => {
+        if (!lazyUsersMap) lazyUsersMap = await loadSchoolUsersNode({ rtdbBase: DB_URL });
+        return lazyUsersMap;
+      };
 
       const studentActive = true;
       const desiredStudentUsername = String(merged.systemAccountInformation?.username || merged.studentId || "").trim() || merged.studentId;
-      const studentCandidates = Object.entries(usersMap).filter(([, row]) => {
-        const user = row || {};
-        return String(user.studentId || "") === String(merged.studentId || "")
-          || String(user.username || "").toLowerCase() === desiredStudentUsername.toLowerCase();
-      });
 
       let chosenStudentUserId = String(merged.userId || merged.systemAccountInformation?.userId || "").trim();
-      if (!chosenStudentUserId && studentCandidates.length > 0) {
-        chosenStudentUserId = studentCandidates[0][0];
+      let studentCandidates = [];
+      if (!chosenStudentUserId) {
+        const usersMap = await getUsersMap();
+        studentCandidates = Object.entries(usersMap).filter(([, row]) => {
+          const user = row || {};
+          return String(user.studentId || "") === String(merged.studentId || "")
+            || String(user.username || "").toLowerCase() === desiredStudentUsername.toLowerCase();
+        });
+        if (studentCandidates.length > 0) chosenStudentUserId = studentCandidates[0][0];
       }
 
       if (chosenStudentUserId) {
@@ -988,21 +996,30 @@ export default function PromotionSystem() {
           const role = String(account.role || "parent").trim() || "parent";
 
           let parentUserId = "";
-          const parentCandidates = Object.entries(usersMap).filter(([, row]) => {
-            const user = row || {};
-            return String(user.parentId || "") === String(parent.parentId || "")
-              || String(user.username || "").toLowerCase() === username.toLowerCase();
-          });
-
-          Object.entries(usersMap).forEach(([uid, row]) => {
-            if (parentUserId) return;
-            const user = row || {};
-            if (String(user.parentId || "") === parent.parentId) parentUserId = uid;
-            if (!parentUserId && String(user.username || "").toLowerCase() === username.toLowerCase()) parentUserId = uid;
-          });
-
-          if (!parentUserId && existingParents[parent.parentId]?.userId) {
+          let parentCandidates = [];
+          // Prefer the direct userId stored on the parent record — avoids loading the full Users node
+          if (existingParents[parent.parentId]?.userId) {
             parentUserId = String(existingParents[parent.parentId].userId || "");
+          } else if (account.userId) {
+            parentUserId = String(account.userId || "");
+          } else {
+            const usersMap = await getUsersMap();
+            parentCandidates = Object.entries(usersMap).filter(([, row]) => {
+              const user = row || {};
+              return String(user.parentId || "") === String(parent.parentId || "")
+                || String(user.username || "").toLowerCase() === username.toLowerCase();
+            });
+
+            Object.entries(usersMap).forEach(([uid, row]) => {
+              if (parentUserId) return;
+              const user = row || {};
+              if (String(user.parentId || "") === parent.parentId) parentUserId = uid;
+              if (!parentUserId && String(user.username || "").toLowerCase() === username.toLowerCase()) parentUserId = uid;
+            });
+          }
+
+          if (!parentUserId && parentCandidates.length > 0) {
+            parentUserId = parentCandidates[0][0];
           }
 
           const parentUserPayload = {
@@ -1294,8 +1311,9 @@ export default function PromotionSystem() {
         );
 
         // Lifecycle rule: rollover deactivates existing Users accounts only.
-        const usersMap = await loadSchoolUsersNode({ rtdbBase: DB_URL });
+        // Collect deactivation IDs from direct references first to avoid downloading the 22 MB Users node.
         const deactivateUserIds = new Set();
+        const parentIdsNeedingLookup = new Set();
 
         queue.forEach((entry) => {
           const fullStudent = entry.fullStudent || {};
@@ -1313,15 +1331,23 @@ export default function PromotionSystem() {
 
           parentIds.forEach((pid) => {
             const linkedParentUserId = String(fullStudent.parents?.[pid]?.userId || "").trim();
-            if (linkedParentUserId) deactivateUserIds.add(linkedParentUserId);
-
-            Object.entries(usersMap).forEach(([uid, row]) => {
-              if (String((row || {}).parentId || "") === pid) {
-                deactivateUserIds.add(uid);
-              }
-            });
+            if (linkedParentUserId) {
+              deactivateUserIds.add(linkedParentUserId);
+            } else {
+              parentIdsNeedingLookup.add(pid);
+            }
           });
         });
+
+        // Only load the full Users node when parent records lack a direct userId reference (uncommon)
+        if (parentIdsNeedingLookup.size > 0) {
+          const usersMap = await loadSchoolUsersNode({ rtdbBase: DB_URL }); // uses 5-min TTL cache
+          Object.entries(usersMap).forEach(([uid, row]) => {
+            if (parentIdsNeedingLookup.has(String((row || {}).parentId || ""))) {
+              deactivateUserIds.add(uid);
+            }
+          });
+        }
 
         await Promise.all(
           [...deactivateUserIds].map((uid) => axios.patch(`${DB_URL}/Users/${uid}.json`, { isActive: false }))

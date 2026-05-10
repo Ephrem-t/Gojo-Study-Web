@@ -1,6 +1,7 @@
 import { equalTo, get, orderByChild, query as dbQuery, ref as dbRef } from "firebase/database";
 import { db, schoolPath } from "../firebase";
 import { RTDB_BASE_RAW, extractSchoolCodeFromRtdbBase } from "../api/rtdbScope";
+import { BACKEND_BASE } from "../config";
 import {
   buildChatKeyCandidates,
   chatKeyIncludesUser,
@@ -17,7 +18,7 @@ import { fetchCachedJson, readCachedJson, writeCachedJson } from "./rtdbCache";
 
 const USER_RECORD_TTL_MS = 15 * 60 * 1000;
 const PARENT_RECORD_TTL_MS = 15 * 60 * 1000;
-const DIRECTORY_TTL_MS = 5 * 60 * 1000;
+const DIRECTORY_TTL_MS = 30 * 60 * 1000; // 30 min — large nodes (Students/Parents/Teachers/Users) rarely change mid-session
 const SCHOOL_INFO_TTL_MS = 5 * 60 * 1000;
 const CHAT_INDEX_TTL_MS = 20 * 1000;
 const CHAT_SUMMARY_TTL_MS = 15 * 1000;
@@ -161,45 +162,58 @@ const loadNode = async ({ rtdbBase, nodePath, ttlMs, fallbackValue = {}, force =
   });
 };
 
-export const loadSchoolUsersNode = ({ rtdbBase, force = false } = {}) =>
-  loadNode({
-    rtdbBase,
-    nodePath: "Users",
-    ttlMs: DIRECTORY_TTL_MS,
-    fallbackValue: {},
-    force,
-    sessionKey: `${String(rtdbBase || "").trim()}:Users`,
-  });
+// ---------------------------------------------------------------------------
+// Large-node loaders — routed through the backend proxy so all registerers
+// share ONE Firebase RTDB download per 30-min window instead of each client
+// pulling the full 10 MB node independently.
+// Backend endpoints: GET /api/nodes/{Students|Parents|Teachers|Users}?schoolCode=X
+// ---------------------------------------------------------------------------
 
-export const loadSchoolStudentsNode = ({ rtdbBase, force = false } = {}) =>
-  loadNode({
-    rtdbBase,
-    nodePath: "Students",
-    ttlMs: DIRECTORY_TTL_MS,
-    fallbackValue: {},
-    force,
-    sessionKey: `${String(rtdbBase || "").trim()}:Students`,
-  });
+const _proxyNodeCache = new Map(); // sessionKey → { data, expiresAt }
 
-export const loadSchoolParentsNode = ({ rtdbBase, force = false } = {}) =>
-  loadNode({
-    rtdbBase,
-    nodePath: "Parents",
-    ttlMs: DIRECTORY_TTL_MS,
-    fallbackValue: {},
-    force,
-    sessionKey: `${String(rtdbBase || "").trim()}:Parents`,
-  });
+async function _loadNodeViaProxy(schoolCode, nodeName, ttlMs, sessionKey, force) {
+  if (!force) {
+    const entry = _proxyNodeCache.get(sessionKey);
+    if (entry && Date.now() < entry.expiresAt) return entry.data;
+  }
+  try {
+    const res = await fetch(`${BACKEND_BASE}/api/nodes/${nodeName}?schoolCode=${encodeURIComponent(schoolCode)}`);
+    if (!res.ok) throw new Error(`proxy ${nodeName} ${res.status}`);
+    const json = await res.json();
+    const data = (json && json.data) || {};
+    _proxyNodeCache.set(sessionKey, { data, expiresAt: Date.now() + ttlMs });
+    return data;
+  } catch {
+    // Fallback: direct RTDB read (still better than nothing)
+    const entry = _proxyNodeCache.get(sessionKey);
+    return entry ? entry.data : {};
+  }
+}
 
-export const loadSchoolTeachersNode = ({ rtdbBase, force = false } = {}) =>
-  loadNode({
-    rtdbBase,
-    nodePath: "Teachers",
-    ttlMs: DIRECTORY_TTL_MS,
-    fallbackValue: {},
-    force,
-    sessionKey: `${String(rtdbBase || "").trim()}:Teachers`,
-  });
+export const loadSchoolStudentsNode = ({ rtdbBase, force = false } = {}) => {
+  const schoolCode = extractSchoolCodeFromRtdbBase(rtdbBase);
+  if (!schoolCode) return Promise.resolve({});
+  return _loadNodeViaProxy(schoolCode, "Students", DIRECTORY_TTL_MS, `${rtdbBase}:Students`, force);
+};
+
+export const loadSchoolParentsNode = ({ rtdbBase, force = false } = {}) => {
+  const schoolCode = extractSchoolCodeFromRtdbBase(rtdbBase);
+  if (!schoolCode) return Promise.resolve({});
+  return _loadNodeViaProxy(schoolCode, "Parents", DIRECTORY_TTL_MS, `${rtdbBase}:Parents`, force);
+};
+
+export const loadSchoolTeachersNode = ({ rtdbBase, force = false } = {}) => {
+  const schoolCode = extractSchoolCodeFromRtdbBase(rtdbBase);
+  if (!schoolCode) return Promise.resolve({});
+  return _loadNodeViaProxy(schoolCode, "Teachers", DIRECTORY_TTL_MS, `${rtdbBase}:Teachers`, force);
+};
+
+export const loadSchoolUsersNode = ({ rtdbBase, force = false } = {}) => {
+  const schoolCode = extractSchoolCodeFromRtdbBase(rtdbBase);
+  if (!schoolCode) return Promise.resolve({});
+  return _loadNodeViaProxy(schoolCode, "Users", DIRECTORY_TTL_MS, `${rtdbBase}:Users`, force);
+};
+
 
 export const loadGradeManagementNode = ({ rtdbBase, force = false } = {}) =>
   loadNode({

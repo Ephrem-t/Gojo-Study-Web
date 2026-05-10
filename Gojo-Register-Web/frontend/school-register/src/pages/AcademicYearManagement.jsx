@@ -3,7 +3,6 @@ import { Link, useNavigate } from "react-router-dom";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger, FaPlus, FaSyncAlt, FaUsers, FaSearch } from "react-icons/fa";
 import { BACKEND_BASE } from "../config";
 import axios from "axios";
-import { buildUserLookupFromNode, loadSchoolUsersNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -513,21 +512,22 @@ export default function AcademicYearManagement() {
     setSelectedHistoryStudent(null);
     setHistoryStudentsLoading(true);
     try {
-      const [studentsObj, usersNode] = await Promise.all([
-        fetchCachedJson(`${DB_URL}/YearHistory/${yearKey}/Students.json`, { ttlMs: 60000 }).catch(() => ({})),
-        loadSchoolUsersNode({ rtdbBase: DB_URL }),
-      ]);
+      // Historical student records contain name and profileImage directly — no need to load the 22 MB Users node
+      const studentsObj = await fetchCachedJson(`${DB_URL}/YearHistory/${yearKey}/Students.json`, { ttlMs: 60000 }).catch(() => ({}));
 
-      const usersObj = buildUserLookupFromNode(usersNode);
       const list = Object.entries(studentsObj).map(([studentId, row]) => {
         const student = row || {};
-        const user = usersObj[student.userId] || {};
+        const name =
+          student.name ||
+          [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") ||
+          student.basicStudentInformation?.name ||
+          "Student";
         return {
           studentId,
           ...student,
-          name: user.name || student.name || student.basicStudentInformation?.name || "Student",
-          profileImage: user.profileImage || student.profileImage || "/default-profile.png",
-          email: user.email || student.email || "",
+          name,
+          profileImage: student.profileImage || "/default-profile.png",
+          email: student.email || "",
         };
       });
 

@@ -369,6 +369,8 @@ function Dashboard() {
   const [targetRole, setTargetRole] = useState("all");
   const [targetOptions, setTargetOptions] = useState(["all"]);
   const fileInputRef = useRef(null);
+  // Cache user profile images across fetchPosts calls to avoid duplicate RTDB reads
+  const postProfileCacheRef = useRef(new Map());
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -1098,35 +1100,47 @@ function Dashboard() {
       const res = await axios.get(`${API_BASE}/get_posts`, {
         params: { schoolCode },
       });
-      console.log(res.data); // check here
       const sortedPosts = res.data.sort(
         (a, b) => new Date(b.time) - new Date(a.time)
       );
-      const enriched = await Promise.all(sortedPosts.map(async (p) => {
-        let profile = p.adminProfile || p.adminProfileImage || p.profileImage || "";
 
-        try {
-          if (!profile && p.userId) {
-            const uRes = await axios.get(`${DB_ROOT}/Users/${p.userId}.json`);
-            const u = uRes.data || {};
-            profile = u.profileImage || u.profile || u.avatar || "";
-          }
+      // Collect all unique userIds/financeIds that need profile enrichment
+      const profileCache = postProfileCacheRef.current;
+      const pendingUserIds = new Set();
+      const pendingFinanceIds = new Set();
 
-          if (!profile && (p.financeId || p.adminId)) {
-            const ownerFinanceId = p.financeId || p.adminId;
-            const fRes = await axios.get(`${DB_ROOT}/Finance/${ownerFinanceId}.json`);
-            const f = fRes.data || {};
-            profile = f.profileImage || f.profile || "";
-          }
-        } catch (err) {
-          // ignore profile enrichment failure
+      for (const p of sortedPosts) {
+        if (p.adminProfile || p.adminProfileImage || p.profileImage) continue;
+        if (p.userId && !profileCache.has(`user:${p.userId}`)) pendingUserIds.add(p.userId);
+        else if ((p.financeId || p.adminId) && !profileCache.has(`finance:${p.financeId || p.adminId}`)) {
+          pendingFinanceIds.add(p.financeId || p.adminId);
         }
+      }
 
-        return {
-          ...p,
-          adminProfile: profile || "/default-profile.png",
-        };
-      }));
+      // Batch-resolve all missing profiles in parallel (deduplicated)
+      await Promise.all([
+        ...[...pendingUserIds].map(async (uid) => {
+          try {
+            const uRes = await axios.get(`${DB_ROOT}/Users/${uid}.json`);
+            const u = uRes.data || {};
+            profileCache.set(`user:${uid}`, u.profileImage || u.profile || u.avatar || "");
+          } catch { profileCache.set(`user:${uid}`, ""); }
+        }),
+        ...[...pendingFinanceIds].map(async (fid) => {
+          try {
+            const fRes = await axios.get(`${DB_ROOT}/Finance/${fid}.json`);
+            const f = fRes.data || {};
+            profileCache.set(`finance:${fid}`, f.profileImage || f.profile || "");
+          } catch { profileCache.set(`finance:${fid}`, ""); }
+        }),
+      ]);
+
+      const enriched = sortedPosts.map((p) => {
+        let profile = p.adminProfile || p.adminProfileImage || p.profileImage || "";
+        if (!profile && p.userId) profile = profileCache.get(`user:${p.userId}`) || "";
+        if (!profile && (p.financeId || p.adminId)) profile = profileCache.get(`finance:${p.financeId || p.adminId}`) || "";
+        return { ...p, adminProfile: profile || "/default-profile.png" };
+      });
 
       setPosts(enriched);
     } catch (err) {

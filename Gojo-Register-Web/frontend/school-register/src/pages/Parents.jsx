@@ -25,10 +25,8 @@ import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import {
-  buildUserLookupFromNode,
   loadSchoolParentsNode,
   loadSchoolStudentsNode,
-  loadSchoolUsersNode,
 } from "../utils/registerData";
 import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
@@ -308,13 +306,11 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersNode, parentsData, studentsData] = await Promise.all([
-          loadSchoolUsersNode({ rtdbBase: DB, force: true }),
-          loadSchoolParentsNode({ rtdbBase: DB, force: true }),
-          loadSchoolStudentsNode({ rtdbBase: DB, force: true }),
+        // Build parent list from the Parents node directly — avoids downloading the 22 MB Users node.
+        const [parentsData, studentsData] = await Promise.all([
+          loadSchoolParentsNode({ rtdbBase: DB }),
+          loadSchoolStudentsNode({ rtdbBase: DB }),
         ]);
-
-        const users = buildUserLookupFromNode(usersNode);
 
         const findParentRecordByUserId = (canonicalUserId) => {
           if (!canonicalUserId) return null;
@@ -354,42 +350,37 @@ function Parent() {
               childCount: childLinks.length,
             };
           }
-          const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
-          const studentUser = getUserByKeyOrUserId(users, studentUserId);
           const name =
-            studentUser?.name ||
-            studentUser?.username ||
             studentRecord?.name ||
-            studentRecord?.username ||
+            [studentRecord?.firstName, studentRecord?.middleName, studentRecord?.lastName].filter(Boolean).join(" ") ||
+            studentRecord?.basicStudentInformation?.name ||
             null;
           const relationship = firstLink.relationship || null;
           return { name, relationship, childCount: childLinks.length };
         };
 
-        const parentList = Object.keys(users)
-          .filter((uid) => users[uid].role === "parent")
-          .map((uid) => {
-            const u = users[uid] || {};
-            const canonicalUserId = u.userId || uid;
-            const parentRecord = findParentRecordByUserId(canonicalUserId);
-            const firstChild = resolveFirstChildPreview(canonicalUserId);
-            return {
-              userId: canonicalUserId,
-              parentId: parentRecord?.parentId || "N/A",
-              name: u.name || u.username || "No Name",
-              email: u.email || "N/A",
-              childName: firstChild?.name || "N/A",
-              childRelationship: firstChild?.relationship || "N/A",
-              childCount: firstChild?.childCount || 0,
-              profileImage: u.profileImage || "/default-profile.png",
-              phone: u.phone || u.phoneNumber || "N/A",
-              age: u.age || null,
-              city: u.city || (u.address && u.address.city) || null,
-              citizenship: u.citizenship || null,
-              job: u.job || null,
-              address: u.address || null,
-            };
-          });
+        // Build parent list from the Parents node (each record has name, email, phone, profileImage, userId)
+        const parentList = Object.entries(parentsData || {}).map(([parentKey, parentRecord]) => {
+          const p = parentRecord || {};
+          const canonicalUserId = p.userId || parentKey;
+          const firstChild = resolveFirstChildPreview(canonicalUserId);
+          return {
+            userId: canonicalUserId,
+            parentId: p.parentId || parentKey || "N/A",
+            name: p.fullName || p.name || "No Name",
+            email: p.email || "N/A",
+            childName: firstChild?.name || "N/A",
+            childRelationship: firstChild?.relationship || "N/A",
+            childCount: firstChild?.childCount || 0,
+            profileImage: p.profileImage || "/default-profile.png",
+            phone: p.phone || p.phoneNumber || "N/A",
+            age: p.age || null,
+            city: p.city || (p.address && p.address.city) || null,
+            citizenship: p.citizenship || null,
+            job: p.job || null,
+            address: p.address || null,
+          };
+        });
         setParents(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
@@ -438,12 +429,11 @@ function Parent() {
 
     const fetchParentInfoAndChildren = async () => {
       try {
-        const [parentsData, usersNode, studentsData] = await Promise.all([
-          loadSchoolParentsNode({ rtdbBase: DB, force: true }),
-          loadSchoolUsersNode({ rtdbBase: DB, force: true }),
-          loadSchoolStudentsNode({ rtdbBase: DB, force: true }),
+        const [parentsData, studentsData] = await Promise.all([
+          loadSchoolParentsNode({ rtdbBase: DB }),
+          loadSchoolStudentsNode({ rtdbBase: DB }),
         ]);
-        const usersData = buildUserLookupFromNode(usersNode);
+
         const parentRecordEntry =
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -452,7 +442,13 @@ function Parent() {
           ) || [];
         const parentRecordKey = parentRecordEntry[0] || null;
         const parentRecord = parentRecordEntry[1] || null;
-        const userInfo = getUserByKeyOrUserId(usersData, selectedParentId) || {};
+
+        // Fetch only this parent's User record by direct path — avoids 22 MB full Users download
+        const userInfo = await axios
+          .get(`${DB}/Users/${selectedParentId}.json`)
+          .then((r) => r.data || {})
+          .catch(() => ({}));
+
         const resolvedChildLinks = getResolvedParentChildLinks({
           parentRecord,
           parentRecordKey,

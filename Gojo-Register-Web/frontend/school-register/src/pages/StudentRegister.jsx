@@ -10,8 +10,6 @@ import { fetchCachedJson } from "../utils/rtdbCache";
 import {
   loadGradeManagementNode,
   loadSchoolInfoNode,
-  loadSchoolParentsNode,
-  loadSchoolStudentsNode,
 } from "../utils/registerData";
 
 export default function StudentRegister() {
@@ -350,7 +348,11 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-        const studentsObj = await loadSchoolStudentsNode({ rtdbBase: activeDbUrl, force: true });
+      const studentsObj = await fetchCachedJson(`${activeDbUrl}/Students.json?shallow=true`, {
+        ttlMs: 2 * 60 * 1000,
+        fallbackValue: {},
+        force: true,
+      }).catch(() => ({}));
       // Append 'S' to shortName to clearly mark student IDs (e.g. ShortNameS_0001_24)
       const safeShortName = escapeRegex(String(shortName) + "S");
       const pattern = new RegExp(`^${safeShortName}_(\\d{4})_${yearSuffix}$`);
@@ -404,7 +406,11 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-        const parentsObj = await loadSchoolParentsNode({ rtdbBase: activeDbUrl, force: true });
+      const parentsObj = await fetchCachedJson(`${activeDbUrl}/Parents.json?shallow=true`, {
+        ttlMs: 2 * 60 * 1000,
+        fallbackValue: {},
+        force: true,
+      }).catch(() => ({}));
       const safePrefix = escapeRegex(`${shortName}P`);
       // Use 4-digit sequence for parent IDs (e.g. GMIP_0001_26)
       const pattern = new RegExp(`^${safePrefix}_(\\d{4})_${yearSuffix}$`);

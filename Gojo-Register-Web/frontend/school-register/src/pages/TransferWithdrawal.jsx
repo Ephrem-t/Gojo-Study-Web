@@ -396,9 +396,9 @@ export default function TransferWithdrawal() {
       const [yearsRes, dbYearsData, schoolInfo, studentsData, parentsData] = await Promise.all([
         axios.get(`${BACKEND_BASE}/api/academic-years`, { params: { schoolCode: activeSchoolCode } }).catch(() => ({ data: {} })),
         fetchCachedJson(`${DB_URL}/AcademicYears.json`, { ttlMs: 60000 }).catch(() => ({})),
-        loadSchoolInfoNode({ rtdbBase: DB_URL, force: true }),
-        loadSchoolStudentsNode({ rtdbBase: DB_URL, force: true }),
-        loadSchoolParentsNode({ rtdbBase: DB_URL, force: true }),
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+        loadSchoolParentsNode({ rtdbBase: DB_URL }),
       ]);
 
       const yearsPayload = yearsRes.data || {};
@@ -534,8 +534,6 @@ export default function TransferWithdrawal() {
   };
 
   const setUsersActiveByStudent = async (studentNode, isActive) => {
-    const users = await loadSchoolUsersNode({ rtdbBase: DB_URL, force: true });
-
     const studentId = String(studentNode?.studentId || "");
     const studentUserId = String(studentNode?.userId || studentNode?.systemAccountInformation?.userId || "");
     const usernames = new Set([
@@ -545,12 +543,17 @@ export default function TransferWithdrawal() {
 
     const patchUserIds = new Set();
     if (studentUserId) patchUserIds.add(studentUserId);
-    Object.entries(users).forEach(([uid, row]) => {
-      const user = row || {};
-      const uname = String(user.username || "").toLowerCase();
-      if (String(user.studentId || "") === studentId) patchUserIds.add(uid);
-      if (usernames.has(uname)) patchUserIds.add(uid);
-    });
+
+    // Only load the full Users node when the direct userId is not stored on the student record
+    if (patchUserIds.size === 0) {
+      const users = await loadSchoolUsersNode({ rtdbBase: DB_URL }); // no force — uses 5-min TTL cache
+      Object.entries(users).forEach(([uid, row]) => {
+        const user = row || {};
+        const uname = String(user.username || "").toLowerCase();
+        if (String(user.studentId || "") === studentId) patchUserIds.add(uid);
+        if (usernames.has(uname)) patchUserIds.add(uid);
+      });
+    }
 
     await Promise.all(
       [...patchUserIds].map((uid) => axios.patch(`${DB_URL}/Users/${uid}.json`, { isActive }))
@@ -564,7 +567,6 @@ export default function TransferWithdrawal() {
     const linkedParentIds = getLinkedParentIds(studentNode);
     if (linkedParentIds.length === 0) return;
 
-    const users = await loadSchoolUsersNode({ rtdbBase: DB_URL, force: true });
     const remainingStudents = Object.entries(studentsMap || {}).filter(([sid]) => String(sid) !== studentId);
 
     await Promise.all(
@@ -581,13 +583,17 @@ export default function TransferWithdrawal() {
 
           const parentUserIds = new Set();
           const directUserId = String(parentRecord?.userId || studentNode?.parents?.[parentId]?.userId || "").trim();
-          if (directUserId) parentUserIds.add(directUserId);
-
-          Object.entries(users).forEach(([uid, userRow]) => {
-            if (String(userRow?.parentId || "").trim() === String(parentId)) {
-              parentUserIds.add(uid);
-            }
-          });
+          if (directUserId) {
+            parentUserIds.add(directUserId);
+          } else {
+            // Fallback: scan Users only when the parent record lacks a direct userId reference
+            const users = await loadSchoolUsersNode({ rtdbBase: DB_URL }); // no force — uses 5-min TTL cache
+            Object.entries(users).forEach(([uid, userRow]) => {
+              if (String(userRow?.parentId || "").trim() === String(parentId)) {
+                parentUserIds.add(uid);
+              }
+            });
+          }
 
           await Promise.all([...parentUserIds].map((uid) => axios.delete(`${DB_URL}/Users/${uid}.json`).catch(() => {})));
           return;

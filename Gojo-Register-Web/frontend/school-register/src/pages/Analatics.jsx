@@ -35,7 +35,7 @@ import {
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildUserLookupFromNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { loadSchoolStudentsNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
@@ -149,27 +149,27 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsData, usersNode, monthlyPaidData] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_ROOT, force: true }),
-          loadSchoolUsersNode({ rtdbBase: DB_ROOT, force: true }),
+        const [studentsData, monthlyPaidData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
           fetchCachedJson(`${DB_ROOT}/monthlyPaid.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
         if (cancelled) return;
 
-        const usersData = buildUserLookupFromNode(usersNode);
-
         const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
-          const userNode = usersData?.[studentNode.userId] || {};
-          const genderRaw = userNode.gender || studentNode.gender || "Unknown";
-
+          const genderRaw = studentNode.gender || "Unknown";
+          const name =
+            studentNode.name ||
+            [studentNode.firstName, studentNode.middleName, studentNode.lastName].filter(Boolean).join(" ") ||
+            studentNode.basicStudentInformation?.name ||
+            "Student";
           return {
             studentId,
             userId: studentNode.userId || "",
             grade: String(studentNode.grade || "Unknown"),
             section: studentNode.section || "N/A",
             gender: String(genderRaw).toLowerCase(),
-            name: userNode.name || userNode.username || studentNode.name || "Student",
+            name,
           };
         });
 

@@ -3,8 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import "../styles/global.css";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildUserLookupFromNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
-import { fetchCachedJson } from "../utils/rtdbCache";
+import { loadSchoolStudentsNode } from "../utils/registerData";
 
 function StudentChatPage() {
   const location = useLocation();
@@ -30,19 +29,19 @@ function StudentChatPage() {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        const [studentsData, usersNode] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
-          loadSchoolUsersNode({ rtdbBase: DB_URL }),
-        ]);
-        const usersData = buildUserLookupFromNode(usersNode);
+        const studentsData = await loadSchoolStudentsNode({ rtdbBase: DB_URL });
 
         const studentList = Object.keys(studentsData).map(id => {
           const student = studentsData[id];
-          const user = usersData[student.userId] || {};
+          const name =
+            student.name ||
+            [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") ||
+            student.basicStudentInformation?.name ||
+            "No Name";
           return {
             studentId: id,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
+            name,
+            profileImage: student.profileImage || "/default-profile.png",
           };
         });
 
@@ -65,9 +64,13 @@ function StudentChatPage() {
     const fetchMessages = async () => {
       if (!selectedStudent) return;
       try {
-        const allMessages = await fetchCachedJson(`${DB_URL}/StudentMessages.json`, { ttlMs: 15000 }).catch(() => ({}));
-        const chatMessages = Object.values(allMessages).filter(
-          m =>
+        // Query only messages for this specific student — avoids downloading the entire 30-50 MB StudentMessages node.
+        // RTDB REST supports orderBy + equalTo to filter server-side.
+        const url = `${DB_URL}/StudentMessages.json?orderBy="studentId"&equalTo="${encodeURIComponent(selectedStudent.studentId)}"`;
+        const res = await axios.get(url).catch(() => ({ data: null }));
+        const filtered = res.data && typeof res.data === "object" ? res.data : {};
+        const chatMessages = Object.values(filtered).filter(
+          (m) =>
             (m.studentId === selectedStudent.studentId && m.adminId === admin.adminId) ||
             (m.studentId === admin.adminId && m.adminId === selectedStudent.studentId)
         );

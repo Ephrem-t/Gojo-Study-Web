@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildUserLookupFromNode, loadSchoolParentsNode, loadSchoolStudentsNode, loadSchoolUsersNode } from "../utils/registerData";
+import { loadSchoolParentsNode, loadSchoolStudentsNode } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
 
 export default function OverviewPage() {
@@ -35,27 +35,23 @@ export default function OverviewPage() {
     const loadOverview = async () => {
       try {
         setLoading(true);
-        const [studentsObj, usersNode, parentsObj, postsObj] = await Promise.all([
+        const [studentsObj, parentsObj, postsObj] = await Promise.all([
           loadSchoolStudentsNode({ rtdbBase: DB_URL }),
-          loadSchoolUsersNode({ rtdbBase: DB_URL }),
           loadSchoolParentsNode({ rtdbBase: DB_URL }),
           fetchCachedJson(`${DB_URL}/posts.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
-        const usersObj = buildUserLookupFromNode(usersNode);
-
         const studentRows = Object.entries(studentsObj).map(([studentId, studentNode]) => {
-          const user = usersObj?.[studentNode?.userId] || {};
           return {
             studentId,
             userId: studentNode?.userId || "",
-            name: user?.name || user?.username || "No Name",
-            profileImage: user?.profileImage || "/default-profile.png",
+            name: studentNode?.name || [studentNode?.firstName, studentNode?.middleName, studentNode?.lastName].filter(Boolean).join(" ") || studentNode?.basicStudentInformation?.name || "No Name",
+            profileImage: studentNode?.profileImage || "/default-profile.png",
             grade: studentNode?.grade || "-",
             section: studentNode?.section || "-",
-            gender: String(studentNode?.gender || user?.gender || "").trim().toLowerCase(),
+            gender: String(studentNode?.gender || "").trim().toLowerCase(),
             status: String(studentNode?.status || "active").toLowerCase(),
-            createdAt: studentNode?.createdAt || studentNode?.registeredAt || user?.createdAt || null,
+            createdAt: studentNode?.createdAt || studentNode?.registeredAt || null,
           };
         });
 

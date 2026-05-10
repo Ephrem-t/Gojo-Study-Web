@@ -9,12 +9,10 @@ import { db } from "../firebase";
 import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import {
   buildConversationSummaryMap,
-  buildUserLookupFromNode,
   fetchConversationSummaries,
   loadSchoolParentsNode,
   loadSchoolStudentsNode,
   loadSchoolTeachersNode,
-  loadSchoolUsersNode,
   loadUserRecordsByIds,
 } from "../utils/registerData";
 
@@ -152,7 +150,16 @@ function AllChat() {
           loadSchoolTeachersNode({ rtdbBase: DB_ROOT }),
         ]);
 
-        const userIds = Array.from(
+        // Load chat summaries first so we know which contacts have actually chatted
+        const summaries = await fetchConversationSummaries({
+          rtdbBase: DB_ROOT,
+          currentUserId: financeUserId,
+          includeWithoutLastMessage: true,
+        });
+        const summariesByUserId = buildConversationSummaryMap(summaries);
+
+        // Build the full set of user IDs across all directory nodes
+        const allDirectoryUserIds = Array.from(
           new Set(
             [...Object.values(studentsData || {}), ...Object.values(parentsData || {}), ...Object.values(teachersData || {})]
               .map((record) => String(record?.userId || "").trim())
@@ -160,24 +167,20 @@ function AllChat() {
           )
         );
 
-        let usersById = {};
-        if (userIds.length <= 80) {
-          usersById = await loadUserRecordsByIds({
-            rtdbBase: DB_ROOT,
-            schoolCode,
-            userIds,
-          });
-        } else {
-          const usersNode = await loadSchoolUsersNode({ rtdbBase: DB_ROOT });
-          usersById = buildUserLookupFromNode(usersNode);
-        }
+        // Only fetch user records for contacts who have summaries or whose IDs are ≤ 200
+        // This avoids downloading the full 22 MB Users node for 11 K+ users
+        const summaryUserIds = new Set(
+          summaries.map((s) => String(s?.contact?.userId || s?.otherUserId || "").trim()).filter(Boolean)
+        );
+        const targetUserIds = allDirectoryUserIds.length <= 200
+          ? allDirectoryUserIds
+          : allDirectoryUserIds.filter((uid) => summaryUserIds.has(uid));
 
-        const summaries = await fetchConversationSummaries({
+        const usersById = await loadUserRecordsByIds({
           rtdbBase: DB_ROOT,
-          currentUserId: financeUserId,
-          includeWithoutLastMessage: true,
+          schoolCode,
+          userIds: targetUserIds,
         });
-        const summariesByUserId = buildConversationSummaryMap(summaries);
 
         const findUserNode = (userId) => usersById[String(userId || "").trim()] || {};
 

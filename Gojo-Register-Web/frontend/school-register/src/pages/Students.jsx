@@ -24,7 +24,6 @@ import {
   loadParentRecordsByIds,
   loadSchoolInfoNode,
   loadSchoolStudentsNode,
-  loadSchoolUsersNode,
   loadUserRecordById,
   loadUserRecordsByIds,
 } from "../utils/registerData";
@@ -773,14 +772,12 @@ useEffect(() => {
     const fetchStudents = async () => {
       try {
         setStudentsLoading(true);
-        const [studentsData, usersNode, schoolInfo, gradesData] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_URL, force: true }),
-          loadSchoolUsersNode({ rtdbBase: DB_URL, force: true }),
-          loadSchoolInfoNode({ rtdbBase: DB_URL, force: true }),
-          loadGradeManagementNode({ rtdbBase: DB_URL, force: true }),
+        const [studentsData, schoolInfo, gradesData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+          loadSchoolInfoNode({ rtdbBase: DB_URL }),
+          loadGradeManagementNode({ rtdbBase: DB_URL }),
         ]);
 
-        const usersData = buildUserLookupFromNode(usersNode);
         const activeAcademicYear = schoolInfo?.currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
 
@@ -797,16 +794,20 @@ useEffect(() => {
 
         const studentList = studentKeys.map((id) => {
           const student = studentsData[id];
-          const user = usersData[student.userId] || {};
+          const name =
+            student.name ||
+            [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") ||
+            student.basicStudentInformation?.name ||
+            "No Name";
           return {
             studentId: id,
             userId: student.userId,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
+            name,
+            profileImage: student.profileImage || "/default-profile.png",
             grade: student.grade,
             section: student.section,
             academicYear: student.academicYear || "",
-            email: user.email || ""
+            email: student.email || student.basicStudentInformation?.email || "",
           };
         });
 

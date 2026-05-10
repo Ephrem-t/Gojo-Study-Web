@@ -41,15 +41,8 @@ import {
   loadSchoolTeachersNode,
 } from "../utils/registerData";
 import { fetchCachedJson } from "../utils/rtdbCache";
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { storage } from "../firebase";
 
 function buildRecoveryCodes() {
   return Array.from({ length: 8 }, () => Math.random().toString(36).slice(2, 10).toUpperCase());
@@ -183,11 +176,11 @@ export default function SettingsPage() {
         setLoading(true);
 
         const [nextSchoolInfo, gradesMap, studentsData, parentsData, teachersData, registerersData, backups] = await Promise.all([
-          loadSchoolInfoNode({ rtdbBase: dbRoot, force: true }),
-          loadGradeManagementNode({ rtdbBase: dbRoot, force: true }),
-          loadSchoolStudentsNode({ rtdbBase: dbRoot, force: true }),
-          loadSchoolParentsNode({ rtdbBase: dbRoot, force: true }),
-          loadSchoolTeachersNode({ rtdbBase: dbRoot, force: true }),
+          loadSchoolInfoNode({ rtdbBase: dbRoot }),
+          loadGradeManagementNode({ rtdbBase: dbRoot }),
+          loadSchoolStudentsNode({ rtdbBase: dbRoot }),
+          loadSchoolParentsNode({ rtdbBase: dbRoot }),
+          loadSchoolTeachersNode({ rtdbBase: dbRoot }),
           fetchCachedJson(`${dbRoot}/Registerers.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})),
           backupRoot ? fetchCachedJson(`${backupRoot}.json`, { ttlMs: 60000, fallbackValue: {} }).catch(() => ({})) : Promise.resolve({}),
         ]);
@@ -527,7 +520,11 @@ export default function SettingsPage() {
       let nextProfileImage = profileImage;
 
       if (selectedProfileFile && admin.userId) {
-        const nextProfileImage = await fileToBase64(selectedProfileFile);
+        // Upload to Firebase Storage — store a URL in RTDB instead of a base64 blob
+        const ext = selectedProfileFile.name.split(".").pop() || "jpg";
+        const imgRef = storageRef(storage, `profileImages/register/${admin.userId}.${ext}`);
+        await uploadBytes(imgRef, selectedProfileFile, { contentType: selectedProfileFile.type || "image/jpeg" });
+        const nextProfileImage = await getDownloadURL(imgRef);
         await axios.patch(`${dbRoot}/Users/${admin.userId}.json`, { profileImage: nextProfileImage });
         setProfileImage(nextProfileImage);
         const updatedAdmin = { ...admin, profileImage: nextProfileImage, name: securityForm.name, username: securityForm.username };

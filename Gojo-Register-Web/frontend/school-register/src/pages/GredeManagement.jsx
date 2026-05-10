@@ -304,11 +304,11 @@ export default function GredeManagement() {
       }
 
       const [rawGrades, studentsData, schoolInfo] = await Promise.all([
-        loadGradeManagementNode({ rtdbBase: nextResolvedDbUrl, force }),
-        loadSchoolStudentsNode({ rtdbBase: nextResolvedDbUrl, force }),
+        loadGradeManagementNode({ rtdbBase: nextResolvedDbUrl, force }), // force only applies to grades after mutations
+        loadSchoolStudentsNode({ rtdbBase: nextResolvedDbUrl }), // always use cache — students don't change on grade mutations
         Object.keys(resolvedSchoolInfo).length > 0
           ? Promise.resolve(resolvedSchoolInfo)
-          : loadSchoolInfoNode({ rtdbBase: nextResolvedDbUrl, force }),
+          : loadSchoolInfoNode({ rtdbBase: nextResolvedDbUrl }),
       ]);
 
       const nextGrades = Object.fromEntries(
