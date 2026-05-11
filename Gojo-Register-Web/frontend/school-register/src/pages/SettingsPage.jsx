@@ -15,7 +15,7 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
-import { generateSecret, verify } from "otplib";
+import { generateSecret, verify } from "../utils/totp";
 import useDarkMode from "../hooks/useDarkMode";
 import {
   buildSchoolRoot,

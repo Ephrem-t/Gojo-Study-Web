@@ -252,31 +252,31 @@ function TeachersPage() {
     setTeachers(optimisticTeachers);
 
     try {
-      let usersItemUrl = `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(userId)}.json`;
-      const directUserRes = await axios.get(usersItemUrl).catch(() => ({ data: null }));
+      const allUsers = await readSchoolNode("Users");
+      const normalize = (v) => String(v || "").replace(/^[-]+/, "").trim();
+      const pushKeys = Object.keys(allUsers || {}).filter((pk) => {
+        const rec = allUsers[pk] || {};
+        const recUserId = normalize(rec.userId || pk);
+        const recUsername = String(rec.username || "").trim();
+        return recUserId === userId || recUsername === userId || pk === userId;
+      });
 
-      if (!directUserRes?.data) {
-        const resp = await axios.get(`${SCHOOL_DB_ROOT}/Users.json`);
-        const allUsers = resp.data || {};
-        const normalize = (v) => String(v || "").replace(/^[-]+/, "").trim();
-        const pushKeys = Object.keys(allUsers || {}).filter((pk) => {
-          const rec = allUsers[pk] || {};
-          const recUserId = normalize(rec.userId || pk);
-          const recUsername = String(rec.username || "").trim();
-          return recUserId === userId || recUsername === userId || pk === userId;
-        });
-
-        if (pushKeys.length === 0) {
-          console.error('submitAdminModal: user push-key not found for', userId, allUsers);
-          throw new Error('user_record_not_found');
-        }
-
-        usersItemUrl = `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(pushKeys[0])}.json`;
+      if (pushKeys.length === 0) {
+        console.error('submitAdminModal: user push-key not found for', userId, allUsers);
+        throw new Error('user_record_not_found');
       }
 
-      await axios.patch(usersItemUrl, { isActive: newActive });
+      await axios.put(`${API_BASE}/school-node`, {
+        schoolCode,
+        path: `Users/${encodeURIComponent(pushKeys[0])}/isActive`,
+        value: newActive,
+      });
       if (teacherId) {
-        await axios.patch(`${SCHOOL_DB_ROOT}/TeacherDirectory/${encodeURIComponent(teacherId)}.json`, { isActive: newActive }).catch(() => undefined);
+        await axios.put(`${API_BASE}/school-node`, {
+          schoolCode,
+          path: `TeacherDirectory/${encodeURIComponent(teacherId)}/isActive`,
+          value: newActive,
+        }).catch(() => undefined);
         writeTeacherDirectoryEntryToCache(teacherId, (previousEntry) => ({
           ...previousEntry,
           isActive: newActive,
@@ -290,12 +290,15 @@ function TeachersPage() {
           if (teacherId) {
             // 1) Remove TeacherAssignments entries that reference this teacherId
             try {
-              const taRes = await axios.get(`${SCHOOL_DB_ROOT}/TeacherAssignments.json`);
-              const taData = taRes.data || {};
+              const taData = await readSchoolNode("TeacherAssignments");
               for (const [taKey, taVal] of Object.entries(taData)) {
                 if (!taVal) continue;
                 if (String(taVal.teacherId || "").trim() === String(teacherId).trim()) {
-                  await axios.delete(`${SCHOOL_DB_ROOT}/TeacherAssignments/${encodeURIComponent(taKey)}.json`);
+                  await axios.put(`${API_BASE}/school-node`, {
+                    schoolCode,
+                    path: `TeacherAssignments/${encodeURIComponent(taKey)}`,
+                    value: null,
+                  });
                 }
               }
             } catch (e) {
@@ -304,8 +307,7 @@ function TeachersPage() {
 
             // 2) Delete GradeManagement sectionSubjectTeachers entries that reference this teacher
             try {
-              const gmRes = await axios.get(`${SCHOOL_DB_ROOT}/GradeManagement/grades.json`);
-              const gmData = gmRes.data || {};
+              const gmData = await readSchoolNode("GradeManagement/grades");
               for (const [gradeKey, gradeNode] of Object.entries(gmData)) {
                 const sst = gradeNode?.sectionSubjectTeachers || {};
                 for (const [sectionKey, subjectsNode] of Object.entries(sst || {})) {
@@ -313,11 +315,14 @@ function TeachersPage() {
                     if (!assign) continue;
                     const assignedTeacherId = String(assign.teacherId || assign.teacherRecordKey || "").trim();
                     if (assignedTeacherId && assignedTeacherId === String(teacherId).trim()) {
-                      const deleteUrl = `${SCHOOL_DB_ROOT}/GradeManagement/grades/${encodeURIComponent(gradeKey)}/sectionSubjectTeachers/${encodeURIComponent(sectionKey)}/${encodeURIComponent(subjectKey)}.json`;
                       try {
-                        await axios.delete(deleteUrl);
+                        await axios.put(`${API_BASE}/school-node`, {
+                          schoolCode,
+                          path: `GradeManagement/grades/${encodeURIComponent(gradeKey)}/sectionSubjectTeachers/${encodeURIComponent(sectionKey)}/${encodeURIComponent(subjectKey)}`,
+                          value: null,
+                        });
                       } catch (err) {
-                        console.error('Failed deleting sectionSubjectTeachers entry', deleteUrl, err?.response?.data || err.message || err);
+                        console.error('Failed deleting sectionSubjectTeachers entry', err?.response?.data || err.message || err);
                       }
                     }
                   }
@@ -482,28 +487,13 @@ function TeachersPage() {
   };
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
   const readSchoolNode = async (nodeName) => {
-    if (schoolCode) {
-      try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName), { timeout: 6000 });
-        const schoolData = schoolRes.data;
-        const hasSchoolData = Array.isArray(schoolData)
-          ? schoolData.length > 0
-          : schoolData && typeof schoolData === "object"
-            ? Object.keys(schoolData).length > 0
-            : schoolData !== null && schoolData !== undefined;
-        if (hasSchoolData) {
-          return schoolData;
-        }
-      } catch (err) {
-        // fallback to root for legacy paths
-      }
-    }
-
     try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName), { timeout: 6000 });
-      return rootRes.data || {};
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode, path: nodeName },
+        timeout: 7000,
+      });
+      return response?.data?.data || {};
     } catch (err) {
       return {};
     }
@@ -801,10 +791,11 @@ useEffect(() => {
       setLoadingTeachers(true);
 
       try {
-        const teacherDirectoryData = await fetchCachedJson(TEACHER_DIRECTORY_URL, {
-          ttlMs: 15 * 60 * 1000,
-          fallbackValue: {},
+        const teacherDirectoryResponse = await axios.get(`${API_BASE}/directory/teachers`, {
+          params: { schoolCode },
+          timeout: 12000,
         });
+        const teacherDirectoryData = teacherDirectoryResponse?.data?.teachers || {};
 
         const teacherSummaryList = Object.entries(teacherDirectoryData || {})
           .map(([teacherId, teacher]) => {
@@ -1307,16 +1298,6 @@ useEffect(() => {
   fetchSchedule();
 }, [selectedTeacher, activeTab]);
 
-
-useEffect(() => {
-    // Replace with your actual API call
-    const fetchUnreadSenders = async () => {
-      const response = await fetch("/api/unreadSenders");
-      const data = await response.json();
-      setUnreadSenders(data);
-    };
-    fetchUnreadSenders();
-  }, []);
 
 
 // Fetch teacher daily lesson plan from RTDB LessonPlans node when Plan tab is active
@@ -2475,17 +2456,16 @@ const handleTyping = (text) => {
     const unread = {};
 
     try {
-      const ownerSummaries = await fetchJson(`${RTDB_BASE}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {});
-      const summariesByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
-        (result, [chatId, summaryValue]) => {
-          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
-          if (summary.otherUserId && summary.unreadCount > 0) {
-            result[summary.otherUserId] = summary.unreadCount;
-          }
-          return result;
-        },
-        {}
-      );
+            const unreadRes = await axios.get(`${API_BASE}/unread_messages/${encodeURIComponent(adminUserId)}`, {
+              timeout: 10000,
+            }).catch(() => ({ data: { messages: [] } }));
+            const unreadMessages = Array.isArray(unreadRes?.data?.messages) ? unreadRes.data.messages : [];
+            const summariesByOtherUserId = unreadMessages.reduce((result, msg) => {
+              const senderId = String(msg?.senderId || "").trim();
+              if (!senderId) return result;
+              result[senderId] = Number(result[senderId] || 0) + 1;
+              return result;
+            }, {});
 
       teachers.forEach((teacherEntry) => {
         const count = Number(summariesByOtherUserId[teacherEntry.userId] || 0);
@@ -2712,38 +2692,20 @@ useEffect(() => {
   }
 
   try {
-    const postsNode = await fetchJson(
-      `${SCHOOL_DB_ROOT}/Posts.json?orderBy=%22%24key%22&limitToLast=25`,
-      {}
-    );
-
-    const notifications = Object.entries(postsNode || {})
-      .map(([postId, postValue]) => ({ postId, ...postValue }))
-      .filter((postValue) => postValue && typeof postValue === "object")
-      .filter((postValue) => !postValue?.seenBy || !postValue.seenBy[admin.userId])
-      .sort(
-        (leftPost, rightPost) =>
-          new Date(rightPost.time || rightPost.createdAt || 0).getTime() -
-          new Date(leftPost.time || leftPost.createdAt || 0).getTime()
-      )
-      .slice(0, 25)
-      .map((postValue) => ({
-        ...postValue,
-        notificationId:
-          postValue?.notificationId ||
-          postValue?.id ||
-          `${postValue.postId}_${postValue.adminId || postValue.userId || "admin"}`,
-        adminName: postValue?.adminName || "Admin",
-        adminProfile: getSafeProfileImage(
-          postValue?.adminProfile || postValue?.adminProfileImage || postValue?.profileImage,
-          "/default-profile.png"
-        ),
-      }));
+    const response = await axios.get(`${API_BASE}/get_post_notifications/${encodeURIComponent(adminId)}`, {
+      params: { schoolCode },
+      timeout: 12000,
+    });
+    const notifications = Array.isArray(response?.data)
+      ? response.data
+      : (Array.isArray(response?.data?.notifications) ? response.data.notifications : []);
 
     setPostNotifications(notifications);
   } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
+    // Keep current UI state during transient backend latency/timeouts.
+    if (String(err?.code || "") !== "ECONNABORTED") {
+      console.warn("Post notification fetch failed", err?.message || err);
+    }
   }
 };
 
@@ -2787,10 +2749,11 @@ useEffect(() => {
 
  const handleNotificationClick = async (notification) => {
   try {
-    await axios.put(
-      `${SCHOOL_DB_ROOT}/Posts/${encodeURIComponent(notification.postId)}/seenBy/${encodeURIComponent(admin.userId)}.json`,
-      true
-    );
+    await axios.post(`${API_BASE}/mark_post_notification_read`, {
+      schoolCode,
+      adminId: admin.userId,
+      postId: notification?.postId,
+    });
   } catch (err) {
     console.warn("Failed to mark post as seen:", err);
   }
@@ -2842,19 +2805,6 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    const fetchUnreadSenders = async () => {
-      try {
-        const response = await fetch("/api/unreadSenders");
-        const data = await response.json();
-        setUnreadSenders(data);
-      } catch (err) {
-        // ignore
-      }
-    };
-    fetchUnreadSenders();
-  }, []);
-
   const handleClick = () => {
     navigate("/all-chat");
   };
@@ -2864,106 +2814,47 @@ useEffect(() => {
     if (!admin.userId) return;
 
     try {
-      const [usersData, teachersData, studentsData, parentsData, chatIndex] = await Promise.all([
-        readSchoolNode("Users"),
-        readSchoolNode("Teachers"),
-        readSchoolNode("Students"),
-        readSchoolNode("Parents"),
-        fetchJson(`${RTDB_BASE}/Chats.json?shallow=true`, {}),
-      ]);
-
-      const usersById = Object.values(usersData || {}).reduce((acc, userRecord) => {
-        const userId = String(userRecord?.userId || "").trim();
-        if (!userId) return acc;
-        acc[userId] = userRecord;
+      const unreadRes = await axios.get(`${API_BASE}/unread_messages/${encodeURIComponent(admin.userId)}`, {
+        timeout: 12000,
+      });
+      const unreadMessages = Array.isArray(unreadRes?.data?.messages) ? unreadRes.data.messages : [];
+      const unreadCounts = unreadMessages.reduce((acc, msg) => {
+        const senderId = String(msg?.senderId || "").trim();
+        if (!senderId) return acc;
+        acc[senderId] = Number(acc[senderId] || 0) + 1;
         return acc;
       }, {});
 
-      const teachersByUserId = Object.values(teachersData || {}).reduce((acc, teacherRecord) => {
-        const userId = String(teacherRecord?.userId || "").trim();
-        if (userId) acc[userId] = teacherRecord;
+      const senderIds = Object.keys(unreadCounts);
+      if (!senderIds.length) {
+        setUnreadSenders({});
+        return;
+      }
+
+      const usersLookupRes = await axios.get(`${API_BASE}/users_lookup`, {
+        params: { schoolCode, userIds: senderIds.join(",") },
+        timeout: 12000,
+      }).catch(() => ({ data: { users: {} } }));
+      const users = usersLookupRes?.data?.users && typeof usersLookupRes.data.users === "object"
+        ? usersLookupRes.data.users
+        : {};
+
+      const senders = senderIds.reduce((acc, senderId) => {
+        const user = users[senderId] || {};
+        acc[senderId] = {
+          type: String(user?.role || "").toLowerCase() || "teacher",
+          name: user?.name || user?.username || senderId,
+          profileImage: getSafeProfileImage(user?.profileImage, "/default-profile.png"),
+          count: Number(unreadCounts[senderId] || 0),
+        };
         return acc;
       }, {});
-      const studentsByUserId = Object.values(studentsData || {}).reduce((acc, studentRecord) => {
-        const userId = String(studentRecord?.userId || studentRecord?.basicStudentInformation?.userId || "").trim();
-        if (userId) acc[userId] = studentRecord;
-        return acc;
-      }, {});
-      const parentsByUserId = Object.values(parentsData || {}).reduce((acc, parentRecord) => {
-        const userId = String(parentRecord?.userId || "").trim();
-        if (userId) acc[userId] = parentRecord;
-        return acc;
-      }, {});
-
-      const candidateChatKeys = Object.keys(chatIndex || {}).filter((chatKey) =>
-        parseChatParticipantIds(chatKey).includes(String(admin.userId || ""))
-      );
-
-      const ownerSummaries = await fetchJson(`${RTDB_BASE}/${buildOwnerChatSummariesPath(admin.userId)}.json`, {});
-      const unreadEntries = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {})
-        .map(([chatId, summaryValue]) => normalizeChatSummaryValue(summaryValue, { chatId }))
-        .filter((summary) => summary.otherUserId && summary.unreadCount > 0)
-        .map((summary) => ({
-          otherUserId: summary.otherUserId,
-          unreadCount: summary.unreadCount,
-          lastMessageTime: getConversationSortTime(summary.lastMessageTime),
-        }));
-
-      const appendUnreadSenders = (collection, type, fallbackNameResolver, fallbackImageResolver) => {
-        Object.values(collection || {}).forEach((item) => {
-          const userId = String(item?.userId || "").trim();
-          if (!userId) return;
-
-          const unread = Number(
-            unreadEntries.find((entry) => String(entry?.otherUserId || "") === userId)?.unreadCount || 0
-          );
-          if (unread <= 0) return;
-
-          const user = usersById[userId] || {};
-          senders[userId] = {
-            type,
-            name: user?.name || fallbackNameResolver(item),
-            profileImage: user?.profileImage || fallbackImageResolver(item),
-            count: unread,
-          };
-        });
-      };
-
-      const senders = {};
-      appendUnreadSenders(teachersData, "teacher", () => "Teacher", () => "/default-profile.png");
-      appendUnreadSenders(studentsData, "student", (item) => item?.name || "Student", (item) => item?.profileImage || "/default-profile.png");
-      appendUnreadSenders(parentsData, "parent", (item) => item?.name || "Parent", (item) => item?.profileImage || "/default-profile.png");
-
-      unreadEntries
-        .filter(Boolean)
-        .sort((leftEntry, rightEntry) => Number(rightEntry.lastMessageTime || 0) - Number(leftEntry.lastMessageTime || 0))
-        .forEach((entry) => {
-          const userId = String(entry.otherUserId || "");
-          if (!userId || senders[userId]) {
-            return;
-          }
-
-          const userRecord = usersById[userId] || {};
-          const teacherRecord = teachersByUserId[userId] || {};
-          const studentRecord = studentsByUserId[userId] || {};
-          const parentRecord = parentsByUserId[userId] || {};
-          const matchedRecord = teacherRecord.userId ? teacherRecord : studentRecord.userId ? studentRecord : parentRecord.userId ? parentRecord : {};
-          const senderType = teacherRecord.userId ? "teacher" : studentRecord.userId ? "student" : parentRecord.userId ? "parent" : "teacher";
-
-          senders[userId] = {
-            type: senderType,
-            name: userRecord?.name || matchedRecord?.name || userRecord?.username || userId,
-            profileImage: getSafeProfileImage(
-              userRecord?.profileImage || matchedRecord?.profileImage || matchedRecord?.studentPhoto,
-              "/default-profile.png"
-            ),
-            count: entry.unreadCount,
-          };
-        });
 
       setUnreadSenders(senders);
     } catch (err) {
-      console.error("Unread fetch failed:", err);
+      if (String(err?.code || "") !== "ECONNABORTED") {
+        console.warn("Unread fetch failed:", err?.message || err);
+      }
     }
   };
 

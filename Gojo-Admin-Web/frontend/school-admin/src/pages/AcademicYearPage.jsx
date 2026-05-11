@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { schoolNodeBase } from "../utils/schoolDbRouting";
 import { FaChevronDown, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { BACKEND_BASE } from "../config.js";
@@ -102,7 +101,7 @@ export default function AcademicYearPage() {
   const ACCENT = "#00B6A9";
 
   const schoolCode = stored.schoolCode || "";
-  const DB_URL = schoolNodeBase(schoolCode);
+  const API_BASE = `${BACKEND_BASE}/api`;
   const academicYearsCacheKey = schoolCode ? `academic-years:v2:${schoolCode}` : "academic-years:v2";
   const yearHistoryCachePrefix = schoolCode ? `academic-year-history:v2:${schoolCode}:` : "academic-year-history:v2:";
 
@@ -260,17 +259,13 @@ export default function AcademicYearPage() {
 
     setLoading(true);
     try {
-      const [academicYearsResponse, schoolInfoResponse] = await Promise.all([
-        axios.get(`${DB_URL}/AcademicYears.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
-      ]);
+      const response = await axios.get(`${API_BASE}/academic-years`, {
+        params: { schoolCode },
+        timeout: 12000,
+      });
 
-      const fetchedAcademicYears = academicYearsResponse.data || {};
-      const schoolInfo = schoolInfoResponse.data || {};
-      const detectedCurrentAcademicYear =
-        schoolInfo.currentAcademicYear ||
-        Object.entries(fetchedAcademicYears).find(([, row]) => Boolean(row?.isCurrent))?.[0] ||
-        "";
+      const fetchedAcademicYears = response?.data?.academicYears || {};
+      const detectedCurrentAcademicYear = response?.data?.currentAcademicYear || "";
 
       setAcademicYears(fetchedAcademicYears);
       setCurrentAcademicYear(detectedCurrentAcademicYear);
@@ -361,29 +356,25 @@ export default function AcademicYearPage() {
     setHistoryStudentsLoading(true);
 
     try {
-      const [studentsResponse, historyUsersResponse] = await Promise.all([
-        axios.get(`${DB_URL}/YearHistory/${yearKey}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/YearHistory/${yearKey}/SchoolSnapshot/data/Users.json`).catch(() => ({ data: {} })),
-      ]);
+      const response = await axios.get(`${API_BASE}/academic-years/history-students`, {
+        params: { schoolCode, yearKey },
+        timeout: 12000,
+      });
 
-      const studentsObj = studentsResponse.data || {};
-      const historyUsersObj = historyUsersResponse.data || {};
-
-      const list = Object.entries(studentsObj).map(([studentId, row]) => {
+      const list = (response?.data?.students || []).map((row) => {
         const student = row || {};
         const studentBasicInfo = student.basicStudentInformation || {};
-        const user = historyUsersObj[student.userId] || {};
         return {
-          studentId,
+          studentId: student.studentId || "",
           ...student,
           grade: student.grade || studentBasicInfo.grade || "",
           section: student.section || studentBasicInfo.section || "",
-          name: user.name || student.name || studentBasicInfo.name || [studentBasicInfo.firstName, studentBasicInfo.middleName, studentBasicInfo.lastName].filter(Boolean).join(" ") || "Student",
+          name: student.name || studentBasicInfo.name || [studentBasicInfo.firstName, studentBasicInfo.middleName, studentBasicInfo.lastName].filter(Boolean).join(" ") || "Student",
           profileImage: getSafeImageUrl(
-            user.profileImage || student.profileImage || studentBasicInfo.studentPhoto,
+            student.profileImage || studentBasicInfo.studentPhoto,
             "/default-profile.png"
           ),
-          email: user.email || student.email || studentBasicInfo.email || "",
+          email: student.email || studentBasicInfo.email || "",
         };
       });
 

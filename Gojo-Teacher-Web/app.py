@@ -151,6 +151,15 @@ SCOPED_ROOTS = {
     "SchoolExams",
     "counters",
     "Users_counters",
+    "GradeManagement",
+    "CalendarEvents",
+    "CalendarEventsByMonth",
+    "AssesmentTemplates",
+    "HR",
+    "Management",
+    "Registerers",
+    "Attendance",
+    "Schedules",
 }
 
 TEACHER_PROXY_WRITE_PREFIXES = (
@@ -888,6 +897,8 @@ def rtdb_proxy(node_path):
         new_ref = reference.push(payload)
         return jsonify({"name": new_ref.key}), 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "message": str(e)}), 500
 
 

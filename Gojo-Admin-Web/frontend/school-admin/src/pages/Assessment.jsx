@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
+import { BACKEND_BASE } from "../config";
 
 const ALL_GRADES_VALUE = "__ALL_GRADES__";
 const ALL_SUBJECTS_VALUE = "__ALL_SUBJECTS__";
@@ -16,6 +17,7 @@ export default function AssessmentPage() {
 
   const schoolCode = String(admin.schoolCode || "").trim();
   const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
+  const API_BASE = `${BACKEND_BASE}/api`;
 
   const [gradeRows, setGradeRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -49,8 +51,11 @@ export default function AssessmentPage() {
       setError("");
 
       try {
-        const gradeRes = await axios.get(`${SCHOOL_DB_ROOT}/GradeManagement/grades.json`, { timeout: 7000 });
-        const gradesNode = gradeRes.data && typeof gradeRes.data === "object" ? gradeRes.data : {};
+        const gradeRes = await axios.get(`${API_BASE}/grade-management/grades`, {
+          params: { schoolCode },
+          timeout: 7000,
+        });
+        const gradesNode = gradeRes.data?.grades && typeof gradeRes.data.grades === "object" ? gradeRes.data.grades : {};
 
         const rowsFromGradeManagement = Object.entries(gradesNode).map(([gradeKey, gradeValue]) => {
           const gradeObj = gradeValue && typeof gradeValue === "object" ? gradeValue : {};
@@ -119,7 +124,7 @@ export default function AssessmentPage() {
     return () => {
       mounted = false;
     };
-  }, [SCHOOL_DB_ROOT]);
+  }, [API_BASE, SCHOOL_DB_ROOT, schoolCode]);
 
   const toSubjectKey = (value) =>
     String(value || "")

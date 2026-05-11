@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { BACKEND_BASE } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { fetchCachedJson } from "../utils/rtdbCache";
-import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 export default function OverviewPage() {
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
@@ -16,9 +15,8 @@ export default function OverviewPage() {
   })();
 
   const schoolCode = stored.schoolCode || "";
-  const DB_URL = schoolNodeBase(schoolCode);
+  const API_BASE = `${BACKEND_BASE}/api`;
   const OVERVIEW_CACHE_KEY = schoolCode ? `overview-cache:${schoolCode}` : "";
-  const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
   const readOverviewCache = () => {
     if (!OVERVIEW_CACHE_KEY || typeof window === "undefined") {
@@ -60,27 +58,6 @@ export default function OverviewPage() {
 
   useEffect(() => {
     let isMounted = true;
-    const NODE_CACHE_TTL_MS = 5 * 60 * 1000;
-
-    const fetchNodeCount = async (nodeName) => {
-      try {
-        const shallowData = await fetchCachedJson(`${DB_URL}/${nodeName}.json?shallow=true`, {
-          ttlMs: NODE_CACHE_TTL_MS,
-          fallbackValue: null,
-        });
-        if (shallowData && typeof shallowData === "object") {
-          return Object.keys(shallowData || {}).length;
-        }
-      } catch (error) {
-        // fall through to the full-node fallback
-      }
-
-      const fallbackNode = await fetchCachedJson(`${DB_URL}/${nodeName}.json`, {
-        ttlMs: NODE_CACHE_TTL_MS,
-        fallbackValue: {},
-      });
-      return Object.keys(fallbackNode || {}).length;
-    };
 
     const loadOverview = async () => {
       try {
@@ -88,53 +65,13 @@ export default function OverviewPage() {
           setLoading(true);
         }
 
-        const [studentDirectoryObj, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
-          fetchCachedJson(STUDENT_DIRECTORY_URL, {
-            ttlMs: NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchNodeCount("Parents"),
-          fetchNodeCount("Posts"),
-        ]);
-
-        // Only fall back to full Students node if Directory is empty (saves ~3MB per load)
-        const rawStudentSource =
-          studentDirectoryObj && Object.keys(studentDirectoryObj || {}).length > 0
-            ? studentDirectoryObj
-            : await fetchCachedJson(`${DB_URL}/Students.json`, { ttlMs: NODE_CACHE_TTL_MS, fallbackValue: {} });
-
-        const studentRows = Object.entries(rawStudentSource || {}).map(([studentId, studentNode]) => {
-          const basicStudentInfo = studentNode?.basicStudentInformation || {};
-          const statusRaw = studentNode?.isActive === false
-            ? "inactive"
-            : basicStudentInfo?.status || studentNode?.status || "active";
-
-          return {
-            studentId,
-            userId: studentNode?.userId || "",
-            name:
-              studentNode?.name ||
-              studentNode?.studentName ||
-              basicStudentInfo?.name ||
-              studentId ||
-              "No Name",
-            profileImage:
-              studentNode?.profileImage ||
-              basicStudentInfo?.studentPhoto ||
-              studentNode?.studentPhoto ||
-              "/default-profile.png",
-            grade: studentNode?.grade || basicStudentInfo?.grade || "-",
-            section: studentNode?.section || basicStudentInfo?.section || "-",
-            gender: String(basicStudentInfo?.gender || studentNode?.gender || "").trim().toLowerCase(),
-            status: String(statusRaw).toLowerCase(),
-            createdAt:
-              studentNode?.createdAt ||
-              studentNode?.registeredAt ||
-              studentNode?.admissionDate ||
-              basicStudentInfo?.admissionDate ||
-              null,
-          };
+        const res = await axios.get(`${API_BASE}/overview`, {
+          params: { schoolCode },
+          timeout: 12000,
         });
+        const studentRows = Array.isArray(res?.data?.students) ? res.data.students : [];
+        const resolvedParentsCount = Number(res?.data?.parentsCount || 0);
+        const resolvedPostsCount = Number(res?.data?.postsCount || 0);
 
         if (!isMounted) {
           return;
@@ -169,7 +106,7 @@ export default function OverviewPage() {
     return () => {
       isMounted = false;
     };
-  }, [DB_URL, OVERVIEW_CACHE_KEY, STUDENT_DIRECTORY_URL]);
+  }, [API_BASE, OVERVIEW_CACHE_KEY, schoolCode]);
 
   const summary = useMemo(() => {
     const totalStudents = students.length;

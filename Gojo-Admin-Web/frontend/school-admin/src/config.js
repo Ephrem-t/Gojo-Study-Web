@@ -1,5 +1,5 @@
 // Central backend base URL. Try Vite env, Node env, legacy React env, then default.
-const DEFAULT_BACKEND = "http://127.0.0.1:5000";
+const DEFAULT_BACKEND = "http://127.0.0.1:5002";
 const DEFAULT_FIREBASE_DATABASE_URL = "https://gojo-education-default-rtdb.firebaseio.com";
 
 const viteEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_BACKEND_BASE;
@@ -17,5 +17,5 @@ const rawFirebaseDatabaseUrl = (viteFirebaseDatabaseEnv || nodeFirebaseDatabaseE
 export const FIREBASE_DATABASE_URL = String(rawFirebaseDatabaseUrl).trim().replace(/\/$/, "");
 
 // Example override for local development (Vite): create .env with
-// VITE_BACKEND_BASE=http://127.0.0.1:5000
+// VITE_BACKEND_BASE=http://127.0.0.1:5001
 // VITE_FIREBASE_DATABASE_URL=https://gojo-education-default-rtdb.firebaseio.com

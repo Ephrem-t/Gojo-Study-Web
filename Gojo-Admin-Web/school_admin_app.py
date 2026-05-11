@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import sys
 import re
 import secrets
+from urllib.parse import unquote
 from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_firebase_credentials
 
 
@@ -33,6 +34,12 @@ def _pc_set(key: str, data):
 def _pc_invalidate(key: str):
     with _POSTS_CACHE_LOCK:
         _POSTS_CACHE.pop(key, None)
+
+def _pc_invalidate_prefix(prefix: str):
+    with _POSTS_CACHE_LOCK:
+        for key in list(_POSTS_CACHE.keys()):
+            if str(key).startswith(prefix):
+                _POSTS_CACHE.pop(key, None)
 # --------------------------------------------------------------------
 
 APP_ENV = str(os.getenv("APP_ENV") or os.getenv("FLASK_ENV") or "development").strip().lower()
@@ -761,6 +768,7 @@ def create_post():
         })
 
         _pc_invalidate(f"posts:{school_code}:60")
+        _pc_invalidate_prefix(f"my_posts:{school_code}:")
         return jsonify({"success": True, "message": "Post created successfully"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -832,6 +840,318 @@ def get_posts():
         })
 
     return jsonify(post_list)
+
+
+@app.route("/api/overview", methods=["GET"])
+def get_overview_data():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+    if not resolved_school_code:
+        return jsonify({"students": [], "parentsCount": 0, "postsCount": 0})
+
+    cache_key = f"overview:{resolved_school_code}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        parents_shallow = school_node_ref(resolved_school_code, "Parents").get(shallow=True) or {}
+    except Exception:
+        parents_shallow = {}
+    try:
+        posts_shallow = school_node_ref(resolved_school_code, "Posts").get(shallow=True) or {}
+    except Exception:
+        posts_shallow = {}
+
+    student_directory = school_node_ref(resolved_school_code, "StudentDirectory").get() or {}
+    if not isinstance(student_directory, dict):
+        student_directory = {}
+
+    # Fallback to Students only when directory is empty.
+    if not student_directory:
+        students_node = school_node_ref(resolved_school_code, "Students").get() or {}
+        if isinstance(students_node, dict):
+            student_directory = students_node
+
+    students = []
+    for student_id, student_node in (student_directory or {}).items():
+        if not isinstance(student_node, dict):
+            continue
+
+        basic_info = student_node.get("basicStudentInformation") or {}
+        status_raw = (
+            "inactive"
+            if student_node.get("isActive") is False
+            else (basic_info.get("status") or student_node.get("status") or "active")
+        )
+
+        students.append({
+            "studentId": str(student_node.get("studentId") or student_id or "").strip(),
+            "userId": str(student_node.get("userId") or "").strip(),
+            "name": (
+                student_node.get("name")
+                or student_node.get("studentName")
+                or basic_info.get("name")
+                or str(student_id or "")
+                or "No Name"
+            ),
+            "profileImage": (
+                student_node.get("profileImage")
+                or basic_info.get("studentPhoto")
+                or student_node.get("studentPhoto")
+                or "/default-profile.png"
+            ),
+            "grade": student_node.get("grade") or basic_info.get("grade") or "-",
+            "section": student_node.get("section") or basic_info.get("section") or "-",
+            "gender": str(basic_info.get("gender") or student_node.get("gender") or "").strip().lower(),
+            "status": str(status_raw or "active").strip().lower(),
+            "createdAt": (
+                student_node.get("createdAt")
+                or student_node.get("registeredAt")
+                or student_node.get("admissionDate")
+                or basic_info.get("admissionDate")
+            ),
+        })
+
+    result = {
+        "students": students,
+        "parentsCount": len(parents_shallow) if isinstance(parents_shallow, dict) else 0,
+        "postsCount": len(posts_shallow) if isinstance(posts_shallow, dict) else 0,
+    }
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/academic-years", methods=["GET"])
+def get_academic_years():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+    if not resolved_school_code:
+        return jsonify({"academicYears": {}, "currentAcademicYear": "", "schoolCode": ""})
+
+    cache_key = f"academic_years:{resolved_school_code}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    years_node = school_node_ref(resolved_school_code, "AcademicYears").get() or {}
+    if not isinstance(years_node, dict):
+        years_node = {}
+
+    school_info = school_node_ref(resolved_school_code, "schoolInfo").get() or {}
+    if not isinstance(school_info, dict):
+        school_info = {}
+
+    current_year = str(school_info.get("currentAcademicYear") or "").strip()
+    if not current_year:
+        current_year = next(
+            (str(year_key) for year_key, row in years_node.items() if isinstance(row, dict) and row.get("isCurrent")),
+            "",
+        )
+
+    result = {
+        "academicYears": years_node,
+        "currentAcademicYear": current_year,
+        "schoolCode": resolved_school_code,
+    }
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/academic-years/history-students", methods=["GET"])
+def get_academic_year_history_students():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    year_key = str(request.args.get("yearKey") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+
+    if not resolved_school_code:
+        return jsonify({"students": []})
+    if not year_key:
+        return jsonify({"students": []})
+
+    cache_key = f"academic_year_history:{resolved_school_code}:{year_key}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    students_node = school_node_ref(resolved_school_code, f"YearHistory/{year_key}/Students").get() or {}
+    users_node = school_node_ref(resolved_school_code, f"YearHistory/{year_key}/SchoolSnapshot/data/Users").get() or {}
+
+    if not isinstance(students_node, dict):
+        students_node = {}
+    if not isinstance(users_node, dict):
+        users_node = {}
+
+    students = []
+    for student_id, student_row in students_node.items():
+        if not isinstance(student_row, dict):
+            continue
+
+        basic_info = student_row.get("basicStudentInformation") or {}
+        if not isinstance(basic_info, dict):
+            basic_info = {}
+
+        user_id = str(student_row.get("userId") or "").strip()
+        user_row = users_node.get(user_id) or {}
+        if not isinstance(user_row, dict):
+            user_row = {}
+
+        students.append({
+            "studentId": str(student_id or "").strip(),
+            **student_row,
+            "grade": student_row.get("grade") or basic_info.get("grade") or "",
+            "section": student_row.get("section") or basic_info.get("section") or "",
+            "name": (
+                user_row.get("name")
+                or student_row.get("name")
+                or basic_info.get("name")
+                or " ".join(
+                    [
+                        str(basic_info.get("firstName") or "").strip(),
+                        str(basic_info.get("middleName") or "").strip(),
+                        str(basic_info.get("lastName") or "").strip(),
+                    ]
+                ).strip()
+                or "Student"
+            ),
+            "profileImage": (
+                user_row.get("profileImage")
+                or student_row.get("profileImage")
+                or basic_info.get("studentPhoto")
+                or "/default-profile.png"
+            ),
+            "email": user_row.get("email") or student_row.get("email") or basic_info.get("email") or "",
+        })
+
+    result = {"students": students}
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/grade-management/grades", methods=["GET"])
+def get_grade_management_grades():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+
+    if not resolved_school_code:
+        return jsonify({"grades": {}})
+
+    cache_key = f"grade_management_grades:{resolved_school_code}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    grades_node = school_node_ref(resolved_school_code, "GradeManagement/grades").get() or {}
+    if not isinstance(grades_node, dict):
+        grades_node = {}
+
+    result = {"grades": grades_node}
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/directory/teachers", methods=["GET"])
+def get_teacher_directory():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+
+    if not resolved_school_code:
+        return jsonify({"teachers": {}})
+
+    cache_key = f"teacher_directory:{resolved_school_code}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    directory_node = school_node_ref(resolved_school_code, "TeacherDirectory").get() or {}
+    if not isinstance(directory_node, dict):
+        directory_node = {}
+
+    result = {"teachers": directory_node}
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/directory/students", methods=["GET"])
+def get_student_directory():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+
+    if not resolved_school_code:
+        return jsonify({"students": {}})
+
+    cache_key = f"student_directory:{resolved_school_code}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    directory_node = school_node_ref(resolved_school_code, "StudentDirectory").get() or {}
+    if not isinstance(directory_node, dict):
+        directory_node = {}
+
+    result = {"students": directory_node}
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/school-node", methods=["PUT"])
+def put_school_node_value():
+    body = request.get_json(silent=True) or {}
+    requested_school_code = str(
+        body.get("schoolCode")
+        or request.args.get("schoolCode")
+        or ""
+    ).strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+    if not resolved_school_code:
+        return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+    raw_path = str(body.get("path") or request.args.get("path") or "").strip()
+    normalized_path = unquote(raw_path).strip("/")
+    if not normalized_path:
+        return jsonify({"success": False, "message": "path is required"}), 400
+
+    value = body.get("value")
+    school_node_ref(resolved_school_code, normalized_path).set(value)
+
+    if normalized_path.startswith("GradeManagement/grades"):
+        _pc_invalidate(f"grade_management_grades:{resolved_school_code}")
+    if normalized_path.startswith("TeacherDirectory"):
+        _pc_invalidate(f"teacher_directory:{resolved_school_code}")
+    if normalized_path.startswith("StudentDirectory"):
+        _pc_invalidate(f"student_directory:{resolved_school_code}")
+    if normalized_path.startswith("AcademicYears") or normalized_path.startswith("schoolInfo/currentAcademicYear"):
+        _pc_invalidate(f"academic_years:{resolved_school_code}")
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/school-node-read", methods=["GET"])
+def get_school_node_value():
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    resolved_school_code = resolve_school_code_alias(requested_school_code)
+    if not resolved_school_code:
+        return jsonify({"data": {}})
+
+    raw_path = str(request.args.get("path") or "").strip()
+    normalized_path = unquote(raw_path).strip("/")
+    if not normalized_path:
+        return jsonify({"data": {}})
+
+    cache_key = f"school_node_read:{resolved_school_code}:{normalized_path}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify({"data": cached})
+
+    try:
+        data = school_node_ref(resolved_school_code, normalized_path).get()
+    except Exception:
+        data = {}
+
+    if data is None:
+        data = {}
+    _pc_set(cache_key, data)
+    return jsonify({"data": data})
 
 
 @app.route("/api/get_all_posts", methods=["GET"])
@@ -936,22 +1256,82 @@ def fetch_admin_profile(adminId):
 # ---------------- GET MY POSTS ---------------- #
 @app.route("/api/get_my_posts/<adminId>", methods=["GET"])
 def get_my_posts(adminId):
-    resolved = resolve_admin_identifiers(adminId)
-    if not resolved:
+    limit = parse_positive_int(request.args.get("limit"), 200, 1, 500)
+    requested_school_code = str(request.args.get("schoolCode") or "").strip()
+    requested_user_id = str(request.args.get("userId") or "").strip()
+
+    school_code = ""
+    valid_ids = set()
+
+    # Fast path for frontend calls that already know schoolCode and userId.
+    if requested_school_code and requested_user_id:
+        school_code = resolve_school_code_alias(requested_school_code) or requested_school_code
+        valid_ids = {
+            str(v).strip()
+            for v in [requested_user_id, adminId]
+            if str(v).strip()
+        }
+    else:
+        resolved = resolve_admin_identifiers(adminId)
+        if not resolved:
+            return jsonify([])
+
+        school_code = resolved.get("schoolCode")
+        user_id = resolved.get("userId")
+        normalized_admin_id = resolved.get("adminId")
+        username = resolved.get("username")
+        valid_ids = {
+            str(v).strip()
+            for v in [user_id, normalized_admin_id, username, adminId]
+            if str(v).strip()
+        }
+
+    if not school_code or not valid_ids:
         return jsonify([])
 
-    school_code = resolved.get("schoolCode")
-    all_posts = school_node_ref(school_code, "Posts").get() or {}
+    cache_key = f"my_posts:{school_code}:{'|'.join(sorted(valid_ids))}:{limit}"
+    cached_my_posts = _pc_get(cache_key)
+    if cached_my_posts is not None:
+        return jsonify(cached_my_posts)
+
+    posts_by_key = {}
+
+    # Bounded indexed reads only; avoid full-node scans that can timeout on large datasets.
+    for field_name in ("adminId", "userId"):
+        for candidate_id in valid_ids:
+            try:
+                candidate_posts = (
+                    school_node_ref(school_code, "Posts")
+                    .order_by_child(field_name)
+                    .equal_to(candidate_id)
+                    .limit_to_last(limit)
+                    .get()
+                    or {}
+                )
+                if isinstance(candidate_posts, dict):
+                    posts_by_key.update(candidate_posts)
+            except Exception:
+                pass
+
+    if not posts_by_key:
+        # Some datasets may not support efficient child-index queries reliably.
+        # Fall back to a bounded recent-post window instead of a full-node scan.
+        recent_limit = max(200, min(500, limit * 4))
+        recent_posts = read_recent_posts_for_school(school_code, recent_limit)
+        if isinstance(recent_posts, dict):
+            posts_by_key.update(recent_posts)
+
+    if not posts_by_key:
+        _pc_set(cache_key, [])
+        return jsonify([])
+
     my_posts = []
 
-    user_id = resolved.get("userId")
-    normalized_admin_id = resolved.get("adminId")
-    username = resolved.get("username")
-
     # Filter posts by any known equivalent ID
-    for key, post in all_posts.items():
+    for key, post in posts_by_key.items():
+        if not isinstance(post, dict):
+            continue
         post_admin_id = str(post.get("adminId") or "")
-        valid_ids = {str(user_id), str(normalized_admin_id), str(username), str(adminId)}
         if post_admin_id and post_admin_id in valid_ids:
             my_posts.append({
                 "postId": key,
@@ -976,6 +1356,9 @@ def get_my_posts(adminId):
                 return datetime.min
 
     my_posts.sort(key=lambda x: parse_time(x["time"]), reverse=True)
+    my_posts = my_posts[:limit]
+
+    _pc_set(cache_key, my_posts)
 
     return jsonify(my_posts)
 
@@ -983,22 +1366,33 @@ def get_my_posts(adminId):
 @app.route("/api/get_post_notifications/<adminId>", methods=["GET"])
 def get_post_notifications(adminId):
     try:
+        limit = parse_positive_int(request.args.get("limit"), 25, 1, 50)
         resolved_viewer = resolve_admin_identifiers(adminId)
         if not resolved_viewer:
             return jsonify([])
 
         viewer_user_id = resolved_viewer.get("userId")
         school_code = resolved_viewer.get("schoolCode")
-        all_posts = school_node_ref(school_code, "Posts").get() or {}
+        cache_key = f"post_notifications:{school_code}:{viewer_user_id}:{limit}"
+        cached = _pc_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
+        all_posts = read_recent_posts_for_school(school_code, max(limit * 3, 30))
+        if not isinstance(all_posts, dict):
+            all_posts = {}
+
+        actor_profiles = load_post_actor_profiles(school_code, list(all_posts.values()))
         notifications = []
 
         for key, post in all_posts.items():
+            if not isinstance(post, dict):
+                continue
             seen_by = post.get("seenBy", {})
             # Only include posts the admin has NOT seen
             if not seen_by.get(viewer_user_id):
-                # Fetch the admin/user who created this post
-                owner = resolve_admin_identifiers(post.get("adminId"))
-                user_data = owner.get("user", {}) if owner else {}
+                actor_id = str(post.get("adminId") or post.get("userId") or "").strip()
+                user_data = actor_profiles.get(actor_id, {}) if actor_id else {}
                 notifications.append({
                     "postId": key,
                     "message": post.get("message"),
@@ -1010,7 +1404,9 @@ def get_post_notifications(adminId):
                 })
 
         # Sort newest first
-        notifications.sort(key=lambda x: x['time'], reverse=True)
+        notifications.sort(key=lambda x: str(x.get("time") or ""), reverse=True)
+        notifications = notifications[:limit]
+        _pc_set(cache_key, notifications)
         return jsonify(notifications)
     
     except Exception as e:
@@ -1018,12 +1414,27 @@ def get_post_notifications(adminId):
 
 @app.route("/api/mark_post_notification_read", methods=["POST"])
 def mark_post_notification_read():
-    data = request.get_json()
-    notification_id = data.get("notificationId")
-    
-    # your logic here...
-    
-    return jsonify({"success": True}), 200  # 🔹 must return 200
+    data = request.get_json(silent=True) or {}
+    admin_id = str(data.get("adminId") or data.get("userId") or "").strip()
+    post_id = str(data.get("postId") or data.get("notificationId") or "").strip()
+    requested_school_code = str(data.get("schoolCode") or "").strip()
+
+    if not admin_id or not post_id:
+        return jsonify({"success": False, "message": "adminId and postId are required"}), 400
+
+    resolved_viewer = resolve_admin_identifiers(admin_id)
+    viewer_user_id = str((resolved_viewer or {}).get("userId") or admin_id).strip()
+    school_code = str((resolved_viewer or {}).get("schoolCode") or requested_school_code).strip()
+    school_code = resolve_school_code_alias(school_code)
+    if not school_code:
+        return jsonify({"success": False, "message": "Unable to resolve school"}), 400
+
+    school_node_ref(school_code, f"Posts/{post_id}/seenBy/{viewer_user_id}").set(True)
+
+    _pc_invalidate_prefix(f"post_notifications:{school_code}:{viewer_user_id}:")
+    _pc_invalidate(f"posts:{school_code}:60")
+
+    return jsonify({"success": True}), 200
 
 
 # ---------------- EDIT POST ---------------- #
@@ -1063,6 +1474,7 @@ def edit_post(postId):
         "edited": True
     })
     _pc_invalidate(f"posts:{school_code}:60")
+    _pc_invalidate_prefix(f"my_posts:{school_code}:")
     return jsonify({"success": True, "message": "Post updated"})
 
 
@@ -1096,6 +1508,7 @@ def delete_post(postId):
 
     post_ref.delete()
     _pc_invalidate(f"posts:{school_code}:60")
+    _pc_invalidate_prefix(f"my_posts:{school_code}:")
     return jsonify({"success": True, "message": "Post deleted"})
 
 
@@ -1159,6 +1572,7 @@ def send_message():
             "time": datetime.now().isoformat(),
             "read": False
         })
+        _pc_invalidate(f"unread_messages:{sender_resolved.get('schoolCode')}:{receiverId}")
         return jsonify({"success": True, "message": "Message sent"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -1194,6 +1608,7 @@ def mark_messages_read():
         if msg.get("receiverId") == adminId and msg.get("senderId") == senderId:
             chats_ref.child(key).update({"read": True})
 
+    _pc_invalidate(f"unread_messages:{resolved.get('schoolCode')}:{adminId}")
     return jsonify({"success": True})
 
 # Get unread messages for admin
@@ -1203,11 +1618,139 @@ def get_unread_messages(adminId):
     if not resolved or not resolved.get("schoolCode"):
         return jsonify({"count": 0, "messages": []})
 
-    chats_ref = school_node_ref(resolved.get("schoolCode"), "Chats")
-    all_msgs = chats_ref.get() or {}
-    unread_msgs = [msg for key, msg in all_msgs.items()
-                   if msg.get("receiverId") == adminId and not msg.get("read", False)]
-    return jsonify({"count": len(unread_msgs), "messages": unread_msgs})
+    school_code = str(resolved.get("schoolCode") or "").strip()
+    viewer_user_id = str(resolved.get("userId") or adminId).strip()
+    cache_key = f"unread_messages:{school_code}:{viewer_user_id}"
+    cached = _pc_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    # Fast path: consume per-user chat summaries instead of scanning full Chats node.
+    summaries = school_node_ref(school_code, f"Chat_Summaries/{viewer_user_id}").get() or {}
+    unread_msgs = []
+
+    if isinstance(summaries, dict) and summaries:
+        for chat_id, summary_value in summaries.items():
+            if not isinstance(summary_value, dict):
+                continue
+
+            other_user_id = str(summary_value.get("otherUserId") or "").strip()
+            unread_count = int(summary_value.get("unreadCount") or 0)
+            if unread_count <= 0 or not other_user_id:
+                continue
+
+            # Preserve existing response shape used by frontend (array of message-like objects).
+            unread_msgs.extend(
+                {
+                    "senderId": other_user_id,
+                    "receiverId": viewer_user_id,
+                    "read": False,
+                    "chatId": str(chat_id),
+                }
+                for _ in range(unread_count)
+            )
+
+    result = {"count": len(unread_msgs), "messages": unread_msgs}
+    _pc_set(cache_key, result)
+    return jsonify(result)
+
+
+@app.route("/api/users_lookup", methods=["GET"])
+def users_lookup():
+    raw_user_ids = str(request.args.get("userIds") or "").strip()
+    school_code = str(request.args.get("schoolCode") or "").strip()
+    user_ids = [str(v).strip() for v in raw_user_ids.split(",") if str(v).strip()]
+
+    if not user_ids:
+        return jsonify({"users": {}})
+
+    if not school_code:
+        for candidate_user_id in user_ids:
+            resolved = resolve_admin_identifiers(candidate_user_id)
+            if resolved and resolved.get("schoolCode"):
+                school_code = str(resolved.get("schoolCode") or "").strip()
+                break
+
+    school_code = resolve_school_code_alias(school_code)
+    if not school_code:
+        return jsonify({"users": {}})
+
+    users = {}
+    for user_id in user_ids:
+        user_data = school_node_ref(school_code, f"Users/{user_id}").get() or {}
+        if not isinstance(user_data, dict):
+            user_data = {}
+
+        users[user_id] = {
+            "userId": str(user_data.get("userId") or user_id),
+            "name": user_data.get("name") or user_data.get("username") or user_id,
+            "username": user_data.get("username") or "",
+            "profileImage": user_data.get("profileImage") or "/default-profile.png",
+            "role": user_data.get("role") or user_data.get("userType") or "",
+        }
+
+    return jsonify({"users": users})
+
+
+@app.route("/api/calendar_events", methods=["GET", "POST"])
+def calendar_events():
+    if request.method == "GET":
+        school_code = str(request.args.get("schoolCode") or "").strip()
+        school_code = resolve_school_code_alias(school_code)
+        if not school_code:
+            return jsonify([])
+
+        events_node = school_node_ref(school_code, "CalendarEvents").get() or {}
+        if not isinstance(events_node, dict):
+            events_node = {}
+
+        events = []
+        for event_id, event_value in events_node.items():
+            if isinstance(event_value, dict):
+                events.append({"id": str(event_id), **event_value})
+
+        return jsonify(events)
+
+    payload = request.get_json(force=True) or {}
+    school_code = str(payload.get("schoolCode") or request.args.get("schoolCode") or "").strip()
+    school_code = resolve_school_code_alias(school_code)
+    if not school_code:
+        return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+    event_payload = dict(payload)
+    event_payload.pop("schoolCode", None)
+
+    event_ref = school_node_ref(school_code, "CalendarEvents").push()
+    event_ref.set(event_payload)
+    return jsonify({"success": True, "id": event_ref.key})
+
+
+@app.route("/api/calendar_events/<eventId>", methods=["PATCH", "DELETE"])
+def calendar_event_item(eventId):
+    body = request.get_json(silent=True) or {}
+    school_code = str(
+        request.args.get("schoolCode")
+        or body.get("schoolCode")
+        or ""
+    ).strip()
+    school_code = resolve_school_code_alias(school_code)
+
+    if not school_code:
+        return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+    event_ref = school_node_ref(school_code, f"CalendarEvents/{eventId}")
+
+    if request.method == "DELETE":
+        event_ref.delete()
+        return jsonify({"success": True})
+
+    patch_payload = dict(body)
+    patch_payload.pop("schoolCode", None)
+    if not patch_payload:
+        return jsonify({"success": False, "message": "No update payload provided"}), 400
+
+    event_ref.update(patch_payload)
+    return jsonify({"success": True})
 
 
 

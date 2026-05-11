@@ -1,21 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck, FaImage, FaTimes, FaFilter } from "react-icons/fa";
+import axios from "axios";
 import { ref, onValue, push, runTransaction, update, get, set } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "../firebase";
-import { FIREBASE_DATABASE_URL } from "../config.js";
+import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import {
   buildChatSummaryPath,
   buildChatSummaryUpdate,
   buildOwnerChatSummariesPath,
-  fetchJson,
   getConversationSortTime,
   mapInBatches,
   normalizeChatSummaryValue,
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
-import { fetchCachedJson } from "../utils/rtdbCache";
 import ProfileAvatar from "../components/ProfileAvatar";
 import "../styles/global.css";
 
@@ -206,9 +205,9 @@ const officeRoleLabel = (role) => {
 };
 
 const sortContactsBySummary = (left, right) => {
-  const timeDifference = Number(right?.lastMsgTime || 0) - Number(left?.lastMsgTime || 0);
-  if (timeDifference !== 0) return timeDifference;
-  return String(left?.name || "").localeCompare(String(right?.name || ""));
+  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+    sensitivity: "base",
+  });
 };
 
 export default function AllChat() {
@@ -225,6 +224,7 @@ export default function AllChat() {
   const lastChatActivityAtRef = useRef(Date.now());
 
   const admin = JSON.parse(localStorage.getItem("admin") || localStorage.getItem("gojo_admin") || "{}") || {};
+  const API_BASE = `${BACKEND_BASE}/api`;
   const adminUserId = String(admin.userId || "").trim();
   const schoolCode = String(admin.schoolCode || "").trim();
   const [resolvedSchoolScopeCode, setResolvedSchoolScopeCode] = useState(() =>
@@ -232,8 +232,25 @@ export default function AllChat() {
   );
   const effectiveSchoolScopeCode = String(resolvedSchoolScopeCode || schoolCode || "").trim();
   const schoolNodePrefix = effectiveSchoolScopeCode ? `Platform1/Schools/${effectiveSchoolScopeCode}` : "";
-  const schoolDbRoot = effectiveSchoolScopeCode ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(effectiveSchoolScopeCode)}` : RTDB_BASE;
   const scopedPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    if (!effectiveSchoolScopeCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: {
+          schoolCode: effectiveSchoolScopeCode,
+          path,
+        },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
 
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
@@ -321,61 +338,7 @@ export default function AllChat() {
         return;
       }
 
-      const seedSet = new Set(seedCodes.map((value) => value.toLowerCase()));
       const resolvedCandidates = [...seedCodes];
-
-      try {
-        const schoolIndexRes = await fetch(`${RTDB_BASE}/Platform1/Schools.json?shallow=true`);
-        const schoolIndexData = await schoolIndexRes.json();
-        const schoolKeys = Object.keys(schoolIndexData || {});
-        const normalizedSeedValues = Array.from(seedSet);
-
-        schoolKeys.forEach((schoolKey) => {
-          const normalizedKey = String(schoolKey || "").trim().toLowerCase();
-          if (!normalizedKey) {
-            return;
-          }
-
-          const matchesSeed = normalizedSeedValues.some(
-            (seedValue) =>
-              normalizedKey === seedValue ||
-              normalizedKey.endsWith(`-${seedValue}`) ||
-              normalizedKey.startsWith(`${seedValue}-`) ||
-              normalizedKey.includes(`-${seedValue}-`)
-          );
-
-          if (matchesSeed) {
-            resolvedCandidates.push(schoolKey);
-          }
-        });
-
-        if (schoolKeys.length > 0 && schoolKeys.length <= 60) {
-          const schoolInfoResponses = await Promise.all(
-            schoolKeys.map((schoolKey) =>
-              fetch(`${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolKey)}/schoolInfo.json`)
-                .then((response) => response.json())
-                .then((schoolInfo) => ({ schoolKey, schoolInfo }))
-                .catch(() => ({ schoolKey, schoolInfo: null }))
-            )
-          );
-
-          schoolInfoResponses.forEach(({ schoolKey, schoolInfo }) => {
-            const aliases = uniqueNonEmptyValues([
-              schoolKey,
-              schoolInfo?.schoolCode,
-              schoolInfo?.shortName,
-            ]);
-
-            if (
-              aliases.some((alias) => seedSet.has(String(alias || "").trim().toLowerCase()))
-            ) {
-              resolvedCandidates.push(...aliases);
-            }
-          });
-        }
-      } catch {
-        // Ignore school-scope resolution failures and continue with stored school code.
-      }
 
       if (!cancelled) {
         setResolvedSchoolScopeCode(pickPreferredSchoolScopeCode(resolvedCandidates) || seedCodes[0] || "");
@@ -505,17 +468,26 @@ export default function AllChat() {
         // Use directory nodes (lightweight summaries) instead of full role nodes.
         // Users.json is dropped — it's keyed by push-key so usersMap[userId] always
         // returned {} anyway; role/directory nodes already carry name & profileImage.
-        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, chatIndexRes, ownerSummariesRes] = await Promise.all([
-          fetchCachedJson(`${schoolDbRoot}/TeacherDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchCachedJson(`${schoolDbRoot}/StudentDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchCachedJson(`${schoolDbRoot}/ParentDirectory.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchCachedJson(`${schoolDbRoot}/HR.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchCachedJson(`${schoolDbRoot}/Finance.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchCachedJson(`${schoolDbRoot}/Registerers.json`, { ttlMs: CONTACT_LIST_CACHE_TTL_MS, fallbackValue: {} }),
-          fetchJson(`${schoolDbRoot}/Chats.json?shallow=true`, {}),
-          fetchJson(`${schoolDbRoot}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {}),
+        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, ownersRaw, teachersRaw, studentsRaw, parentsRaw, ownerSummariesRes] = await Promise.all([
+          readSchoolNodeApi("TeacherDirectory", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
+          readSchoolNodeApi("ParentDirectory", {}),
+          readSchoolNodeApi("HR", {}),
+          readSchoolNodeApi("Finance", {}),
+          readSchoolNodeApi("Registerers", {}),
+          readSchoolNodeApi("Users", {}),
+          readSchoolNodeApi("Teachers", {}),
+          readSchoolNodeApi("Students", {}),
+          readSchoolNodeApi("Parents", {}),
+          readSchoolNodeApi(buildOwnerChatSummariesPath(adminUserId), {}),
         ]);
-        const chatKeyIndex = new Set(Object.keys(chatIndexRes || {}));
+        const usersById = Object.values(ownersRaw || {}).reduce((result, userRecord) => {
+          const userId = String(userRecord?.userId || "").trim();
+          if (userId) {
+            result[userId] = userRecord;
+          }
+          return result;
+        }, {});
         const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
         const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
           const summary = normalizeChatSummaryValue(summaryValue, { chatId });
@@ -533,9 +505,7 @@ export default function AllChat() {
 
         const buildLastMessageMeta = (otherUserId) => {
           const summary = summaryByOtherUserId[String(otherUserId || "").trim()] || null;
-          const resolvedChatKey = String(
-            summary?.chatId || resolveExistingChatKey(chatKeyIndex, adminUserId, otherUserId)
-          ).trim();
+          const resolvedChatKey = String(summary?.chatId || sortedChatId(adminUserId, otherUserId)).trim();
 
           return {
             chatKey: resolvedChatKey,
@@ -555,7 +525,7 @@ export default function AllChat() {
         };
 
         // TeacherDirectory: each entry has { teacherId, userId, name, profileImage, isActive, ... }
-        const teacherRecords = Object.entries(teachersRes || {})
+        const teacherDirectoryRecords = Object.entries(teachersRes || {})
           .map(([teacherId, teacherNode]) => {
             const userId = String(teacherNode?.userId || "").trim();
             if (!userId) return null;
@@ -574,10 +544,32 @@ export default function AllChat() {
           .filter(Boolean)
           .filter((record) => record.isActive);
 
+        const teacherFallbackRecords = Object.entries(teachersRaw || {})
+          .map(([teacherId, teacherNode]) => {
+            const userId = String(teacherNode?.userId || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, teacherNode?.name, teacherId, "Teacher");
+            return {
+              id: teacherId,
+              teacherId,
+              userId,
+              type: "teacher",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.status !== "inactive" && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const teacherRecords = teacherDirectoryRecords.length ? teacherDirectoryRecords : teacherFallbackRecords;
+
         const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
 
         // StudentDirectory: each entry has { studentId, userId, name, profileImage, grade, section, isActive, ... }
-        const studentRecords = Object.entries(studentsRes || {})
+        const studentDirectoryRecords = Object.entries(studentsRes || {})
           .map(([studentId, studentNode]) => {
             const userId = String(studentNode?.userId || "").trim();
             if (!userId) return null;
@@ -598,10 +590,43 @@ export default function AllChat() {
           .filter(Boolean)
           .filter((record) => record.isActive);
 
+        const studentFallbackRecords = Object.entries(studentsRaw || {})
+          .map(([studentId, studentNode]) => {
+            const userId = String(studentNode?.userId || studentNode?.use || studentNode?.user || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const basicInfo = studentNode?.basicStudentInformation || {};
+            const name = pickFirstNonEmpty(
+              userNode?.name,
+              userNode?.username,
+              studentNode?.name,
+              studentNode?.studentName,
+              basicInfo?.name,
+              studentId,
+              "Student"
+            );
+            return {
+              id: studentId,
+              studentId,
+              userId,
+              type: "student",
+              name,
+              grade: String(studentNode?.grade || basicInfo?.grade || "").trim(),
+              section: String(studentNode?.section || basicInfo?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(userNode?.profileImage || studentNode?.profileImage || basicInfo?.studentPhoto, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const studentRecords = studentDirectoryRecords.length ? studentDirectoryRecords : studentFallbackRecords;
+
         const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
 
         // ParentDirectory: each entry has { userId, name, profileImage, isActive, children, ... }
-        const parentRecords = Object.entries(parentsRes || {})
+        const parentDirectoryRecords = Object.entries(parentsRes || {})
           .map(([parentId, parentNode]) => {
             const userId = String(parentNode?.userId || "").trim();
             if (!userId) return null;
@@ -619,6 +644,28 @@ export default function AllChat() {
           })
           .filter(Boolean)
           .filter((record) => record.isActive);
+
+        const parentFallbackRecords = Object.entries(parentsRaw || {})
+          .map(([parentId, parentNode]) => {
+            const userId = String(parentNode?.userId || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, parentNode?.name, parentId, "Parent");
+            return {
+              id: parentId,
+              parentId,
+              userId,
+              type: "parent",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const parentRecords = parentDirectoryRecords.length ? parentDirectoryRecords : parentFallbackRecords;
 
         const mappedParents = (await hydrateChatPreviewMeta(parentRecords)).sort(sortContactsBySummary);
 
@@ -669,7 +716,7 @@ export default function AllChat() {
     };
 
     fetchUsers();
-  }, [adminUserId, schoolDbRoot]);
+  }, [adminUserId, effectiveSchoolScopeCode]);
 
   useEffect(() => {
     if (!selectedChatUser?.userId) return;
@@ -890,11 +937,7 @@ export default function AllChat() {
 
       try {
         const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
-          const data = await fetchCachedJson(`${schoolDbRoot}/Presence/${encodeURIComponent(userId)}.json`, {
-            ttlMs: 60 * 1000,
-            fallbackValue: null,
-            force,
-          });
+          const data = await readSchoolNodeApi(`Presence/${userId}`, null);
 
           return [userId, data];
         });
@@ -938,7 +981,7 @@ export default function AllChat() {
       window.removeEventListener("online", handleFocusedPresenceRefresh);
       document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
     };
-  }, [selectedTab, selectedChatUser?.userId, schoolDbRoot, teachers, students, parents, managements]);
+  }, [selectedTab, selectedChatUser?.userId, effectiveSchoolScopeCode, teachers, students, parents, managements]);
 
   const getActiveChatKey = async () => {
     if (!selectedChatUser || !adminUserId) return null;

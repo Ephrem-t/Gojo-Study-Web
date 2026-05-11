@@ -45,7 +45,7 @@ function toSchoolScopedUrl(url) {
   }
 
   const suffix = url.slice(matchedRoot.length);
-  if (suffix.startsWith("/Platform1/Schools/")) {
+  if (suffix.startsWith("/Platform1/")) {
     return url;
   }
 

@@ -21,7 +21,6 @@ import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { fetchCachedJson } from "../utils/rtdbCache";
 import {
   buildChatSummaryPath,
   buildChatSummaryUpdate,
@@ -31,7 +30,6 @@ import { schoolNodeBase } from "../utils/schoolDbRouting";
 
 const getChatId = (a, b) => [a, b].sort().join("_");
 const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
-const DIRECTORY_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const normalizeText = (value) => String(value || "").trim();
 
@@ -150,7 +148,45 @@ function Parent() {
   };
   const schoolCode = _stored.schoolCode || "";
   const DB = schoolNodeBase(schoolCode);
-  const PARENT_DIRECTORY_URL = `${DB}/ParentDirectory.json`;
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    if (!schoolCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode, path },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+  const patchSchoolNodeApi = async (path, patchValue = {}) => {
+    if (!schoolCode) {
+      return;
+    }
+
+    const currentValue = await readSchoolNodeApi(path, {});
+    const baseValue =
+      currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+        ? currentValue
+        : {};
+
+    await axios.put(
+      `${API_BASE}/school-node`,
+      {
+        schoolCode,
+        path,
+        value: {
+          ...baseValue,
+          ...(patchValue || {}),
+        },
+      },
+      { timeout: 12000 }
+    );
+  };
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";
   const adminId = admin.userId;
@@ -172,16 +208,16 @@ function Parent() {
 
   const maybeMarkLastMessageSeenForAdmin = async (chatKey, otherUserId = "") => {
     try {
-      const summaryPath = `${DB}/${buildChatSummaryPath(admin.userId, chatKey)}.json`;
-      const res = await axios.get(summaryPath).catch(() => ({ data: null }));
-      const summary = normalizeChatSummaryValue(res.data, {
+      const summaryNodePath = buildChatSummaryPath(admin.userId, chatKey);
+      const summaryData = await readSchoolNodeApi(summaryNodePath, null);
+      const summary = normalizeChatSummaryValue(summaryData, {
         chatId: chatKey,
         otherUserId,
       });
       const shouldMarkSeen = Boolean(summary.chatId) && summary.lastSenderId && String(summary.lastSenderId) !== String(admin.userId) && !summary.lastMessageSeen;
 
-      await axios.patch(
-        summaryPath,
+      await patchSchoolNodeApi(
+        summaryNodePath,
         buildChatSummaryUpdate({
           chatId: chatKey,
           otherUserId,
@@ -291,21 +327,9 @@ function Parent() {
     }
 
     const [usersData, parentsData, studentsData] = await Promise.all([
-      fetchCachedJson(`${DB}/Users.json`, {
-        ttlMs: BIG_NODE_CACHE_TTL_MS,
-        fallbackValue: {},
-        force,
-      }),
-      fetchCachedJson(`${DB}/Parents.json`, {
-        ttlMs: BIG_NODE_CACHE_TTL_MS,
-        fallbackValue: {},
-        force,
-      }),
-      fetchCachedJson(`${DB}/Students.json`, {
-        ttlMs: BIG_NODE_CACHE_TTL_MS,
-        fallbackValue: {},
-        force,
-      }),
+      readSchoolNodeApi("Users", {}),
+      readSchoolNodeApi("Parents", {}),
+      readSchoolNodeApi("Students", {}),
     ]);
 
     usersDataRef.current = usersData || {};
@@ -461,10 +485,7 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const parentDirectoryData = await fetchCachedJson(PARENT_DIRECTORY_URL, {
-          ttlMs: DIRECTORY_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        const parentDirectoryData = await readSchoolNodeApi("ParentDirectory", {});
         const directoryParentList = sortParentsByName(
           Object.entries(parentDirectoryData || {})
             .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
@@ -574,7 +595,7 @@ function Parent() {
     return () => {
       cancelled = true;
     };
-  }, [PARENT_DIRECTORY_URL]);
+  }, [schoolCode]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {

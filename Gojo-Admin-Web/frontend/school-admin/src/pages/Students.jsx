@@ -235,13 +235,13 @@ function StudentsPage() {
     try {
       const payload = { isActive: newActive };
       if (selectedStudent.studentId) {
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
       }
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
       }
       if (selectedStudent.studentId) {
-        await axios.patch(`${DB_URL}/StudentDirectory/${selectedStudent.studentId}.json`, payload).catch(() => undefined);
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, payload).catch(() => undefined);
         writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
           ...previousEntry,
           ...payload,
@@ -297,9 +297,52 @@ function StudentsPage() {
     return getStoredAuth().data || {};
   })();
 
-  const schoolCode = _storedFinance.schoolCode || "";
-  const DB_URL = schoolNodeBase(schoolCode);
-  const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
+  const initialSchoolCode = _storedFinance.schoolCode || "";
+  const DB_URL = schoolNodeBase(initialSchoolCode);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode: effectiveSchoolCode, path },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+  const patchSchoolNodeApi = async (path, patchValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      throw new Error("Missing schoolCode");
+    }
+    const currentValue = await readSchoolNodeApi(path, {});
+    const baseValue =
+      currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+        ? currentValue
+        : {};
+    const nextValue = {
+      ...baseValue,
+      ...(patchValue || {}),
+    };
+
+    await axios.put(
+      `${API_BASE}/school-node`,
+      {
+        schoolCode: effectiveSchoolCode,
+        path,
+        value: nextValue,
+      },
+      { timeout: 12000 }
+    );
+
+    return nextValue;
+  };
+  const STUDENTS_CACHE_KEY = `students_page_cache_${initialSchoolCode || "global"}`;
   const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
   const readStudentsCache = () => {
@@ -384,6 +427,7 @@ function StudentsPage() {
 
   const adminId = admin?.adminId || admin?.userId || null;
   const adminUserId = admin?.userId || null;
+  const activeSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
 
   const [loadingFinance, setLoadingFinance] = useState(true);
   // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
@@ -405,14 +449,14 @@ function StudentsPage() {
       if (financeKey) {
         let res = null;
         try {
-          res = (await axios.get(`${DB_URL}/Finance/${financeKey}.json`)) || null;
+          res = { data: await readSchoolNodeApi(`Finance/${financeKey}`, null) };
         } catch (err) {
           res = null;
         }
 
         if (!res || !res.data) {
           try {
-            res = (await axios.get(`${DB_URL}/Academics/${financeKey}.json`)) || null;
+            res = { data: await readSchoolNodeApi(`Academics/${financeKey}`, null) };
           } catch (err) {
             res = null;
           }
@@ -424,7 +468,7 @@ function StudentsPage() {
 
           if (userId) {
             try {
-              const userRes = await axios.get(`${DB_URL}/Users/${userId}.json`);
+              const userRes = { data: await readSchoolNodeApi(`Users/${userId}`, {}) };
               const nextFinance = {
                 financeId: financeKey,
                 userId,
@@ -461,7 +505,7 @@ function StudentsPage() {
 
       if (possibleUserId) {
         try {
-          const userRes = await axios.get(`${DB_URL}/Users/${possibleUserId}.json`);
+          const userRes = { data: await readSchoolNodeApi(`Users/${possibleUserId}`, {}) };
           const nextFinance = {
             financeId: financeData.financeId || financeData.adminId || "",
             userId: possibleUserId,
@@ -587,20 +631,14 @@ function StudentsPage() {
 
       let userRecord = {};
       if (studentItem?.userId) {
-        userRecord = await fetchCachedJson(`${DB_URL}/Users/${studentItem.userId}.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        userRecord = await readSchoolNodeApi(`Users/${studentItem.userId}`, {});
       }
 
       let nextProfileImage = getSafeImage(userRecord?.profileImage, studentItem?.profileImage);
       let studentRecord = {};
 
       if (!hasDatabaseProfileImage(nextProfileImage) && studentItem?.studentId) {
-        studentRecord = await fetchCachedJson(`${DB_URL}/Students/${studentItem.studentId}.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        studentRecord = await readSchoolNodeApi(`Students/${studentItem.studentId}`, {});
 
         nextProfileImage = getSafeImage(
           studentRecord?.profileImage,
@@ -768,6 +806,10 @@ function StudentsPage() {
   }, []);
 
   useEffect(() => {
+    if (loadingFinance || !activeSchoolCode) {
+      return undefined;
+    }
+
     let cancelled = false;
     const cached = readStudentsCache();
     if (!cached) return undefined;
@@ -819,7 +861,7 @@ function StudentsPage() {
 
     const refreshUser = async () => {
       try {
-        const res = await axios.get(`${DB_URL}/Users/${finance.userId}.json`);
+        const res = { data: await readSchoolNodeApi(`Users/${finance.userId}`, {}) };
         if (cancelled) return;
         const user = res.data || {};
         setFinance((prev) => ({
@@ -854,16 +896,10 @@ function StudentsPage() {
     try {
       const [user, rtStudent] = await Promise.all([
         s.userId
-          ? fetchCachedJson(`${DB_URL}/Users/${s.userId}.json`, {
-              ttlMs: BIG_NODE_CACHE_TTL_MS,
-              fallbackValue: {},
-            })
+          ? readSchoolNodeApi(`Users/${s.userId}`, {})
           : Promise.resolve({}),
         s.studentId
-          ? fetchCachedJson(`${DB_URL}/Students/${s.studentId}.json`, {
-              ttlMs: BIG_NODE_CACHE_TTL_MS,
-              fallbackValue: {},
-            })
+          ? readSchoolNodeApi(`Students/${s.studentId}`, {})
           : Promise.resolve({}),
       ]);
 
@@ -889,19 +925,13 @@ function StudentsPage() {
       const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
       const parentsList = (await mapInBatches(parentIds, 4, async (parentId) => {
         try {
-          const parentNode = await fetchCachedJson(`${DB_URL}/Parents/${parentId}.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
+          const parentNode = await readSchoolNodeApi(`Parents/${parentId}`, {});
           const parentUserId = String(parentNode?.userId || "").trim();
           if (!parentUserId) {
             return null;
           }
 
-          const parentUser = await fetchCachedJson(`${DB_URL}/Users/${parentUserId}.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
+          const parentUser = await readSchoolNodeApi(`Users/${parentUserId}`, {});
 
           return {
             parentId,
@@ -979,7 +1009,7 @@ function StudentsPage() {
       // Primary: if we have a RTDB studentId, update the Realtime DB directly
       if (selectedStudent.studentId) {
         // PATCH the Students node
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
 
         // Also update Users node when userId exists (keep profile in sync)
         if (selectedStudent.userId) {
@@ -988,11 +1018,11 @@ function StudentsPage() {
             if (typeof payload[k] !== "undefined") userPayload[k] = payload[k];
           });
           if (Object.keys(userPayload).length > 0) {
-            await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+            await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
           }
         }
 
-        await axios.patch(`${DB_URL}/StudentDirectory/${selectedStudent.studentId}.json`, studentDirectoryPayload).catch(() => undefined);
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, studentDirectoryPayload).catch(() => undefined);
         writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
           ...previousEntry,
           ...studentDirectoryPayload,
@@ -1016,7 +1046,7 @@ function StudentsPage() {
 
       // Secondary: if we have only a userId, update Users node
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
         const updated = { ...(selectedStudent || {}), ...(payload || {}) };
         setSelectedStudent(updated);
         setStudents((prev) => {
@@ -1079,10 +1109,7 @@ function StudentsPage() {
 
     const loadGradeSubjects = async () => {
       try {
-        const gradesData = await fetchCachedJson(`${DB_URL}/GradeManagement/grades.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        const gradesData = await readSchoolNodeApi("GradeManagement/grades", {});
 
         if (!cancelled) {
           setGradeSubjectsByGrade(buildGradeSubjectsByGrade(gradesData));
@@ -1103,10 +1130,20 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [BIG_NODE_CACHE_TTL_MS, DB_URL]);
+  }, [BIG_NODE_CACHE_TTL_MS, activeSchoolCode, loadingFinance]);
 
   // ------------------ FETCH STUDENTS ------------------
   useEffect(() => {
+    if (loadingFinance) {
+      return;
+    }
+
+    if (!activeSchoolCode) {
+      setStudents([]);
+      setStudentsLoading(false);
+      return;
+    }
+
     const fetchStudents = async () => {
       const cached = readStudentsCache();
       if (cached && Array.isArray(cached.studentList)) {
@@ -1119,18 +1156,9 @@ function StudentsPage() {
 
       try {
         const [schoolInfoData, gradesData, studentDirectoryData] = await Promise.all([
-          fetchCachedJson(`${DB_URL}/schoolInfo.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchCachedJson(`${DB_URL}/GradeManagement/grades.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchCachedJson(STUDENT_DIRECTORY_URL, {
-            ttlMs: DIRECTORY_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
+          readSchoolNodeApi("schoolInfo", {}),
+          readSchoolNodeApi("GradeManagement/grades", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
         ]);
         const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
@@ -1156,10 +1184,7 @@ function StudentsPage() {
           return;
         }
 
-        const studentsData = await fetchCachedJson(`${DB_URL}/Students.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        const studentsData = await readSchoolNodeApi("Students", {});
 
         const studentKeys = Object.keys(studentsData || {});
 
@@ -1169,9 +1194,7 @@ function StudentsPage() {
         persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
 
         try {
-          const usersData = readCachedJson(`${DB_URL}/Users.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-          });
+          const usersData = await readSchoolNodeApi("Users", {});
           if (!usersData || typeof usersData !== "object") {
             return;
           }
@@ -1201,7 +1224,7 @@ function StudentsPage() {
     };
 
     fetchStudents();
-  }, []);
+  }, [activeSchoolCode, loadingFinance]);
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
@@ -2179,7 +2202,7 @@ function StudentsPage() {
         ...normalizedAdditional,
       };
 
-      await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, studentPayload);
+      await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, studentPayload);
 
       if (selectedStudent.userId) {
         const userPayload = {};
@@ -2210,7 +2233,7 @@ function StudentsPage() {
         }
 
         if (Object.keys(userPayload).length > 0) {
-          await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+          await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
         }
       }
 

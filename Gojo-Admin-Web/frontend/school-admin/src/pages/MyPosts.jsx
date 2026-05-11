@@ -728,7 +728,14 @@ function MyPosts() {
     }
 
     try {
-      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, { timeout: 4500 });
+      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, {
+        params: {
+          limit: 200,
+          schoolCode: schoolCode || "",
+          userId: admin?.userId || adminId,
+        },
+        timeout: 12000,
+      });
       const postsArray = Array.isArray(res.data)
         ? res.data
         : Object.entries(res.data || {}).map(([key, post]) => ({
@@ -772,6 +779,70 @@ function MyPosts() {
         setPosts(mappedPosts);
       }
     } catch (err) {
+      const isTimeout = err?.code === "ECONNABORTED" || /timeout/i.test(String(err?.message || ""));
+      if (isTimeout && cachedPosts.length > 0) {
+        // Keep showing cached posts if backend is temporarily slow.
+        if (isCurrentRequest()) {
+          setPosts(cachedPosts);
+        }
+      }
+
+      // Secondary fallback: use the fast school-scoped posts endpoint and filter locally.
+      if (isTimeout && schoolCode) {
+        try {
+          const fallbackRes = await axios.get(`${API_BASE}/get_posts`, {
+            params: { schoolCode, limit: 200 },
+            timeout: 8000,
+          });
+          const sourcePosts = Array.isArray(fallbackRes?.data) ? fallbackRes.data : [];
+          const actorIds = new Set([
+            String(admin?.userId || "").trim(),
+            String(adminId || "").trim(),
+          ]);
+          const filteredPosts = sourcePosts.filter((postItem) =>
+            actorIds.has(String(postItem?.adminId || postItem?.userId || "").trim())
+          );
+
+          const mappedPosts = filteredPosts
+            .map((p) => {
+              const parsedTime = parsePostTimestamp(p) || new Date();
+              const mediaUrl = p.postUrl || p.mediaUrl || null;
+              const postId = p.postId || p.id || "";
+              return {
+                postId: postId || String(p?.postId || p?.id || ""),
+                message: p.message || p.postText || "",
+                postUrl: mediaUrl,
+                time: parsedTime.toLocaleString(),
+                parsedTimeMs: parsedTime.getTime(),
+                parsedTime,
+                edited: p.edited || false,
+                likeCount: Number(p.likeCount) || 0,
+                likes: p.likes || {},
+                adminId: p.adminId || adminId,
+                targetRole: p.targetRole || "all",
+                adminName: p.adminName || admin.name || "Admin",
+                adminProfile: p.adminProfile || admin.profileImage || "/default-profile.png",
+                isVideo: isVideoMediaUrl(mediaUrl, p.mediaType),
+              };
+            })
+            .sort((a, b) => b.parsedTime - a.parsedTime);
+
+          if (isCurrentRequest()) {
+            setPosts(mappedPosts);
+          }
+
+          if (myPostsCacheKey) {
+            try {
+              localStorage.setItem(myPostsCacheKey, JSON.stringify(mappedPosts.slice(0, 120)));
+            } catch (error) {
+              // Ignore localStorage write issues.
+            }
+          }
+        } catch (fallbackErr) {
+          // Keep existing cached posts if fallback also fails.
+        }
+      }
+
       console.error("Error fetching posts:", err.response?.data || err);
     } finally {
       if (isCurrentRequest()) {

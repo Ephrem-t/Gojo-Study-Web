@@ -1242,10 +1242,7 @@ function Dashboard() {
     };
 
     if (!effectiveSchoolCode) {
-      clearCachedPosts();
-      setPosts([]);
       setPostsLoading(false);
-      setPostsInitialized(true);
       return;
     }
 
@@ -1434,23 +1431,7 @@ function Dashboard() {
           return apiPosts;
         }
 
-        const schoolDbRoots = buildSchoolDbRoots(normalizedCandidateCodes);
-        const firebasePostsResponses = await Promise.all(
-          schoolDbRoots.map((schoolDbRoot) =>
-            safeGet(
-              `${schoolDbRoot}/Posts.json`,
-              {
-                params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
-                timeout: 4500,
-              },
-              {}
-            )
-          )
-        );
-
-        return mergeUniquePosts(
-          firebasePostsResponses.flatMap((response) => normalizePostsNode(response?.data || {}))
-        );
+        return [];
       };
 
       const cachedPostsResult = readCachedPosts();
@@ -1488,25 +1469,6 @@ function Dashboard() {
         );
       }
 
-      if (sourcePosts.length === 0) {
-        const [legacyApiPostsRes, legacyFirebasePostsRes] = await Promise.all([
-          safeGet(`${API_BASE}/get_posts`, { timeout: 4500 }, []),
-          safeGet(
-            `${DB_URL}/Posts.json`,
-            {
-              params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
-              timeout: 4500,
-            },
-            {}
-          ),
-        ]);
-
-        sourcePosts = mergeUniquePosts(
-          normalizePostsResponse(legacyApiPostsRes.data),
-          normalizePostsNode(legacyFirebasePostsRes.data || {})
-        );
-      }
-
       const fastPosts = toFastRenderablePosts(sourcePosts);
       const cacheCodesToUpdate = uniqueNonEmptyValues([
         ...initialCacheCodes,
@@ -1515,12 +1477,9 @@ function Dashboard() {
 
       if (fastPosts.length > 0) {
         writeCachedPosts(fastPosts, cacheCodesToUpdate);
-      } else {
-        clearCachedPosts(cacheCodesToUpdate);
-      }
-
-      if (isCurrentRequest()) {
-        setPosts(fastPosts);
+        if (isCurrentRequest()) {
+          setPosts(fastPosts);
+        }
       }
     } catch (err) {
       if (postsFetchRequestIdRef.current === requestId) {
@@ -2380,10 +2339,12 @@ function Dashboard() {
 
     setCalendarEventsLoading(true);
     try {
-      const res = await axios.get(`${DB_ROOT}/CalendarEvents.json`);
-      const rawEvents = res.data || {};
-      const normalizedEvents = Object.entries(rawEvents)
-        .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
+      const res = await axios.get(`${API_BASE}/calendar_events`, {
+        params: { schoolCode: schoolScopeCode },
+      });
+      const sourceEvents = Array.isArray(res?.data) ? res.data : [];
+      const normalizedEvents = sourceEvents
+        .map((eventItem) => normalizeCalendarEvent(eventItem.id, eventItem))
         .filter((eventItem) => eventItem.gregorianDate);
 
       setCalendarEvents(sortCalendarEvents(normalizedEvents));
@@ -2435,10 +2396,16 @@ function Dashboard() {
       };
 
       if (editingCalendarEventId) {
-        await axios.patch(`${DB_ROOT}/CalendarEvents/${editingCalendarEventId}.json`, payload);
+        await axios.patch(`${API_BASE}/calendar_events/${editingCalendarEventId}`, {
+          ...payload,
+          schoolCode: schoolScopeCode,
+        });
         setCalendarActionMessage("Calendar event updated successfully.");
       } else {
-        await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        await axios.post(`${API_BASE}/calendar_events`, {
+          ...payload,
+          schoolCode: schoolScopeCode,
+        });
         setCalendarActionMessage("Calendar event saved successfully.");
       }
 
@@ -2505,7 +2472,9 @@ function Dashboard() {
 
     setCalendarEventSaving(true);
     try {
-      await axios.delete(`${DB_ROOT}/CalendarEvents/${eventItem.id}.json`);
+      await axios.delete(`${API_BASE}/calendar_events/${eventItem.id}`, {
+        params: { schoolCode: schoolScopeCode },
+      });
       if (editingCalendarEventId === eventItem.id) {
         setEditingCalendarEventId("");
         setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
