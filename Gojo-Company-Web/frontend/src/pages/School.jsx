@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FaArrowRight, FaBuilding, FaCheckCircle, FaIdBadge, FaImage, FaLayerGroup, FaMapMarkerAlt, FaSearch, FaSyncAlt } from 'react-icons/fa'
+import { API_BASE_URL } from '../apiBaseUrl'
 import CompanySidebar from '../components/CompanySidebar'
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 
 const COUNTRY_OPTIONS = [
 	{ value: 'Ethiopia', label: 'Ethiopia', code: 'ET' },

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
+import { API_BASE_URL } from '../apiBaseUrl'
 import CompanySidebar from '../components/CompanySidebar'
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 
 function toOptionalTimestamp(value) {
 	const normalized = String(value || '').trim()

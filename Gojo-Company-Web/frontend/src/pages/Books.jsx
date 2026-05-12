@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FaArrowRight, FaBook, FaFilePdf, FaFilter, FaLayerGroup } from 'react-icons/fa'
 import { Link } from 'react-router-dom'
+import { API_BASE_URL } from '../apiBaseUrl'
 import CompanySidebar from '../components/CompanySidebar'
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 
 const gradeOptions = ['grade1', 'grade2', 'grade3', 'grade4', 'grade5', 'grade6', 'grade7', 'grade8', 'grade9', 'grade10', 'grade11', 'grade12']
 
