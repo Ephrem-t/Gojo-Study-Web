@@ -19,6 +19,8 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getOrLoad } from "../utils/requestCache";
+import { loadSchoolPeople, loadUserProfile } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
@@ -129,92 +131,21 @@ function Parent() {
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersRes, parentsRes, studentsRes] = await Promise.all([
-          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
-        ]);
-
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const studentsData = studentsRes.data || {};
-
-        const getUserByKeyOrUserId = (maybeUserId) => {
-          if (!maybeUserId) return null;
-          return (
-            users[maybeUserId] ||
-            Object.values(users).find((u) => String(u?.userId) === String(maybeUserId)) ||
-            null
-          );
-        };
-
-        const findParentRecordByUserId = (canonicalUserId) => {
-          if (!canonicalUserId) return null;
-          return (
-            parentsData?.[canonicalUserId] ||
-            Object.entries(parentsData || {}).find(
-              ([parentKey, p]) =>
-                String(parentKey) === String(canonicalUserId) ||
-                String(p?.userId) === String(canonicalUserId)
-            )?.[1] ||
-            null
-          );
-        };
-
-        const findStudentRecordById = (maybeStudentId) => {
-          if (!maybeStudentId) return null;
-          return (
-            studentsData?.[maybeStudentId] ||
-            Object.entries(studentsData || {}).find(
-              ([studentKey, s]) =>
-                String(studentKey) === String(maybeStudentId) ||
-                String(s?.studentId || s?.id || "") === String(maybeStudentId)
-            )?.[1] ||
-            null
-          );
-        };
-
-        const resolveFirstChildPreview = (canonicalUserId) => {
-          const parentRecord = findParentRecordByUserId(canonicalUserId);
-          const childLinks = Object.values(parentRecord?.children || {});
-          if (!childLinks.length) return null;
-
-          const firstLink = childLinks[0] || {};
-          const studentRecord = findStudentRecordById(firstLink.studentId);
-          if (!studentRecord) return null;
-          const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
-          const studentUser = getUserByKeyOrUserId(studentUserId);
-          const name =
-            studentUser?.name ||
-            studentUser?.username ||
-            studentRecord?.name ||
-            studentRecord?.username ||
-            null;
-          const relationship = firstLink.relationship || null;
-          return { name, relationship };
-        };
-
-        const parentList = Object.keys(users)
-          .filter((uid) => users[uid].role === "parent")
-          .map((uid) => {
-            const u = users[uid] || {};
-            const canonicalUserId = u.userId || uid;
-            const firstChild = resolveFirstChildPreview(canonicalUserId);
-            return {
-              userId: canonicalUserId,
-              name: u.name || u.username || "No Name",
-              email: u.email || "N/A",
-              childName: firstChild?.name || "N/A",
-              childRelationship: firstChild?.relationship || "N/A",
-              profileImage: u.profileImage || "/default-profile.png",
-              phone: u.phone || u.phoneNumber || "N/A",
-              age: u.age || null,
-              city: u.city || (u.address && u.address.city) || null,
-              citizenship: u.citizenship || null,
-              job: u.job || null,
-              address: u.address || null,
-            };
-          });
+        const parentContacts = await loadSchoolPeople(DB, "parent");
+        const parentList = (parentContacts || []).map((parentContact) => ({
+          ...parentContact,
+          parentId: parentContact.parentId || parentContact.id,
+          email: parentContact.email || "N/A",
+          childName: parentContact.childName || "N/A",
+          childRelationship: parentContact.childRelationship || "N/A",
+          profileImage: parentContact.profileImage || "/default-profile.png",
+          phone: parentContact.phone || "N/A",
+          age: parentContact.age || null,
+          city: parentContact.city || null,
+          citizenship: parentContact.citizenship || null,
+          job: parentContact.job || null,
+          address: parentContact.address || null,
+        }));
         setParents(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
@@ -224,7 +155,7 @@ function Parent() {
       }
     };
     fetchParents();
-  }, []);
+  }, [DB]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -260,8 +191,14 @@ function Parent() {
     if (!selectedParent) return;
     const fetchParentInfoAndChildren = async () => {
       try {
-        const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-        const parentsData = parentsRes.data || {};
+        const parentsData = await getOrLoad(
+          `finance:parents:list:${DB}`,
+          async () => {
+            const response = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
+            return response.data || {};
+          },
+          { ttlMs: 5 * 60 * 1000 }
+        );
         const parentRecord = (
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -270,18 +207,7 @@ function Parent() {
           ) ||
           []
         )[1];
-        const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
-        const getUserByKeyOrUserId = (maybeUserId) => {
-          if (!maybeUserId) return null;
-          return (
-            usersData[maybeUserId] ||
-            Object.values(usersData).find((u) => String(u?.userId) === String(maybeUserId)) ||
-            null
-          );
-        };
-
-        const userInfo = getUserByKeyOrUserId(selectedParent.userId) || {};
+        const userInfo = (await loadUserProfile(DB, selectedParent.userId).catch(() => null)) || {};
 
         // compute age from possible DOB fields or explicit age field
         const dobRaw = userInfo?.dob || userInfo?.birthDate || parentRecord?.dob || parentRecord?.birthDate || null;
@@ -324,10 +250,16 @@ function Parent() {
         };
         setParentInfo(info);
         setSelectedParent((prev) => ({ ...(prev || {}), ...info }));
-        const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-        const studentsData = studentsRes.data || {};
-        const childrenList = Object.values(parentRecord?.children || {})
-          .map((childLink) => {
+        const studentsData = await getOrLoad(
+          `finance:parents:students:${DB}`,
+          async () => {
+            const response = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
+            return response.data || {};
+          },
+          { ttlMs: 5 * 60 * 1000 }
+        );
+        const childrenList = await Promise.all(
+          Object.values(parentRecord?.children || {}).map(async (childLink) => {
             const studentRecord =
               studentsData?.[childLink.studentId] ||
               Object.entries(studentsData || {}).find(
@@ -338,20 +270,27 @@ function Parent() {
               )?.[1];
             if (!studentRecord) return null;
             const studentUserId = studentRecord.use || studentRecord.userId || studentRecord.user || null;
-            const studentUser = getUserByKeyOrUserId(studentUserId) || {};
+            const studentUser = studentUserId
+              ? (await loadUserProfile(DB, studentUserId).catch(() => null)) || {}
+              : {};
+            const basicInfo = studentRecord?.basicStudentInformation || {};
             return {
               studentId: childLink.studentId,
-              name: studentUser.name || studentUser.username || studentRecord.name || studentRecord.username || "N/A",
-              email: studentUser.email || "N/A",
-              grade: studentRecord.grade || "N/A",
-              section: studentRecord.section || "N/A",
+              name: studentUser.name || studentRecord.name || basicInfo.name || studentRecord.username || "N/A",
+              email: studentUser.email || studentRecord.email || basicInfo.email || "N/A",
+              grade: studentRecord.grade || basicInfo.grade || "N/A",
+              section: studentRecord.section || basicInfo.section || "N/A",
               parentPhone: parentRecord.phone || "N/A",
               relationship: childLink.relationship || "N/A",
-              profileImage: studentUser.profileImage || studentRecord.profileImage || "/default-profile.png",
+              profileImage:
+                studentUser.profileImage ||
+                studentRecord.profileImage ||
+                basicInfo.studentPhoto ||
+                "/default-profile.png",
             };
           })
-          .filter(Boolean);
-        setChildren(childrenList);
+        );
+        setChildren(childrenList.filter(Boolean));
       } catch (err) {
         console.error("Error fetching parent info and children:", err);
         setParentInfo(null);
@@ -762,47 +701,8 @@ function Parent() {
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{admin?.name || "Admin Name"}</h3>
-            {(admin?.username || admin?.userId || admin?.adminId) ? (
-              <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.username || admin?.userId || admin?.adminId}</p>
-            ) : null}
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaHome style={{ width: 18, height: 18 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#1d4ed8', color: '#fff', borderRadius: 10, boxShadow: '0 8px 18px rgba(29,78,216,0.25)' }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/analytics" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-            {/* registration-form removed */}
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => { localStorage.removeItem("admin"); window.location.href = "/login"; }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
         {/* MAIN CONTENT (centered & responsive) */}
-        <main className="main-content" style={mainContentStyle}>
+        <main className="main-content google-main" style={mainContentStyle}>
           <div
             style={{
               marginBottom: "12px",

@@ -1,8 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import "../styles/global.css";
-import { storage } from "../firebase.js";
-import { ref as sRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, FaSignOutAlt, FaBell, FaFacebookMessenger, FaCalendarAlt, FaChartLine, FaPlus, FaThumbsUp, FaEllipsisH, FaExchangeAlt, FaFolderOpen, FaUserGraduate, FaChevronDown } from "react-icons/fa";
 import { Link } from "react-router-dom";
@@ -11,6 +9,9 @@ import { useLocation } from "react-router-dom";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import EthiopicCalendar from "ethiopic-calendar";
+import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import { buildRegisterTargetRoleOptions, fetchConversationSummaries } from "../utils/registerData";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -301,7 +302,28 @@ const formatCalendarDeadlineDate = (isoDate) => {
   });
 };
 
+const hasUsableProfileImage = (value) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  return normalized !== "/default-profile.png" && normalized.toLowerCase() !== "null" && normalized.toLowerCase() !== "undefined";
+};
+
+const getAvatarInitials = (value) => {
+  const parts = String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!parts.length) return "RO";
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
+};
+
+const RECENT_CONTACT_LIMIT = 3;
+
 function Dashboard() {
+  const PRIMARY = "#007AFB";
+  const BACKGROUND = "#FFFFFF";
+  const ACCENT = "#00B6A9";
   const API_BASE = `${BACKEND_BASE}/api`;
   const DB_URL = "https://bale-house-rental-default-rtdb.firebaseio.com";
   // ---------------- STATE ----------------
@@ -342,9 +364,13 @@ function Dashboard() {
   const [posts, setPosts] = useState([]);
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const [targetRole, setTargetRole] = useState("all");
   const [targetOptions, setTargetOptions] = useState(["all"]);
   const fileInputRef = useRef(null);
+  // Cache user profile images across fetchPosts calls to avoid duplicate RTDB reads
+  const postProfileCacheRef = useRef(new Map());
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -433,12 +459,56 @@ function Dashboard() {
   });
 
   const navigate = useNavigate();
-  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const FEED_MAX_WIDTH = 760;
+  const MESSAGE_PREVIEW_LIMIT = 220;
   const FEED_SECTION_STYLE = {
     width: "100%",
     maxWidth: FEED_MAX_WIDTH,
     margin: "0 auto",
     boxSizing: "border-box",
+  };
+  const formatPostTimestamp = (timestamp) => {
+    if (!timestamp) return "Recent update";
+
+    const parsedDate = new Date(timestamp);
+    if (Number.isNaN(parsedDate.getTime())) {
+      return String(timestamp);
+    }
+
+    const now = Date.now();
+    const differenceMs = now - parsedDate.getTime();
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (differenceMs >= 0 && differenceMs < minuteMs) return "Just now";
+    if (differenceMs >= 0 && differenceMs < hourMs) return `${Math.floor(differenceMs / minuteMs)}m ago`;
+    if (differenceMs >= 0 && differenceMs < dayMs) return `${Math.floor(differenceMs / hourMs)}h ago`;
+    if (differenceMs >= 0 && differenceMs < 7 * dayMs) return `${Math.floor(differenceMs / dayMs)}d ago`;
+
+    return parsedDate.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: parsedDate.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+    });
+  };
+  const formatAudienceLabel = (targetRoleValue) => {
+    const normalizedValue = String(targetRoleValue || "all").trim().toLowerCase();
+    if (!normalizedValue || normalizedValue === "all") return "everyone";
+    return normalizedValue
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+      .join(" ");
+  };
+  const isPostLikedByActor = (post, actorId) => {
+    if (!actorId || !post?.likes) return false;
+    return Boolean(post.likes[actorId]);
+  };
+  const getResolvedLikeCount = (post) => {
+    if (Number.isFinite(Number(post?.likeCount))) return Number(post.likeCount);
+    if (post?.likes && typeof post.likes === "object") return Object.keys(post.likes).length;
+    return 0;
   };
   const shellCardStyle = {
     background: "var(--surface-panel)",
@@ -545,6 +615,19 @@ function Dashboard() {
       ? { ...sidebarLinkBaseStyle, ...sidebarLinkActiveStyle }
       : sidebarLinkBaseStyle
   );
+  const renderProfileAvatar = (imageUrl, name, size = 40, borderRadius = "50%", style = {}) => {
+    return (
+      <ProfileAvatar
+        className="img-circle"
+        imageUrl={imageUrl}
+        name={name || "Register Office"}
+        alt={name || "profile"}
+        size={size}
+        borderRadius={borderRadius}
+        style={style}
+      />
+    );
+  };
   const toggleSidebarSection = (sectionKey) => {
     setSidebarSections((prev) => {
       const nextState = {
@@ -557,7 +640,7 @@ function Dashboard() {
     });
   };
   const isOverlayModalOpen = showCalendarEventModal;
-  const canSubmitPost = Boolean(postText.trim() || postMedia);
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
   const calendarNow = new Date();
   const calendarTodayIsoDate = `${calendarNow.getFullYear()}-${String(calendarNow.getMonth() + 1).padStart(2, "0")}-${String(calendarNow.getDate()).padStart(2, "0")}`;
   const deadlineWindowEnd = new Date(calendarNow);
@@ -1017,35 +1100,47 @@ function Dashboard() {
       const res = await axios.get(`${API_BASE}/get_posts`, {
         params: { schoolCode },
       });
-      console.log(res.data); // check here
       const sortedPosts = res.data.sort(
         (a, b) => new Date(b.time) - new Date(a.time)
       );
-      const enriched = await Promise.all(sortedPosts.map(async (p) => {
-        let profile = p.adminProfile || p.adminProfileImage || p.profileImage || "";
 
-        try {
-          if (!profile && p.userId) {
-            const uRes = await axios.get(`${DB_ROOT}/Users/${p.userId}.json`);
-            const u = uRes.data || {};
-            profile = u.profileImage || u.profile || u.avatar || "";
-          }
+      // Collect all unique userIds/financeIds that need profile enrichment
+      const profileCache = postProfileCacheRef.current;
+      const pendingUserIds = new Set();
+      const pendingFinanceIds = new Set();
 
-          if (!profile && (p.financeId || p.adminId)) {
-            const ownerFinanceId = p.financeId || p.adminId;
-            const fRes = await axios.get(`${DB_ROOT}/Finance/${ownerFinanceId}.json`);
-            const f = fRes.data || {};
-            profile = f.profileImage || f.profile || "";
-          }
-        } catch (err) {
-          // ignore profile enrichment failure
+      for (const p of sortedPosts) {
+        if (p.adminProfile || p.adminProfileImage || p.profileImage) continue;
+        if (p.userId && !profileCache.has(`user:${p.userId}`)) pendingUserIds.add(p.userId);
+        else if ((p.financeId || p.adminId) && !profileCache.has(`finance:${p.financeId || p.adminId}`)) {
+          pendingFinanceIds.add(p.financeId || p.adminId);
         }
+      }
 
-        return {
-          ...p,
-          adminProfile: profile || "/default-profile.png",
-        };
-      }));
+      // Batch-resolve all missing profiles in parallel (deduplicated)
+      await Promise.all([
+        ...[...pendingUserIds].map(async (uid) => {
+          try {
+            const uRes = await axios.get(`${DB_ROOT}/Users/${uid}.json`);
+            const u = uRes.data || {};
+            profileCache.set(`user:${uid}`, u.profileImage || u.profile || u.avatar || "");
+          } catch { profileCache.set(`user:${uid}`, ""); }
+        }),
+        ...[...pendingFinanceIds].map(async (fid) => {
+          try {
+            const fRes = await axios.get(`${DB_ROOT}/Finance/${fid}.json`);
+            const f = fRes.data || {};
+            profileCache.set(`finance:${fid}`, f.profileImage || f.profile || "");
+          } catch { profileCache.set(`finance:${fid}`, ""); }
+        }),
+      ]);
+
+      const enriched = sortedPosts.map((p) => {
+        let profile = p.adminProfile || p.adminProfileImage || p.profileImage || "";
+        if (!profile && p.userId) profile = profileCache.get(`user:${p.userId}`) || "";
+        if (!profile && (p.financeId || p.adminId)) profile = profileCache.get(`finance:${p.financeId || p.adminId}`) || "";
+        return { ...p, adminProfile: profile || "/default-profile.png" };
+      });
 
       setPosts(enriched);
     } catch (err) {
@@ -1072,257 +1167,42 @@ function Dashboard() {
     const fetchTeachersAndUnread = async () => {
       if (!financeUserId) {
         setRecentContacts([]);
+        setTargetOptions(buildRegisterTargetRoleOptions());
         return;
       }
 
       try {
-        const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Teachers.json`),
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`),
-          axios.get(`${DB_ROOT}/Chats.json`)
-        ]);
-
-        const teachersData = teachersRes.data || {};
-        const studentsData = studentsRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const usersData = usersRes.data || {};
-        const chatsData = chatsRes.data || {};
-
-        const userRecords = Object.values(usersData || {});
-
-        const findUserNode = (identifier) => {
-          const id = String(identifier || "");
-          if (!id) return null;
-          if (usersData[id]) return usersData[id];
-          return (
-            userRecords.find(
-              (u) =>
-                String(u?.userId || "") === id ||
-                String(u?.username || "") === id ||
-                String(u?.employeeId || "") === id ||
-                String(u?.teacherId || "") === id ||
-                String(u?.studentId || "") === id ||
-                String(u?.parentId || "") === id
-            ) || null
-          );
-        };
-
-        const resolveContactMeta = (identifier) => {
-          const id = String(identifier || "");
-          if (!id) return { name: "Unknown", profileImage: "/default-profile.png", type: "user", userId: "" };
-
-          const userNode = findUserNode(id);
-          if (userNode) {
-            return {
-              name: userNode.name || userNode.username || "Unknown",
-              profileImage: userNode.profileImage || "/default-profile.png",
-              type: userNode.role || userNode.userType || "user",
-              userId: userNode.userId || id,
-            };
-          }
-
-          const teacherNode =
-            teachersData[id] ||
-            Object.values(teachersData || {}).find(
-              (t) =>
-                String(t?.userId || "") === id ||
-                String(t?.teacherId || "") === id
-            );
-          if (teacherNode) {
-            const teacherUser = findUserNode(teacherNode?.userId) || {};
-            return {
-              name: teacherUser.name || teacherNode.name || teacherNode.teacherId || "Teacher",
-              profileImage: teacherUser.profileImage || teacherNode.profileImage || "/default-profile.png",
-              type: "teacher",
-              userId: teacherNode.userId || id,
-            };
-          }
-
-          const studentNode =
-            studentsData[id] ||
-            Object.values(studentsData || {}).find(
-              (s) =>
-                String(s?.userId || "") === id ||
-                String(s?.studentId || "") === id
-            );
-          if (studentNode) {
-            const studentUser = findUserNode(studentNode?.userId) || {};
-            return {
-              name: studentUser.name || studentNode.name || studentNode.studentId || "Student",
-              profileImage: studentUser.profileImage || studentNode.profileImage || "/default-profile.png",
-              type: "student",
-              userId: studentNode.userId || id,
-            };
-          }
-
-          const parentNode =
-            parentsData[id] ||
-            Object.values(parentsData || {}).find(
-              (p) =>
-                String(p?.userId || "") === id ||
-                String(p?.parentId || "") === id
-            );
-          if (parentNode) {
-            const parentUser = findUserNode(parentNode?.userId) || {};
-            return {
-              name: parentUser.name || parentNode.name || parentNode.parentId || "Parent",
-              profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
-              type: "parent",
-              userId: parentNode.userId || id,
-            };
-          }
-
-          return {
-            name: "Unknown",
-            profileImage: "/default-profile.png",
-            type: "user",
-            userId: id,
-          };
-        };
-
-        const roleSet = new Set(
-          Object.values(usersData || {})
-            .map((u) => String(u?.role || u?.userType || "").trim().toLowerCase())
-            .filter(Boolean)
-        );
-        const orderedRoles = ["student", "parent", "teacher", "registerer", "finance", "admin"].filter((r) => roleSet.has(r));
-        const extraRoles = Array.from(roleSet).filter((r) => !orderedRoles.includes(r)).sort();
-        const nextRoles = ["all", ...orderedRoles, ...extraRoles];
+        const nextRoles = buildRegisterTargetRoleOptions();
         setTargetOptions(nextRoles);
         setTargetRole((prev) => (nextRoles.includes(prev) ? prev : "all"));
+        setTeachers([]);
+        setUnreadTeachers({});
+        setPopupMessages([]);
 
-        // Debug: log key data to help diagnose missing Recent Contacts
-        try {
-          console.log("RecentContacts debug:", {
-            financeUserId,
-            schoolCode,
-            teachersCount: Object.keys(teachersData || {}).length,
-            usersCount: Object.keys(usersData || {}).length,
-            chatsCount: Object.keys(chatsData || {}).length,
-            chatSample: Object.keys(chatsData || {}).slice(0, 10),
-          });
-        } catch (e) {
-          // ignore console errors in environments without console
-        }
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
-          };
+        const summaries = await fetchConversationSummaries({
+          rtdbBase: DB_ROOT,
+          currentUserId: financeUserId,
+          includeWithoutLastMessage: true,
+          limit: RECENT_CONTACT_LIMIT,
         });
 
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        const getMessageTime = (message) => {
-          const raw =
-            message?.timeStamp ||
-            message?.timestamp ||
-            message?.time ||
-            message?.createdAt ||
-            message?.sentAt ||
-            0;
-          if (typeof raw === "number") {
-            return raw < 1e12 ? raw * 1000 : raw;
-          }
-          const parsed = new Date(raw).getTime();
-          return Number.isFinite(parsed) ? parsed : 0;
-        };
-
-        for (const t of teacherList) {
-          const forwardKey = `${financeUserId}_${t.userId}`;
-          const reverseKey = `${t.userId}_${financeUserId}`;
-
-          const forwardMsgs = Object.values(chatsData?.[forwardKey]?.messages || {});
-          const reverseMsgs = Object.values(chatsData?.[reverseKey]?.messages || {});
-
-          const msgs = [...forwardMsgs, ...reverseMsgs].map(m => ({
-            ...m,
-            sender: m.senderId === financeUserId ? "registerer" : "teacher"
-          }));
-          allMessages.push(
-            ...msgs.map((m) => ({
-              ...m,
-              partnerUserId: t.userId,
-              partnerName: t.name,
-              partnerProfileImage: t.profileImage,
-            }))
-          );
-
-          const unreadCount = msgs.filter(m => m.receiverId === financeUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
-        }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-        const myIds = new Set(
-          [financeUserId, admin.userId, admin.adminId, finance.financeId]
-            .map((v) => String(v || ""))
-            .filter(Boolean)
+        setRecentContacts(
+          summaries.slice(0, RECENT_CONTACT_LIMIT).map((summary) => ({
+            userId: summary?.contact?.userId || "",
+            name: summary?.contact?.name || summary?.displayName || "Unknown",
+            profileImage: summary?.contact?.profileImage || "/default-profile.png",
+            lastMessage: summary?.lastMessageText || "",
+            lastTime: Number(summary?.lastMessageTime || 0),
+            type: summary?.contact?.type || "user",
+          }))
         );
-
-        const recentByUser = {};
-        for (const [, chatNode] of Object.entries(chatsData || {})) {
-          const msgs = Object.values(chatNode?.messages || {});
-          if (!msgs.length) continue;
-
-          for (const m of msgs) {
-            const senderId = String(m?.senderId || "");
-            const receiverId = String(m?.receiverId || "");
-            if (!senderId || !receiverId) continue;
-
-            const isMineSender = myIds.has(senderId);
-            const isMineReceiver = myIds.has(receiverId);
-            if (!isMineSender && !isMineReceiver) continue;
-
-            const rawPartnerId = isMineSender ? receiverId : senderId;
-            if (!rawPartnerId || myIds.has(rawPartnerId)) continue;
-
-            const contactMeta = resolveContactMeta(rawPartnerId);
-            const stableContactId = String(contactMeta.userId || rawPartnerId);
-            if (!stableContactId || myIds.has(stableContactId)) continue;
-
-            const messageTime = getMessageTime(m);
-            if (!messageTime) continue;
-
-            const current = recentByUser[stableContactId];
-            if (!current || messageTime > current.lastTime) {
-              recentByUser[stableContactId] = {
-                userId: stableContactId,
-                name: contactMeta.name,
-                profileImage: contactMeta.profileImage,
-                lastMessage: m?.message || m?.text || m?.content || "",
-                lastTime: messageTime,
-                type: contactMeta.type,
-              };
-            }
-          }
-        }
-
-        const topRecent = Object.values(recentByUser)
-          .sort((a, b) => b.lastTime - a.lastTime)
-          .slice(0, 5);
-
-        setRecentContacts(topRecent);
-
       } catch (err) {
         console.error(err);
       }
     };
 
     fetchTeachersAndUnread();
-  }, [financeUserId, schoolCode]);
+  }, [DB_ROOT, financeUserId]);
 
   const openChatWithUser = async (userId) => {
     setShowMessengerDropdown(false);
@@ -1437,50 +1317,82 @@ function Dashboard() {
     };
   }, [showCreatePostModal]);
 
-  const handlePost = async () => {
-    if (!postText && !postMedia) return;
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
 
-    if (!admin.adminId || !admin.userId) {
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+
+    setIsOptimizingMedia(true);
+
+    try {
+      const optimizedResult = await optimizePostMedia(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
+
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
+
+  const handlePost = async () => {
+    if (!(postText.trim() || postMedia) || isOptimizingMedia) return;
+
+    const ownerUserId = admin.userId || admin.adminId || "";
+    const compatibilityFinanceId = finance.financeId || admin.adminId || "";
+
+    if (!ownerUserId) {
       alert("Session expired");
       return;
     }
 
-    // If a media file is selected, upload it to Firebase Storage and get a download URL
-    let postUrl = "";
-    try {
-      if (postMedia) {
-        const path = `posts/${Date.now()}_${postMedia.name.replace(/[^a-zA-Z0-9.\-_/]/g, "_")}`;
-        const storageRef = sRef(storage, path);
-        // upload as blob/file
-        await uploadBytes(storageRef, postMedia);
-        postUrl = await getDownloadURL(storageRef);
-      }
-    } catch (err) {
-      console.error("Failed to upload media to Firebase Storage:", err);
-      // proceed without media URL
-    }
-
     const formData = new FormData();
     formData.append("message", postText);
-    formData.append("postUrl", postUrl);
+    if (postMedia) {
+      formData.append("post_media", postMedia);
+    }
 
-    // keep old admin fields for compatibility
-    formData.append("adminId", admin.adminId); // ownership
-    formData.append("userId", admin.userId);   // display & likes
+    formData.append("adminId", ownerUserId);
+    formData.append("userId", ownerUserId);
     formData.append("adminName", admin.name);
     formData.append("adminProfile", admin.profileImage);
 
-    // new finance fields (for Finance schema)
-    formData.append("financeId", admin.adminId || "");
+    formData.append("financeId", compatibilityFinanceId);
     formData.append("financeName", admin.name || "");
     formData.append("financeProfile", admin.profileImage || "");
     formData.append("schoolCode", schoolCode || "");
     formData.append("targetRole", targetRole || "all");
 
-    await axios.post(`${API_BASE}/create_post`, formData);
+    const response = await axios.post(`${API_BASE}/create_post`, formData);
+
+    if (response.data && response.data.success === false) {
+      throw new Error(response.data.message || "Post could not be published.");
+    }
 
     setPostText("");
     setPostMedia(null);
+    setPostMediaMeta(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     fetchPosts();
   };
@@ -1559,7 +1471,46 @@ function Dashboard() {
 
   // ---------------- RENDER ----------------
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        height: "auto",
+        overflowX: "hidden",
+        overflowY: "auto",
+        "--surface-panel": BACKGROUND,
+        "--surface-accent": "#F1F8FF",
+        "--surface-muted": "#F7FBFF",
+        "--surface-strong": "#DCEBFF",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": BACKGROUND,
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": "#007AFB",
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-soft": "#FEE2E2",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
 
       {/* ---------------- TOP NAVIGATION BAR ---------------- */}
       <nav className="top-navbar" style={{ borderBottom: "1px solid var(--border-soft)", background: "var(--surface-overlay)" }}>
@@ -1642,16 +1593,9 @@ function Dashboard() {
                           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                           onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                         >
-                          <img
-                            src={post.adminProfile || "/default-profile.png"}
-                            alt=""
-                            style={{
-                              width: 46,
-                              height: 46,
-                              borderRadius: 8,
-                              objectFit: "cover",
-                            }}
-                          />
+                          <div style={{ width: 46, height: 46, flexShrink: 0 }}>
+                            {renderProfileAvatar(post.adminProfile, post.adminName, 46)}
+                          </div>
 
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <strong>{post.adminName}</strong>
@@ -1718,16 +1662,7 @@ function Dashboard() {
                             });
                           }}
                         >
-                          <img
-                            src={sender.profileImage}
-                            alt={sender.name}
-                            style={{
-                              width: 46,
-                              height: 46,
-                              borderRadius: 8,
-                              objectFit: "cover",
-                            }}
-                          />
+                          {renderProfileAvatar(sender.profileImage, sender.name, 46, 8)}
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{sender.name}</strong>
                             <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1772,22 +1707,20 @@ function Dashboard() {
           </div>
 
           {/* Profile */}
-          <img
-            src={admin.profileImage || "/default-profile.png"}
-            alt="admin"
-            className="profile-img"
-          />
+          <div className="profile-img" style={{ width: 38, height: 38, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+            {renderProfileAvatar(admin.profileImage, admin.name, 38)}
+          </div>
           {/* <span>{admin.name}</span> */}
         </div>
       </nav>
 
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
         {/* LEFT SIDEBAR */}
         <div className="google-sidebar" style={{ width: 'clamp(230px, 16vw, 290px)', minWidth: 230, padding: 14, borderRadius: 24, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', height: 'calc(100vh - 24px)', overflowY: 'auto', alignSelf: 'flex-start', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
           {/* Sidebar profile */}
           <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '16px 14px', marginBottom: 8, borderRadius: 18, background: 'linear-gradient(180deg, var(--surface-accent) 0%, var(--surface-panel) 100%)', border: '1px solid var(--border-strong)', boxShadow: 'inset 0 1px 0 color-mix(in srgb, white 8%, transparent)' }}>
             <div className="sidebar-img-circle" style={{ width: 58, height: 58, borderRadius: '50%', overflow: 'hidden', border: '3px solid var(--border-strong)', boxShadow: 'var(--shadow-glow)' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              {renderProfileAvatar(admin?.profileImage, admin?.name, 58)}
             </div>
             <div style={{ padding: '4px 10px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent)', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Register Office</div>
             <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', textAlign: 'center' }}>{admin?.name || "Admin Name"}</h3>
@@ -1941,7 +1874,8 @@ function Dashboard() {
         </div>
 
         {/* MIDDLE FEED COLUMN */}
-        <div className="main-content google-main" style={{ flex: '1.08 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - 24px)', overflowY: 'auto', position: 'sticky', top: 24, scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 2px', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+        <div className="main-content google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: '0', boxSizing: 'border-box', alignSelf: 'flex-start', minHeight: 'calc(100vh - 24px)', overflowY: 'visible', overflowX: 'hidden', position: 'relative', top: 'auto', scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent', padding: '0 12px 0 2px', display: 'flex', justifyContent: 'center', opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? 'blur(1px)' : 'none', pointerEvents: isOverlayModalOpen ? 'none' : 'auto', transition: 'opacity 180ms ease, filter 180ms ease' }}>
+          <div style={{ width: '100%', maxWidth: FEED_SECTION_STYLE.maxWidth }}>
           {/* Feed header */}
           <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
@@ -1962,11 +1896,7 @@ function Dashboard() {
                 padding: 0,
               }}
             >
-              <img
-                src={admin.profileImage || "/default-profile.png"}
-                alt="me"
-                style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-soft)", flexShrink: 0 }}
-              />
+              {renderProfileAvatar(admin.profileImage, admin.name, 38)}
               <button
                 type="button"
                 onClick={() => setShowCreatePostModal(true)}
@@ -2033,114 +1963,101 @@ function Dashboard() {
 
           {/* Posts container */}
           <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: 12 }}>
-            {posts.map((post) => (
-              <div className="post-card facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden" }}>
-                <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                  <div className="img-circle" style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                    <img
-                      src={post.adminProfile || "/default-profile.png"}
-                      alt="profile"
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
-                  </div>
-                  <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                    <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName}</h4>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2, fontSize: 13, color: "var(--text-muted)", fontWeight: 500 }}>
-                      <span>{post.time}</span>
-                      <span>·</span>
-                      <span>{post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}</span>
+            {posts.length === 0 ? (
+              <div style={{ ...shellCardStyle, borderRadius: 12, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
+                No posts available right now.
+              </div>
+            ) : posts.map((post) => {
+              const messageText = String(post.message || "");
+              const canExpandPost = shouldShowPostSeeMore(messageText);
+              const isPostExpanded = !!expandedPostDescriptions[post.postId];
+              const normalizedTargetRole = String(post.targetRole || "all").trim().toLowerCase();
+              const audienceLabel = formatAudienceLabel(normalizedTargetRole);
+              const isPublicPost = !normalizedTargetRole || normalizedTargetRole === "all";
+              const targetRoleLabel = isPublicPost ? "Visible to everyone" : `Visible to ${audienceLabel}`;
+              const audienceBadgeLabel = isPublicPost ? "Public update" : `${audienceLabel} update`;
+              const likeCount = getResolvedLikeCount(post);
+              const isLikedByRegister = isPostLikedByActor(post, currentLikeActorId);
+              const postTimestamp = post.time || post.createdAt || "";
+              const postTimeLabel = formatPostTimestamp(postTimestamp);
+              const postTimestampTitle = postTimestamp && !Number.isNaN(new Date(postTimestamp).getTime()) ? new Date(postTimestamp).toLocaleString() : String(postTimestamp || "");
+
+              return (
+                <div className="facebook-post-card" id={`post-${post.postId}`} key={post.postId} style={{ ...shellCardStyle, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(15, 23, 42, 0.08)", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)", transition: "background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease" }}>
+                  <div className="facebook-post-card__header" style={{ padding: "12px 14px 10px" }}>
+                    <div className="facebook-post-card__header-main">
+                      <div className="facebook-post-card__avatar">
+                        {renderProfileAvatar(post.adminProfile, post.adminName || "Register Office", 42)}
+                      </div>
+                      <div className="facebook-post-card__identity">
+                        <div className="facebook-post-card__identity-row">
+                          <h4>{post.adminName || "Register Office"}</h4>
+                          <span className="facebook-post-card__page-badge">School Page</span>
+                        </div>
+                        <div className="facebook-post-card__meta" title={postTimestampTitle || undefined}>
+                          <span>{postTimeLabel}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{targetRoleLabel}</span>
+                        </div>
+                      </div>
                     </div>
+                    <div className="facebook-post-card__type-chip">Announcement</div>
                   </div>
-                  </div>
-                  <button
-                    type="button"
-                    style={{ width: 36, height: 36, border: "none", borderRadius: "50%", background: "transparent", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                    aria-label="Post options"
-                    title="Post options"
-                  >
-                    <FaEllipsisH style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
 
-                {post.message ? (() => {
-                  const canExpandPost = shouldShowPostSeeMore(post.message);
-                  const isPostExpanded = !!expandedPostDescriptions[post.postId];
-
-                  return (
-                    <div style={{ padding: "0 16px 12px", color: "var(--text-primary)", fontSize: 15, lineHeight: 1.3333, wordBreak: "break-word" }}>
-                      <div
-                        style={{
-                          whiteSpace: "pre-wrap",
-                          overflow: canExpandPost && !isPostExpanded ? "hidden" : "visible",
-                          display: canExpandPost && !isPostExpanded ? "-webkit-box" : "block",
-                          WebkitBoxOrient: canExpandPost && !isPostExpanded ? "vertical" : "initial",
-                          WebkitLineClamp: canExpandPost && !isPostExpanded ? 3 : "unset",
-                        }}
-                      >
-                        {post.message}
+                  {messageText ? (
+                    <div className="facebook-post-card__body" style={{ padding: "0 14px 12px" }}>
+                      <div className="facebook-post-card__message">
+                        {canExpandPost && !isPostExpanded
+                          ? `${messageText.slice(0, MESSAGE_PREVIEW_LIMIT).trimEnd()}...`
+                          : messageText}
                       </div>
                       {canExpandPost ? (
-                        <button
-                          type="button"
-                          onClick={() => togglePostDescription(post.postId)}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            padding: 0,
-                            marginTop: 4,
-                            color: "var(--text-muted)",
-                            fontSize: 15,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          {isPostExpanded ? "See less" : "See more"}
+                        <button type="button" className="facebook-post-card__read-more" onClick={() => togglePostDescription(post.postId)}>
+                          {isPostExpanded ? "See less" : "Read more"}
                         </button>
                       ) : null}
                     </div>
-                  );
-                })() : null}
-                {post.postUrl && (
-                  <div className="facebook-post-media-wrap" style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <img
-                      className="facebook-post-media"
-                      src={post.postUrl}
-                      alt="post media"
-                      style={{ width: "100%", height: "auto", maxHeight: "min(78vh, 720px)", objectFit: "contain", display: "block", margin: "0 auto" }}
-                    />
-                  </div>
-                )}
+                  ) : null}
 
-                <div style={{ padding: "10px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  <button
-                    type="button"
-                    onClick={() => handleLike(post.postId)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      minWidth: 0,
-                      border: "none",
-                      background: "transparent",
-                      padding: 0,
-                      cursor: "pointer",
-                      color: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--text-muted)",
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
-                    <span style={{ width: 20, height: 20, borderRadius: "50%", background: post.likes && post.likes[currentLikeActorId] ? "var(--accent-strong)" : "var(--surface-strong)", color: post.likes && post.likes[currentLikeActorId] ? "#fff" : "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <FaThumbsUp style={{ width: 10, height: 10 }} />
-                    </span>
-                    <span style={{ whiteSpace: "nowrap" }}>{post.likeCount || 0} like{(post.likeCount || 0) === 1 ? "" : "s"}</span>
-                  </button>
-                  <div style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                    {post.targetRole && post.targetRole !== "all" ? `Visible to ${post.targetRole}` : "Visible to everyone"}
+                  {post.postUrl ? (
+                    <div className="facebook-post-card__media-shell">
+                      <img className="facebook-post-card__media" src={post.postUrl} alt="post media" />
+                    </div>
+                  ) : null}
+
+                  <div className="facebook-post-card__stats" style={{ padding: "10px 14px 8px" }}>
+                    <div className="facebook-post-card__stats-left">
+                      {likeCount > 0 ? (
+                        <>
+                          <span className="facebook-post-card__reaction-bubble">
+                            <FaThumbsUp style={{ width: 10, height: 10 }} />
+                          </span>
+                          <span>{`${likeCount} ${likeCount === 1 ? "like" : "likes"}`}</span>
+                        </>
+                      ) : (
+                        <span>Be the first to react</span>
+                      )}
+                    </div>
+                    <div className="facebook-post-card__stats-right" title={targetRoleLabel}>
+                      <span>{audienceBadgeLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="facebook-post-card__actions" style={{ padding: "4px 10px 10px" }}>
+                    <button
+                      type="button"
+                      aria-pressed={isLikedByRegister}
+                      onClick={() => handleLike(post.postId)}
+                      className={`facebook-post-card__action-button${isLikedByRegister ? " is-active" : ""}`}
+                    >
+                      <FaThumbsUp style={{ width: 14, height: 14 }} />
+                      <span>{isLikedByRegister ? "Liked" : "Like"}</span>
+                    </button>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
+          </div>
           </div>
         </div>
 
@@ -2208,11 +2125,10 @@ function Dashboard() {
                         })}
                         style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left', ...softPanelStyle, padding: '5px 6px', cursor: 'pointer' }}
                       >
-                        <img
-                          src={contact.profileImage || '/default-profile.png'}
-                          alt={contact.name}
-                          style={{ width: 24, height: 24, borderRadius: '50%', objectFit: 'cover' }}
-                        />
+                        {renderProfileAvatar(contact.profileImage, contact.name, 30, "50%", {
+                          border: "2px solid var(--border-strong)",
+                          boxShadow: "0 8px 18px rgba(15,23,42,0.14)",
+                        })}
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {contact.name}
@@ -2594,49 +2510,30 @@ function Dashboard() {
         </div>
       </div>
 
-      {showCreatePostModal && (
+      {showCreatePostModal ? (
         <>
           <div
             onClick={() => setShowCreatePostModal(false)}
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "color-mix(in srgb, var(--surface-overlay) 84%, transparent)",
-              backdropFilter: "blur(6px)",
-              zIndex: 1200,
-            }}
+            style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.18)", backdropFilter: "blur(10px)", zIndex: 1200 }}
           />
-          <div
-            style={{
-              position: "fixed",
-              inset: 0,
-              zIndex: 1201,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 12,
-              pointerEvents: "none",
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                width: "min(500px, 100%)",
-                maxHeight: "90vh",
-                overflowY: "auto",
-                background: "var(--surface-panel)",
-                borderRadius: 18,
-                border: "1px solid var(--border-soft)",
-                boxShadow: "var(--shadow-panel)",
-                pointerEvents: "auto",
-              }}
-            >
-              <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px 20px 13px", borderBottom: "1px solid var(--border-soft)" }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2, letterSpacing: "-0.01em" }}>Create post</div>
+          <div style={{ position: "fixed", inset: 0, zIndex: 1201, display: "flex", alignItems: "center", justifyContent: "center", padding: 12, pointerEvents: "none" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(640px, 100%)", maxHeight: "90vh", overflowY: "auto", background: "var(--surface-panel)", borderRadius: 28, border: "1px solid var(--border-soft)", boxShadow: "none", pointerEvents: "auto", position: "relative" }}>
+              <div style={{ position: "relative", padding: "22px 24px 18px", borderBottom: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingRight: 52 }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", width: "fit-content", height: 28, padding: "0 12px", borderRadius: 999, background: "var(--accent-soft)", border: "1px solid var(--border-strong)", color: "var(--accent-strong)", fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    School Announcement
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: "var(--text-primary)", lineHeight: 1.1, letterSpacing: "-0.03em" }}>
+                    Create a new post
+                  </div>
+                  <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5, maxWidth: 420 }}>
+                    Share polished announcements, reminders, and updates with the right audience.
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() => setShowCreatePostModal(false)}
-                  style={{ position: "absolute", right: 16, top: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", width: 40, height: 40, borderRadius: "50%", fontSize: 22, color: "var(--text-secondary)", cursor: "pointer", lineHeight: 1 }}
+                  style={{ position: "absolute", right: 18, top: 18, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", width: 40, height: 40, borderRadius: "50%", fontSize: 22, color: "var(--text-secondary)", cursor: "pointer", lineHeight: 1 }}
                   aria-label="Close create post modal"
                   title="Close"
                 >
@@ -2644,115 +2541,159 @@ function Dashboard() {
                 </button>
               </div>
 
-              <div style={{ padding: "16px 16px 18px", display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <img
-                    src={admin.profileImage || "/default-profile.png"}
-                    alt="me"
-                    style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-                  />
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>{admin.name || "Register Office"}</div>
+              <div style={{ padding: "22px 24px 24px", display: "flex", flexDirection: "column", gap: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", padding: "14px 16px", borderRadius: 20, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                    <div style={{ borderRadius: "50%", boxShadow: "var(--shadow-glow)", flexShrink: 0 }}>
+                      {renderProfileAvatar(admin.profileImage, admin.name, 48)}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{admin.name || "Register Office"}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>Posting from the register dashboard</div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                      Audience
+                    </div>
                     <select
                       value={targetRole}
                       onChange={(e) => setTargetRole(e.target.value)}
-                      style={{ height: 28, borderRadius: 6, border: "1px solid var(--input-border)", background: "var(--input-bg)", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", padding: "0 28px 0 10px", width: "fit-content", minWidth: 118 }}
+                      style={{ height: 40, borderRadius: 12, border: "1px solid var(--input-border)", background: "var(--input-bg)", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", padding: "0 36px 0 12px", minWidth: 170, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.45)" }}
                       title="Post target role"
                     >
                       {targetOptions.map((role) => {
                         const label = role === "all" ? "All Users" : `${role.charAt(0).toUpperCase()}${role.slice(1)}s`;
-                        return (
-                          <option key={role} value={role}>
-                            {label}
-                          </option>
-                        );
+                        return <option key={role} value={role}>{label}</option>;
                       })}
                     </select>
                   </div>
                 </div>
 
-                <textarea
-                  placeholder="What's on your mind?"
-                  value={postText}
-                  onChange={(e) => setPostText(e.target.value)}
-                  style={{
-                    minHeight: 210,
-                    resize: "vertical",
-                    border: "none",
-                    background: "transparent",
-                    borderRadius: 0,
-                    padding: 0,
-                    fontSize: 28,
-                    lineHeight: 1.3333,
-                    outline: "none",
-                    color: "var(--text-primary)",
-                  }}
-                />
+                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 24, background: "var(--surface-panel)", overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "14px 16px 12px", borderBottom: "1px solid color-mix(in srgb, var(--border-soft) 80%, transparent 20%)" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Post message</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{postText.trim().length} characters</div>
+                  </div>
 
-                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 12, padding: "8px 12px", boxShadow: "var(--shadow-soft)", background: "var(--surface-overlay)" }}>
-                  <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ marginRight: "auto", fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Add to your post</div>
-                    <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "50%", background: "transparent", cursor: "pointer", color: "var(--success)", fontSize: 24 }}>
-                      <AiFillPicture className="fb-icon" />
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        onChange={(e) => {
-                          const file = e.target.files && e.target.files[0];
-                          setPostMedia(file || null);
-                        }}
-                        accept="image/*,video/*"
-                      />
-                    </label>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: "50%", color: "var(--danger)", fontSize: 22, background: "transparent", opacity: 0.9 }}>
-                      <AiFillVideoCamera />
+                  <textarea
+                    placeholder="Write a clear announcement for your school community..."
+                    value={postText}
+                    onChange={(event) => setPostText(event.target.value)}
+                    style={{ minHeight: 220, resize: "vertical", border: "none", background: "transparent", borderRadius: 0, padding: "18px 18px 16px", fontSize: 19, lineHeight: 1.6, outline: "none", color: "var(--text-primary)", width: "100%", boxSizing: "border-box" }}
+                  />
+                </div>
+
+                <div style={{ border: "1px solid var(--border-soft)", borderRadius: 20, padding: "14px 16px", background: "var(--surface-panel)" }}>
+                  <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ marginRight: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>Media and attachments</div>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Add a photo or video to make the update stand out.</div>
                     </div>
 
-                    {postMedia && (
-                      <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--surface-muted)", borderRadius: 10, boxSizing: "border-box" }}>
-                        <AiFillPicture style={{ color: "var(--success)", fontSize: 18, flexShrink: 0 }} />
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {postMedia.name}
-                        </span>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handlePostMediaSelection}
+                      accept="image/*,video/*"
+                      style={{ display: "none" }}
+                    />
+
+                    <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "16px 18px", background: "linear-gradient(180deg, var(--surface-muted) 0%, #ffffff 100%)", borderRadius: 18, border: "1px dashed var(--border-strong)", boxSizing: "border-box", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: "1 1 260px" }}>
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: "var(--accent-soft)", border: "1px solid var(--border-strong)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
+                          {postMedia && String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera /> : <AiFillPicture />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>
+                            {postMedia ? "Media ready to attach" : "Choose a photo or video"}
+                          </div>
+                          <div style={{ marginTop: 3, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.45 }}>
+                            {isOptimizingMedia
+                              ? "Optimizing your image before upload."
+                              : "Images are automatically compressed and converted to JPEG when that reduces size."}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginLeft: "auto" }}>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 34, padding: "0 12px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontSize: 11, fontWeight: 800, letterSpacing: "0.02em" }}>
+                          <AiFillVideoCamera style={{ color: "var(--danger)", fontSize: 15 }} />
+                          Photos and videos
+                        </div>
                         <button
+                          type="button"
+                          onClick={handleOpenPostMediaPicker}
+                          disabled={isOptimizingMedia}
+                          style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, height: 42, padding: "0 18px", borderRadius: 999, background: isOptimizingMedia ? "var(--surface-strong)" : "var(--accent)", border: "none", cursor: isOptimizingMedia ? "progress" : "pointer", color: "#fff", fontSize: 13, fontWeight: 800, opacity: isOptimizingMedia ? 0.86 : 1, minWidth: 138 }}
+                        >
+                          <AiFillPicture style={{ fontSize: 17 }} />
+                          <span>{isOptimizingMedia ? "Optimizing..." : postMedia ? "Change file" : "Choose file"}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {postMedia ? (
+                      <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "var(--surface-muted)", borderRadius: 16, border: "1px solid var(--border-soft)", boxSizing: "border-box" }}>
+                        <div style={{ width: 42, height: 42, borderRadius: 12, background: String(postMedia.type || "").startsWith("video/") ? "var(--warning-soft)" : "var(--success-soft)", color: String(postMedia.type || "").startsWith("video/") ? "var(--danger)" : "var(--success)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          {String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera style={{ fontSize: 20 }} /> : <AiFillPicture style={{ fontSize: 20 }} />}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{postMedia.name}</div>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                            {postMediaMeta?.wasCompressed
+                              ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? " as JPEG" : ""}`
+                              : `Ready to attach to this post${postMediaMeta?.wasConvertedToJpeg ? " as JPEG" : ""}`}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
                           onClick={() => {
                             setPostMedia(null);
+                            setPostMediaMeta(null);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          style={{ background: "var(--surface-strong)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", width: 26, height: 26, borderRadius: "50%", cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+                          style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", width: 30, height: 30, borderRadius: "50%", cursor: "pointer", fontSize: 18, lineHeight: 1, flexShrink: 0 }}
                           aria-label="Remove selected media"
                           title="Remove"
                         >
                           ×
                         </button>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
-                <button
-                  className="telegram-send-icon"
-                  onClick={handleSubmitCreatePost}
-                  disabled={!canSubmitPost}
-                  style={{
-                    width: "100%",
-                    border: "none",
-                    background: canSubmitPost ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%)" : "var(--surface-strong)",
-                    borderRadius: 6,
-                    height: 36,
-                    color: canSubmitPost ? "#fff" : "var(--text-muted)",
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: canSubmitPost ? "pointer" : "not-allowed",
-                  }}
-                >
-                  Post
-                </button>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", paddingTop: 2 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    Your post will appear in the register feed immediately after publishing.
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreatePostModal(false)}
+                      style={{ height: 44, padding: "0 18px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSubmitCreatePost}
+                      disabled={!canSubmitPost}
+                      style={{ minWidth: 160, height: 46, border: "none", background: canSubmitPost ? "var(--accent)" : "var(--surface-strong)", borderRadius: 999, color: canSubmitPost ? "#fff" : "var(--text-muted)", fontSize: 14, fontWeight: 800, letterSpacing: "0.01em", cursor: canSubmitPost ? "pointer" : "not-allowed", boxShadow: canSubmitPost ? "0 8px 18px rgba(0, 122, 251, 0.14)" : "none" }}
+                    >
+                      {isOptimizingMedia ? "Optimizing..." : "Publish post"}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </>
-      )}
+      ) : null}
 
       {showCalendarEventModal ? (
         <div

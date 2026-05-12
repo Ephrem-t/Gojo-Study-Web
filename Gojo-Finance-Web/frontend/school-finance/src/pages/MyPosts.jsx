@@ -16,6 +16,8 @@ import {
 import "../styles/global.css";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import { invalidateMyPosts, loadMyPosts } from "../utils/postData";
 
 function MyPosts() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -24,13 +26,10 @@ function MyPosts() {
   const [editedContent, setEditedContent] = useState("");
   const [postText, setPostText] = useState("");
   const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
   const fileInputRef = useRef(null);
-  const [teachers, setTeachers] = useState([]);
-  const [unreadTeachers, setUnreadTeachers] = useState({});
-  const [popupMessages, setPopupMessages] = useState([]);
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
-  const [selectedTeacher, setSelectedTeacher] = useState(null);
-  const [teacherChatOpen, setTeacherChatOpen] = useState(false);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
 
   // loading states for edit/delete
@@ -241,38 +240,22 @@ function MyPosts() {
     });
   };
 
-  const fetchMyPosts = async () => {
+  const fetchMyPosts = async ({ force = false } = {}) => {
     if (!adminId) return;
     try {
-      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, {
-        params: { schoolCode },
-      });
-      const postsArray = Array.isArray(res.data)
-        ? res.data
-        : Object.entries(res.data || {}).map(([key, post]) => ({
-            postId: key,
-            ...post,
-          }));
-
-      const mappedPosts = postsArray
-        .map((p) => {
-          const parsedTime = p.time ? new Date(p.time) : new Date();
-          const postId = p.postId || p.id || "";
-          return {
-            postId: postId || String(p?.postId || p?.id || ""),
-            message: p.message || p.postText || "",
-            postUrl: p.postUrl || p.mediaUrl || p.postUrl || null,
-            time: parsedTime.toLocaleString(),
-            parsedTime,
-            edited: p.edited || false,
-            likeCount: Number(p.likeCount) || 0,
-            likes: p.likes || {},
-            adminId: p.adminId || adminId,
-          };
-        })
-        .sort((a, b) => b.parsedTime - a.parsedTime);
-
-      setPosts(mappedPosts);
+      const rows = await loadMyPosts({ adminId, schoolCode, force });
+      setPosts(
+        rows.map((post) => ({
+          ...post,
+          time: post.sortTime ? new Date(post.sortTime).toLocaleString() : new Date().toLocaleString(),
+          parsedTime: post.sortTime ? new Date(post.sortTime) : new Date(),
+          edited: post.edited || false,
+          likeCount: Number(post.likeCount) || 0,
+          likes: post.likes || {},
+          adminId: post.adminId || adminId,
+          postUrl: post.postUrl || post.mediaUrl || null,
+        }))
+      );
     } catch (err) {
       console.error("Error fetching posts:", err.response?.data || err);
     }
@@ -282,9 +265,21 @@ function MyPosts() {
     if (loadingFinance) return;
     if (!adminId) return;
 
-    fetchMyPosts();
-    const interval = setInterval(fetchMyPosts, 10000);
-    return () => clearInterval(interval);
+    fetchMyPosts({ force: false });
+
+    const refreshOnFocus = () => fetchMyPosts({ force: false });
+    const refreshOnVisible = () => {
+      if (document.hidden) return;
+      fetchMyPosts({ force: false });
+    };
+
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnVisible);
+
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisible);
+    };
   }, [adminId, loadingFinance]);
 
   // load finance info on mount (so adminId is populated from RTDB when needed)
@@ -292,8 +287,49 @@ function MyPosts() {
     loadFinanceFromStorage();
   }, []);
 
+  const handlePostMediaSelection = async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+
+    setIsOptimizingMedia(true);
+
+    try {
+      const optimizedResult = await optimizePostMedia(file);
+      setPostMedia(optimizedResult.file);
+      setPostMediaMeta({
+        originalSize: optimizedResult.originalSize,
+        finalSize: optimizedResult.finalSize,
+        wasCompressed: optimizedResult.wasCompressed,
+        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  };
+
+  const handleOpenPostMediaPicker = () => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  };
+
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
+
   const handlePost = async () => {
-    if (!postText && !postMedia) return;
+    if (!canSubmitPost) return;
     try {
       const formData = new FormData();
       // Use backend-compatible field names: `message`, `postUrl` (if uploading client-side), and include finance fields
@@ -318,8 +354,10 @@ function MyPosts() {
 
       setPostText("");
       setPostMedia(null);
+      setPostMediaMeta(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      fetchMyPosts();
+      invalidateMyPosts(adminId, schoolCode);
+      fetchMyPosts({ force: true });
     } catch (err) {
       console.error("Error creating post:", err.response?.data || err);
       alert("Create post failed: " + (err.response?.data?.message || err.message || "See console"));
@@ -401,6 +439,7 @@ function MyPosts() {
       const firebaseUrl = `${RTDB_BASE}/Posts/${encodeURIComponent(postId)}.json`;
       await axios.delete(firebaseUrl);
       setPosts((prev) => prev.filter((p) => p.postId !== postId));
+      invalidateMyPosts(adminId, schoolCode);
       setDeletingId(null);
       return;
     } catch (err) {
@@ -419,6 +458,7 @@ function MyPosts() {
         const rPost = await axios.post(url, { adminId }, { headers });
         if (rPost.data && rPost.data.success === false) throw new Error(rPost.data.message || "delete returned success:false");
         setPosts((prev) => prev.filter((p) => p.postId !== postId));
+        invalidateMyPosts(adminId, schoolCode);
         setDeletingId(null);
         return;
       } catch (postErr) {
@@ -429,6 +469,7 @@ function MyPosts() {
         const rDelBody = await axios.delete(url, { data: { adminId }, headers });
         if (rDelBody.data && rDelBody.data.success === false) throw new Error(rDelBody.data.message || "delete returned success:false");
         setPosts((prev) => prev.filter((p) => p.postId !== postId));
+        invalidateMyPosts(adminId, schoolCode);
         setDeletingId(null);
         return;
       } catch (delBodyErr) {
@@ -438,6 +479,7 @@ function MyPosts() {
       const rDelParam = await axios.delete(url, { params: { adminId }, headers });
       if (rDelParam.data && rDelParam.data.success === false) throw new Error(rDelParam.data.message || "delete returned success:false");
       setPosts((prev) => prev.filter((p) => p.postId !== postId));
+      invalidateMyPosts(adminId, schoolCode);
     } catch (err) {
       console.error("[DELETE] Final error:", err.response?.status, err.response?.data || err.message || err);
       alert("Delete failed: " + (err.response?.data?.message || err.message || "See console"));
@@ -636,48 +678,6 @@ function MyPosts() {
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
-        {/* ---------------- SIDEBAR ---------------- */}
-        <div className="google-sidebar" style={{ width: '220px', padding: '12px', borderRadius: 16, background: '#ffffff', border: '1px solid #e5e7eb', boxShadow: '0 10px 24px rgba(15,23,42,0.06)', height: 'fit-content' }}>
-          <div className="sidebar-profile" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', border: '2px solid #e6eefc' }}>
-              <img src={admin?.profileImage || "/default-profile.png"} alt="profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{admin?.name || "Admin Name"}</h3>
-            {(admin?.username || admin?.userId || admin?.adminId) ? (
-              <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>{admin?.username || admin?.userId || admin?.adminId}</p>
-            ) : null}
-          </div>
-
-          <div className="sidebar-menu" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaHome style={{ width: 18, height: 18 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13, backgroundColor: '#1d4ed8', color: '#fff', borderRadius: 10, boxShadow: '0 8px 18px rgba(29,78,216,0.25)' }}>
-              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/analytics" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className="main-content google-main"
@@ -740,23 +740,38 @@ function MyPosts() {
                   }}
                 />
                 <div className="fb-post-bottom" style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 8, borderTop: "1px solid #edf0f2" }}>
-                  <label className="fb-upload" title="Upload media" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 6, background: "transparent", border: "1px solid #d9dde3", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3f4752" }}>
-                    <AiFillPicture className="fb-icon" />
-                    <span>Photo/Video</span>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      onChange={(e) => {
-                        const file = e.target.files && e.target.files[0];
-                        setPostMedia(file || null);
-                      }}
-                      accept="image/*,video/*"
-                    />
-                  </label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handlePostMediaSelection}
+                    accept="image/*,video/*"
+                    style={{ display: "none" }}
+                  />
+                  <div style={{ flex: 1, minWidth: 220, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderRadius: 12, background: "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)", border: "1px dashed #bfd3f6", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 180px" }}>
+                      <div style={{ width: 38, height: 38, borderRadius: 12, background: "#e7f2ff", border: "1px solid #bfd3f6", color: "#1877f2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        {postMedia && String(postMedia.type || "").startsWith("video/") ? <AiFillVideoCamera /> : <AiFillPicture />}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>{postMedia ? "Media ready" : "Choose a photo or video"}</div>
+                        <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>{isOptimizingMedia ? "Optimizing image..." : "Images are compressed automatically when possible."}</div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleOpenPostMediaPicker}
+                      disabled={isOptimizingMedia}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 34, padding: "0 12px", borderRadius: 999, border: "none", background: isOptimizingMedia ? "#cfe0fb" : "#1877f2", color: "#fff", fontSize: 12, fontWeight: 700, cursor: isOptimizingMedia ? "progress" : "pointer" }}
+                    >
+                      <AiFillPicture />
+                      <span>{isOptimizingMedia ? "Optimizing..." : postMedia ? "Change file" : "Choose file"}</span>
+                    </button>
+                  </div>
 
                   {postMedia && (
                     <div style={{
-                      width: "20%",
+                      width: "100%",
                       minWidth: 120,
                       display: "flex",
                       alignItems: "center",
@@ -770,12 +785,26 @@ function MyPosts() {
                       textOverflow: "ellipsis",
                       boxSizing: "border-box",
                     }}>
-                      <span style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {postMedia.name}
-                      </span>
+                      {String(postMedia.type || "").startsWith("video/") ? (
+                        <AiFillVideoCamera style={{ color: "#dc2626", fontSize: 18, flexShrink: 0 }} />
+                      ) : (
+                        <AiFillPicture style={{ color: "#16a34a", fontSize: 18, flexShrink: 0 }} />
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, color: "#111", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {postMedia.name}
+                        </div>
+                        <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>
+                          {postMediaMeta?.wasCompressed
+                            ? `Optimized from ${formatFileSize(postMediaMeta.originalSize)} to ${formatFileSize(postMediaMeta.finalSize)}${postMediaMeta.wasConvertedToJpeg ? " as JPEG" : ""}`
+                            : `Ready to attach${postMediaMeta?.wasConvertedToJpeg ? " as JPEG" : ""}`}
+                        </div>
+                      </div>
                       <button
+                        type="button"
                         onClick={() => {
                           setPostMedia(null);
+                          setPostMediaMeta(null);
                           if (fileInputRef.current) fileInputRef.current.value = "";
                         }}
                         style={{
@@ -797,20 +826,21 @@ function MyPosts() {
                   <div style={{ marginLeft: "auto" }}>
                     <button
                       onClick={handlePost}
+                      disabled={!canSubmitPost}
                       style={{
                         border: "none",
-                        background: "#1877f2",
+                        background: canSubmitPost ? "#1877f2" : "#cbd5e1",
                         borderRadius: 6,
                         height: 30,
                         minWidth: 64,
                         padding: "0 12px",
-                        color: "#fff",
+                        color: canSubmitPost ? "#fff" : "#64748b",
                         fontSize: 12,
                         fontWeight: 700,
-                        cursor: "pointer",
+                        cursor: canSubmitPost ? "pointer" : "not-allowed",
                       }}
                     >
-                      Post
+                      {isOptimizingMedia ? "Optimizing..." : "Post"}
                     </button>
                   </div>
                 </div>

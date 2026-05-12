@@ -1,21 +1,21 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Sidebar from "../components/Sidebar";
+import { BACKEND_BASE } from "../config.js";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 export default function OverviewPage() {
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
 
   const stored = (() => {
     try {
-      return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
+      return JSON.parse(localStorage.getItem("admin") || "{}") || {};
     } catch (e) {
       return {};
     }
   })();
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const API_BASE = `${BACKEND_BASE}/api`;
   const OVERVIEW_CACHE_KEY = schoolCode ? `overview-cache:${schoolCode}` : "";
 
   const readOverviewCache = () => {
@@ -30,7 +30,7 @@ export default function OverviewPage() {
       }
 
       const cachedAt = Number(cached.cachedAt || 0);
-      if (!cachedAt || Date.now() - cachedAt > 60 * 1000) {
+      if (!cachedAt || Date.now() - cachedAt > 5 * 60 * 1000) {
         return null;
       }
 
@@ -48,6 +48,7 @@ export default function OverviewPage() {
   const [parentsCount, setParentsCount] = useState(cachedOverview?.parentsCount || 0);
   const [postsCount, setPostsCount] = useState(cachedOverview?.postsCount || 0);
   const [showAllRecent, setShowAllRecent] = useState(false);
+  const [hoveredTrendKey, setHoveredTrendKey] = useState("");
 
   useEffect(() => {
     const onResize = () => setIsNarrow(getIsNarrow());
@@ -58,53 +59,19 @@ export default function OverviewPage() {
   useEffect(() => {
     let isMounted = true;
 
-    const fetchNodeCount = async (nodeName) => {
-      try {
-        const res = await axios.get(`${DB_URL}/${nodeName}.json`, {
-          params: { shallow: true },
-          timeout: 4000,
-        });
-        return Object.keys(res.data || {}).length;
-      } catch (error) {
-        const fallbackRes = await axios.get(`${DB_URL}/${nodeName}.json`, {
-          timeout: 5000,
-        }).catch(() => ({ data: {} }));
-        return Object.keys(fallbackRes.data || {}).length;
-      }
-    };
-
     const loadOverview = async () => {
       try {
         if (!cachedOverview && isMounted) {
           setLoading(true);
         }
 
-        const [studentsRes, resolvedParentsCount, resolvedPostsCount] = await Promise.all([
-          axios.get(`${DB_URL}/Students.json`, { timeout: 5000 }).catch(() => ({ data: {} })),
-          fetchNodeCount("Parents"),
-          fetchNodeCount("posts"),
-        ]);
-
-        const studentsObj = studentsRes.data || {};
-
-        const studentRows = Object.entries(studentsObj).map(([studentId, studentNode]) => {
-          const basicStudentInfo = studentNode?. basicStudentInformation || {};
-          return {
-            studentId,
-            userId: studentNode?.userId || "",
-            name: basicStudentInfo?.name || studentNode?.name || studentId || "No Name",
-            profileImage:
-              basicStudentInfo?.studentPhoto ||
-              studentNode?.studentPhoto ||
-              studentNode?.profileImage ||
-              "/default-profile.png",
-            grade: basicStudentInfo?.grade || studentNode?.grade || "-",
-            section: basicStudentInfo?.section || studentNode?.section || "-",
-            gender: String(basicStudentInfo?.gender || studentNode?.gender || "").trim().toLowerCase(),
-            status: String(basicStudentInfo?.status || studentNode?.status || "active").toLowerCase(),
-            createdAt: studentNode?.createdAt || studentNode?.registeredAt || basicStudentInfo?.admissionDate || null,
-          };
+        const res = await axios.get(`${API_BASE}/overview`, {
+          params: { schoolCode },
+          timeout: 12000,
         });
+        const studentRows = Array.isArray(res?.data?.students) ? res.data.students : [];
+        const resolvedParentsCount = Number(res?.data?.parentsCount || 0);
+        const resolvedPostsCount = Number(res?.data?.postsCount || 0);
 
         if (!isMounted) {
           return;
@@ -139,7 +106,7 @@ export default function OverviewPage() {
     return () => {
       isMounted = false;
     };
-  }, [DB_URL, OVERVIEW_CACHE_KEY]);
+  }, [API_BASE, OVERVIEW_CACHE_KEY, schoolCode]);
 
   const summary = useMemo(() => {
     const totalStudents = students.length;
@@ -242,11 +209,15 @@ export default function OverviewPage() {
     return date.toLocaleString();
   };
 
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
+
   const shellCardStyle = {
     background: "var(--surface-panel)",
     border: "1px solid var(--border-soft)",
     borderRadius: 16,
-    boxShadow: "var(--shadow-soft)",
+    // boxShadow: "var(--shadow-soft)",
   };
   const FEED_MAX_WIDTH = "min(1320px, 100%)";
   const headerCardStyle = {
@@ -286,11 +257,56 @@ export default function OverviewPage() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        <Sidebar admin={stored} />
-        <div className="main-content google-main" style={{ flex: "1.08 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "stretch", height: "100%", overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 2px" }}>
-            <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
+        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", top: "auto", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 12px 0 2px", display: "flex", justifyContent: "center" }}>
+            <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
           <div style={headerCardStyle}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
@@ -334,13 +350,13 @@ export default function OverviewPage() {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "1.4fr 1fr", gap: 12, alignItems: "start" }}>
-            <div style={{ ...shellCardStyle, borderRadius: 14, padding: 14 }}>
+            <div style={{ ...shellCardStyle, borderRadius: 18, padding: 16, background: "linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--surface-accent) 26%, white) 100%)", border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>New Registrations (This Month)</div>
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)" }}>Latest students added during the current calendar month.</div>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", maxWidth: 440 }}>Latest students added during the current calendar month, paired with a cleaner registration trend snapshot.</div>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "7px 11px", borderRadius: 999, background: "#ffffff", border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))", fontWeight: 700 }}>
                   {loading ? "--" : summary.thisMonthRegistrationCount} registrations • Posts: {loading ? "--" : postsCount}
                 </div>
               </div>
@@ -348,19 +364,29 @@ export default function OverviewPage() {
               {loading ? (
                 <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading students...</div>
               ) : summary.recentStudents.length === 0 ? (
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No registrations found for this month yet.</div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "16px 18px", borderRadius: 16, background: "#ffffff", border: "1px solid var(--border-soft)" }}>No registrations found for this month yet.</div>
               ) : (
                 <div style={{ display: "grid", gap: 8 }}>
-                  {(showAllRecent ? summary.recentStudents : summary.recentStudents.slice(0, 5)).map((student) => (
-                    <div key={student.studentId} style={{ ...softRowStyle, gridTemplateColumns: isNarrow ? "42px 1fr" : "42px 1fr auto" }}>
-                      <img src={student.profileImage} alt={student.name} style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)" }} />
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{student.name}</div>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Registered: {formatDateTime(student.createdAt)}</div>
+                  {(showAllRecent ? summary.recentStudents : summary.recentStudents.slice(0, 5)).map((student, index) => (
+                    <div key={student.studentId} style={{ ...softRowStyle, gridTemplateColumns: isNarrow ? "48px 1fr" : "48px minmax(0, 1fr) auto", padding: "12px 14px", borderRadius: 16, background: "#ffffff", boxShadow: "0 12px 24px rgba(15, 23, 42, 0.04)" }}>
+                      <div style={{ position: "relative", width: 46, height: 46 }}>
+                        <ProfileAvatar src={student.profileImage} name={student.name} alt={student.name} loading="lazy" style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)" }} />
+                        <div style={{ position: "absolute", right: -2, bottom: -1, minWidth: 18, height: 18, borderRadius: 999, background: "var(--accent-strong)", color: "#ffffff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #ffffff" }}>{index + 1}</div>
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-strong)", gridColumn: isNarrow ? "2 / 3" : "auto", padding: "6px 10px", borderRadius: 999, background: "color-mix(in srgb, var(--accent) 10%, white)", border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border-soft))" }}>
-                        G{student.grade} • {student.section}
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>{student.name}</div>
+                          <div style={{ padding: "3px 8px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-accent) 78%, white)", border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))", fontSize: 10, color: "var(--text-secondary)", fontWeight: 700 }}>{student.studentId}</div>
+                        </div>
+                        <div style={{ marginTop: 5, display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11, color: "var(--text-secondary)" }}>
+                          <span>Registered: {formatDateTime(student.createdAt)}</span>
+                          <span style={{ color: "var(--text-muted)" }}>Status: {student.status || "active"}</span>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, gridColumn: isNarrow ? "2 / 3" : "auto", justifySelf: isNarrow ? "flex-start" : "flex-end" }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-strong)", padding: "6px 10px", borderRadius: 999, background: "color-mix(in srgb, var(--accent) 10%, white)", border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border-soft))" }}>
+                          G{student.grade} • {student.section}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -374,12 +400,13 @@ export default function OverviewPage() {
                         alignSelf: "flex-start",
                         border: "1px solid var(--border-soft)",
                         borderRadius: 999,
-                        background: "var(--surface-panel)",
+                        background: "#ffffff",
                         color: "var(--accent-strong)",
                         fontSize: 12,
                         fontWeight: 800,
                         padding: "7px 12px",
                         cursor: "pointer",
+                        // boxShadow: "0 10px 22px rgba(15, 23, 42, 0.05)",
                       }}
                     >
                       {showAllRecent ? "See less" : `See more (${summary.recentStudents.length - 5})`}
@@ -388,42 +415,95 @@ export default function OverviewPage() {
                 </div>
               )}
 
-              <div style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 10, marginTop: 12 }}>
+              <div style={{ borderTop: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))", paddingTop: 12, marginTop: 14 }}>
                 <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>Monthly Registration Trend</div>
                 {(() => {
                   const trend = summary.monthlyTrend || [];
                   const maxValue = Math.max(summary.monthlyTrendMax || 0, 1);
+                  const chartScaleMax = Math.max(1, Math.ceil(maxValue * 1.18));
                   const chartWidth = 100;
-                  const chartHeight = 34;
+                  const chartHeight = 42;
                   const step = trend.length > 1 ? chartWidth / (trend.length - 1) : 0;
-                  const points = trend
+                  const pointCoordinates = trend.map((row, index) => {
+                    const x = trend.length > 1 ? index * step : chartWidth / 2;
+                    const y = chartHeight - (Number(row.count || 0) / chartScaleMax) * chartHeight;
+                    return {
+                      ...row,
+                      x,
+                      y,
+                    };
+                  });
+                  const points = pointCoordinates
                     .map((row, index) => {
                       const x = trend.length > 1 ? index * step : chartWidth / 2;
-                      const y = chartHeight - (Number(row.count || 0) / maxValue) * chartHeight;
-                      return `${x},${y}`;
+                      return `${x},${row.y}`;
                     })
                     .join(" ");
+                  const areaPoints = [
+                    `0,${chartHeight}`,
+                    ...pointCoordinates.map((row) => `${row.x},${row.y}`),
+                    `${chartWidth},${chartHeight}`,
+                  ].join(" ");
+                  const latestPoint = pointCoordinates[pointCoordinates.length - 1] || null;
+                  const activePoint = pointCoordinates.find((row) => row.key === hoveredTrendKey) || latestPoint;
+                  const gridValues = [0, 0.33, 0.66, 1].map((ratio) => ({
+                    value: Math.round(chartScaleMax * ratio),
+                    y: chartHeight - chartHeight * ratio,
+                  }));
 
                   return (
                     <>
-                      <svg viewBox={`0 0 ${chartWidth} 42`} style={{ width: "100%", height: 140, display: "block" }}>
-                        <line x1="0" y1={chartHeight} x2={chartWidth} y2={chartHeight} stroke="var(--border-strong)" strokeWidth="0.5" />
-                        <polyline fill="none" stroke="var(--accent-strong)" strokeWidth="1.2" points={points} />
-                        {trend.map((row, index) => {
-                          const x = trend.length > 1 ? index * step : chartWidth / 2;
-                          const y = chartHeight - (Number(row.count || 0) / maxValue) * chartHeight;
-                          return (
-                            <g key={`${row.key}-point`}>
-                              <circle cx={x} cy={y} r="1.1" fill="var(--accent)" />
-                              <text x={x} y={chartHeight + 5.5} textAnchor="middle" fontSize="2.6" fill="var(--text-secondary)">{row.label}</text>
+                      <div style={{ background: "#ffffff", padding: "6px 0 0" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+                          <div>
+                            {/* <div style={{ fontSize: 12, fontWeight: 800, color: "var(--accent-strong)", letterSpacing: "0.03em", textTransform: "uppercase" }}>Registration momentum</div> */}
+                            {/* <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)" }}>Hover the points to inspect each month.</div> */}
+                          </div>
+                          <div style={{ padding: "8px 11px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-accent) 55%, white)", border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))", fontSize: 11, color: "var(--text-secondary)", fontWeight: 700 }}>
+                            {activePoint ? `${activePoint.label}: ${activePoint.count}` : "No trend data"}
+                          </div>
+                        </div>
+                        <svg viewBox={`0 0 ${chartWidth} 52`} style={{ width: "100%", height: 216, display: "block" }}>
+                          <defs>
+                            <linearGradient id="overviewTrendArea" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="color-mix(in srgb, var(--accent) 28%, white)" />
+                              <stop offset="100%" stopColor="rgba(0, 122, 251, 0.02)" />
+                            </linearGradient>
+                            <linearGradient id="overviewTrendLine" x1="0" y1="0" x2="1" y2="0">
+                              <stop offset="0%" stopColor="color-mix(in srgb, var(--accent-strong) 88%, white)" />
+                              <stop offset="100%" stopColor="var(--accent)" />
+                            </linearGradient>
+                          </defs>
+                          {gridValues.map((row) => (
+                            <g key={`grid-${row.y}`}>
+                              <line x1="0" y1={row.y} x2={chartWidth} y2={row.y} stroke="color-mix(in srgb, var(--accent) 10%, var(--border-soft))" strokeWidth="0.45" strokeDasharray="2 2" />
+                              <text x="0" y={Math.max(3, row.y - 1.4)} fontSize="2.6" fill="var(--text-muted)">{row.value}</text>
                             </g>
-                          );
-                        })}
-                      </svg>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 6, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
-                        {trend.map((row) => (
-                          <span key={`${row.key}-meta`}>{row.label}: {row.count}</span>
-                        ))}
+                          ))}
+                          {activePoint ? (
+                            <line x1={activePoint.x} y1="0" x2={activePoint.x} y2={chartHeight} stroke="color-mix(in srgb, var(--accent) 18%, var(--border-soft))" strokeWidth="0.5" strokeDasharray="2 2" />
+                          ) : null}
+                          <polygon fill="url(#overviewTrendArea)" points={areaPoints} />
+                          <polyline fill="none" stroke="url(#overviewTrendLine)" strokeWidth="1.35" strokeLinejoin="round" strokeLinecap="round" points={points} />
+                          {pointCoordinates.map((row) => (
+                            <g
+                              key={`${row.key}-point`}
+                              onMouseEnter={() => setHoveredTrendKey(row.key)}
+                              onMouseLeave={() => setHoveredTrendKey("")}
+                              style={{ cursor: "pointer" }}
+                            >
+                              <circle cx={row.x} cy={row.y} r={activePoint?.key === row.key ? "3.1" : "2.05"} fill="#ffffff" stroke="var(--accent-strong)" strokeWidth={activePoint?.key === row.key ? "1.15" : "0.9"} />
+                              <circle cx={row.x} cy={row.y} r={activePoint?.key === row.key ? "1.15" : "0.75"} fill="var(--accent-strong)" />
+                              {activePoint?.key === row.key ? (
+                                <g>
+                                  <rect x={Math.max(0, row.x - 10)} y={Math.max(1, row.y - 9)} width="20" height="6.6" rx="2.2" fill="#ffffff" stroke="color-mix(in srgb, var(--accent) 10%, var(--border-soft))" strokeWidth="0.35" />
+                                  <text x={row.x} y={Math.max(5.1, row.y - 4.7)} textAnchor="middle" fontSize="2.45" fill="var(--text-primary)" fontWeight="700">{row.count}</text>
+                                </g>
+                              ) : null}
+                              <text x={row.x} y="49" textAnchor="middle" fontSize="2.7" fill={activePoint?.key === row.key ? "var(--accent-strong)" : "var(--text-secondary)"}>{row.label}</text>
+                            </g>
+                          ))}
+                        </svg>
                       </div>
                     </>
                   );

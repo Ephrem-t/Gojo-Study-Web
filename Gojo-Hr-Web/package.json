@@ -1,10 +1,18 @@
 {
   "name": "gojo-hr-web",
   "version": "1.0.0",
-  "description": "",
+  "description": "Production helpers and maintenance commands for Gojo HR Web",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
+    "start:backend": "python backend/hr_app.py",
+    "validate:backend": "python -m py_compile backend/hr_app.py backend/backfill_post_previews.py backend/backfill_profile_image_cache_headers.py",
+    "estimate:hr-cost": "node scripts/estimate-hr-firebase-cost.mjs",
+    "backfill:post-previews": "python backend/backfill_post_previews.py",
+    "backfill:post-previews:dry-run": "python backend/backfill_post_previews.py --dry-run",
+    "backfill:profile-cache": "python backend/backfill_profile_image_cache_headers.py",
+    "backfill:profile-cache:dry-run": "python backend/backfill_profile_image_cache_headers.py --dry-run --all-schools"
   },
   "keywords": [],
   "author": "",

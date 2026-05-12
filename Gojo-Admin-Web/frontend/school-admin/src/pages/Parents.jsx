@@ -20,10 +20,85 @@ import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  normalizeChatSummaryValue,
+} from "../utils/chatRtdb";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
+const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const normalizeText = (value) => String(value || "").trim();
+
+const uniqueTextValues = (values = []) => {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : []).reduce((result, value) => {
+    const text = normalizeText(value);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) {
+      return result;
+    }
+    seen.add(key);
+    result.push(text);
+    return result;
+  }, []);
+};
+
+const normalizeParentDirectoryChild = (child = {}) => ({
+  studentId: normalizeText(child?.studentId),
+  userId: normalizeText(child?.userId),
+  name: normalizeText(child?.name) || "N/A",
+  email: normalizeText(child?.email) || "N/A",
+  grade: normalizeText(child?.grade) || "N/A",
+  section: normalizeText(child?.section) || "N/A",
+  relationship: normalizeText(child?.relationship) || "N/A",
+  profileImage: normalizeText(child?.profileImage) || "/default-profile.png",
+});
+
+const normalizeParentDirectoryEntry = (parentKey, parentValue = {}) => {
+  const children = Array.isArray(parentValue?.children)
+    ? parentValue.children.map((child) => normalizeParentDirectoryChild(child)).filter((child) => child.studentId)
+    : Object.values(parentValue?.children || {})
+        .map((child) => normalizeParentDirectoryChild(child))
+        .filter((child) => child.studentId);
+  const relationships = uniqueTextValues([
+    ...(Array.isArray(parentValue?.relationships) ? parentValue.relationships : []),
+    ...children.map((child) => child.relationship),
+  ]);
+  const firstChild = children[0] || {};
+  const isActive = parentValue?.isActive !== false;
+
+  return {
+    directoryKey: normalizeText(parentKey),
+    userId: normalizeText(parentValue?.userId) || normalizeText(parentKey),
+    parentId: normalizeText(parentValue?.parentId) || "N/A",
+    name: normalizeText(parentValue?.name) || normalizeText(parentValue?.username) || "No Name",
+    username: normalizeText(parentValue?.username) || null,
+    email: normalizeText(parentValue?.email) || "N/A",
+    childName: normalizeText(parentValue?.childName) || firstChild.name || "N/A",
+    childRelationship: normalizeText(parentValue?.childRelationship) || firstChild.relationship || "N/A",
+    profileImage: normalizeText(parentValue?.profileImage) || "/default-profile.png",
+    phone: normalizeText(parentValue?.phone) || "N/A",
+    age: parentValue?.age ?? null,
+    city: normalizeText(parentValue?.city) || (parentValue?.address && parentValue.address.city) || null,
+    citizenship: normalizeText(parentValue?.citizenship) || null,
+    job: normalizeText(parentValue?.job) || null,
+    address: parentValue?.address || null,
+    isActive,
+    status: normalizeText(parentValue?.status) || (isActive ? "Active" : "Inactive"),
+    additionalInfo: normalizeText(parentValue?.additionalInfo) || "N/A",
+    createdAt: parentValue?.createdAt || parentValue?.updatedAt || null,
+    relationships,
+    children,
+    detailsLoaded: true,
+  };
+};
+
+const sortParentsByName = (items = []) =>
+  [...items].sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
 
 function Parent() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -35,24 +110,27 @@ function Parent() {
   const [newMessageText, setNewMessageText] = useState("");
   const [parentInfo, setParentInfo] = useState(null);
   const [children, setChildren] = useState([]);
-  const [expandedChildren, setExpandedChildren] = useState({});
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
   const [showPostDropdown, setShowPostDropdown] = useState(false);
   const [selectedParent, setSelectedParent] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 900);
   const [parentFullscreenOpen, setParentFullscreenOpen] = useState(false);
+  const [togglingParentActive, setTogglingParentActive] = useState(false);
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const typingTimeoutRef = useRef(null);
+  const usersDataRef = useRef({});
+  const parentsDataRef = useRef({});
+  const studentsDataRef = useRef({});
   const [typingUserId, setTypingUserId] = useState(null);
 
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Build backward-compatible admin object from `finance` or legacy `admin` in localStorage
+  // Build the admin object from the Admin session for the Admin web app.
   const _stored = (() => {
-    const s = localStorage.getItem("registrar") || localStorage.getItem("admin");
+    const s = localStorage.getItem("admin");
     if (!s) return {};
     try {
       return JSON.parse(s) || {};
@@ -69,7 +147,46 @@ function Parent() {
     token: _stored.token || _stored.accessToken || _stored.idToken || null,
   };
   const schoolCode = _stored.schoolCode || "";
-  const DB = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB = schoolNodeBase(schoolCode);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    if (!schoolCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode, path },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+  const patchSchoolNodeApi = async (path, patchValue = {}) => {
+    if (!schoolCode) {
+      return;
+    }
+
+    const currentValue = await readSchoolNodeApi(path, {});
+    const baseValue =
+      currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+        ? currentValue
+        : {};
+
+    await axios.put(
+      `${API_BASE}/school-node`,
+      {
+        schoolCode,
+        path,
+        value: {
+          ...baseValue,
+          ...(patchValue || {}),
+        },
+      },
+      { timeout: 12000 }
+    );
+  };
   // expose username (from Users node) for sidebar display
   admin.username = _stored.username || "";
   const adminId = admin.userId;
@@ -89,16 +206,91 @@ function Parent() {
     currentUserId: admin.userId,
   });
 
-  const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+  const maybeMarkLastMessageSeenForAdmin = async (chatKey, otherUserId = "") => {
     try {
-      const res = await axios.get(`${DB}/Chats/${chatKey}/lastMessage.json`).catch(() => ({ data: null }));
-      const last = res.data;
-      if (!last) return;
-      if (String(last.receiverId) === String(admin.userId) && last.seen === false) {
-        await axios.patch(`${DB}/Chats/${chatKey}/lastMessage.json`, { seen: true }).catch(() => {});
-      }
+      const summaryNodePath = buildChatSummaryPath(admin.userId, chatKey);
+      const summaryData = await readSchoolNodeApi(summaryNodePath, null);
+      const summary = normalizeChatSummaryValue(summaryData, {
+        chatId: chatKey,
+        otherUserId,
+      });
+      const shouldMarkSeen = Boolean(summary.chatId) && summary.lastSenderId && String(summary.lastSenderId) !== String(admin.userId) && !summary.lastMessageSeen;
+
+      await patchSchoolNodeApi(
+        summaryNodePath,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId,
+          unreadCount: 0,
+          ...(shouldMarkSeen
+            ? {
+                lastMessageSeen: true,
+                lastMessageSeenAt: Date.now(),
+              }
+            : {}),
+        })
+      ).catch(() => {});
     } catch (e) {
       // ignore
+    }
+  };
+
+  const updateParentInState = (parentUserId, updater) => {
+    setParents((previousParents) =>
+      previousParents.map((parentItem) =>
+        String(parentItem?.userId || "") === String(parentUserId || "")
+          ? { ...parentItem, ...(typeof updater === "function" ? updater(parentItem) : updater) }
+          : parentItem
+      )
+    );
+
+    setSelectedParent((previousParent) => {
+      if (!previousParent || String(previousParent.userId || "") !== String(parentUserId || "")) {
+        return previousParent;
+      }
+
+      return { ...previousParent, ...(typeof updater === "function" ? updater(previousParent) : updater) };
+    });
+
+    setParentInfo((previousParentInfo) => {
+      if (!previousParentInfo || String(previousParentInfo.userId || "") !== String(parentUserId || "")) {
+        return previousParentInfo;
+      }
+
+      return { ...previousParentInfo, ...(typeof updater === "function" ? updater(previousParentInfo) : updater) };
+    });
+  };
+
+  const toggleParentActive = async () => {
+    if (!selectedParent?.userId || togglingParentActive) return;
+
+    const nextIsActive = selectedParent.isActive === false;
+    const payload = {
+      isActive: nextIsActive,
+      status: nextIsActive ? "Active" : "Inactive",
+    };
+    const parentUserId = selectedParent.userId;
+    const parentId = selectedParent.parentId && selectedParent.parentId !== "N/A" ? selectedParent.parentId : "";
+    const directoryKey = selectedParent.directoryKey || parentUserId;
+
+    setTogglingParentActive(true);
+    try {
+      await Promise.all([
+        axios.patch(`${DB}/Users/${parentUserId}.json`, payload).catch(() => undefined),
+        parentId ? axios.patch(`${DB}/Parents/${parentId}.json`, payload).catch(() => undefined) : Promise.resolve(),
+        axios.patch(`${DB}/Parents/${parentUserId}.json`, payload).catch(() => undefined),
+        axios.patch(`${DB}/ParentDirectory/${directoryKey}.json`, payload).catch(() => undefined),
+        directoryKey !== parentUserId
+          ? axios.patch(`${DB}/ParentDirectory/${parentUserId}.json`, payload).catch(() => undefined)
+          : Promise.resolve(),
+      ]);
+
+      updateParentInState(parentUserId, payload);
+    } catch (error) {
+      console.error("Parent active toggle error:", error);
+      alert(`Could not ${nextIsActive ? "activate" : "deactivate"} parent: ${error.message || error}`);
+    } finally {
+      setTogglingParentActive(false);
     }
   };
 
@@ -118,7 +310,38 @@ function Parent() {
   // Portrait detection helper used in sidebar layout
   const isPortrait = windowW <= 600;
   const contentLeft = 0;
-  const contentWidth = isNarrow ? "92%" : "760px";
+
+  const loadParentDatasets = async (options = {}) => {
+    const force = Boolean(options?.force);
+    const hasCachedDatasets =
+      Object.keys(usersDataRef.current || {}).length > 0 &&
+      Object.keys(parentsDataRef.current || {}).length > 0 &&
+      Object.keys(studentsDataRef.current || {}).length > 0;
+
+    if (!force && hasCachedDatasets) {
+      return {
+        usersData: usersDataRef.current,
+        parentsData: parentsDataRef.current,
+        studentsData: studentsDataRef.current,
+      };
+    }
+
+    const [usersData, parentsData, studentsData] = await Promise.all([
+      readSchoolNodeApi("Users", {}),
+      readSchoolNodeApi("Parents", {}),
+      readSchoolNodeApi("Students", {}),
+    ]);
+
+    usersDataRef.current = usersData || {};
+    parentsDataRef.current = parentsData || {};
+    studentsDataRef.current = studentsData || {};
+
+    return {
+      usersData: usersDataRef.current,
+      parentsData: parentsDataRef.current,
+      studentsData: studentsDataRef.current,
+    };
+  };
 
   const getUserByKeyOrUserId = (usersData, maybeUserId) => {
     if (!maybeUserId) return null;
@@ -257,18 +480,29 @@ function Parent() {
 
   // Fetch parents
   useEffect(() => {
+    let cancelled = false;
+
     const fetchParents = async () => {
       setLoadingParents(true);
       try {
-        const [usersRes, parentsRes, studentsRes] = await Promise.all([
-          axios.get(`${DB}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB}/Students.json`).catch(() => ({ data: {} })),
-        ]);
+        const parentDirectoryData = await readSchoolNodeApi("ParentDirectory", {});
+        const directoryParentList = sortParentsByName(
+          Object.entries(parentDirectoryData || {})
+            .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
+            .filter((parentValue) => parentValue.userId)
+        );
 
-        const users = usersRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const studentsData = studentsRes.data || {};
+        if (directoryParentList.length > 0) {
+          if (cancelled) return;
+          setParents(directoryParentList);
+          setSelectedParent((previousParent) => {
+            if (!previousParent?.userId) return previousParent;
+            return directoryParentList.find((parentValue) => String(parentValue.userId) === String(previousParent.userId)) || previousParent;
+          });
+          return;
+        }
+
+        const { usersData: users, parentsData, studentsData } = await loadParentDatasets();
 
         const findParentRecordByUserId = (canonicalUserId) => {
           if (!canonicalUserId) return null;
@@ -322,9 +556,11 @@ function Parent() {
             const parentRecord = findParentRecordByUserId(canonicalUserId);
             const firstChild = resolveFirstChildPreview(canonicalUserId);
             return {
+              directoryKey: canonicalUserId,
               userId: canonicalUserId,
               parentId: parentRecord?.parentId || "N/A",
               name: u.name || u.username || "No Name",
+              username: u.username || null,
               email: u.email || "N/A",
               childName: firstChild?.name || "N/A",
               childRelationship: firstChild?.relationship || "N/A",
@@ -335,18 +571,31 @@ function Parent() {
               citizenship: u.citizenship || null,
               job: u.job || null,
               address: u.address || null,
+              isActive: u.isActive ?? parentRecord?.isActive ?? true,
+              status: parentRecord?.status || (u.isActive === false ? "Inactive" : "Active"),
+              createdAt: parentRecord?.createdAt || u.createdAt || null,
+              detailsLoaded: false,
             };
           });
-        setParents(parentList);
+
+        if (cancelled) return;
+        setParents(sortParentsByName(parentList));
       } catch (err) {
         console.error("Error fetching parents:", err);
+        if (cancelled) return;
         setParents([]);
       } finally {
-        setLoadingParents(false);
+        if (!cancelled) {
+          setLoadingParents(false);
+        }
       }
     };
     fetchParents();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [schoolCode]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -379,14 +628,23 @@ function Parent() {
 
   // Fetch parent info & children
   useEffect(() => {
-    if (!selectedParentId) return;
+    if (!selectedParentId) {
+      setParentInfo(null);
+      setChildren([]);
+      return;
+    }
+
+    if (selectedParent?.detailsLoaded) {
+      setParentInfo(selectedParent);
+      setChildren(Array.isArray(selectedParent.children) ? selectedParent.children : []);
+      return;
+    }
 
     let cancelled = false;
 
     const fetchParentInfoAndChildren = async () => {
       try {
-        const parentsRes = await axios.get(`${DB}/Parents.json`).catch(() => ({ data: {} }));
-        const parentsData = parentsRes.data || {};
+        const { parentsData, usersData, studentsData } = await loadParentDatasets();
         const parentRecordEntry =
           Object.entries(parentsData).find(
             ([parentKey, p]) =>
@@ -395,11 +653,7 @@ function Parent() {
           ) || [];
         const parentRecordKey = parentRecordEntry[0] || null;
         const parentRecord = parentRecordEntry[1] || null;
-        const usersRes = await axios.get(`${DB}/Users.json`).catch(() => ({ data: {} }));
-        const usersData = usersRes.data || {};
         const userInfo = getUserByKeyOrUserId(usersData, selectedParentId) || {};
-        const studentsRes = await axios.get(`${DB}/Students.json`).catch(() => ({ data: {} }));
-        const studentsData = studentsRes.data || {};
         const resolvedChildLinks = getResolvedParentChildLinks({
           parentRecord,
           parentRecordKey,
@@ -450,14 +704,6 @@ function Parent() {
 
         if (cancelled) return;
 
-        setParentInfo(info);
-        setSelectedParent((prev) => {
-          if (!prev || String(prev.userId) !== String(selectedParentId)) {
-            return prev;
-          }
-          return { ...prev, ...info };
-        });
-
         const childrenList = resolvedChildLinks
           .map((childLink) => {
             const studentMatch = findStudentMatchById(studentsData, childLink.studentId);
@@ -478,6 +724,20 @@ function Parent() {
           })
           .filter(Boolean);
 
+        const hydratedParent = {
+          ...info,
+          children: childrenList,
+          detailsLoaded: true,
+        };
+
+        setParentInfo(hydratedParent);
+        setSelectedParent((prev) => {
+          if (!prev || String(prev.userId) !== String(selectedParentId)) {
+            return prev;
+          }
+          return { ...prev, ...hydratedParent };
+        });
+
         if (cancelled) return;
 
         setChildren(childrenList);
@@ -496,11 +756,14 @@ function Parent() {
     return () => {
       cancelled = true;
     };
-  }, [DB, selectedParentId]);
+  }, [DB, selectedParent, selectedParentId]);
 
   // Fetch chat messages in realtime
   useEffect(() => {
-    if (!chatId) return;
+    if (!chatId || !parentChatOpen) {
+      setMessages([]);
+      return;
+    }
     const db = getDatabase();
     const messagesRef = rdbRef(db, `Chats/${chatId}/messages`);
     const unsubscribe = onValue(messagesRef, async (snapshot) => {
@@ -524,15 +787,17 @@ function Parent() {
         } catch (err) {
           console.warn('Failed to patch parent seen updates', err);
         }
-        // also reset unread for admin; only mark lastMessage seen if it was sent to admin
-        axios.patch(`${DB}/Chats/${chatId}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-        maybeMarkLastMessageSeenForAdmin(chatId);
+      }
+
+      maybeMarkLastMessageSeenForAdmin(chatId, selectedParent?.userId).catch(() => {});
+
+      if (Object.keys(updates).length > 0) {
         // optimistic local update
         setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
       }
     });
     return () => unsubscribe();
-  }, [chatId]);
+  }, [DB, admin.userId, chatId, parentChatOpen, selectedParent?.userId]);
 
   // Listen to typing in realtime (only while popup open)
   useEffect(() => {
@@ -548,41 +813,6 @@ function Parent() {
     });
     return () => unsub();
   }, [chatId, parentChatOpen]);
-
-  // Mark messages as seen when the chat popup opens or selected parent changes
-  useEffect(() => {
-    if (!parentChatOpen || !selectedParent || !admin?.userId) return;
-    const chatKey = getChatId(admin.userId, selectedParent.userId);
-
-    const markSeen = async () => {
-      try {
-        const res = await axios.get(`${DB}/Chats/${chatKey}/messages.json`);
-        const data = res.data || {};
-        const updates = {};
-        Object.entries(data).forEach(([msgId, msg]) => {
-          if (msg && msg.receiverId === admin.userId && !msg.seen) {
-            updates[`${msgId}/seen`] = true;
-          }
-        });
-
-        if (Object.keys(updates).length > 0) {
-          // Patch the messages node with per-message seen updates
-          await axios.patch(`${DB}/Chats/${chatKey}/messages.json`, updates).catch(() => {});
-        }
-
-        // Optimistically update local state
-        setMessages((prev) => prev.map((m) => (m.receiverId === admin.userId ? { ...m, seen: true } : m)));
-      } catch (err) {
-        console.warn("Failed to mark messages as seen:", err);
-      }
-    };
-
-    markSeen();
-    // also reset unread counter for admin in chat root
-    axios.patch(`${DB}/Chats/${chatKey}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-    maybeMarkLastMessageSeenForAdmin(chatKey);
-    axios.put(`${DB}/Chats/${chatKey}/typing.json`, null).catch(() => {});
-  }, [parentChatOpen, selectedParent, admin]);
 
   // Typing handler: write typing.userId to chat root while admin types
   const handleTyping = (text) => {
@@ -630,9 +860,7 @@ function Parent() {
     if (!chatId) return;
     await axios.patch(`${DB}/Chats/${chatId}.json`, {
       participants: { [admin.userId]: true, [selectedParent.userId]: true },
-      unread: { [admin.userId]: 0, [selectedParent.userId]: 0 },
       typing: null,
-      lastMessage: null,
     }).catch(() => {});
   };
 
@@ -662,35 +890,66 @@ function Parent() {
       const pushRes = await axios.post(`${DB}/Chats/${id}/messages.json`, newMsg).catch(() => ({ data: null }));
       const generatedId = pushRes?.data?.name || `${Date.now()}`;
 
-      // Build a full lastMessage object matching desired DB structure
-      const lastMessage = {
-        messageId: generatedId,
-        senderId: newMsg.senderId,
-        receiverId: newMsg.receiverId,
-        text: newMsg.text || "",
-        type: newMsg.type || "text",
-        timeStamp: newMsg.timeStamp,
-        seen: false,
-        edited: false,
-        deleted: false,
-      };
-
-      // Ensure chat root contains participants, typing cleared, and full lastMessage
+      // Ensure chat root contains participants and typing cleared.
       await axios.patch(`${DB}/Chats/${id}.json`, {
         participants: { [admin.userId]: true, [selectedParent.userId]: true },
-        lastMessage,
         typing: null,
       }).catch(() => {});
 
-      // increment unread for receiver (preserve existing unread counts)
+      await Promise.all([
+        axios.patch(
+          `${DB}/${buildChatSummaryPath(admin.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: selectedParent.userId,
+            unreadCount: 0,
+            lastMessageText: newMsg.text || "",
+            lastMessageType: newMsg.type || "text",
+            lastMessageTime: newMsg.timeStamp,
+            lastSenderId: admin.userId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            lastMessageText: newMsg.text || "",
+            lastMessageType: newMsg.type || "text",
+            lastMessageTime: newMsg.timeStamp,
+            lastSenderId: admin.userId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]).catch(() => {});
+
+      // increment unread for receiver summary
       try {
-        const unreadRes = await axios.get(`${DB}/Chats/${id}/unread.json`);
-        const unread = unreadRes.data || {};
-        const prev = Number(unread[selectedParent.userId] || 0);
-        const updated = { ...(unread || {}), [selectedParent.userId]: prev + 1, [admin.userId]: Number(unread[admin.userId] || 0) };
-        await axios.put(`${DB}/Chats/${id}/unread.json`, updated).catch(() => {});
+        const summaryRes = await axios.get(`${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`);
+        const summary = normalizeChatSummaryValue(summaryRes.data, {
+          chatId: id,
+          otherUserId: admin.userId,
+        });
+        await axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            unreadCount: Number(summary.unreadCount || 0) + 1,
+          })
+        ).catch(() => {});
       } catch (uErr) {
-        await axios.put(`${DB}/Chats/${id}/unread.json`, { [selectedParent.userId]: 1, [admin.userId]: 0 }).catch(() => {});
+        await axios.patch(
+          `${DB}/${buildChatSummaryPath(selectedParent.userId, id)}.json`,
+          buildChatSummaryUpdate({
+            chatId: id,
+            otherUserId: admin.userId,
+            unreadCount: 1,
+          })
+        ).catch(() => {});
       }
 
       // update local UI state immediately and clear typing indicator
@@ -706,9 +965,8 @@ function Parent() {
   useEffect(() => {
     if (!selectedParent || !admin?.userId) return;
     const id = getChatId(admin.userId, selectedParent.userId);
-    axios.patch(`${DB}/Chats/${id}/unread.json`, { [admin.userId]: 0 }).catch(() => {});
-    maybeMarkLastMessageSeenForAdmin(id);
-  }, [selectedParent, admin]);
+    maybeMarkLastMessageSeenForAdmin(id, selectedParent.userId).catch(() => {});
+  }, [DB, selectedParent, admin]);
 
   // allow rendering even if no admin/userId is present; effects will no-op when adminId is falsy
 
@@ -731,34 +989,37 @@ function Parent() {
     });
   }, [parents, normalizedSearch]);
 
-  // MAIN CONTENT (Teachers-like layout)
-  const mainContentStyle = {
-    padding: "10px 20px 20px",
-    flex: 1,
-    minWidth: 0,
-    boxSizing: "border-box",
-    height: "100%",
-    overflowY: "auto",
-    overflowX: "hidden",
-  };
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
+  const rightSidebarOffset = !isPortrait ? 408 : 2;
+  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const contentWidth = isNarrow
+    ? "100%"
+    : !isPortrait
+      ? "min(760px, max(320px, calc(100vw - 560px)))"
+      : "760px";
 
-  const pageBackground = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
-
-  const panelStyle = {
+  const shellCardStyle = {
     background: "var(--surface-panel)",
     border: "1px solid var(--border-soft)",
-    boxShadow: "var(--shadow-panel)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+
+  const headerCardStyle = {
+    ...shellCardStyle,
+    borderRadius: 14,
+    padding: "16px 18px 14px",
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
   };
 
   const elevatedPanelStyle = {
     background: "var(--surface-panel)",
     border: "1px solid var(--border-soft)",
     boxShadow: "var(--shadow-soft)",
-  };
-
-  const heroStyle = {
-    position: "relative",
-    overflow: "hidden",
   };
 
   const searchShellStyle = {
@@ -773,17 +1034,18 @@ function Parent() {
   };
 
   const sidebarShellStyle = {
-    background: "var(--surface-overlay)",
+    background: "var(--surface-panel)",
     boxShadow: "var(--shadow-panel)",
-    borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+    border: isPortrait ? "none" : "1px solid var(--border-soft)",
+    borderRadius: isPortrait ? 0 : 18,
   };
 
   const detailsCardStyle = {
-    padding: "12px",
-    borderRadius: 12,
+    padding: "14px",
+    borderRadius: 16,
     margin: "0 auto",
     maxWidth: 380,
-    background: "var(--surface-panel)",
+    background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
     border: "1px solid var(--border-soft)",
     boxShadow: "var(--shadow-soft)",
   };
@@ -792,11 +1054,11 @@ function Parent() {
     alignItems: "center",
     justifyContent: "flex-start",
     display: "flex",
-    background: "var(--surface-muted)",
-    padding: "8px",
-    borderRadius: 10,
+    background: "var(--surface-soft)",
+    padding: "10px",
+    borderRadius: 14,
     border: "1px solid var(--border-soft)",
-    minHeight: 36,
+    minHeight: 52,
   };
 
   const statusValueColor = (label, value) => {
@@ -806,14 +1068,15 @@ function Parent() {
 
   const tabButtonStyle = (isActive) => ({
     flex: 1,
-    padding: "6px",
-    background: "none",
+    padding: "8px",
+    background: isActive ? "var(--surface-accent)" : "transparent",
     border: "none",
     cursor: "pointer",
-    fontWeight: 600,
+    fontWeight: 700,
     color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
-    fontSize: "10px",
-    borderBottom: isActive ? "3px solid var(--accent-strong)" : "3px solid transparent",
+    fontSize: "11px",
+    borderBottom: isActive ? "2px solid var(--accent-strong)" : "2px solid transparent",
+    transition: "all 0.2s ease",
   });
 
   const chatFabStyle = {
@@ -868,6 +1131,7 @@ function Parent() {
   };
 
   const parentCardBase = {
+    maxWidth: "100%",
     minHeight: "86px",
     borderRadius: "14px",
     padding: "12px",
@@ -875,6 +1139,7 @@ function Parent() {
     transition: "all 0.25s ease",
     width: "100%",
     boxSizing: "border-box",
+    position: "relative",
   };
 
   const renderParentProfilePanel = (isFullscreen = false) => {
@@ -887,6 +1152,7 @@ function Parent() {
     const formattedStatus = activeParent.status
       ? `${String(activeParent.status).charAt(0).toUpperCase()}${String(activeParent.status).slice(1)}`
       : "—";
+    const parentIsActive = activeParent.isActive !== false;
     const formattedRelationships = Array.isArray(activeParent.relationships) && activeParent.relationships.length > 0
       ? Array.from(new Set(activeParent.relationships.filter(Boolean))).join(", ")
       : (activeParent.childRelationship && activeParent.childRelationship !== "N/A" ? activeParent.childRelationship : "—");
@@ -923,22 +1189,75 @@ function Parent() {
 
     const detailsSection = (
       <div style={detailsCardStyle}>
-        <h3 style={{ margin: 0, marginBottom: 6, color: "var(--text-primary)", fontWeight: 800, letterSpacing: "0.1px", fontSize: 12, textAlign: "left" }}>
-          Parent Profile
-        </h3>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {profileItems.map((item) => (
-            <div key={item.label} style={{ ...infoTileStyle, gridColumn: item.fullWidth ? "1 / -1" : "auto" }}>
-              <div>
-                <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.4px", color: "var(--text-muted)", textTransform: "uppercase" }}>
-                  {item.label}
-                </div>
-                <div style={{ fontSize: 10, fontWeight: 600, color: statusValueColor(item.label, item.value), marginTop: 2, wordBreak: "break-word" }}>
-                  {item.value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
-                </div>
-              </div>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>
+              Parent profile
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Cleaner guardian and contact snapshot.</div>
+          </div>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: parentIsActive ? "var(--success)" : "var(--danger)", fontSize: 11, fontWeight: 900 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 999, background: parentIsActive ? "var(--success)" : "var(--danger)" }} />
+            {parentIsActive ? "Active" : "Inactive"}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={toggleParentActive}
+            disabled={togglingParentActive}
+            style={{
+              border: "none",
+              borderRadius: 10,
+              padding: "8px 12px",
+              background: parentIsActive ? "#ff4d4f" : "var(--accent-strong)",
+              color: "#fff",
+              cursor: togglingParentActive ? "not-allowed" : "pointer",
+              fontSize: 11,
+              fontWeight: 800,
+              opacity: togglingParentActive ? 0.75 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {togglingParentActive ? "Saving..." : parentIsActive ? "Deactivate" : "Activate"}
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginBottom: 12 }}>
+          {[
+            { label: "Children", value: children.length || 0 },
+            { label: "Status", value: parentIsActive ? "Active" : "Inactive" },
+            { label: "Relation", value: formattedRelationships === "—" ? "N/A" : formattedRelationships.split(",")[0] },
+          ].map((item) => (
+            <div key={item.label} style={{ background: "var(--surface-soft)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: "12px 10px", textAlign: "center" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>{item.label}</div>
+              <div style={{ fontSize: item.label === "Relation" ? 12 : 20, fontWeight: 900, color: statusValueColor(item.label === "Status" ? "Status" : item.label, item.value), marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.value}</div>
             </div>
           ))}
+        </div>
+
+        <div style={{ padding: "12px 14px", borderRadius: 14, background: "var(--surface-soft)", border: "1px solid var(--border-soft)", marginBottom: 12 }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.45px" }}>Parent ID</div>
+          <div style={{ fontSize: 15, color: "var(--text-primary)", fontWeight: 900, marginTop: 4 }}>{activeParent.parentId || "N/A"}</div>
+        </div>
+
+        <div style={{ ...detailsCardStyle, padding: 14, boxShadow: "none", margin: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px", marginBottom: 10 }}>Profile details</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {profileItems.map((item) => (
+              <div key={item.label} style={{ ...infoTileStyle, gridColumn: item.fullWidth ? "1 / -1" : "auto" }}>
+                <div>
+                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.4px", color: "var(--text-muted)", textTransform: "uppercase" }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: statusValueColor(item.label, item.value), marginTop: 2, wordBreak: "break-word" }}>
+                    {item.value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -962,11 +1281,7 @@ function Parent() {
                 ...elevatedPanelStyle,
               }}
             >
-              <img
-                src={c.profileImage}
-                alt={c.name}
-                style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid var(--accent-strong)" }}
-              />
+              <ProfileAvatar src={c.profileImage} name={c.name} alt={c.name} loading="lazy" style={{ width: 44, height: 44, borderRadius: 22, objectFit: "cover", border: "2px solid var(--accent-strong)" }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {c.name}
@@ -1033,11 +1348,7 @@ function Parent() {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img
-                  src={activeParent.profileImage || "/default-profile.png"}
-                  alt={activeParent.name}
-                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
-                />
+                <ProfileAvatar src={activeParent.profileImage} name={activeParent.name} alt={activeParent.name} style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }} />
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{activeParent.name || "Parent"}</div>
                   <div style={{ fontSize: 12, opacity: 0.95 }}>
@@ -1105,15 +1416,17 @@ function Parent() {
           width: isPortrait ? "100%" : "380px",
           position: "fixed",
           left: isPortrait ? 0 : "auto",
-          right: 0,
-          top: isPortrait ? 0 : "55px",
-          height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+          right: isPortrait ? 0 : 14,
+          top: isPortrait ? 0 : "calc(var(--topbar-height) + 18px)",
+          height: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
+          maxHeight: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
           ...sidebarShellStyle,
-          zIndex: 300,
+          zIndex: 1000,
           display: "flex",
           flexDirection: "column",
-          overflow: "hidden",
-          fontSize: "10px",
+          overflowY: "auto",
+          padding: "14px",
+          fontSize: "12px",
         };
 
     return (
@@ -1175,7 +1488,7 @@ function Parent() {
           </div>
         )}
 
-        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "14px", overflow: "hidden" }}>
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div
             style={{
               background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
@@ -1194,11 +1507,7 @@ function Parent() {
                 border: "3px solid rgba(255,255,255,0.8)",
               }}
             >
-              <img
-                src={selectedParent.profileImage}
-                alt={selectedParent.name}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              />
+              <ProfileAvatar src={selectedParent.profileImage} name={selectedParent.name} alt={selectedParent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
             <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedParent.name}</h2>
             <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedParent.parentId || "No Parent ID"}</p>
@@ -1309,24 +1618,100 @@ function Parent() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: pageBackground, minHeight: "100vh", height: "100vh", overflow: "hidden" }}>
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        <Sidebar admin={admin} />
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-soft": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+        "--on-accent": "#ffffff",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         {/* MAIN CONTENT */}
-        <main className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`} style={mainContentStyle}>
-          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
+        <main
+          className={`main-content ${selectedParent && sidebarVisible && !parentFullscreenOpen ? "sidebar-open" : ""}`}
+          style={{
+            flex: "1 1 0",
+            minWidth: 0,
+            maxWidth: "none",
+            margin: 0,
+            boxSizing: "border-box",
+            alignSelf: "flex-start",
+            minHeight: "calc(100vh - 24px)",
+            overflowY: "visible",
+            overflowX: "hidden",
+            position: "relative",
+            padding: `0 ${selectedParent && sidebarVisible && !parentFullscreenOpen ? rightSidebarOffset : 2}px 0 2px`,
+            display: "flex",
+            justifyContent: "center",
+          }}
+        >
+          <div className="main-inner" style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
             <div
               className="section-header-card"
-              style={{
-                marginBottom: "12px",
-                marginLeft: contentLeft,
-                width: contentWidth,
-                ...heroStyle,
-              }}
+              style={headerCardStyle}
             >
-              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Parents</h2>
-              <div className="section-header-card__subtitle">Total parents: {filteredParents.length}</div>
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+                <div>
+                  <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em" }}>Parents</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-secondary)", maxWidth: 620, lineHeight: 1.5 }}>
+                    Manage parent accounts, child links, activation status, and communication from the same admin workspace as the Students page.
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, position: "relative", zIndex: 1 }}>
+                {[
+                  { label: `Total: ${parents.length}` },
+                  { label: `Visible: ${filteredParents.length}` },
+                  { label: `Active: ${parents.filter((parent) => parent.isActive !== false).length}` },
+                ].map((item) => (
+                  <div key={item.label} style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                    {item.label}
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
@@ -1380,12 +1765,12 @@ function Parent() {
                     style={{
                       ...parentCardBase,
                       width: contentWidth,
-                      background: selectedParent?.userId === p.userId ? "var(--accent-soft)" : "var(--surface-panel)",
+                      background: selectedParent?.userId === p.userId ? "var(--surface-accent)" : "var(--surface-panel)",
                       border: selectedParent?.userId === p.userId ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
                       boxShadow: selectedParent?.userId === p.userId ? "var(--shadow-glow)" : "var(--shadow-soft)",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 94 }}>
                       <div
                         style={{
                           width: 36,
@@ -1403,18 +1788,7 @@ function Parent() {
                       >
                         {i + 1}
                       </div>
-                      <img
-                        src={p.profileImage}
-                        alt={p.name}
-                        style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: "50%",
-                          objectFit: "cover",
-                          border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)",
-                          transition: "all 0.3s ease",
-                        }}
-                      />
+                      <ProfileAvatar src={p.profileImage} name={p.name} alt={p.name} loading="lazy" style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)", transition: "all 0.3s ease" }} />
                       <div style={{ minWidth: 0 }}>
                         <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {p.name}
@@ -1423,6 +1797,23 @@ function Parent() {
                           {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
                         </div>
                       </div>
+                    </div>
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 14,
+                        right: 12,
+                        padding: "5px 9px",
+                        borderRadius: 999,
+                        background: p.isActive === false ? "var(--warning-soft)" : "var(--success-soft)",
+                        color: p.isActive === false ? "var(--danger)" : "var(--success)",
+                        border: p.isActive === false ? "1px solid var(--warning-border)" : "1px solid var(--success-border)",
+                        fontSize: 10,
+                        fontWeight: 900,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {p.isActive === false ? "Inactive" : "Active"}
                     </div>
                   </div>
                 ))}

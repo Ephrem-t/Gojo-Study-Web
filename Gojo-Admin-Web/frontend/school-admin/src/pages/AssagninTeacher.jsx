@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { FaCog, FaEdit, FaSave, FaTrash } from "react-icons/fa";
-import Sidebar from "../components/Sidebar";
 
 const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
@@ -589,7 +588,15 @@ function AssagninTeacher() {
         className="google-dashboard"
         style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}
       >
-        <Sidebar admin={admin} />
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         <div
           style={{

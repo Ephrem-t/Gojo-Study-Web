@@ -11,6 +11,7 @@ import {
   FaUserGraduate,
   FaChevronDown,
 } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 
 const SIDEBAR_SECTIONS = [
   {
@@ -252,19 +253,16 @@ function RegisterSidebar({
           boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
         }}
       >
-        <div
+        <ProfileAvatar
           className="sidebar-img-circle"
+          imageUrl={profileImage}
+          name={profileName}
+          size={58}
           style={{
-            width: 58,
-            height: 58,
-            borderRadius: "50%",
-            overflow: "hidden",
             border: "3px solid var(--border-strong)",
             boxShadow: "0 10px 20px rgba(15,23,42,0.16)",
           }}
-        >
-          <img src={profileImage} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        </div>
+        />
         <div
           style={{
             padding: "4px 10px",
@@ -337,4 +335,4 @@ function RegisterSidebar({
   );
 }
 
-export default RegisterSidebar;
+export default React.memo(RegisterSidebar);

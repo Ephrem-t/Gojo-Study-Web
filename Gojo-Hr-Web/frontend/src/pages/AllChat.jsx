@@ -1,1222 +1,1562 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { FaArrowLeft, FaCheck, FaPaperPlane, FaSearch } from 'react-icons/fa'
-import { getDatabase, get, onValue, push, ref, set, update } from 'firebase/database'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import {
+	FaArrowLeft,
+	FaBell,
+	FaCheck,
+	FaChevronUp,
+	FaCog,
+	FaEdit,
+	FaFacebookMessenger,
+	FaFilter,
+	FaImage,
+	FaPaperPlane,
+	FaSearch,
+	FaTimes,
+	FaTrash,
+	FaUsers,
+} from 'react-icons/fa'
+import { endAt, get, getDatabase, limitToLast, onValue, orderByChild, push, query, ref, update } from 'firebase/database'
+import { getDownloadURL, getStorage, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { app } from '../firebase'
-import api from '../api'
+import {
+	getEmployeeContact,
+	getEmployeeJob,
+	getEmployeeMeta,
+	getEmployeeName,
+	getEmployeeProfileImage,
+	getEmployeesSnapshot,
+} from '../hrData'
+import {
+	buildChatSummaryUpdate,
+	clearChatSummaryUnread,
+	dedupeUserIds,
+	loadChatSummariesForContacts,
+	loadPresenceByUserIds,
+	writeChatSummaryUpdate,
+	sortedChatId,
+} from '../utils/chatSummary'
+import { createProfilePlaceholder, isFallbackProfileImage, resolveProfileImage } from '../utils/profileImage'
+import '../styles/global.css'
 
-const RTDB_BASE = 'https://bale-house-rental-default-rtdb.firebaseio.com'
-const DEFAULT_PROFILE = '/default-profile.png'
+const DEFAULT_PROFILE_IMAGE = '/default-profile.png'
+const DEFAULT_SCHOOL_CODE = 'ET-ORO-ADA-GMI'
+const MESSAGE_PAGE_SIZE = 25
+const MAX_CHAT_IMAGE_BYTES = 180 * 1024
+const UNREAD_REFRESH_INTERVAL_MS = 60 * 1000
+const UNREAD_PRIORITY_LIMIT = 120
+const CONTACT_LIST_ROW_HEIGHT = 78
+const CONTACT_LIST_BUFFER_ROWS = 6
+const EMPLOYEE_CONTACTS_CACHE_TTL_MS = 5 * 60 * 1000
 
-const ROLE_META = {
-  teacher: { label: 'Teacher', node: 'Teachers' },
-  finance: { label: 'Finance', node: 'Finance' },
-  school_admins: { label: 'School Admins', node: 'School_Admins' },
+function getInitials(name) {
+	return (name || 'HR Office')
+		.split(/\s+/)
+		.filter(Boolean)
+		.slice(0, 2)
+		.map((part) => part.charAt(0).toUpperCase())
+		.join('') || 'HR'
 }
 
-const normalizeTab = (value) => {
-  const tab = String(value || '').trim().toLowerCase()
-  if (tab === 'teacher' || tab === 'teachers') return 'teacher'
-  if (tab === 'finance') return 'finance'
-  if (['school_admins', 'school_admin', 'school admins', 'school-admins', 'management', 'admin', 'admins'].includes(tab)) return 'school_admins'
-  return 'teacher'
+function createPlaceholderAvatar(name) {
+	return createProfilePlaceholder(name || 'HR Office')
 }
 
-const getChatCandidates = (leftId, rightId) => {
-  const left = String(leftId || '').trim()
-  const right = String(rightId || '').trim()
-  if (!left || !right) return []
-  return Array.from(new Set([[left, right].sort().join('_'), `${left}_${right}`, `${right}_${left}`]))
+function sanitizeProfileImage(value) {
+	return resolveProfileImage(value)
 }
 
-const resolveExistingChatKey = (chats, leftId, rightId) => {
-  const candidates = getChatCandidates(leftId, rightId)
-  return (
-    candidates.find((key) => {
-      const chatNode = chats?.[key]
-      if (!chatNode || typeof chatNode !== 'object') return false
-      return Boolean(chatNode.lastMessage || chatNode.messages || chatNode.participants)
-    }) || candidates[0] || ''
-  )
+function resolveAvatarSrc(rawValue, name) {
+	const sanitized = sanitizeProfileImage(rawValue)
+	if (!sanitized || isFallbackProfileImage(sanitized)) {
+		return createPlaceholderAvatar(name)
+	}
+	return sanitized
 }
 
-const formatChatTime = (value) => {
-  const stamp = Number(value || 0)
-  if (!stamp) return ''
-  const date = new Date(stamp)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+function AvatarBadge({ src, name, size = 40, fontSize = 14, radius = '50%' }) {
+	const [failed, setFailed] = useState(false)
+	const fallbackSrc = useMemo(() => createPlaceholderAvatar(name), [name])
+	const resolvedSrc = useMemo(() => {
+		const normalizedSrc = failed ? DEFAULT_PROFILE_IMAGE : sanitizeProfileImage(src)
+		if (isFallbackProfileImage(normalizedSrc)) {
+			return fallbackSrc
+		}
+		return normalizedSrc
+	}, [failed, fallbackSrc, src])
+
+	useEffect(() => {
+		setFailed(false)
+	}, [src])
+
+	return (
+		<img
+			src={resolvedSrc}
+			alt={name || 'HR Office'}
+			onError={(event) => {
+				if (event.currentTarget.src !== fallbackSrc) {
+					event.currentTarget.src = fallbackSrc
+				}
+				setFailed(true)
+			}}
+			style={{ width: size, height: size, borderRadius: radius, objectFit: 'cover', border: '1px solid #d9e5f5', flexShrink: 0 }}
+		/>
+	)
 }
 
-const formatContactTime = (value) => {
-  const stamp = Number(value || 0)
-  if (!stamp) return ''
-  const date = new Date(stamp)
-  const now = new Date()
-  if (date.toDateString() === now.toDateString()) {
-    return formatChatTime(stamp)
-  }
-  const diffDays = Math.floor((now.setHours(0, 0, 0, 0) - new Date(date).setHours(0, 0, 0, 0)) / 86400000)
-  if (diffDays < 7) {
-    return date.toLocaleDateString([], { weekday: 'short' })
-  }
-  return date.toLocaleDateString([], { day: 'numeric', month: 'short' })
+const loadImageFromFile = (file) =>
+	new Promise((resolve, reject) => {
+		const objectUrl = URL.createObjectURL(file)
+		const image = new Image()
+
+		image.onload = () => {
+			URL.revokeObjectURL(objectUrl)
+			resolve(image)
+		}
+
+		image.onerror = () => {
+			URL.revokeObjectURL(objectUrl)
+			reject(new Error('Failed to load image file'))
+		}
+
+		image.src = objectUrl
+	})
+
+function canvasToJpegBlob(canvas, quality) {
+	return new Promise((resolve, reject) => {
+		canvas.toBlob(
+			(output) => {
+				if (!output) {
+					reject(new Error('Image compression failed'))
+					return
+				}
+				resolve(output)
+			},
+			'image/jpeg',
+			quality
+		)
+	})
 }
 
-const formatChatDayLabel = (value) => {
-  const stamp = Number(value || 0)
-  if (!stamp) return ''
-  const date = new Date(stamp)
-  if (Number.isNaN(date.getTime())) return ''
-  const today = new Date()
-  const todayFloor = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const dateFloor = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const diffDays = Math.round((todayFloor - dateFloor) / 86400000)
-  if (diffDays === 0) return 'Today'
-  if (diffDays === 1) return 'Yesterday'
-  return date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' })
+async function compressImageToJpeg(file, {
+	maxWidth = 1080,
+	maxHeight = 1080,
+	maxBytes = MAX_CHAT_IMAGE_BYTES,
+	initialQuality = 0.7,
+	minimumQuality = 0.42,
+	qualityStep = 0.08,
+	dimensionStep = 0.86,
+} = {}) {
+	const image = await loadImageFromFile(file)
+
+	let width = image.naturalWidth || image.width
+	let height = image.naturalHeight || image.height
+	const ratio = Math.min(maxWidth / width, maxHeight / height, 1)
+
+	width = Math.max(1, Math.round(width * ratio))
+	height = Math.max(1, Math.round(height * ratio))
+
+	const canvas = document.createElement('canvas')
+	canvas.width = width
+	canvas.height = height
+
+	const context = canvas.getContext('2d')
+	if (!context) {
+		throw new Error('Canvas context unavailable')
+	}
+
+	let bestBlob = null
+	let currentWidth = width
+	let currentHeight = height
+
+	for (let dimensionAttempt = 0; dimensionAttempt < 4; dimensionAttempt += 1) {
+		canvas.width = currentWidth
+		canvas.height = currentHeight
+		context.clearRect(0, 0, currentWidth, currentHeight)
+		context.drawImage(image, 0, 0, currentWidth, currentHeight)
+
+		for (let quality = initialQuality; quality >= minimumQuality; quality -= qualityStep) {
+			const blob = await canvasToJpegBlob(canvas, Number(quality.toFixed(2)))
+			bestBlob = blob
+			if (blob.size <= maxBytes) {
+				return blob
+			}
+		}
+
+		currentWidth = Math.max(480, Math.round(currentWidth * dimensionStep))
+		currentHeight = Math.max(480, Math.round(currentHeight * dimensionStep))
+	}
+
+	if (!bestBlob) {
+		throw new Error('Image compression failed')
+	}
+
+	return bestBlob
 }
 
-const getLastSeenText = (value) => {
-  const stamp = Number(value || 0)
-  if (!stamp) return 'Offline'
-  const diffMs = Date.now() - stamp
-  if (diffMs < 60_000) return 'Online recently'
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `last seen ${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `last seen ${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `last seen ${days}d ago`
+function normalizeRoleLabel(value) {
+	const normalized = String(value || '').trim().toLowerCase()
+	if (!normalized) return 'Staff'
+	if (normalized === 'hr') return 'HR'
+	if (normalized === 'finance') return 'Finance'
+	if (normalized === 'teacher') return 'Teacher'
+	if (normalized === 'management') return 'Management'
+	return value
 }
 
-const getDisplayName = (userNode, fallbackNode, fallbackLabel) =>
-  userNode?.name ||
-  userNode?.displayName ||
-  userNode?.username ||
-  fallbackNode?.name ||
-  fallbackNode?.username ||
-  fallbackLabel
+function normalizeRoleFilterLabel(value) {
+	const normalized = String(value || '').trim().toLowerCase()
+	if (!normalized) return 'Staff'
+	if (normalized.includes('finance') || normalized.includes('admin')) return 'Administrative'
+	return normalizeRoleLabel(value)
+}
 
-const getProfileImage = (userNode, fallbackNode) =>
-  userNode?.profileImage ||
-  userNode?.profile ||
-  userNode?.avatar ||
-  fallbackNode?.profileImage ||
-  DEFAULT_PROFILE
+function formatTime(ts) {
+	const date = new Date(Number(ts) || Date.now())
+	let hours = date.getHours()
+	const minutes = date.getMinutes().toString().padStart(2, '0')
+	const period = hours >= 12 ? 'PM' : 'AM'
+	hours %= 12
+	if (hours === 0) hours = 12
+	return `${hours}:${minutes} ${period}`
+}
+
+function formatDateLabel(ts) {
+	if (!ts) return ''
+
+	const msgDate = new Date(Number(ts))
+	const now = new Date()
+	const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+	const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate())
+	const diffMs = startOfToday - startOfMsgDay
+	const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000))
+
+	if (diffDays === 0) return 'Today'
+	if (diffDays === 1) return 'Yesterday'
+	if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`
+	return msgDate.toLocaleDateString()
+}
+
+function isPageVisible() {
+	return typeof document === 'undefined' || document.visibilityState === 'visible'
+}
+
+function isEmployeeActive(employee = {}) {
+	const status = String(employee?.status || employee?.employment?.status || employee?.job?.status || '').trim().toLowerCase()
+	return !employee?.terminated && employee?.isActive !== false && !status.includes('terminated') && !status.includes('inactive') && !status.includes('deactivated')
+}
+
+function normalizeChatMessages(payload, currentUserId) {
+	return Object.entries(payload || {})
+		.map(([id, value]) => ({
+			id,
+			...(value || {}),
+			isMine: String(value?.senderId || '') === String(currentUserId || ''),
+		}))
+		.sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+}
+
+function mergeMessages(existingMessages, incomingMessages) {
+	const merged = new Map()
+	;[...(existingMessages || []), ...(incomingMessages || [])].forEach((message) => {
+		if (!message?.id) return
+		merged.set(message.id, message)
+	})
+	return Array.from(merged.values()).sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+}
 
 export default function AllChat() {
-  const location = useLocation()
-  const navigate = useNavigate()
-  const db = getDatabase(app)
-
-  const [admin] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('admin')) || {}
-    } catch {
-      return {}
-    }
-  })
-
-  const hrUserId = String(admin?.userId || admin?.id || admin?.uid || admin?.user_id || admin?.hrId || '').trim()
-  const schoolCode = String(
-    admin?.schoolCode ||
-      (() => {
-        try {
-          const stored = JSON.parse(localStorage.getItem('gojo_admin') || '{}')
-          return stored?.schoolCode || ''
-        } catch {
-          return ''
-        }
-      })()
-  ).trim()
-
-  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode)
-
-  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || '').trim()
-
-  const schoolDbRoot = activeSchoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(activeSchoolCode)}`
-    : RTDB_BASE
-  const schoolNodePrefix = activeSchoolCode ? `Platform1/Schools/${activeSchoolCode}` : ''
-  const withSchoolPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path)
-
-  const navigationState = location.state || {}
-  const incomingUser = navigationState.contact || navigationState.user || null
-  const incomingTab = normalizeTab(navigationState.tab || incomingUser?.type)
-
-  const [baseUsers, setBaseUsers] = useState({})
-  const [baseNodes, setBaseNodes] = useState({ teacher: {}, finance: {}, school_admins: {} })
-  const [contactsByTab, setContactsByTab] = useState({ teacher: [], finance: [], school_admins: [] })
-  const [selectedTab, setSelectedTab] = useState(incomingTab)
-  const [selectedChatUser, setSelectedChatUser] = useState(null)
-  const [messages, setMessages] = useState([])
-  const [messageInput, setMessageInput] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [typing, setTyping] = useState(false)
-  const [lastSeen, setLastSeen] = useState(null)
-  const [activeChatKey, setActiveChatKey] = useState('')
-  const [loadingContacts, setLoadingContacts] = useState(true)
-  const [error, setError] = useState('')
-  const [isMobile, setIsMobile] = useState(false)
-
-  const chatEndRef = useRef(null)
-  const typingTimeoutRef = useRef(null)
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(typeof window !== 'undefined' && window.innerWidth < 880)
-    }
-
-    handleResize()
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-
-    const loadBaseData = async () => {
-      if (!hrUserId) {
-        setLoadingContacts(false)
-        setError('HR user information is missing. Please log in again.')
-        return
-      }
-
-      setLoadingContacts(true)
-      setError('')
-
-      try {
-        const [contextRes, usersRes, teachersRes, financeRes, schoolAdminsRes] = await Promise.all([
-          api.get('/school_context').catch(() => ({ data: {} })),
-          api.get('/users').catch(() => ({ data: {} })),
-          api.get('/teachers').catch(() => ({ data: {} })),
-          api.get('/finance').catch(() => ({ data: {} })),
-          api.get('/school_admins').catch(() => api.get('/management').catch(() => ({ data: {} }))),
-        ])
-
-        if (cancelled) return
-
-        const backendSchoolCode = String(contextRes?.data?.schoolCode || '').trim()
-        if (backendSchoolCode) {
-          setResolvedSchoolCode(backendSchoolCode)
-        }
-
-        setBaseUsers(usersRes.data || {})
-        setBaseNodes({
-          teacher: teachersRes.data || {},
-          finance: financeRes.data || {},
-          school_admins: schoolAdminsRes.data || {},
-        })
-      } catch (requestError) {
-        if (cancelled) return
-        setError('Failed to load chat contacts.')
-      } finally {
-        if (!cancelled) setLoadingContacts(false)
-      }
-    }
-
-    loadBaseData()
-    return () => {
-      cancelled = true
-    }
-  }, [hrUserId])
-
-  useEffect(() => {
-    if (!hrUserId) return undefined
-    if (!activeSchoolCode) return undefined
-
-    const chatsRef = ref(db, withSchoolPath('Chats'))
-
-    const unsubscribe = onValue(chatsRef, (snapshot) => {
-      const chats = snapshot.val() || {}
-
-      const buildContacts = (tabKey) =>
-        Object.entries(baseNodes[tabKey] || {})
-          .map(([nodeKey, nodeValue]) => {
-            const userId = String(nodeValue?.userId || '').trim()
-            if (!userId || userId === hrUserId) return null
-
-            const userNode = baseUsers[userId] || {}
-            const chatKey = resolveExistingChatKey(chats, hrUserId, userId)
-            const chatNode = chats?.[chatKey] || {}
-            const unread = Number(chatNode?.unread?.[hrUserId] || 0)
-            const lastMessage = chatNode?.lastMessage || null
-
-            return {
-              key: `${tabKey}-${nodeKey}`,
-              nodeKey,
-              type: tabKey,
-              roleLabel: ROLE_META[tabKey].label,
-              userId,
-              name: getDisplayName(userNode, nodeValue, ROLE_META[tabKey].label),
-              profileImage: getProfileImage(userNode, nodeValue),
-              lastSeen: userNode?.lastSeen || null,
-              unread,
-              chatKey,
-              lastMsgText: String(lastMessage?.text || '').trim(),
-              lastMsgTime: Number(lastMessage?.timeStamp || 0),
-            }
-          })
-          .filter(Boolean)
-          .sort((left, right) => {
-            const timeDiff = Number(right.lastMsgTime || 0) - Number(left.lastMsgTime || 0)
-            if (timeDiff !== 0) return timeDiff
-            return left.name.localeCompare(right.name)
-          })
-
-      setContactsByTab({
-        teacher: buildContacts('teacher'),
-        finance: buildContacts('finance'),
-        school_admins: buildContacts('school_admins'),
-      })
-    })
-
-    return () => unsubscribe()
-  }, [activeSchoolCode, db, baseNodes, baseUsers, hrUserId, schoolNodePrefix])
-
-  useEffect(() => {
-    const findIncomingUser = () => {
-      if (!incomingUser?.userId) return null
-      const targetTab = normalizeTab(incomingUser?.type || incomingTab)
-      const pool = contactsByTab[targetTab] || []
-      return pool.find((contact) => String(contact.userId) === String(incomingUser.userId)) || null
-    }
-
-    const incomingMatch = findIncomingUser()
-    if (incomingMatch) {
-      setSelectedTab(normalizeTab(incomingUser?.type || incomingTab))
-      setSelectedChatUser(incomingMatch)
-      return
-    }
-
-    if (selectedChatUser?.userId) {
-      const currentPool = contactsByTab[selectedTab] || []
-      const refreshed = currentPool.find((contact) => contact.userId === selectedChatUser.userId)
-      if (refreshed) {
-        setSelectedChatUser(refreshed)
-      } else if (!currentPool.length) {
-        setSelectedChatUser(null)
-      }
-      return
-    }
-
-    if (!(contactsByTab[selectedTab] || []).length) return
-  }, [contactsByTab, incomingTab, incomingUser, selectedChatUser, selectedTab])
-
-  useEffect(() => {
-    if (!selectedChatUser?.userId || !hrUserId) {
-      setMessages([])
-      setTyping(false)
-      setLastSeen(null)
-      setActiveChatKey('')
-      return undefined
-    }
-    if (!activeSchoolCode) return undefined
-
-    const chatKey = selectedChatUser.chatKey || resolveExistingChatKey({}, hrUserId, selectedChatUser.userId)
-    const chatPath = withSchoolPath(`Chats/${chatKey}`)
-    const messagesRef = ref(db, `${chatPath}/messages`)
-    const typingRef = ref(db, `${chatPath}/typing`)
-    const lastSeenRef = ref(db, withSchoolPath(`Users/${selectedChatUser.userId}/lastSeen`))
-
-    setActiveChatKey(chatKey)
-
-    const unsubscribeMessages = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val() || {}
-      const mappedMessages = Object.entries(data)
-        .filter(([, message]) => !message?.deleted)
-        .map(([id, message]) => ({
-          id,
-          ...message,
-          mine: String(message?.senderId) === String(hrUserId),
-        }))
-        .sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
-
-      setMessages(mappedMessages)
-
-      Object.entries(data).forEach(([id, message]) => {
-        if (message && !message.deleted && !message.seen && String(message.receiverId) === String(hrUserId)) {
-          update(ref(db, `${chatPath}/messages/${id}`), { seen: true }).catch(() => {})
-        }
-      })
-
-      update(ref(db, `${chatPath}/unread`), { [hrUserId]: 0 }).catch(() => {})
-    })
-
-    const unsubscribeTyping = onValue(typingRef, (snapshot) => {
-      const typingData = snapshot.val()
-      setTyping(Boolean(typingData?.userId) && String(typingData.userId) === String(selectedChatUser.userId))
-    })
-
-    const unsubscribeLastSeen = onValue(lastSeenRef, (snapshot) => {
-      setLastSeen(snapshot.val())
-    })
-
-    return () => {
-      unsubscribeMessages()
-      unsubscribeTyping()
-      unsubscribeLastSeen()
-    }
-  }, [activeSchoolCode, db, hrUserId, selectedChatUser, schoolNodePrefix])
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, typing])
-
-  const filteredContacts = useMemo(() => {
-    const pool = contactsByTab[selectedTab] || []
-    const query = String(searchQuery || '').trim().toLowerCase()
-    if (!query) return pool
-    return pool.filter((contact) => {
-      const haystack = `${contact.name} ${contact.roleLabel} ${contact.lastMsgText}`.toLowerCase()
-      return haystack.includes(query)
-    })
-  }, [contactsByTab, searchQuery, selectedTab])
-
-  const threadItems = useMemo(() => {
-    const items = []
-    let previousDayLabel = ''
-
-    messages.forEach((message) => {
-      const dayLabel = formatChatDayLabel(message.timeStamp)
-      if (dayLabel && dayLabel !== previousDayLabel) {
-        items.push({ type: 'day', key: `day-${dayLabel}-${message.id}`, label: dayLabel })
-        previousDayLabel = dayLabel
-      }
-
-      items.push({ type: 'message', key: message.id, message })
-    })
-
-    return items
-  }, [messages])
-
-  const sendMessage = async () => {
-    if (!messageInput.trim() || !selectedChatUser?.userId || !hrUserId || !activeChatKey) return
-
-    const chatPath = withSchoolPath(`Chats/${activeChatKey}`)
-    const chatRef = ref(db, chatPath)
-    const messagesRef = ref(db, `${chatPath}/messages`)
-    const payload = {
-      senderId: hrUserId,
-      receiverId: selectedChatUser.userId,
-      type: 'text',
-      text: messageInput.trim(),
-      imageUrl: null,
-      replyTo: null,
-      seen: false,
-      edited: false,
-      deleted: false,
-      timeStamp: Date.now(),
-    }
-
-    const messageRef = push(messagesRef)
-    await set(messageRef, payload)
-
-    let unreadState = {}
-    try {
-      const unreadSnapshot = await get(ref(db, `${chatPath}/unread`))
-      unreadState = unreadSnapshot.val() || {}
-    } catch {
-      unreadState = {}
-    }
-
-    await update(chatRef, {
-      participants: {
-        [hrUserId]: true,
-        [selectedChatUser.userId]: true,
-      },
-      lastMessage: {
-        ...payload,
-        messageId: messageRef.key,
-      },
-      unread: {
-        ...(unreadState || {}),
-        [hrUserId]: 0,
-        [selectedChatUser.userId]: Number(unreadState?.[selectedChatUser.userId] || 0) + 1,
-      },
-      typing: null,
-    })
-
-    setMessageInput('')
-  }
-
-  const handleTyping = async (event) => {
-    const nextValue = event.target.value
-    setMessageInput(nextValue)
-
-    if (!selectedChatUser?.userId || !hrUserId || !activeChatKey) return
-
-    const typingRef = ref(db, `${withSchoolPath(`Chats/${activeChatKey}`)}/typing`)
-
-    if (!nextValue.trim()) {
-      await set(typingRef, { userId: null })
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-      return
-    }
-
-    await set(typingRef, { userId: hrUserId })
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => {
-      set(typingRef, { userId: null }).catch(() => {})
-    }, 1600)
-  }
-
-  const subtitle =
-    selectedChatUser && typing
-      ? `${selectedChatUser.roleLabel} is typing...`
-      : selectedChatUser
-        ? getLastSeenText(lastSeen || selectedChatUser.lastSeen)
-        : 'Select a staff member to start chatting'
-
-  const selectedUnreadCount = Math.max(Number(selectedChatUser?.unread || 0), 0)
-
-  return (
-    <div style={{ minHeight: '100vh', background: 'var(--page-bg, #f4f6fb)', padding: '18px 14px', boxSizing: 'border-box' }}>
-      <div
-        style={{
-          minHeight: 'calc(100vh - 36px)',
-          width: '100%',
-          boxSizing: 'border-box',
-        }}
-      >
-        <main
-          style={{
-            width: '100%',
-            minWidth: 0,
-            maxWidth: 'none',
-            minHeight: 'calc(100vh - 36px)',
-            padding: '0 2px',
-            boxSizing: 'border-box',
-          }}
-        >
-          <style>{`
-            .hr-chat-shell {
-              display: flex;
-              flex-direction: column;
-              gap: 18px;
-              min-height: calc(100vh - 40px);
-            }
-            .hr-chat-hero {
-              position: relative;
-              overflow: hidden;
-              border-radius: 22px;
-              padding: 24px;
-              border: 1px solid var(--border-strong, rgba(191, 219, 254, 0.9));
-              background:
-                radial-gradient(circle at top right, color-mix(in srgb, var(--accent, #60a5fa) 20%, transparent), transparent 34%),
-                linear-gradient(135deg, var(--surface-panel, #f8fbff) 0%, var(--surface-accent, #e9f2ff) 52%, var(--surface-panel, #f8fbff) 100%);
-              box-shadow: var(--shadow-panel, 0 18px 40px rgba(15, 23, 42, 0.08));
-            }
-            .hr-chat-topbar {
-              display: flex;
-              align-items: flex-start;
-              gap: 14px;
-            }
-            .hr-chat-page-back {
-              width: 44px;
-              height: 44px;
-              border: none;
-              border-radius: 14px;
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 92%, transparent);
-              color: var(--accent-strong, #1d4ed8);
-              cursor: pointer;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              box-shadow: var(--shadow-soft, 0 10px 20px rgba(37, 99, 235, 0.12));
-              flex-shrink: 0;
-            }
-            .hr-chat-hero-copy {
-              min-width: 0;
-            }
-            .hr-chat-hero h1 {
-              margin: 0;
-              color: var(--text-primary, #0f172a);
-              font-size: 30px;
-              font-weight: 800;
-            }
-            .hr-chat-hero p {
-              margin: 8px 0 0;
-              max-width: 720px;
-              color: var(--text-secondary, #475569);
-              font-size: 14px;
-              line-height: 1.6;
-            }
-            .hr-chat-tabs {
-              margin-top: 18px;
-              display: flex;
-              flex-wrap: wrap;
-              gap: 10px;
-            }
-            .hr-chat-tab {
-              border: 1px solid var(--border-soft, #cbdaf8);
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 92%, transparent);
-              color: var(--text-secondary, #28539a);
-              border-radius: 999px;
-              padding: 10px 16px;
-              font-size: 13px;
-              font-weight: 800;
-              cursor: pointer;
-              transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-            }
-            .hr-chat-tab:hover {
-              transform: translateY(-1px);
-              background: var(--surface-accent, #eef4ff);
-              box-shadow: var(--shadow-glow, 0 10px 20px rgba(37, 99, 235, 0.14));
-            }
-            .hr-chat-tab.active {
-              color: #fff;
-              border-color: var(--accent-strong, #2563eb);
-              background: linear-gradient(135deg, var(--accent, #2563eb), var(--accent-strong, #4f8cff));
-            }
-            .hr-chat-card {
-              display: grid;
-              grid-template-columns: 340px minmax(0, 1fr);
-              gap: 18px;
-              min-height: calc(100vh - 220px);
-            }
-            .hr-chat-panel,
-            .hr-chat-thread {
-              background: linear-gradient(180deg, var(--surface-panel, #ffffff) 0%, var(--surface-muted, #f9fbff) 100%);
-              border: 1px solid var(--border-soft, rgba(226, 232, 240, 0.9));
-              border-radius: 22px;
-              box-shadow: var(--shadow-panel, 0 18px 40px rgba(15, 23, 42, 0.08));
-            }
-            .hr-chat-panel {
-              padding: 18px;
-              display: flex;
-              flex-direction: column;
-              min-width: 0;
-            }
-            .hr-chat-thread {
-              display: flex;
-              flex-direction: column;
-              min-width: 0;
-              overflow: hidden;
-            }
-            .hr-chat-panel-head {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              gap: 12px;
-              margin-bottom: 14px;
-            }
-            .hr-chat-panel-title {
-              margin: 0;
-              color: var(--text-primary, #0f172a);
-              font-size: 18px;
-              font-weight: 800;
-            }
-            .hr-chat-panel-copy {
-              margin: 4px 0 0;
-              color: var(--text-muted, #64748b);
-              font-size: 12px;
-            }
-            .hr-chat-search {
-              position: relative;
-              margin-bottom: 14px;
-            }
-            .hr-chat-search svg {
-              position: absolute;
-              left: 12px;
-              top: 50%;
-              transform: translateY(-50%);
-              color: var(--text-muted, #94a3b8);
-              font-size: 14px;
-            }
-            .hr-chat-search input {
-              width: 100%;
-              height: 42px;
-              border-radius: 14px;
-              border: 1px solid var(--input-border, #dbe6f8);
-              padding: 0 14px 0 38px;
-              font-size: 13px;
-              font-weight: 600;
-              color: var(--text-primary, #0f172a);
-              background: var(--input-bg, #fff);
-              outline: none;
-              box-sizing: border-box;
-            }
-            .hr-chat-list {
-              display: flex;
-              flex-direction: column;
-              gap: 10px;
-              overflow-y: auto;
-              padding-right: 4px;
-            }
-            .hr-chat-contact {
-              display: flex;
-              align-items: center;
-              gap: 12px;
-              border-radius: 18px;
-              padding: 12px;
-              border: 1px solid var(--border-soft, #e2e8f0);
-              background: var(--surface-panel, #fff);
-              cursor: pointer;
-              transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
-            }
-            .hr-chat-contact:hover {
-              transform: translateY(-1px);
-              box-shadow: var(--shadow-soft, 0 12px 24px rgba(15, 23, 42, 0.08));
-            }
-            .hr-chat-contact.active {
-              background: linear-gradient(180deg, var(--surface-accent, #eaf3ff) 0%, var(--accent-soft, #dbeafe) 100%);
-              border-color: var(--border-strong, #93c5fd);
-              box-shadow: var(--shadow-glow, 0 16px 28px rgba(37, 99, 235, 0.16));
-            }
-            .hr-chat-avatar {
-              width: 52px;
-              height: 52px;
-              border-radius: 16px;
-              object-fit: cover;
-              flex-shrink: 0;
-              border: 1px solid color-mix(in srgb, var(--border-soft, #94a3b8) 32%, transparent);
-              background: var(--surface-accent, #eef4ff);
-            }
-            .hr-chat-contact-main {
-              flex: 1;
-              min-width: 0;
-            }
-            .hr-chat-contact-row {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              gap: 10px;
-            }
-            .hr-chat-contact-time {
-              flex-shrink: 0;
-              font-size: 11px;
-              font-weight: 700;
-              color: var(--text-muted, #94a3b8);
-            }
-            .hr-chat-contact-name {
-              font-size: 14px;
-              font-weight: 800;
-              color: var(--text-primary, #0f172a);
-              white-space: nowrap;
-              overflow: hidden;
-              text-overflow: ellipsis;
-            }
-            .hr-chat-contact-role {
-              margin-top: 2px;
-              font-size: 12px;
-              color: var(--accent, #3b82f6);
-              font-weight: 700;
-            }
-            .hr-chat-contact-preview {
-              margin-top: 4px;
-              font-size: 12px;
-              color: var(--text-muted, #64748b);
-              white-space: nowrap;
-              overflow: hidden;
-              text-overflow: ellipsis;
-            }
-            .hr-chat-unread {
-              min-width: 22px;
-              height: 22px;
-              border-radius: 999px;
-              background: var(--danger, #dc2626);
-              color: #fff;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              font-size: 11px;
-              font-weight: 800;
-              padding: 0 6px;
-              box-sizing: border-box;
-            }
-            .hr-chat-thread-head {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              gap: 14px;
-              padding: 16px 20px;
-              border-bottom: 1px solid var(--border-soft, rgba(226, 232, 240, 0.8));
-              background: linear-gradient(180deg, color-mix(in srgb, var(--surface-panel, #ffffff) 96%, transparent) 0%, color-mix(in srgb, var(--surface-muted, #f3f7ff) 96%, transparent) 100%);
-              backdrop-filter: blur(12px);
-            }
-            .hr-chat-thread-meta {
-              display: flex;
-              align-items: center;
-              gap: 12px;
-              min-width: 0;
-            }
-            .hr-chat-thread-avatar {
-              width: 46px;
-              height: 46px;
-              border-radius: 50%;
-              object-fit: cover;
-              border: 2px solid var(--border-strong, rgba(191, 219, 254, 0.9));
-              box-shadow: var(--shadow-glow, 0 10px 22px rgba(37, 99, 235, 0.14));
-              flex-shrink: 0;
-            }
-            .hr-chat-thread-name {
-              font-size: 16px;
-              font-weight: 800;
-              color: var(--text-primary, #0f172a);
-            }
-            .hr-chat-thread-name-row {
-              display: flex;
-              align-items: center;
-              gap: 10px;
-              min-width: 0;
-            }
-            .hr-chat-thread-subtitle {
-              font-size: 12px;
-              color: var(--text-muted, #64748b);
-              font-weight: 600;
-            }
-            .hr-chat-thread-count {
-              flex-shrink: 0;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              min-width: 28px;
-              height: 28px;
-              padding: 0 10px;
-              border-radius: 999px;
-              background: linear-gradient(135deg, var(--accent, #2563eb), var(--accent-strong, #1d4ed8));
-              color: #fff;
-              font-size: 12px;
-              font-weight: 800;
-              box-shadow: var(--shadow-glow, 0 10px 20px rgba(37, 99, 235, 0.18));
-            }
-            .hr-chat-back {
-              width: 38px;
-              height: 38px;
-              border: none;
-              border-radius: 12px;
-              background: var(--surface-accent, #e2ebfb);
-              color: var(--accent-strong, #1d4ed8);
-              cursor: pointer;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              flex-shrink: 0;
-            }
-            .hr-chat-body {
-              flex: 1;
-              overflow-y: auto;
-              padding: 22px 20px 18px;
-              background:
-                radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--accent, #60a5fa) 18%, transparent), transparent 18%),
-                radial-gradient(circle at 80% 0%, color-mix(in srgb, var(--accent, #60a5fa) 10%, transparent), transparent 20%),
-                linear-gradient(180deg, var(--page-bg-secondary, #edf4ff) 0%, var(--surface-panel, #f8fbff) 45%, var(--surface-accent, #eef6ff) 100%);
-            }
-            .hr-chat-empty-thread,
-            .hr-chat-empty-list {
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              flex-direction: column;
-              gap: 8px;
-              color: var(--text-muted, #64748b);
-              text-align: center;
-              min-height: 220px;
-              padding: 20px;
-            }
-            .hr-chat-empty-thread h3,
-            .hr-chat-empty-list h3 {
-              margin: 0;
-              color: var(--text-primary, #0f172a);
-              font-size: 18px;
-            }
-            .hr-chat-day-separator {
-              display: flex;
-              justify-content: center;
-              margin: 6px 0 18px;
-            }
-            .hr-chat-day-chip {
-              padding: 6px 12px;
-              border-radius: 999px;
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 82%, transparent);
-              border: 1px solid var(--border-strong, rgba(191, 219, 254, 0.9));
-              color: var(--text-muted, #64748b);
-              font-size: 11px;
-              font-weight: 800;
-              letter-spacing: 0.04em;
-              box-shadow: var(--shadow-soft, 0 8px 18px rgba(15, 23, 42, 0.06));
-              backdrop-filter: blur(10px);
-            }
-            .hr-chat-message-row {
-              display: flex;
-              align-items: flex-end;
-              gap: 10px;
-              margin-bottom: 14px;
-            }
-            .hr-chat-message-row.theirs {
-              justify-content: flex-start;
-            }
-            .hr-chat-message-row.mine {
-              justify-content: flex-end;
-            }
-            .hr-chat-message-avatar {
-              width: 34px;
-              height: 34px;
-              border-radius: 50%;
-              object-fit: cover;
-              border: 2px solid color-mix(in srgb, var(--surface-panel, #ffffff) 90%, transparent);
-              box-shadow: var(--shadow-soft, 0 8px 18px rgba(15, 23, 42, 0.08));
-              align-self: flex-end;
-              flex-shrink: 0;
-            }
-            .hr-chat-message-stack {
-              display: flex;
-              flex-direction: column;
-              align-items: flex-start;
-              max-width: min(78%, 700px);
-            }
-            .hr-chat-message-row.mine .hr-chat-message-stack {
-              align-items: flex-end;
-            }
-            .hr-chat-bubble {
-              width: fit-content;
-              max-width: 100%;
-              padding: 12px 14px 24px;
-              border-radius: 18px;
-              position: relative;
-              box-shadow: var(--shadow-soft, 0 14px 24px rgba(15, 23, 42, 0.08));
-              line-height: 1.5;
-              font-size: 14px;
-              white-space: pre-wrap;
-              word-break: break-word;
-            }
-            .hr-chat-bubble.mine {
-              color: #fff;
-              background: linear-gradient(135deg, #2a7fff 0%, #1473f6 55%, #0d65e8 100%);
-              border-top-right-radius: 8px;
-            }
-            .hr-chat-bubble.theirs {
-              color: var(--text-primary, #0f172a);
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 95%, transparent);
-              border: 1px solid var(--border-soft, rgba(226, 232, 240, 0.9));
-              border-top-left-radius: 8px;
-            }
-            .hr-chat-bubble.mine::after,
-            .hr-chat-bubble.theirs::after {
-              content: '';
-              position: absolute;
-              bottom: 0;
-              width: 16px;
-              height: 16px;
-            }
-            .hr-chat-bubble.mine::after {
-              right: -5px;
-              background: linear-gradient(135deg, var(--accent, #1473f6) 0%, var(--accent-strong, #0d65e8) 100%);
-              clip-path: polygon(0 0, 100% 100%, 0 100%);
-            }
-            .hr-chat-bubble.theirs::after {
-              left: -5px;
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 95%, transparent);
-              border-left: 1px solid var(--border-soft, rgba(226, 232, 240, 0.9));
-              border-bottom: 1px solid var(--border-soft, rgba(226, 232, 240, 0.9));
-              clip-path: polygon(100% 0, 100% 100%, 0 100%);
-            }
-            .hr-chat-bubble-text {
-              display: block;
-              padding-right: 56px;
-            }
-            .hr-chat-meta {
-              position: absolute;
-              right: 10px;
-              bottom: 8px;
-              display: inline-flex;
-              align-items: center;
-              gap: 6px;
-              font-size: 11px;
-              color: rgba(255, 255, 255, 0.92);
-              font-weight: 700;
-            }
-            .hr-chat-bubble.theirs .hr-chat-meta {
-              color: var(--text-muted, #64748b);
-            }
-            .hr-chat-input {
-              padding: 16px 18px 18px;
-              border-top: 1px solid var(--border-soft, rgba(226, 232, 240, 0.8));
-              background: linear-gradient(180deg, color-mix(in srgb, var(--surface-panel, #ffffff) 98%, transparent) 0%, color-mix(in srgb, var(--surface-muted, #f8fafc) 98%, transparent) 100%);
-            }
-            .hr-chat-composer {
-              display: flex;
-              align-items: flex-end;
-              gap: 12px;
-              padding: 8px 8px 8px 16px;
-              border-radius: 26px;
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 98%, transparent);
-              border: 1px solid var(--border-soft, rgba(209, 223, 248, 0.95));
-              box-shadow: var(--shadow-soft, 0 16px 28px rgba(15, 23, 42, 0.08));
-            }
-            .hr-chat-input textarea {
-              flex: 1;
-              min-height: 26px;
-              max-height: 120px;
-              resize: none;
-              border-radius: 0;
-              border: none;
-              background: transparent;
-              padding: 10px 0 10px 0;
-              font-size: 14px;
-              font-family: inherit;
-              outline: none;
-              box-sizing: border-box;
-              line-height: 1.5;
-              color: var(--text-primary, #0f172a);
-            }
-            .hr-chat-send {
-              width: 50px;
-              height: 50px;
-              border: none;
-              border-radius: 50%;
-              background: linear-gradient(135deg, var(--accent, #2a7fff), var(--accent-strong, #0d65e8));
-              color: #fff;
-              cursor: pointer;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              box-shadow: var(--shadow-glow, 0 16px 26px rgba(37, 99, 235, 0.24));
-              flex-shrink: 0;
-            }
-            .hr-chat-send:disabled {
-              opacity: 0.45;
-              cursor: not-allowed;
-              box-shadow: none;
-            }
-            .hr-chat-typing {
-              display: inline-flex;
-              align-items: center;
-              gap: 8px;
-              padding: 10px 12px;
-              border-radius: 14px;
-              background: color-mix(in srgb, var(--surface-panel, #ffffff) 90%, transparent);
-              border: 1px solid var(--border-strong, rgba(191, 219, 254, 0.9));
-              color: var(--accent-strong, #1d4ed8);
-              font-size: 12px;
-              font-weight: 700;
-              margin: 6px 0 0 46px;
-            }
-            .hr-chat-loading {
-              padding: 28px;
-              color: var(--text-secondary, #475569);
-              font-weight: 700;
-              text-align: center;
-            }
-            @media (max-width: 1120px) {
-              .hr-chat-card {
-                grid-template-columns: 300px minmax(0, 1fr);
-              }
-            }
-            @media (max-width: 880px) {
-              .hr-chat-card {
-                grid-template-columns: 1fr;
-                min-height: calc(100vh - 220px);
-              }
-              .hr-chat-panel.mobile-hidden,
-              .hr-chat-thread.mobile-hidden {
-                display: none;
-              }
-            }
-            @media (max-width: 640px) {
-              .hr-chat-bubble-text {
-                padding-right: 48px;
-              }
-              .hr-chat-message-stack {
-                max-width: 88%;
-              }
-              .hr-chat-typing {
-                margin-left: 0;
-              }
-            }
-          `}</style>
-
-          <div className="hr-chat-shell">
-            <section className="hr-chat-hero">
-              <div className="hr-chat-topbar">
-                <button type="button" className="hr-chat-page-back" onClick={() => navigate(-1)} aria-label="Go back">
-                  <FaArrowLeft />
-                </button>
-                <div className="hr-chat-hero-copy">
-                  <h1>All Chat</h1>
-                  <p>
-                    HR can message staff teams directly from one workspace. This page is limited to employee communication with Teachers, Finance, and School Admins, and uses the shared realtime chat node so it stays compatible with the other panels.
-                  </p>
-                </div>
-              </div>
-              <div className="hr-chat-tabs">
-                {Object.entries(ROLE_META).map(([tabKey, meta]) => {
-                  const count = contactsByTab[tabKey]?.length || 0
-                  return (
-                    <button
-                      key={tabKey}
-                      type="button"
-                      className={`hr-chat-tab ${selectedTab === tabKey ? 'active' : ''}`}
-                      onClick={() => {
-                        setSelectedTab(tabKey)
-                        setSelectedChatUser(null)
-                      }}
-                    >
-                      {meta.label} ({count})
-                    </button>
-                  )
-                })}
-              </div>
-            </section>
-
-            <section className="hr-chat-card">
-              <aside className={`hr-chat-panel ${isMobile && selectedChatUser ? 'mobile-hidden' : ''}`}>
-                <div className="hr-chat-panel-head">
-                  <div>
-                    <h2 className="hr-chat-panel-title">{ROLE_META[selectedTab].label} Contacts</h2>
-                    <p className="hr-chat-panel-copy">Choose who HR should message.</p>
-                  </div>
-                </div>
-
-                <div className="hr-chat-search">
-                  <FaSearch />
-                  <input
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder={`Search ${ROLE_META[selectedTab].label.toLowerCase()} contacts...`}
-                  />
-                </div>
-
-                {loadingContacts ? (
-                  <div className="hr-chat-loading">Loading contacts...</div>
-                ) : error ? (
-                  <div className="hr-chat-empty-list">
-                    <h3>Chat unavailable</h3>
-                    <p>{error}</p>
-                  </div>
-                ) : filteredContacts.length ? (
-                  <div className="hr-chat-list">
-                    {filteredContacts.map((contact) => (
-                      <button
-                        key={contact.key}
-                        type="button"
-                        className={`hr-chat-contact ${selectedChatUser?.userId === contact.userId ? 'active' : ''}`}
-                        onClick={() => setSelectedChatUser(contact)}
-                        style={{ textAlign: 'left' }}
-                      >
-                        <img className="hr-chat-avatar" src={contact.profileImage} alt={contact.name} />
-                        <div className="hr-chat-contact-main">
-                          <div className="hr-chat-contact-row">
-                            <span className="hr-chat-contact-name">{contact.name}</span>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              {contact.lastMsgTime ? <span className="hr-chat-contact-time">{formatContactTime(contact.lastMsgTime)}</span> : null}
-                              {contact.unread > 0 ? <span className="hr-chat-unread">{contact.unread}</span> : null}
-                            </div>
-                          </div>
-                          <div className="hr-chat-contact-role">{contact.roleLabel}</div>
-                          <div className="hr-chat-contact-preview">
-                            {contact.lastMsgText || 'No messages yet'}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="hr-chat-empty-list">
-                    <h3>No contacts found</h3>
-                    <p>There are no {ROLE_META[selectedTab].label.toLowerCase()} contacts matching this search.</p>
-                  </div>
-                )}
-              </aside>
-
-              <section className={`hr-chat-thread ${isMobile && !selectedChatUser ? 'mobile-hidden' : ''}`}>
-                {selectedChatUser ? (
-                  <>
-                    <header className="hr-chat-thread-head">
-                      <div className="hr-chat-thread-meta">
-                        {isMobile ? (
-                          <button type="button" className="hr-chat-back" onClick={() => setSelectedChatUser(null)}>
-                            <FaArrowLeft />
-                          </button>
-                        ) : null}
-                        <img className="hr-chat-thread-avatar" src={selectedChatUser.profileImage} alt={selectedChatUser.name} />
-                        <div style={{ minWidth: 0 }}>
-                          <div className="hr-chat-thread-name-row">
-                            <div className="hr-chat-thread-name">{selectedChatUser.name}</div>
-                            {selectedUnreadCount > 0 ? <span className="hr-chat-thread-count">{selectedUnreadCount}</span> : null}
-                          </div>
-                          <div className="hr-chat-thread-subtitle">{subtitle}</div>
-                        </div>
-                      </div>
-                    </header>
-
-                    <div className="hr-chat-body">
-                      {threadItems.length ? (
-                        threadItems.map((item) => {
-                          if (item.type === 'day') {
-                            return (
-                              <div key={item.key} className="hr-chat-day-separator">
-                                <span className="hr-chat-day-chip">{item.label}</span>
-                              </div>
-                            )
-                          }
-
-                          const message = item.message
-                          return (
-                            <div key={item.key} className={`hr-chat-message-row ${message.mine ? 'mine' : 'theirs'}`}>
-                              {!message.mine ? (
-                                <img
-                                  className="hr-chat-message-avatar"
-                                  src={selectedChatUser.profileImage}
-                                  alt={selectedChatUser.name}
-                                />
-                              ) : null}
-                              <div className="hr-chat-message-stack">
-                                <div className={`hr-chat-bubble ${message.mine ? 'mine' : 'theirs'}`}>
-                                  <span className="hr-chat-bubble-text">{message.text || 'Message'}</span>
-                                  <span className="hr-chat-meta">
-                                    <span>{formatChatTime(message.timeStamp)}</span>
-                                    {message.mine ? <FaCheck color={message.seen ? '#a5d8ff' : '#dbeafe'} size={11} /> : null}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                          )
-                        })
-                      ) : (
-                        <div className="hr-chat-empty-thread">
-                          <h3>Start the conversation</h3>
-                          <p>Send the first message to {selectedChatUser.name}.</p>
-                        </div>
-                      )}
-
-                      {typing ? <div className="hr-chat-typing">{selectedChatUser.name} is typing...</div> : null}
-                      <div ref={chatEndRef} />
-                    </div>
-
-                    <div className="hr-chat-input">
-                      <div className="hr-chat-composer">
-                        <textarea
-                          value={messageInput}
-                          onChange={handleTyping}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' && !event.shiftKey) {
-                              event.preventDefault()
-                              sendMessage().catch(() => {})
-                            }
-                          }}
-                          placeholder={`Message ${selectedChatUser.name}...`}
-                        />
-                        <button type="button" className="hr-chat-send" onClick={() => sendMessage().catch(() => {})} disabled={!messageInput.trim()}>
-                          <FaPaperPlane />
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="hr-chat-empty-thread">
-                    <h3>Select a user to start chatting</h3>
-                    <p>Pick a teacher, finance officer, or school admin contact from the list.</p>
-                  </div>
-                )}
-              </section>
-            </section>
-          </div>
-        </main>
-      </div>
-    </div>
-  )
+	const location = useLocation()
+	const navigate = useNavigate()
+	const chatEndRef = useRef(null)
+	const imageInputRef = useRef(null)
+	const contactListRef = useRef(null)
+	const db = useMemo(() => getDatabase(app), [])
+	const storage = useMemo(() => getStorage(app), [])
+	const [admin] = useState(() => JSON.parse(localStorage.getItem('admin') || '{}'))
+	const adminUserId = String(admin?.userId || admin?.id || admin?.hrId || admin?.adminId || admin?.hrID || admin?.adminID || '').trim()
+	const schoolCode = String(admin?.activeSchoolCode || admin?.schoolCode || DEFAULT_SCHOOL_CODE).trim() || DEFAULT_SCHOOL_CODE
+	const locationState = location.state || {}
+	const incomingContact = locationState.contact || locationState.user || null
+	const incomingContactUserId = String(incomingContact?.userId || '').trim()
+	const incomingChatId = String(locationState.chatId || '').trim()
+
+	const [employees, setEmployees] = useState([])
+	const [loadingContacts, setLoadingContacts] = useState(true)
+	const [contactError, setContactError] = useState('')
+	const [searchText, setSearchText] = useState('')
+	const [selectedRoleFilter, setSelectedRoleFilter] = useState('all')
+	const [selectedChatUser, setSelectedChatUser] = useState(() => incomingContact || null)
+	const [recentMessages, setRecentMessages] = useState([])
+	const [olderMessages, setOlderMessages] = useState([])
+	const [input, setInput] = useState('')
+	const [chatSummariesByUserId, setChatSummariesByUserId] = useState({})
+	const [presence, setPresence] = useState({})
+	const [unreadCounts, setUnreadCounts] = useState({})
+	const [imageSending, setImageSending] = useState(false)
+	const [previewImageUrl, setPreviewImageUrl] = useState('')
+	const [editingMessageId, setEditingMessageId] = useState('')
+	const [activeMenuMessageId, setActiveMenuMessageId] = useState('')
+	const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
+	const [hasOlderMessages, setHasOlderMessages] = useState(false)
+	const [contactListScrollTop, setContactListScrollTop] = useState(0)
+	const [contactListViewportHeight, setContactListViewportHeight] = useState(0)
+
+	const schoolPath = (path) => `Platform1/Schools/${schoolCode}/${String(path || '').replace(/^\/+/, '')}`
+
+	useEffect(() => {
+		if (adminUserId) return
+		navigate('/login', { replace: true })
+	}, [adminUserId, navigate])
+
+	useEffect(() => {
+		if (selectedRoleFilter === 'all') return
+		const normalizedFilter = normalizeRoleFilterLabel(selectedRoleFilter)
+		if (normalizedFilter !== selectedRoleFilter) {
+			setSelectedRoleFilter(normalizedFilter)
+		}
+	}, [selectedRoleFilter])
+
+	useEffect(() => {
+		if (!incomingContactUserId) return
+		setSelectedChatUser((current) => {
+			if (current?.userId === incomingContactUserId) {
+				return current
+			}
+
+			return incomingContact
+		})
+	}, [incomingContact, incomingContactUserId])
+
+	useEffect(() => {
+		let cancelled = false
+
+		async function loadEmployees() {
+			setLoadingContacts(true)
+			setContactError('')
+
+			try {
+				const buildChatContacts = (items) => (Array.isArray(items) ? items : [])
+					.map((employee) => {
+						const job = getEmployeeJob(employee)
+						const contact = getEmployeeContact(employee)
+						const meta = getEmployeeMeta(employee)
+						const role = normalizeRoleLabel(job.employeeCategory || job.category || job.position || employee.role || employee.position || 'Staff')
+						const userId = String(employee.userId || meta.userId || '').trim()
+						const name = getEmployeeName(employee)
+						const profileImage = resolveAvatarSrc(getEmployeeProfileImage(employee), name)
+						const status = String(job.status || employee.status || '').trim() || 'Active'
+
+						return {
+							...employee,
+							id: employee.id || employee.employeeId,
+							employeeId: employee.employeeId || employee.id || '',
+							userId,
+							name,
+							role,
+							department: job.department || employee.department || 'Unassigned',
+							status,
+							email: contact.email || contact.altEmail || employee.email || '',
+							phone: contact.phone1 || contact.phone || contact.phone2 || employee.phone || '',
+							profileImage,
+						}
+					})
+					.filter((employee) => employee.userId)
+					.filter((employee) => employee.userId !== adminUserId)
+					.filter((employee) => isEmployeeActive(employee))
+					.sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
+
+				let snapshot = await getEmployeesSnapshot(EMPLOYEE_CONTACTS_CACHE_TTL_MS)
+				if (cancelled) return
+
+				let normalized = buildChatContacts(snapshot)
+				const shouldForceFreshFetch =
+					!Array.isArray(snapshot)
+					|| snapshot.length === 0
+					|| normalized.length === 0
+
+				if (shouldForceFreshFetch) {
+					snapshot = await getEmployeesSnapshot(0)
+					if (cancelled) return
+					normalized = buildChatContacts(snapshot)
+				}
+
+				setEmployees(normalized)
+				if (!normalized.length && Array.isArray(snapshot) && snapshot.length > 0) {
+					setContactError('Only active employees with linked user accounts are available in chat.')
+				}
+			} catch (error) {
+				console.error(error)
+				if (!cancelled) {
+					setContactError('Employee contacts could not be loaded.')
+				}
+			} finally {
+				if (!cancelled) {
+					setLoadingContacts(false)
+				}
+			}
+		}
+
+		loadEmployees()
+		return () => {
+			cancelled = true
+		}
+	}, [adminUserId])
+
+	const roleFilters = useMemo(() => {
+		const values = ['all', ...new Set(employees.map((employee) => normalizeRoleFilterLabel(employee.role)).filter(Boolean))]
+		return values
+	}, [employees])
+
+	const filteredEmployees = useMemo(() => {
+		const query = String(searchText || '').trim().toLowerCase()
+		const activeRoleFilter = selectedRoleFilter === 'all' ? 'all' : normalizeRoleFilterLabel(selectedRoleFilter)
+
+		return employees.filter((employee) => {
+			if (activeRoleFilter !== 'all' && normalizeRoleFilterLabel(employee.role).toLowerCase() !== String(activeRoleFilter || '').toLowerCase()) {
+				return false
+			}
+
+			if (!query) return true
+
+			return [employee.name, employee.department, employee.role, employee.employeeId, employee.email]
+				.filter(Boolean)
+				.some((value) => String(value).toLowerCase().includes(query))
+		})
+	}, [employees, searchText, selectedRoleFilter])
+
+	const orderedFilteredEmployees = useMemo(() => {
+		if (!selectedChatUser?.userId) return filteredEmployees
+
+		return [...filteredEmployees].sort((left, right) => {
+			if (left.userId === selectedChatUser.userId) return -1
+			if (right.userId === selectedChatUser.userId) return 1
+			return 0
+		})
+	}, [filteredEmployees, selectedChatUser])
+
+	useEffect(() => {
+		const element = contactListRef.current
+		if (!element) return undefined
+
+		const syncContactListMetrics = () => {
+			setContactListScrollTop(element.scrollTop || 0)
+			setContactListViewportHeight(element.clientHeight || 0)
+		}
+
+		syncContactListMetrics()
+
+		if (typeof ResizeObserver === 'function') {
+			const resizeObserver = new ResizeObserver(() => {
+				syncContactListMetrics()
+			})
+			resizeObserver.observe(element)
+
+			return () => {
+				resizeObserver.disconnect()
+			}
+		}
+
+		if (typeof window !== 'undefined') {
+			window.addEventListener('resize', syncContactListMetrics)
+		}
+
+		return () => {
+			if (typeof window !== 'undefined') {
+				window.removeEventListener('resize', syncContactListMetrics)
+			}
+		}
+	}, [orderedFilteredEmployees.length, searchText, selectedRoleFilter])
+
+	const activeUnreadUserIds = useMemo(() => {
+		return Object.entries(unreadCounts || {})
+			.filter(([, count]) => Number(count || 0) > 0)
+			.slice(0, UNREAD_PRIORITY_LIMIT)
+			.map(([userId]) => String(userId || '').trim())
+			.filter(Boolean)
+	}, [unreadCounts])
+
+	const unreadRefreshUserIds = useMemo(() => {
+		return dedupeUserIds([
+			selectedChatUser?.userId,
+			...activeUnreadUserIds,
+			...orderedFilteredEmployees.slice(0, UNREAD_PRIORITY_LIMIT).map((employee) => employee.userId),
+		])
+	}, [activeUnreadUserIds, orderedFilteredEmployees, selectedChatUser])
+
+	const visiblePresenceEmployees = useMemo(() => {
+		if (!orderedFilteredEmployees.length) {
+			return []
+		}
+
+		const viewportHeight = Math.max(contactListViewportHeight, CONTACT_LIST_ROW_HEIGHT * 6)
+		const visibleRowCount = Math.max(8, Math.ceil(viewportHeight / CONTACT_LIST_ROW_HEIGHT))
+		const startIndex = Math.max(0, Math.floor(contactListScrollTop / CONTACT_LIST_ROW_HEIGHT) - CONTACT_LIST_BUFFER_ROWS)
+		const endIndex = Math.min(
+			orderedFilteredEmployees.length,
+			startIndex + visibleRowCount + (CONTACT_LIST_BUFFER_ROWS * 2)
+		)
+
+		return orderedFilteredEmployees.slice(startIndex, endIndex)
+	}, [contactListScrollTop, contactListViewportHeight, orderedFilteredEmployees])
+
+	const visiblePresenceUserIds = useMemo(() => {
+		return dedupeUserIds([
+			selectedChatUser?.userId,
+			...visiblePresenceEmployees.map((employee) => employee.userId),
+		])
+	}, [selectedChatUser, visiblePresenceEmployees])
+
+	useEffect(() => {
+		if (!employees.length) return
+
+		const matchedEmployee = employees.find((employee) => {
+			if (incomingContactUserId && employee.userId === incomingContactUserId) {
+				return true
+			}
+
+			if (incomingChatId && adminUserId && sortedChatId(adminUserId, employee.userId) === incomingChatId) {
+				return true
+			}
+
+			return false
+		})
+
+		if (!matchedEmployee) return
+
+		setSelectedChatUser((current) => {
+			if (
+				current?.userId === matchedEmployee.userId
+				&& current?.name === matchedEmployee.name
+				&& current?.role === matchedEmployee.role
+				&& current?.department === matchedEmployee.department
+				&& current?.profileImage === matchedEmployee.profileImage
+			) {
+				return current
+			}
+
+			return matchedEmployee
+		})
+	}, [adminUserId, employees, incomingChatId, incomingContactUserId])
+
+	const currentChatKey = useMemo(() => {
+		if (!adminUserId || !selectedChatUser?.userId) return null
+		return sortedChatId(adminUserId, selectedChatUser.userId)
+	}, [adminUserId, selectedChatUser])
+
+	const messages = useMemo(() => mergeMessages(olderMessages, recentMessages), [olderMessages, recentMessages])
+
+	const displayItems = useMemo(() => {
+		const items = []
+		let lastLabel = null
+
+		messages.forEach((message) => {
+			const label = formatDateLabel(message.timeStamp)
+			if (label && label !== lastLabel) {
+				items.push({ type: 'date', id: `date-${label}-${message.timeStamp}`, label })
+				lastLabel = label
+			}
+			items.push({ type: 'message', ...message })
+		})
+
+		return items
+	}, [messages])
+
+	useEffect(() => {
+		if (!selectedChatUser || !adminUserId || !currentChatKey) {
+			setRecentMessages([])
+			setOlderMessages([])
+			setHasOlderMessages(false)
+			return undefined
+		}
+
+		setOlderMessages([])
+		setHasOlderMessages(false)
+
+		const chatRef = ref(db, schoolPath(`Chats/${currentChatKey}/messages`))
+		const recentMessagesQuery = query(chatRef, orderByChild('timeStamp'), limitToLast(MESSAGE_PAGE_SIZE))
+		const unsubscribe = onValue(recentMessagesQuery, (snapshot) => {
+			const payload = snapshot.val() || {}
+			const list = normalizeChatMessages(payload, adminUserId)
+
+			setRecentMessages(list)
+			setHasOlderMessages(list.length >= MESSAGE_PAGE_SIZE)
+
+			Object.entries(payload).forEach(([id, value]) => {
+				if (String(value?.receiverId || '') === adminUserId && !value?.seen) {
+					update(ref(db, schoolPath(`Chats/${currentChatKey}/messages/${id}`)), { seen: true }).catch(console.error)
+				}
+			})
+
+			Promise.all([
+				update(ref(db, schoolPath(`Chats/${currentChatKey}/unread`)), { [adminUserId]: 0 }).catch(() => {}),
+				clearChatSummaryUnread({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					otherUserId: selectedChatUser?.userId,
+					chatId: currentChatKey,
+				}).catch(() => {}),
+			]).catch(() => {})
+
+			if (selectedChatUser?.userId) {
+				setUnreadCounts((previous) => ({ ...previous, [selectedChatUser.userId]: 0 }))
+				setChatSummariesByUserId((previous) => ({
+					...previous,
+					[selectedChatUser.userId]: {
+						...(previous[selectedChatUser.userId] || {}),
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						unreadCount: 0,
+					},
+				}))
+			}
+		})
+
+		return () => unsubscribe()
+	}, [adminUserId, currentChatKey, db, selectedChatUser])
+
+	useEffect(() => {
+		if (!adminUserId || !employees.length) {
+			setChatSummariesByUserId({})
+			setUnreadCounts({})
+			return undefined
+		}
+
+		let cancelled = false
+
+		loadChatSummariesForContacts({
+			db,
+			schoolPath,
+			ownerUserId: adminUserId,
+			contacts: employees.map((employee) => ({ userId: employee.userId })),
+		})
+			.then((entries) => {
+				if (!cancelled) {
+					const summaryMap = entries.reduce((accumulator, entry) => {
+						accumulator[entry.userId] = entry
+						return accumulator
+					}, {})
+
+					setChatSummariesByUserId(summaryMap)
+					setUnreadCounts(employees.reduce((accumulator, employee) => {
+						accumulator[employee.userId] = Number(summaryMap[employee.userId]?.unreadCount || 0)
+						return accumulator
+					}, {}))
+				}
+			})
+			.catch((error) => {
+				console.error('Failed to load chat summaries:', error)
+				if (!cancelled) {
+					setChatSummariesByUserId({})
+					setUnreadCounts({})
+				}
+			})
+
+		return () => {
+			cancelled = true
+		}
+	}, [adminUserId, db, employees, schoolCode])
+
+	useEffect(() => {
+		if (!adminUserId || !unreadRefreshUserIds.length) return undefined
+
+		let cancelled = false
+
+		const refreshChatSummaries = () => {
+			if (!isPageVisible()) {
+				return Promise.resolve()
+			}
+
+			return loadChatSummariesForContacts({
+				db,
+				schoolPath,
+				ownerUserId: adminUserId,
+				contacts: unreadRefreshUserIds.map((userId) => ({ userId })),
+			})
+				.then((entries) => {
+					if (!cancelled) {
+						const summaryMap = entries.reduce((accumulator, entry) => {
+							accumulator[entry.userId] = entry
+							return accumulator
+						}, {})
+
+						const unreadMap = unreadRefreshUserIds.reduce((accumulator, userId) => {
+							accumulator[userId] = Number(summaryMap[userId]?.unreadCount || 0)
+							return accumulator
+						}, {})
+
+						setChatSummariesByUserId((previous) => ({ ...previous, ...summaryMap }))
+						setUnreadCounts((previous) => ({ ...previous, ...unreadMap }))
+					}
+				})
+				.catch((error) => {
+					console.error('Failed to refresh chat summaries:', error)
+				})
+		}
+
+		refreshChatSummaries().catch(() => {})
+		const intervalId = window.setInterval(() => {
+			refreshChatSummaries().catch(() => {})
+		}, UNREAD_REFRESH_INTERVAL_MS)
+		const handleVisibilityChange = () => {
+			if (!isPageVisible()) return
+			refreshChatSummaries().catch(() => {})
+		}
+
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', handleVisibilityChange)
+		}
+
+		return () => {
+			cancelled = true
+			window.clearInterval(intervalId)
+			if (typeof document !== 'undefined') {
+				document.removeEventListener('visibilitychange', handleVisibilityChange)
+			}
+		}
+	}, [adminUserId, db, schoolCode, unreadRefreshUserIds])
+
+	useEffect(() => {
+		if (!visiblePresenceUserIds.length) {
+			setPresence({})
+			return undefined
+		}
+
+		let cancelled = false
+
+		const refreshPresence = () => {
+			if (!isPageVisible()) {
+				return Promise.resolve()
+			}
+
+			return loadPresenceByUserIds({
+				db,
+				schoolPath,
+				userIds: visiblePresenceUserIds,
+			})
+				.then((presenceMap) => {
+					if (!cancelled) {
+						setPresence(visiblePresenceUserIds.reduce((accumulator, userId) => {
+							accumulator[userId] = Object.prototype.hasOwnProperty.call(presenceMap, userId) ? presenceMap[userId] : null
+							return accumulator
+						}, {}))
+					}
+				})
+				.catch((error) => {
+					console.error('Failed to refresh scoped presence:', error)
+				})
+		}
+
+		refreshPresence().catch(() => {})
+		const intervalId = window.setInterval(() => {
+			refreshPresence().catch(() => {})
+		}, UNREAD_REFRESH_INTERVAL_MS)
+		const handleVisibilityChange = () => {
+			if (!isPageVisible()) return
+			refreshPresence().catch(() => {})
+		}
+
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', handleVisibilityChange)
+		}
+
+		return () => {
+			cancelled = true
+			window.clearInterval(intervalId)
+			if (typeof document !== 'undefined') {
+				document.removeEventListener('visibilitychange', handleVisibilityChange)
+			}
+		}
+	}, [db, schoolCode, visiblePresenceUserIds])
+
+	useEffect(() => {
+		chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+	}, [recentMessages])
+
+	useEffect(() => {
+		if (!selectedChatUser?.userId) return
+		if (employees.some((employee) => employee.userId === selectedChatUser.userId)) return
+		setSelectedChatUser(null)
+	}, [employees, selectedChatUser])
+
+	const isUserOnline = (userId) => {
+		const record = presence?.[userId]
+		if (record == null) return false
+		if (typeof record === 'boolean') return record
+		if (typeof record === 'number') return Date.now() - Number(record) < 2 * 60 * 1000
+		if (typeof record === 'object') {
+			if (typeof record.online === 'boolean') return record.online
+			const lastSeen = record.lastSeen || record.timestamp || record.updatedAt
+			if (lastSeen) return Date.now() - Number(lastSeen) < 2 * 60 * 1000
+		}
+		return false
+	}
+
+	const getLastSeenText = (userId) => {
+		const record = presence?.[userId]
+		if (!record || isUserOnline(userId)) return 'Online now'
+
+		let timestamp = null
+		if (typeof record === 'number') timestamp = record
+		if (typeof record === 'object') timestamp = record.lastSeen || record.timestamp || record.updatedAt || null
+		if (!timestamp) return 'Offline'
+
+		const diff = Date.now() - Number(timestamp)
+		const minutes = Math.floor(diff / 60000)
+		if (minutes < 1) return 'Seen just now'
+		if (minutes < 60) return `Seen ${minutes}m ago`
+		const hours = Math.floor(minutes / 60)
+		if (hours < 24) return `Seen ${hours}h ago`
+		const days = Math.floor(hours / 24)
+		if (days < 7) return `Seen ${days}d ago`
+		return `Seen ${new Date(Number(timestamp)).toLocaleDateString()}`
+	}
+
+	const resetComposer = () => {
+		setInput('')
+		setEditingMessageId('')
+		setActiveMenuMessageId('')
+	}
+
+	const loadOlderMessages = async () => {
+		if (!currentChatKey || loadingOlderMessages || !hasOlderMessages) return
+
+		const loadedMessages = mergeMessages(olderMessages, recentMessages)
+		const oldestTimestamp = Number(loadedMessages[0]?.timeStamp || 0)
+		if (!oldestTimestamp) {
+			setHasOlderMessages(false)
+			return
+		}
+
+		setLoadingOlderMessages(true)
+		try {
+			const olderMessagesQuery = query(
+				ref(db, schoolPath(`Chats/${currentChatKey}/messages`)),
+				orderByChild('timeStamp'),
+				endAt(oldestTimestamp - 1),
+				limitToLast(MESSAGE_PAGE_SIZE)
+			)
+			const snapshot = await get(olderMessagesQuery)
+			const payload = snapshot.val() || {}
+			const list = normalizeChatMessages(payload, adminUserId)
+
+			if (!list.length) {
+				setHasOlderMessages(false)
+				return
+			}
+
+			setOlderMessages((previous) => mergeMessages(previous, list))
+			if (list.length < MESSAGE_PAGE_SIZE) {
+				setHasOlderMessages(false)
+			}
+		} catch (error) {
+			console.error('Failed to load older messages:', error)
+		} finally {
+			setLoadingOlderMessages(false)
+		}
+	}
+
+	const sendMessage = async () => {
+		if (!selectedChatUser || !adminUserId || !currentChatKey) return
+		const text = String(input || '').trim()
+		if (!text) return
+		const latestVisibleMessage = [...messages].filter((message) => !message?.deleted).sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0)).at(-1)
+
+		if (editingMessageId) {
+			await update(ref(db, schoolPath(`Chats/${currentChatKey}/messages/${editingMessageId}`)), {
+				text,
+				edited: true,
+			})
+
+			if (latestVisibleMessage?.id === editingMessageId) {
+				await Promise.all([
+					writeChatSummaryUpdate({
+						db,
+						schoolPath,
+						ownerUserId: adminUserId,
+						chatId: currentChatKey,
+						summary: {
+							chatId: currentChatKey,
+							otherUserId: selectedChatUser.userId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						},
+					}),
+					writeChatSummaryUpdate({
+						db,
+						schoolPath,
+						ownerUserId: selectedChatUser.userId,
+						chatId: currentChatKey,
+						summary: {
+							chatId: currentChatKey,
+							otherUserId: adminUserId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						},
+					}),
+				])
+
+				setChatSummariesByUserId((previous) => ({
+					...previous,
+					[selectedChatUser.userId]: {
+						...(previous[selectedChatUser.userId] || {}),
+						...buildChatSummaryUpdate({
+							chatId: currentChatKey,
+							otherUserId: selectedChatUser.userId,
+							lastMessageText: text,
+							lastMessageType: 'text',
+							lastMessageTime: latestVisibleMessage?.timeStamp,
+							lastSenderId: latestVisibleMessage?.senderId,
+						}),
+					},
+				}))
+			}
+
+			resetComposer()
+			return
+		}
+
+		const timeStamp = Date.now()
+		const messageData = {
+			senderId: adminUserId,
+			receiverId: selectedChatUser.userId,
+			type: 'text',
+			text,
+			seen: false,
+			edited: false,
+			deleted: false,
+			timeStamp,
+		}
+
+		await push(ref(db, schoolPath(`Chats/${currentChatKey}/messages`)), messageData)
+		await update(ref(db, schoolPath(`Chats/${currentChatKey}/participants`)), {
+			[adminUserId]: true,
+			[selectedChatUser.userId]: true,
+		})
+		const receiverSummaryUnreadRef = ref(
+			db,
+			schoolPath(`Chat_Summaries/${selectedChatUser.userId}/${currentChatKey}/unreadCount`),
+		)
+		const receiverSummaryUnreadSnapshot = await get(receiverSummaryUnreadRef).catch(() => null)
+		const nextReceiverUnread = Number(receiverSummaryUnreadSnapshot?.val() || 0) + 1
+
+		await Promise.all([
+			writeChatSummaryUpdate({
+				db,
+				schoolPath,
+				ownerUserId: adminUserId,
+				chatId: currentChatKey,
+				summary: {
+					chatId: currentChatKey,
+					otherUserId: selectedChatUser.userId,
+					unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+					lastMessageText: text,
+					lastMessageType: 'text',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}),
+			writeChatSummaryUpdate({
+				db,
+				schoolPath,
+				ownerUserId: selectedChatUser.userId,
+				chatId: currentChatKey,
+				summary: {
+					chatId: currentChatKey,
+					otherUserId: adminUserId,
+					unreadCount: nextReceiverUnread,
+					lastMessageText: text,
+					lastMessageType: 'text',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}),
+		])
+
+		setChatSummariesByUserId((previous) => ({
+			...previous,
+			[selectedChatUser.userId]: {
+				...(previous[selectedChatUser.userId] || {}),
+				chatId: currentChatKey,
+				otherUserId: selectedChatUser.userId,
+				unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+				lastMessageText: text,
+				lastMessageType: 'text',
+				lastMessageTime: timeStamp,
+				lastSenderId: adminUserId,
+			},
+		}))
+
+		setInput('')
+	}
+
+	const sendImageMessage = async (event) => {
+		const file = event?.target?.files?.[0]
+		if (!file || !selectedChatUser || !adminUserId || !currentChatKey) {
+			if (event?.target) event.target.value = ''
+			return
+		}
+
+		try {
+			setImageSending(true)
+			const compressedBlob = await compressImageToJpeg(file, { maxBytes: MAX_CHAT_IMAGE_BYTES })
+			const messagesRef = ref(db, schoolPath(`Chats/${currentChatKey}/messages`))
+			const messageRef = push(messagesRef)
+			const messageId = messageRef.key
+			const timeStamp = Date.now()
+			const uploadRef = storageRef(storage, `chatImages/${schoolCode}/${currentChatKey}/${messageId}.jpg`)
+
+			await uploadBytes(uploadRef, compressedBlob, { contentType: 'image/jpeg' })
+			const imageUrl = await getDownloadURL(uploadRef)
+
+			await update(messageRef, {
+				messageId,
+				senderId: adminUserId,
+				receiverId: selectedChatUser.userId,
+				type: 'image',
+				text: '',
+				imageUrl,
+				seen: false,
+				edited: false,
+				deleted: false,
+				timeStamp,
+			})
+
+			await update(ref(db, schoolPath(`Chats/${currentChatKey}/participants`)), {
+				[adminUserId]: true,
+				[selectedChatUser.userId]: true,
+			})
+			const receiverSummaryUnreadRef = ref(
+				db,
+				schoolPath(`Chat_Summaries/${selectedChatUser.userId}/${currentChatKey}/unreadCount`),
+			)
+			const receiverSummaryUnreadSnapshot = await get(receiverSummaryUnreadRef).catch(() => null)
+			const nextReceiverUnread = Number(receiverSummaryUnreadSnapshot?.val() || 0) + 1
+
+			await Promise.all([
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+						lastMessageText: 'Image',
+						lastMessageType: 'image',
+						lastMessageTime: timeStamp,
+						lastSenderId: adminUserId,
+					},
+				}),
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: selectedChatUser.userId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: adminUserId,
+						unreadCount: nextReceiverUnread,
+						lastMessageText: 'Image',
+						lastMessageType: 'image',
+						lastMessageTime: timeStamp,
+						lastSenderId: adminUserId,
+					},
+				}),
+			])
+
+			setChatSummariesByUserId((previous) => ({
+				...previous,
+				[selectedChatUser.userId]: {
+					...(previous[selectedChatUser.userId] || {}),
+					chatId: currentChatKey,
+					otherUserId: selectedChatUser.userId,
+					unreadCount: Number(unreadCounts[selectedChatUser.userId] || 0),
+					lastMessageText: 'Image',
+					lastMessageType: 'image',
+					lastMessageTime: timeStamp,
+					lastSenderId: adminUserId,
+				},
+			}))
+		} catch (error) {
+			console.error('Image send failed:', error)
+			window.alert('Image send failed. Please try again.')
+		} finally {
+			setImageSending(false)
+			if (event?.target) event.target.value = ''
+		}
+	}
+
+	const beginEditing = (message) => {
+		setEditingMessageId(message.id)
+		setInput(String(message.text || ''))
+		setActiveMenuMessageId('')
+	}
+
+	const deleteMessage = async (messageId) => {
+		if (!currentChatKey || !messageId) return
+		const remainingMessages = [...messages]
+			.filter((message) => !message?.deleted && message.id !== messageId)
+			.sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+		const latestVisibleMessage = [...messages]
+			.filter((message) => !message?.deleted)
+			.sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0))
+			.at(-1)
+		const nextLatestMessage = remainingMessages.at(-1)
+		await update(ref(db, schoolPath(`Chats/${currentChatKey}/messages/${messageId}`)), { deleted: true })
+
+		if (latestVisibleMessage?.id === messageId && selectedChatUser?.userId) {
+			const summaryPatch = nextLatestMessage
+				? {
+					lastMessageText: nextLatestMessage.text,
+					lastMessageType: nextLatestMessage.type,
+					lastMessageTime: nextLatestMessage.timeStamp,
+					lastSenderId: nextLatestMessage.senderId,
+				}
+				: {
+					lastMessageText: '',
+					lastMessageType: 'deleted',
+					lastMessageTime: 0,
+					lastSenderId: '',
+				}
+
+			await Promise.all([
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: adminUserId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						...summaryPatch,
+					},
+				}),
+				writeChatSummaryUpdate({
+					db,
+					schoolPath,
+					ownerUserId: selectedChatUser.userId,
+					chatId: currentChatKey,
+					summary: {
+						chatId: currentChatKey,
+						otherUserId: adminUserId,
+						...summaryPatch,
+					},
+				}),
+			])
+
+			setChatSummariesByUserId((previous) => ({
+				...previous,
+				[selectedChatUser.userId]: {
+					...(previous[selectedChatUser.userId] || {}),
+					...buildChatSummaryUpdate({
+						chatId: currentChatKey,
+						otherUserId: selectedChatUser.userId,
+						...summaryPatch,
+					}),
+				},
+			}))
+		}
+
+		setActiveMenuMessageId('')
+		if (editingMessageId === messageId) {
+			resetComposer()
+		}
+	}
+
+	const headerActionStyle = {
+		position: 'relative',
+		display: 'inline-flex',
+		alignItems: 'center',
+		gap: 8,
+		height: 38,
+		padding: '0 14px',
+		borderRadius: 999,
+		border: '1px solid var(--border-soft, #dbe2f2)',
+		background: 'var(--surface-panel, #fff)',
+		color: 'var(--text-secondary, #334155)',
+		fontSize: 13,
+		fontWeight: 700,
+		cursor: 'pointer',
+		textDecoration: 'none',
+	}
+
+	return (
+		<div
+			style={{
+				height: '100vh',
+				overflow: 'hidden',
+				background: 'var(--page-bg)',
+				color: 'var(--text-primary)',
+				'--sidebar-width': 'clamp(230px, 16vw, 290px)',
+				'--topbar-height': '64px',
+			}}
+		>
+			<nav className="top-navbar" style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--topbar-height)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '0 18px 0 20px', borderBottom: '1px solid var(--border-soft)', background: 'var(--surface-panel)', zIndex: 60 }}>
+				<div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+					<h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Gojo HR</h2>
+				</div>
+
+				<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+					<button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
+					<Link to="/all-chat" aria-label="Messages" style={{ ...headerActionStyle, color: 'var(--accent)', borderColor: 'var(--border-strong)', background: 'var(--surface-accent)' }}><FaFacebookMessenger /></Link>
+					<Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
+					<AvatarBadge src={admin.profileImage} name={admin.name || 'HR Office'} size={40} fontSize={14} />
+				</div>
+			</nav>
+
+			<div className="google-dashboard" style={{ display: 'flex', gap: 14, padding: 'calc(var(--topbar-height) + 18px) 14px 18px', marginTop: 0, height: '100vh', overflow: 'hidden', background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box', alignItems: 'flex-start' }}>
+				<div className="admin-sidebar-spacer" style={{ width: 'var(--sidebar-width)', minWidth: 'var(--sidebar-width)', flex: '0 0 var(--sidebar-width)', pointerEvents: 'none' }} />
+
+				<main style={{ flex: '1 1 0', minWidth: 0, margin: 0, padding: '0 12px 0 2px', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+					<div style={{ width: '100%', maxWidth: 1260, height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+						<section style={{ display: 'grid', gridTemplateColumns: '340px minmax(0, 1fr)', gap: 16, alignItems: 'stretch', height: '100%', minHeight: 0 }}>
+							<div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 22, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
+								<div style={{ padding: '18px 18px 14px', borderBottom: '1px solid var(--border-soft)' }}>
+									<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+										<div>
+											<div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>Employees</div>
+											<div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>HR conversations are limited to staff only</div>
+										</div>
+										<div style={{ width: 38, height: 38, borderRadius: 14, border: '1px solid var(--border-strong)', background: 'var(--surface-accent)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+											<FaUsers />
+										</div>
+									</div>
+
+									<div style={{ position: 'relative', marginBottom: 12 }}>
+										<FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
+										<input
+											value={searchText}
+											onChange={(event) => setSearchText(event.target.value)}
+											placeholder="Search employees..."
+											style={{ width: '100%', height: 44, borderRadius: 14, border: '1px solid var(--input-border)', background: 'var(--input-bg)', color: 'var(--text-primary)', padding: '0 14px 0 38px', fontSize: 13, outline: 'none' }}
+										/>
+									</div>
+
+									<div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+										{roleFilters.map((role) => {
+											const active = selectedRoleFilter === role
+											return (
+												<button
+													key={role}
+													type="button"
+													onClick={() => setSelectedRoleFilter(role)}
+													style={{
+														border: active ? '1px solid var(--border-strong)' : '1px solid var(--border-soft)',
+														background: active ? 'var(--surface-accent)' : 'var(--surface-panel)',
+														color: active ? 'var(--accent)' : 'var(--text-secondary)',
+														borderRadius: 999,
+														minHeight: 34,
+														padding: '0 12px',
+														fontSize: 12,
+														fontWeight: 800,
+														cursor: 'pointer',
+														display: 'inline-flex',
+														alignItems: 'center',
+														gap: 6,
+													}}
+												>
+													{role === 'all' ? <FaFilter size={11} /> : null}
+													{role === 'all' ? 'All roles' : role}
+												</button>
+											)
+										})}
+									</div>
+
+									{contactError ? (
+										<div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--warning-border)', background: 'var(--warning-soft)', color: 'var(--warning)', fontSize: 13, fontWeight: 700 }}>
+											{contactError}
+										</div>
+									) : null}
+								</div>
+
+								<div
+									ref={contactListRef}
+									onScroll={(event) => setContactListScrollTop(event.currentTarget.scrollTop || 0)}
+									style={{ padding: 14, overflowY: 'auto', flex: 1, minHeight: 0 }}
+								>
+									{loadingContacts ? <div style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: 13 }}>Loading employee contacts...</div> : null}
+									{!loadingContacts && !filteredEmployees.length ? <div style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: 13 }}>No employee contacts matched the current filter.</div> : null}
+
+									{orderedFilteredEmployees.map((employee) => {
+										const isActive = selectedChatUser?.userId === employee.userId
+										const unread = unreadCounts[employee.userId] || 0
+										const online = isUserOnline(employee.userId)
+
+										return (
+											<button
+												key={employee.userId}
+												type="button"
+												onClick={() => {
+													setSelectedChatUser(employee)
+													setActiveMenuMessageId('')
+													setEditingMessageId('')
+													setInput('')
+												}}
+												style={{
+													width: '100%',
+													display: 'flex',
+													alignItems: 'center',
+													justifyContent: 'space-between',
+													gap: 10,
+													padding: 12,
+													borderRadius: 16,
+													cursor: 'pointer',
+													marginBottom: 10,
+													background: 'var(--surface-panel)',
+													border: isActive ? '1px solid var(--border-strong)' : '1px solid var(--border-soft)',
+													boxShadow: isActive ? 'inset 3px 0 0 var(--accent), var(--shadow-soft)' : 'var(--shadow-soft)',
+													textAlign: 'left',
+												}}
+											>
+												<div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+													<div style={{ position: 'relative', flexShrink: 0 }}>
+														<img
+															src={employee.profileImage}
+															alt={employee.name}
+															loading="lazy"
+															decoding="async"
+															onError={(event) => {
+																const fallback = createPlaceholderAvatar(employee.name)
+																if (event.currentTarget.src === fallback) return
+																event.currentTarget.src = fallback
+															}}
+															style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}
+														/>
+														<span style={{ position: 'absolute', right: -2, bottom: -2, width: 12, height: 12, borderRadius: 12, border: '2px solid var(--surface-panel)', background: online ? '#22c55e' : '#94a3b8' }} />
+													</div>
+
+													<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+														<span style={{ fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.name}</span>
+														<span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee.role} · {employee.department}</span>
+													</div>
+												</div>
+
+												{unread > 0 ? <div style={{ minWidth: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#ef4444', color: '#fff', borderRadius: 14, padding: '0 6px', fontSize: 11, fontWeight: 800, boxShadow: '0 4px 10px rgba(239,68,68,0.25)' }}>{unread > 99 ? '99+' : unread}</div> : <div style={{ width: 26 }} />}
+											</button>
+										)
+									})}
+								</div>
+							</div>
+
+							<div style={{ background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 22, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
+								{selectedChatUser ? (
+									<>
+										<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 18px 14px', borderBottom: '1px solid var(--border-soft)' }}>
+											<div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+												{/* <button
+													type="button"
+													onClick={() => navigate(-1)}
+													style={{ border: '1px solid #dbeafe', background: '#ffffff', padding: 8, cursor: 'pointer', borderRadius: 999, color: '#007AFB', boxShadow: '0 2px 8px rgba(15, 23, 42, 0.08)' }}
+													aria-label="Go back"
+												>
+													<FaArrowLeft size={16} />
+												</button> */}
+
+												<img
+													src={selectedChatUser.profileImage}
+													alt={selectedChatUser.name}
+													onError={(event) => {
+														const fallback = createPlaceholderAvatar(selectedChatUser.name)
+														if (event.currentTarget.src === fallback) return
+														event.currentTarget.src = fallback
+													}}
+													style={{ width: 50, height: 50, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}
+												/>
+
+												<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+													<span style={{ fontWeight: 800, fontSize: 16, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedChatUser.name}</span>
+													<span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? '#16A34A' : 'var(--text-muted)' }}>{isUserOnline(selectedChatUser.userId) ? 'Online' : getLastSeenText(selectedChatUser.userId)}</span>
+												</div>
+											</div>
+
+											<div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.role}</span>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', padding: '5px 10px', borderRadius: 999 }}>{selectedChatUser.department}</span>
+												<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', padding: '5px 10px', borderRadius: 999 }}>{messages.length} loaded</span>
+											</div>
+										</div>
+
+										<div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', background: 'var(--surface-panel)' }}>
+											{hasOlderMessages ? (
+												<div style={{ display: 'flex', justifyContent: 'center', margin: '0 0 16px' }}>
+													<button
+														type="button"
+														onClick={() => loadOlderMessages().catch(console.error)}
+														disabled={loadingOlderMessages}
+														style={{
+															minHeight: 36,
+															padding: '0 14px',
+															borderRadius: 999,
+															border: '1px solid var(--border-strong)',
+															background: 'var(--surface-accent)',
+															color: 'var(--accent)',
+															fontWeight: 800,
+															fontSize: 12,
+															cursor: loadingOlderMessages ? 'wait' : 'pointer',
+															display: 'inline-flex',
+															alignItems: 'center',
+															gap: 8,
+														}}
+													>
+														<FaChevronUp size={11} />
+														{loadingOlderMessages ? 'Loading older messages...' : `Load ${MESSAGE_PAGE_SIZE} older messages`}
+													</button>
+												</div>
+											) : null}
+
+											{displayItems.map((item, index) => {
+												if (item.type === 'date') {
+													return (
+														<div key={item.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0 16px' }}>
+															<span style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', background: 'var(--surface-muted)', border: '1px solid var(--border-soft)', borderRadius: 999, padding: '6px 12px' }}>{item.label}</span>
+														</div>
+													)
+												}
+
+												const message = item
+												const isMine = message.isMine
+												const previous = index > 0 ? displayItems[index - 1] : null
+												const prevSameSender = previous && previous.type === 'message' && previous.senderId === message.senderId
+												const isImageMessage = String(message.type || '').toLowerCase() === 'image' && !!message.imageUrl
+												const isDeleted = !!message.deleted
+												const showMenu = activeMenuMessageId === message.id && isMine && !isDeleted
+
+												return (
+													<div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMine ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
+														<div
+															onClick={() => {
+																if (!isMine || isDeleted) return
+																setActiveMenuMessageId((current) => current === message.id ? '' : message.id)
+															}}
+															style={{
+																maxWidth: '76%',
+																background: isMine ? 'var(--accent)' : 'var(--surface-muted)',
+																color: isMine ? '#fff' : 'var(--text-primary)',
+																padding: isImageMessage ? 6 : '10px 13px',
+																borderRadius: 14,
+																borderTopRightRadius: isMine ? 6 : 14,
+																borderTopLeftRadius: isMine ? 14 : 6,
+																boxShadow: '0 2px 8px rgba(15, 23, 42, 0.08)',
+																border: isMine ? 'none' : '1px solid var(--border-soft)',
+																wordBreak: 'break-word',
+																cursor: isMine ? 'pointer' : 'default',
+																position: 'relative',
+																overflow: 'visible',
+															}}
+														>
+															{!isMine && !prevSameSender ? <div style={{ position: 'absolute', left: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid var(--surface-muted)', transform: 'rotate(180deg)' }} /> : null}
+															{isMine && !prevSameSender ? <div style={{ position: 'absolute', right: -6, bottom: -2, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: '8px solid var(--accent)' }} /> : null}
+
+															{isDeleted ? (
+																<>
+																	<span style={{ fontStyle: 'italic', color: isMine ? 'rgba(255,255,255,0.92)' : '#64748b' }}>This message is deleted</span>
+																	<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginTop: 6, fontSize: 10, color: isMine ? 'rgba(255,255,255,0.85)' : '#64748b' }}>
+																		<span>{formatTime(message.timeStamp)}</span>
+																	</div>
+																</>
+															) : isImageMessage ? (
+																<div style={{ width: 240, position: 'relative' }}>
+																	<img
+																		src={message.imageUrl}
+																		alt="Chat"
+																		loading="lazy"
+																		decoding="async"
+																		onClick={(event) => {
+																			event.stopPropagation()
+																			setPreviewImageUrl(message.imageUrl)
+																		}}
+																		style={{ width: '100%', maxHeight: 220, objectFit: 'cover', borderRadius: 12, display: 'block', background: isMine ? '#0b61c3' : 'var(--surface-muted)', cursor: 'zoom-in' }}
+																	/>
+																	<div style={{ position: 'absolute', right: 8, bottom: 8, display: 'flex', alignItems: 'center', gap: 6, background: isMine ? 'rgba(2,6,23,0.24)' : 'rgba(8,17,31,0.72)', borderRadius: 999, padding: '2px 8px', fontSize: 10, color: '#f8fafc' }}>
+																		<span>{formatTime(message.timeStamp)}</span>
+																		{isMine ? <span style={{ display: 'flex', alignItems: 'center' }}><FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />{message.seen ? <FaCheck size={10} color="#fff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}</span> : null}
+																	</div>
+																</div>
+															) : (
+																<>
+																	{message.text}
+																	<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginTop: 6, fontSize: 10, color: isMine ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)' }}>
+																		{message.edited ? <span style={{ fontStyle: 'italic', opacity: 0.95 }}>edited</span> : null}
+																		<span>{formatTime(message.timeStamp)}</span>
+																		{isMine ? <span style={{ display: 'flex', alignItems: 'center' }}><FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />{message.seen ? <FaCheck size={10} color="#fff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}</span> : null}
+																	</div>
+																</>
+															)}
+
+															{showMenu ? (
+																<div style={{ position: 'absolute', top: '100%', right: isMine ? 0 : 'auto', left: isMine ? 'auto' : 0, marginTop: 8, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', borderRadius: 14, boxShadow: 'var(--shadow-panel)', minWidth: 150, overflow: 'hidden', zIndex: 5 }}>
+																	{!isImageMessage ? (
+																		<button type="button" onClick={(event) => { event.stopPropagation(); beginEditing(message) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'var(--surface-panel)', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: 'var(--text-primary)', cursor: 'pointer' }}>
+																			<FaEdit size={12} /> Edit message
+																		</button>
+																	) : null}
+																	<button type="button" onClick={(event) => { event.stopPropagation(); deleteMessage(message.id).catch(console.error) }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'var(--surface-panel)', padding: '12px 14px', textAlign: 'left', fontWeight: 700, color: 'var(--danger)', cursor: 'pointer' }}>
+																		<FaTrash size={12} /> Delete message
+																	</button>
+																</div>
+															) : null}
+														</div>
+													</div>
+												)
+											})}
+											<div ref={chatEndRef} />
+										</div>
+
+										<div style={{ display: 'flex', gap: 8, margin: '0 18px 18px', padding: 8, borderRadius: 16, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
+											<input ref={imageInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={sendImageMessage} />
+											<button type="button" onClick={() => imageInputRef.current?.click()} style={{ width: 46, height: 46, borderRadius: '50%', background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent)', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: imageSending ? 'not-allowed' : 'pointer', opacity: imageSending ? 0.65 : 1 }} disabled={imageSending} aria-label="Attach image">
+												<FaImage />
+											</button>
+											<input
+												value={input}
+												onChange={(event) => setInput(event.target.value)}
+												onKeyDown={(event) => {
+													if (event.key === 'Enter') {
+														event.preventDefault()
+														sendMessage().catch(console.error)
+													}
+												}}
+												placeholder={editingMessageId ? 'Edit your message...' : 'Type a message...'}
+												style={{ flex: 1, padding: 12, borderRadius: 999, border: '1px solid var(--input-border)', outline: 'none', background: 'var(--input-bg)', color: 'var(--text-primary)', boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.04)' }}
+											/>
+											{editingMessageId ? <button type="button" onClick={resetComposer} style={{ minWidth: 88, borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontWeight: 700, cursor: 'pointer' }}>Cancel</button> : null}
+											<button type="button" onClick={() => sendMessage().catch(console.error)} style={{ width: 46, height: 46, borderRadius: '50%', background: '#007AFB', border: 'none', color: '#fff', display: 'flex', justifyContent: 'center', alignItems: 'center', boxShadow: '0 8px 18px rgba(0, 122, 251, 0.25)', cursor: 'pointer' }} aria-label="Send message" disabled={imageSending}>
+												<FaPaperPlane />
+											</button>
+										</div>
+									</>
+								) : (
+									<div style={{ display: 'grid', placeItems: 'center', flex: 1, padding: 24 }}>
+										<div style={{ textAlign: 'center', maxWidth: 460, padding: 28, borderRadius: 20, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', boxShadow: 'var(--shadow-soft)' }}>
+											<div style={{ width: 58, height: 58, margin: '0 auto 14px', borderRadius: 18, background: 'var(--surface-accent)', color: 'var(--accent)', border: '1px solid var(--border-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+												<FaFacebookMessenger />
+											</div>
+											<h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: 22 }}>Select an employee to start chatting</h3>
+											<div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.6 }}>This HR page loads internal employee conversations only. Students and parents are intentionally excluded from the contact list.</div>
+										</div>
+									</div>
+								)}
+							</div>
+						</section>
+					</div>
+				</main>
+			</div>
+
+			{previewImageUrl ? (
+				<div onClick={() => setPreviewImageUrl('')} style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.85)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+					<button type="button" onClick={() => setPreviewImageUrl('')} style={{ position: 'absolute', top: 18, right: 18, width: 36, height: 36, borderRadius: 999, border: '1px solid rgba(255,255,255,0.35)', background: 'rgba(15,23,42,0.5)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} aria-label="Close image">
+						<FaTimes />
+					</button>
+					<img src={previewImageUrl} alt="Preview" onClick={(event) => event.stopPropagation()} style={{ maxWidth: '92vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: 14 }} />
+				</div>
+			) : null}
+		</div>
+	)
 }

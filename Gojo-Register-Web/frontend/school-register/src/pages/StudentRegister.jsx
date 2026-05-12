@@ -4,6 +4,13 @@ import { FaSave, FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutA
 import { BACKEND_BASE } from "../config";
 import "../styles/global.css";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { buildSchoolRtdbBase, RTDB_BASE_RAW } from "../api/rtdbScope";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import {
+  loadGradeManagementNode,
+  loadSchoolInfoNode,
+} from "../utils/registerData";
 
 export default function StudentRegister() {
   const navigate = useNavigate();
@@ -98,8 +105,9 @@ export default function StudentRegister() {
     profileImage: stored.profileImage || "/default-profile.png",
   };
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB_URL = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(DB_URL);
 
   const parseAcademicYearSuffix = (yearInput) => {
     const raw = String(yearInput || "").trim();
@@ -123,6 +131,91 @@ export default function StudentRegister() {
 
   const normalizeSectionKey = (value) => String(value || "").trim().toUpperCase();
 
+  const persistResolvedSchoolSession = (nextSchoolCode, shortName = "") => {
+    if (!nextSchoolCode || typeof window === "undefined") return;
+
+    const updateStoredValue = (key) => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(key) || "{}") || {};
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({
+            ...parsed,
+            schoolCode: nextSchoolCode,
+            ...(shortName
+              ? {
+                  shortName,
+                  schoolShortName: shortName,
+                }
+              : {}),
+          })
+        );
+      } catch {
+        // Ignore malformed local storage.
+      }
+    };
+
+    updateStoredValue("registrar");
+    updateStoredValue("admin");
+  };
+
+  const resolveSchoolScope = async (requestedSchoolCode) => {
+    const normalizedRequestedCode = String(requestedSchoolCode || "").trim();
+    const fallbackDbUrl = buildSchoolRtdbBase(normalizedRequestedCode);
+    const normalizeLookup = (value) => String(value || "").trim().toLowerCase();
+    const requestedLookup = normalizeLookup(normalizedRequestedCode);
+
+    if (!normalizedRequestedCode) {
+      return {
+        schoolCode: "",
+        dbUrl: fallbackDbUrl,
+        schoolInfo: {},
+      };
+    }
+
+    const directSchoolInfo = (await loadSchoolInfoNode({ rtdbBase: fallbackDbUrl, force: true })) || {};
+    if (Object.keys(directSchoolInfo).length > 0) {
+      return {
+        schoolCode: normalizedRequestedCode,
+        dbUrl: fallbackDbUrl,
+        schoolInfo: directSchoolInfo,
+      };
+    }
+
+    const schoolIndex =
+      (await fetchCachedJson(`${RTDB_BASE_RAW}/Platform1/Schools.json?shallow=true`, {
+        ttlMs: 60 * 1000,
+        fallbackValue: {},
+        force: true,
+      })) || {};
+
+    for (const candidateSchoolCode of Object.keys(schoolIndex || {})) {
+      const candidateDbUrl = buildSchoolRtdbBase(candidateSchoolCode);
+      const candidateSchoolInfo = (await loadSchoolInfoNode({ rtdbBase: candidateDbUrl, force: true })) || {};
+      const matchesRequestedSchool = [
+        candidateSchoolCode,
+        candidateSchoolInfo?.schoolCode,
+        candidateSchoolInfo?.shortName,
+      ].some((value) => normalizeLookup(value) === requestedLookup);
+
+      if (!matchesRequestedSchool) {
+        continue;
+      }
+
+      return {
+        schoolCode: candidateSchoolCode,
+        dbUrl: candidateDbUrl,
+        schoolInfo: candidateSchoolInfo,
+      };
+    }
+
+    return {
+      schoolCode: normalizedRequestedCode,
+      dbUrl: fallbackDbUrl,
+      schoolInfo: directSchoolInfo,
+    };
+  };
+
   const generateTemporaryPassword = (length = 8) => {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     let result = "";
@@ -138,12 +231,41 @@ export default function StudentRegister() {
   }, []);
 
   useEffect(() => {
-    const fetchActiveAcademicYear = async () => {
+    const resolveScope = async () => {
       if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbUrl = String(resolvedScope?.dbUrl || DB_URL || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbUrl(nextResolvedDbUrl);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve student register school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbUrl(DB_URL);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, DB_URL]);
+
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
+  const activeDbUrl = String(resolvedDbUrl || DB_URL || "").trim();
+
+  useEffect(() => {
+    const fetchActiveAcademicYear = async () => {
+      if (!activeSchoolCode || !activeDbUrl) return;
       setLoadingAcademicYear(true);
       try {
-        const res = await fetch(`${DB_URL}/schoolInfo/currentAcademicYear.json`);
-        const currentYear = res.ok ? await res.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: activeDbUrl, force: true });
+        const currentYear = schoolInfo?.currentAcademicYear || "";
         const normalizedYear = String(currentYear || "").trim();
         setActiveAcademicYear(normalizedYear);
         setForm((prev) => ({ ...prev, academicYear: normalizedYear }));
@@ -157,14 +279,13 @@ export default function StudentRegister() {
     };
 
     fetchActiveAcademicYear();
-  }, [schoolCode, DB_URL]);
+  }, [activeSchoolCode, activeDbUrl]);
 
   useEffect(() => {
     const fetchGradeManagement = async () => {
-      if (!schoolCode) return;
+      if (!activeSchoolCode || !activeDbUrl) return;
       try {
-        const res = await fetch(`${DB_URL}/GradeManagement/grades.json`);
-        const rawGrades = res.ok ? (await res.json()) || {} : {};
+        const rawGrades = await loadGradeManagementNode({ rtdbBase: activeDbUrl, force: true });
         const gradesObj = Object.fromEntries(
           Object.entries(rawGrades || {}).filter(([gradeKey]) => isValidGradeKey(gradeKey))
         );
@@ -201,11 +322,11 @@ export default function StudentRegister() {
     };
 
     fetchGradeManagement();
-  }, [schoolCode, DB_URL]);
+  }, [activeSchoolCode, activeDbUrl]);
 
   const generateStudentNumber = async (yearInput) => {
     const yearSuffix = parseAcademicYearSuffix(yearInput);
-    if (!schoolCode || !yearSuffix) {
+    if (!activeSchoolCode || !activeDbUrl || !yearSuffix) {
       setForm((prev) => ({ ...prev, studentNumber: "", username: "" }));
       return "";
     }
@@ -215,8 +336,8 @@ export default function StudentRegister() {
       let shortName = (schoolShortName || stored.shortName || stored.schoolShortName || "").trim();
 
       if (!shortName) {
-        const shortNameRes = await fetch(`${DB_URL}/schoolInfo/shortName.json`);
-        const fetchedShortName = shortNameRes.ok ? await shortNameRes.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: activeDbUrl, force: true });
+        const fetchedShortName = schoolInfo?.shortName || "";
         shortName = String(fetchedShortName || "").trim();
       }
 
@@ -227,8 +348,11 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-      const studentsRes = await fetch(`${DB_URL}/Students.json`);
-      const studentsObj = studentsRes.ok ? (await studentsRes.json()) || {} : {};
+      const studentsObj = await fetchCachedJson(`${activeDbUrl}/Students.json?shallow=true`, {
+        ttlMs: 2 * 60 * 1000,
+        fallbackValue: {},
+        force: true,
+      }).catch(() => ({}));
       // Append 'S' to shortName to clearly mark student IDs (e.g. ShortNameS_0001_24)
       const safeShortName = escapeRegex(String(shortName) + "S");
       const pattern = new RegExp(`^${safeShortName}_(\\d{4})_${yearSuffix}$`);
@@ -261,7 +385,7 @@ export default function StudentRegister() {
 
   const generateParentIds = async (yearInput, parentCount = parents.length) => {
     const yearSuffix = parseAcademicYearSuffix(yearInput);
-    if (!schoolCode || !yearSuffix || parentCount <= 0) {
+    if (!activeSchoolCode || !activeDbUrl || !yearSuffix || parentCount <= 0) {
       setParents((prev) => prev.map((parent) => ({ ...parent, parentId: "" })));
       return [];
     }
@@ -270,8 +394,8 @@ export default function StudentRegister() {
       let shortName = (schoolShortName || stored.shortName || stored.schoolShortName || "").trim();
 
       if (!shortName) {
-        const shortNameRes = await fetch(`${DB_URL}/schoolInfo/shortName.json`);
-        const fetchedShortName = shortNameRes.ok ? await shortNameRes.json() : "";
+        const schoolInfo = await loadSchoolInfoNode({ rtdbBase: activeDbUrl, force: true });
+        const fetchedShortName = schoolInfo?.shortName || "";
         shortName = String(fetchedShortName || "").trim();
       }
 
@@ -282,8 +406,11 @@ export default function StudentRegister() {
 
       setSchoolShortName(shortName);
 
-      const parentsRes = await fetch(`${DB_URL}/Parents.json`);
-      const parentsObj = parentsRes.ok ? (await parentsRes.json()) || {} : {};
+      const parentsObj = await fetchCachedJson(`${activeDbUrl}/Parents.json?shallow=true`, {
+        ttlMs: 2 * 60 * 1000,
+        fallbackValue: {},
+        force: true,
+      }).catch(() => ({}));
       const safePrefix = escapeRegex(`${shortName}P`);
       // Use 4-digit sequence for parent IDs (e.g. GMIP_0001_26)
       const pattern = new RegExp(`^${safePrefix}_(\\d{4})_${yearSuffix}$`);
@@ -387,7 +514,7 @@ export default function StudentRegister() {
   };
 
   useEffect(() => {
-    if (!schoolCode) return;
+    if (!activeSchoolCode) return;
 
     if (!form.academicYear) {
       setForm((prev) => ({ ...prev, studentNumber: "", username: "" }));
@@ -399,12 +526,12 @@ export default function StudentRegister() {
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [form.academicYear, schoolCode]);
+  }, [form.academicYear, activeSchoolCode, activeDbUrl]);
 
   useEffect(() => {
-    if (!schoolCode || !form.academicYear || parents.length === 0) return;
+    if (!activeSchoolCode || !form.academicYear || parents.length === 0) return;
     generateParentIds(form.academicYear, parents.length);
-  }, [form.academicYear, schoolCode, parents.length]);
+  }, [form.academicYear, activeSchoolCode, activeDbUrl, parents.length]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -412,10 +539,7 @@ export default function StudentRegister() {
     setSubmitting(true);
 
     try {
-      const stored = JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
-      const schoolCode = stored.schoolCode || "";
-
-      if (!schoolCode) {
+      if (!activeSchoolCode) {
         setMessage("Missing schoolCode in session. Please login again.");
         setSubmitting(false);
         return;
@@ -511,7 +635,7 @@ export default function StudentRegister() {
         fd.append("studentNationalIdImage", studentNationalIdImage);
       }
 
-      fd.append("schoolCode", schoolCode);
+      fd.append("schoolCode", activeSchoolCode);
 
       const res = await fetch(`${BACKEND_BASE}/register/student`, { method: "POST", body: fd });
       const data = await res.json();
@@ -714,7 +838,7 @@ export default function StudentRegister() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 

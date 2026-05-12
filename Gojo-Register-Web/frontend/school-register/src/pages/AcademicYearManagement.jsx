@@ -3,7 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { FaHome, FaFileAlt, FaChalkboardTeacher, FaChartLine, FaSignOutAlt, FaCog, FaChevronDown, FaBell, FaFacebookMessenger, FaPlus, FaSyncAlt, FaUsers, FaSearch } from "react-icons/fa";
 import { BACKEND_BASE } from "../config";
 import axios from "axios";
+import { fetchCachedJson } from "../utils/rtdbCache";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
 
 const PAGE_BG = "var(--page-bg)";
 
@@ -46,6 +48,12 @@ export default function AcademicYearManagement() {
   const [loading, setLoading] = useState(false);
   const [working, setWorking] = useState(false);
   const [showRolloverConfirm, setShowRolloverConfirm] = useState(false);
+  const [rolloverPassword, setRolloverPassword] = useState("");
+  const [rolloverPhraseInput, setRolloverPhraseInput] = useState("");
+  const [rolloverDelaySeconds, setRolloverDelaySeconds] = useState(3600);
+  const [pendingRollover, setPendingRollover] = useState(null);
+  const [pendingNow, setPendingNow] = useState(Date.now());
+  const [rolloverModalFeedback, setRolloverModalFeedback] = useState({ type: "", text: "" });
   const [selectedHistoryYear, setSelectedHistoryYear] = useState("");
   const [historyStudentsLoading, setHistoryStudentsLoading] = useState(false);
   const [historyStudents, setHistoryStudents] = useState([]);
@@ -84,6 +92,61 @@ export default function AcademicYearManagement() {
       .map(([key]) => key)
       .filter((key) => key !== currentAcademicYear);
   }, [yearRows, currentAcademicYear]);
+
+  const rolloverDelayOptions = useMemo(() => ([
+    { label: "1 hour", value: 3600, hint: "Short approval window" },
+    { label: "6 hours", value: 21600, hint: "Same working day" },
+    { label: "12 hours", value: 43200, hint: "Half day buffer" },
+    { label: "1 day", value: 86400, hint: "Full-day safety window" },
+  ]), []);
+
+  const expectedRolloverPhrase = useMemo(() => {
+    if (!currentAcademicYear || !targetRolloverYear) return "";
+    return `ROLL OVER ${currentAcademicYear} TO ${targetRolloverYear}`;
+  }, [currentAcademicYear, targetRolloverYear]);
+
+  const parseRolloverDate = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return null;
+
+    const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+    const normalized = hasTimezone ? text : `${text}Z`;
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const formatRolloverDateTime = (value) => {
+    const parsed = parseRolloverDate(value);
+    return parsed ? parsed.toLocaleString() : "Unknown time";
+  };
+
+  const pendingCountdownMs = useMemo(() => {
+    if (!pendingRollover?.executeAfter) return 0;
+    const executeAfter = parseRolloverDate(pendingRollover.executeAfter);
+    if (!executeAfter) return 0;
+    return Math.max(executeAfter.getTime() - pendingNow, 0);
+  }, [pendingRollover, pendingNow]);
+
+  const canExecutePendingRollover = !!pendingRollover?.requestId && pendingCountdownMs <= 0;
+
+  const formatCountdown = (milliseconds) => {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const segments = [];
+    if (days) segments.push(`${days}d`);
+    if (days || hours) segments.push(`${String(hours).padStart(2, "0")}h`);
+    segments.push(`${String(minutes).padStart(2, "0")}m`);
+    segments.push(`${String(seconds).padStart(2, "0")}s`);
+    return segments.join(" ");
+  };
+
+  const formatDelayLabel = (seconds) => {
+    const match = rolloverDelayOptions.find((option) => option.value === Number(seconds));
+    return match?.label || `${seconds}s`;
+  };
 
   const historyGradeOptions = useMemo(() => {
     const set = new Set(
@@ -133,6 +196,12 @@ export default function AcademicYearManagement() {
 
   const setSuccess = (msg) => setFeedback({ type: "success", text: msg });
   const setWarning = (msg) => setFeedback({ type: "warning", text: msg });
+  const setRolloverModalError = (err, fallback) => {
+    const msg = err?.response?.data?.message || err?.message || fallback;
+    setRolloverModalFeedback({ type: "error", text: msg });
+  };
+  const setRolloverModalWarning = (msg) => setRolloverModalFeedback({ type: "warning", text: msg });
+  const clearRolloverModalFeedback = () => setRolloverModalFeedback({ type: "", text: "" });
 
   const chipStyle = (active) => ({
     padding: "6px 12px",
@@ -189,9 +258,39 @@ export default function AcademicYearManagement() {
     }
   };
 
+  const fetchPendingRollover = async ({ silent = true } = {}) => {
+    if (!schoolCode) return;
+
+    try {
+      const res = await axios.get(`${BACKEND_BASE}/api/academic-years/rollover/pending`, {
+        params: { schoolCode },
+      });
+      const nextPending = res.data?.pendingRequest || null;
+      setPendingRollover(nextPending);
+      if (nextPending?.targetYear) {
+        setTargetRolloverYear(nextPending.targetYear);
+      }
+    } catch (err) {
+      if (!silent) {
+        setError(err, "Failed to load guarded rollover status.");
+      }
+    }
+  };
+
   useEffect(() => {
     fetchAcademicYears();
+    fetchPendingRollover();
   }, [schoolCode]);
+
+  useEffect(() => {
+    if (!pendingRollover?.requestId) return undefined;
+
+    const timer = window.setInterval(() => {
+      setPendingNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [pendingRollover?.requestId]);
 
   const handleCreateYear = async () => {
     const cleanedStartYear = String(startYear || "").trim();
@@ -259,24 +358,123 @@ export default function AcademicYearManagement() {
   };
 
   const handleRollover = async () => {
+    if (!pendingRollover?.requestId) {
+      setRolloverModalWarning("Arm the rollover first.");
+      return;
+    }
+
+    if (!canExecutePendingRollover) {
+      setRolloverModalWarning("The countdown is still active. Wait until the timer completes or cancel the rollover.");
+      return;
+    }
+
+    clearRolloverModalFeedback();
     setWorking(true);
     try {
       const res = await axios.post(`${BACKEND_BASE}/api/academic-years/rollover`, {
         schoolCode,
-        targetYearKey: targetRolloverYear.trim() || undefined,
+        targetYearKey: pendingRollover.targetYear,
+        requestId: pendingRollover.requestId,
+        actorUserId: stored.userId || admin.userId || "",
       });
       const data = res.data || {};
-      setSuccess(`${data.message || "Rollover completed."} Promoted: ${data.promoted || 0}, Graduated: ${data.graduated || 0}, Skipped: ${data.skipped || 0}`);
+      setSuccess(`${data.message || "Rollover completed."} Promoted: ${data.promoted || 0}, Graduated: ${data.graduated || 0}, Repeated: ${data.repeated || 0}`);
+      setPendingRollover(null);
+      setRolloverPhraseInput("");
+      setRolloverPassword("");
+      clearRolloverModalFeedback();
       setShowRolloverConfirm(false);
-      await fetchAcademicYears();
+      await Promise.all([fetchAcademicYears(), fetchPendingRollover()]);
     } catch (err) {
-      setError(err, "Failed to run rollover.");
+      setRolloverModalError(err, "Failed to run rollover.");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleArmRollover = async () => {
+    if (!targetRolloverYear) {
+      setRolloverModalWarning("Please select target rollover year.");
+      return;
+    }
+
+    if (!rolloverPassword.trim()) {
+      setRolloverModalWarning("Re-enter the registerer password to arm the rollover.");
+      return;
+    }
+
+    if (rolloverPhraseInput.trim() !== expectedRolloverPhrase) {
+      setRolloverModalWarning(`Type the exact phrase: ${expectedRolloverPhrase}`);
+      return;
+    }
+
+    clearRolloverModalFeedback();
+    setWorking(true);
+    try {
+      const res = await axios.post(`${BACKEND_BASE}/api/academic-years/rollover/arm`, {
+        schoolCode,
+        actorUserId: stored.userId || admin.userId || "",
+        actorRegistrarId: stored.registrarId || stored.adminId || admin.adminId || "",
+        targetYearKey: targetRolloverYear.trim(),
+        confirmationPhrase: rolloverPhraseInput.trim(),
+        password: rolloverPassword,
+        delaySeconds: Number(rolloverDelaySeconds),
+      });
+
+      const data = res.data || {};
+      setPendingRollover(data.pendingRequest || null);
+      setSuccess(data.message || "Rollover guard armed.");
+      setRolloverPassword("");
+      setRolloverPhraseInput("");
+      clearRolloverModalFeedback();
+    } catch (err) {
+      const pendingRequest = err?.response?.data?.pendingRequest || null;
+      if (pendingRequest?.requestId) {
+        setPendingRollover(pendingRequest);
+        setTargetRolloverYear(pendingRequest.targetYear || targetRolloverYear);
+      }
+      setRolloverModalError(err, "Failed to arm rollover guard.");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleCancelPendingRollover = async () => {
+    if (!pendingRollover?.requestId) {
+      setRolloverModalWarning("No pending rollover to cancel.");
+      return;
+    }
+
+    clearRolloverModalFeedback();
+    setWorking(true);
+    try {
+      const res = await axios.post(`${BACKEND_BASE}/api/academic-years/rollover/cancel`, {
+        schoolCode,
+        requestId: pendingRollover.requestId,
+        actorUserId: stored.userId || admin.userId || "",
+      });
+      setSuccess(res.data?.message || "Pending rollover cancelled.");
+      setPendingRollover(null);
+      setRolloverPassword("");
+      setRolloverPhraseInput("");
+      clearRolloverModalFeedback();
+      setShowRolloverConfirm(false);
+      await fetchPendingRollover();
+    } catch (err) {
+      setRolloverModalError(err, "Failed to cancel pending rollover.");
     } finally {
       setWorking(false);
     }
   };
 
   const openRolloverConfirm = () => {
+    if (pendingRollover?.requestId) {
+      clearRolloverModalFeedback();
+      setShowRolloverConfirm(true);
+      setFeedback({ type: "", text: "" });
+      return;
+    }
+
     if (!targetRolloverYear) {
       setWarning("Please select target rollover year.");
       return;
@@ -288,6 +486,9 @@ export default function AcademicYearManagement() {
     }
 
     setFeedback({ type: "", text: "" });
+    clearRolloverModalFeedback();
+    setRolloverPhraseInput("");
+    setRolloverPassword("");
     setShowRolloverConfirm(true);
   };
 
@@ -311,22 +512,22 @@ export default function AcademicYearManagement() {
     setSelectedHistoryStudent(null);
     setHistoryStudentsLoading(true);
     try {
-      const [studentsRes, usersRes] = await Promise.all([
-        axios.get(`${DB_URL}/YearHistory/${yearKey}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
-      ]);
+      // Historical student records contain name and profileImage directly — no need to load the 22 MB Users node
+      const studentsObj = await fetchCachedJson(`${DB_URL}/YearHistory/${yearKey}/Students.json`, { ttlMs: 60000 }).catch(() => ({}));
 
-      const studentsObj = studentsRes.data || {};
-      const usersObj = usersRes.data || {};
       const list = Object.entries(studentsObj).map(([studentId, row]) => {
         const student = row || {};
-        const user = usersObj[student.userId] || {};
+        const name =
+          student.name ||
+          [student.firstName, student.middleName, student.lastName].filter(Boolean).join(" ") ||
+          student.basicStudentInformation?.name ||
+          "Student";
         return {
           studentId,
           ...student,
-          name: user.name || student.name || student.basicStudentInformation?.name || "Student",
-          profileImage: user.profileImage || student.profileImage || "/default-profile.png",
-          email: user.email || student.email || "",
+          name,
+          profileImage: student.profileImage || "/default-profile.png",
+          email: student.email || "",
         };
       });
 
@@ -435,7 +636,7 @@ export default function AcademicYearManagement() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 
@@ -524,6 +725,7 @@ export default function AcademicYearManagement() {
                   <select
                     value={targetRolloverYear}
                     onChange={(e) => setTargetRolloverYear(e.target.value)}
+                    disabled={!!pendingRollover?.requestId || working}
                     style={{ border: "1px solid var(--input-border)", background: "var(--input-bg)", color: "var(--text-primary)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
                   >
                     <option value="">Select target year</option>
@@ -538,11 +740,79 @@ export default function AcademicYearManagement() {
                     disabled={working}
                     style={{ border: "1px solid var(--success)", background: "var(--success)", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.75 : 1 }}
                   >
-                    Rollover
+                    {pendingRollover?.requestId ? "Manage Guard" : "Open Guard"}
                   </button>
                 </div>
               </div>
             </div>
+
+            {pendingRollover?.requestId ? (
+              <div
+                style={{
+                  ...cardStyle,
+                  padding: 16,
+                  background: "linear-gradient(145deg, color-mix(in srgb, var(--surface-panel) 86%, #dbeafe 14%), color-mix(in srgb, var(--surface-accent) 62%, var(--surface-panel)))",
+                  border: "1px solid color-mix(in srgb, var(--accent-strong) 26%, var(--border-soft))",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: "var(--accent-strong)", textTransform: "uppercase" }}>Guarded Rollover Armed</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: "var(--text-primary)" }}>{formatCountdown(pendingCountdownMs)}</div>
+                    <div style={{ fontSize: 13, color: "var(--text-secondary)", maxWidth: 650 }}>
+                      {canExecutePendingRollover
+                          ? "The full waiting time has ended. Final execute is now unlocked."
+                        : `The rollover is force-locked until ${formatRolloverDateTime(pendingRollover.executeAfter)}. The registerer must wait the full selected time before rollover is allowed, but can still cancel during the waiting period.`}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={openRolloverConfirm}
+                      style={{ border: "1px solid var(--accent-strong)", background: "var(--surface-panel)", color: "var(--accent-strong)", borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+                    >
+                      Review Guard
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelPendingRollover}
+                      disabled={working}
+                      style={{ border: "1px solid var(--warning)", background: "var(--warning)", color: "#fff", borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                    >
+                      Cancel Pending
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRollover}
+                      disabled={working || !canExecutePendingRollover}
+                      style={{ border: "1px solid var(--danger)", background: "var(--danger)", color: "#fff", borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 800, cursor: working || !canExecutePendingRollover ? "not-allowed" : "pointer", opacity: working || !canExecutePendingRollover ? 0.6 : 1 }}
+                    >
+                      Final Execute
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginTop: 14 }}>
+                  {/* <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.62)", border: "1px solid var(--border-soft)" }}> */}
+                    {/* <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Route</div>
+                    <div style={{ marginTop: 4, fontSize: 15, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.currentYear?.replace("_", "/")} → {pendingRollover.targetYear?.replace("_", "/")}</div> */}
+                  {/* </div> */}
+                  <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.62)", border: "1px solid var(--border-soft)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Delay</div>
+                    <div style={{ marginTop: 4, fontSize: 15, fontWeight: 900, color: "var(--text-primary)" }}>{formatDelayLabel(pendingRollover.delaySeconds)}</div>
+                  </div>
+                  <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.62)", border: "1px solid var(--border-soft)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Armed By</div>
+                    <div style={{ marginTop: 4, fontSize: 15, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.initiatedBy?.name || "Registerer"}</div>
+                  </div>
+                  <div style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,0.62)", border: "1px solid var(--border-soft)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Students In Scope</div>
+                    <div style={{ marginTop: 4, fontSize: 15, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.preview?.archiveCounts?.students || 0}</div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {feedback.text ? (
               <div
@@ -712,14 +982,11 @@ export default function AcademicYearManagement() {
                                     <div key={student.studentId} style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.7fr", padding: "9px 12px", borderTop: "1px solid var(--border-soft)", alignItems: "center", gap: 8 }}>
                                       <div style={{ minWidth: 0 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                                          <img
-                                            src={student.profileImage || "/default-profile.png"}
-                                            alt={student.name || "Student"}
-                                            onError={(e) => {
-                                              e.currentTarget.onerror = null;
-                                              e.currentTarget.src = "/default-profile.png";
-                                            }}
-                                            style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border-strong)", flexShrink: 0 }}
+                                          <ProfileAvatar
+                                            imageUrl={student.profileImage}
+                                            name={student.name || "Student"}
+                                            size={30}
+                                            style={{ border: "1px solid var(--border-strong)" }}
                                           />
                                           <div style={{ minWidth: 0 }}>
                                             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
@@ -787,47 +1054,208 @@ export default function AcademicYearManagement() {
             onClick={(e) => e.stopPropagation()}
             style={{
               width: "100%",
-              maxWidth: 520,
+              maxWidth: 760,
               background: "var(--surface-panel)",
               border: "1px solid var(--border-soft)",
-              borderRadius: 14,
+              borderRadius: 20,
               boxShadow: "var(--shadow-panel)",
-              padding: 16,
+              padding: 18,
               display: "flex",
               flexDirection: "column",
-              gap: 12,
+              gap: 16,
             }}
           >
-            <div>
-              <h3 style={{ margin: 0, fontSize: 18, color: "var(--text-primary)", fontWeight: 800 }}>Confirm Academic Year Rollover</h3>
-              <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                This will promote students to the next grade, archive yearly snapshots, and reset operational yearly data.
-              </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.08em", color: "var(--accent-strong)", textTransform: "uppercase" }}>Protected Academic Rollover</div>
+                <h3 style={{ margin: "6px 0 0", fontSize: 22, color: "var(--text-primary)", fontWeight: 900 }}>
+                  {pendingRollover?.requestId ? "Countdown Guard Active" : "Arm The Rollover"}
+                </h3>
+                <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: 620 }}>
+                  {pendingRollover?.requestId
+                    ? "The rollover is already armed. The registerer must wait the full selected time before execution is permitted. During that waiting time, the request may still be cancelled."
+                    : "Type the exact phrase, re-enter the registerer password, choose the forced waiting time, then arm the rollover. As soon as it is armed, the countdown starts and execution stays blocked until the entire time finishes."}
+                </p>
+              </div>
+
+              {/* <div style={{ padding: "10px 12px", borderRadius: 14, background: "linear-gradient(180deg, var(--surface-accent), var(--surface-muted))", border: "1px solid var(--border-soft)", minWidth: 180 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Route</div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 900, color: "var(--text-primary)" }}>
+                  {(pendingRollover?.currentYear || currentAcademicYear || "----_----").replace("_", "/")} → {(pendingRollover?.targetYear || targetRolloverYear || "----_----").replace("_", "/")}
+                </div>
+              </div> */}
             </div>
 
-            <div style={{ background: "var(--surface-muted)", border: "1px solid var(--border-soft)", borderRadius: 10, padding: 10, fontSize: 12, color: "var(--text-secondary)" }}>
-              <div><strong>From Year:</strong> {currentAcademicYear ? currentAcademicYear.replace("_", "/") : "Current active year"}</div>
-              <div><strong>Target Year:</strong> {targetRolloverYear ? targetRolloverYear.replace("_", "/") : "Not selected"}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+              <div style={{ padding: 12, borderRadius: 14, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>From Year</div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 900, color: "var(--text-primary)" }}>{(pendingRollover?.currentYear || currentAcademicYear || "Not set").replace("_", "/")}</div>
+              </div>
+              <div style={{ padding: 12, borderRadius: 14, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Target Year</div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 900, color: "var(--text-primary)" }}>{(pendingRollover?.targetYear || targetRolloverYear || "Not selected").replace("_", "/")}</div>
+              </div>
+              <div style={{ padding: 12, borderRadius: 14, border: "1px solid var(--border-soft)", background: pendingRollover?.requestId ? "linear-gradient(145deg, color-mix(in srgb, var(--surface-panel) 84%, #dbeafe 16%), var(--surface-accent))" : "var(--surface-muted)" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>{pendingRollover?.requestId ? "Countdown" : "Selected Delay"}</div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover?.requestId ? formatCountdown(pendingCountdownMs) : formatDelayLabel(rolloverDelaySeconds)}</div>
+              </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button
-                onClick={() => {
-                  setShowRolloverConfirm(false);
+            {rolloverModalFeedback.text ? (
+              <div
+                style={{
+                  borderRadius: 14,
+                  padding: "11px 13px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  border: `1px solid ${rolloverModalFeedback.type === "error" ? "var(--danger-border)" : "var(--warning-border)"}`,
+                  background: rolloverModalFeedback.type === "error" ? "var(--danger-soft)" : "var(--warning-soft)",
+                  color: rolloverModalFeedback.type === "error" ? "var(--danger)" : "var(--warning)",
                 }}
-                disabled={working}
-                style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleRollover}
-                disabled={working || !targetRolloverYear}
-                style={{ border: "1px solid var(--danger)", background: "var(--danger)", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: working || !targetRolloverYear ? "not-allowed" : "pointer", opacity: working || !targetRolloverYear ? 0.6 : 1 }}
-              >
-                Confirm Rollover
-              </button>
-            </div>
+                {rolloverModalFeedback.text}
+              </div>
+            ) : null}
+
+            {pendingRollover?.preview ? (
+              <div style={{ borderRadius: 16, border: "1px solid var(--border-soft)", background: "linear-gradient(180deg, var(--surface-panel), var(--surface-muted))", padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Students</div>
+                  <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.preview.archiveCounts?.students || 0}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Parents</div>
+                  <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.preview.archiveCounts?.parents || 0}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Class Marks</div>
+                  <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.preview.archiveCounts?.classMarks || 0}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Lesson Plans</div>
+                  <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "var(--text-primary)" }}>{pendingRollover.preview.archiveCounts?.lessonPlans || 0}</div>
+                </div>
+              </div>
+            ) : null}
+
+            {!pendingRollover?.requestId ? (
+              <>
+                <div style={{ borderRadius: 16, border: "1px solid var(--border-soft)", background: "linear-gradient(180deg, var(--surface-muted), var(--surface-panel))", padding: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>Exact Confirmation Phrase</div>
+                    <div style={{ borderRadius: 12, border: "1px dashed var(--accent-strong)", background: "var(--surface-panel)", padding: "10px 12px", fontSize: 14, fontWeight: 900, color: "var(--accent-strong)", wordBreak: "break-word" }}>
+                      {expectedRolloverPhrase || "Select a target year first"}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>Type The Phrase</div>
+                      <input
+                        value={rolloverPhraseInput}
+                        onChange={(e) => setRolloverPhraseInput(e.target.value.toUpperCase())}
+                        placeholder="ROLL OVER 2026_2027 TO 2027_2028"
+                        style={{ width: "100%", border: "1px solid var(--input-border)", background: "var(--input-bg)", color: "var(--text-primary)", borderRadius: 12, padding: "10px 12px", fontSize: 13, fontWeight: 700, boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>Registerer Password</div>
+                      <input
+                        type="password"
+                        value={rolloverPassword}
+                        onChange={(e) => setRolloverPassword(e.target.value)}
+                        placeholder="Re-enter password"
+                        style={{ width: "100%", border: "1px solid var(--input-border)", background: "var(--input-bg)", color: "var(--text-primary)", borderRadius: 12, padding: "10px 12px", fontSize: 13, fontWeight: 700, boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>Countdown Window</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+                      {rolloverDelayOptions.map((option) => {
+                        const active = rolloverDelaySeconds === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setRolloverDelaySeconds(option.value)}
+                            style={{
+                              textAlign: "left",
+                              border: active ? "1px solid var(--accent-strong)" : "1px solid var(--border-soft)",
+                              background: active ? "linear-gradient(180deg, var(--surface-accent), color-mix(in srgb, var(--accent-soft) 45%, var(--surface-panel)))" : "var(--surface-panel)",
+                              color: "var(--text-primary)",
+                              borderRadius: 14,
+                              padding: "11px 12px",
+                              cursor: "pointer",
+                              boxShadow: active ? "var(--shadow-glow)" : "none",
+                            }}
+                          >
+                            <div style={{ fontSize: 13, fontWeight: 900 }}>{option.label}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>{option.hint}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button
+                    onClick={() => setShowRolloverConfirm(false)}
+                    disabled={working}
+                    style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={handleArmRollover}
+                    disabled={working || !targetRolloverYear}
+                    style={{ border: "1px solid var(--accent-strong)", background: "linear-gradient(180deg, var(--accent-strong), var(--accent))", color: "#fff", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 800, cursor: working || !targetRolloverYear ? "not-allowed" : "pointer", opacity: working || !targetRolloverYear ? 0.6 : 1 }}
+                  >
+                    Arm Guarded Rollover
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ borderRadius: 16, border: "1px solid var(--border-soft)", background: "linear-gradient(180deg, var(--surface-muted), var(--surface-panel))", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase" }}>Expected Phrase</div>
+                  <div style={{ borderRadius: 12, border: "1px dashed var(--accent-strong)", background: "var(--surface-panel)", padding: "10px 12px", fontSize: 14, fontWeight: 900, color: "var(--accent-strong)" }}>
+                    {pendingRollover.expectedPhrase}
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    {canExecutePendingRollover
+                      ? "The timer has completed. Final execution is now available."
+                      : "Final execution is force-blocked until the full countdown finishes. If anything looks wrong, cancel this pending rollover before the waiting time ends."}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => setShowRolloverConfirm(false)}
+                    disabled={working}
+                    style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={handleCancelPendingRollover}
+                    disabled={working}
+                    style={{ border: "1px solid var(--warning)", background: "var(--warning)", color: "#fff", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 800, cursor: working ? "not-allowed" : "pointer", opacity: working ? 0.7 : 1 }}
+                  >
+                    Cancel Pending
+                  </button>
+                  <button
+                    onClick={handleRollover}
+                    disabled={working || !canExecutePendingRollover}
+                    style={{ border: "1px solid var(--danger)", background: "linear-gradient(180deg, color-mix(in srgb, var(--danger) 88%, #000 12%), var(--danger))", color: "#fff", borderRadius: 10, padding: "9px 13px", fontSize: 12, fontWeight: 800, cursor: working || !canExecutePendingRollover ? "not-allowed" : "pointer", opacity: working || !canExecutePendingRollover ? 0.6 : 1 }}
+                  >
+                    Final Execute Rollover
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : null}
@@ -867,14 +1295,11 @@ export default function AcademicYearManagement() {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <img
-                  src={selectedHistoryStudent.profileImage || "/default-profile.png"}
-                  alt={selectedHistoryStudent.name || "Student"}
-                  onError={(e) => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.src = "/default-profile.png";
-                  }}
-                  style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
+                <ProfileAvatar
+                  imageUrl={selectedHistoryStudent.profileImage}
+                  name={selectedHistoryStudent.name || "Student"}
+                  size={56}
+                  style={{ border: "2px solid rgba(255,255,255,0.8)" }}
                 />
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedHistoryStudent.name || "Student"}</div>

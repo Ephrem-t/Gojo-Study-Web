@@ -1,11 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
-import { getDatabase, get, onValue, push, ref, set, update } from "firebase/database";
+import { get, onValue, push, ref, set, update } from "firebase/database";
 import axios from "axios";
 import "../styles/global.css";
-
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { db } from "../firebase";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
+import {
+  buildConversationSummaryMap,
+  fetchConversationSummaries,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolTeachersNode,
+  loadUserRecordsByIds,
+} from "../utils/registerData";
 
 function AllChat() {
   const location = useLocation();
@@ -27,7 +36,7 @@ function AllChat() {
   const financeUserId = stored.userId || "";
   const financeAccountId = stored.financeId || stored.adminId || "";
   const schoolCode = stored.schoolCode || "";
-  const DB_ROOT = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB_ROOT = buildSchoolRtdbBase(schoolCode);
   const DB_PATH = schoolCode ? `Platform1/Schools/${schoolCode}` : "";
 
   const isSelfUser = (value) => {
@@ -135,45 +144,45 @@ function AllChat() {
       if (!financeUserId) return;
 
       try {
-        const [studentsRes, parentsRes, teachersRes, usersRes, chatsRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Chats.json`).catch(() => ({ data: {} })),
+        const [studentsData, parentsData, teachersData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
+          loadSchoolParentsNode({ rtdbBase: DB_ROOT }),
+          loadSchoolTeachersNode({ rtdbBase: DB_ROOT }),
         ]);
 
-        const studentsData = studentsRes.data || {};
-        const parentsData = parentsRes.data || {};
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-        const chatsData = chatsRes.data || {};
+        // Load chat summaries first so we know which contacts have actually chatted
+        const summaries = await fetchConversationSummaries({
+          rtdbBase: DB_ROOT,
+          currentUserId: financeUserId,
+          includeWithoutLastMessage: true,
+        });
+        const summariesByUserId = buildConversationSummaryMap(summaries);
 
-        const findUserNode = (userId) => {
-          if (usersData[userId]) return usersData[userId];
-          return (
-            Object.values(usersData).find(
-              (u) => String(u?.userId || "") === String(userId || "")
-            ) || {}
-          );
-        };
+        // Build the full set of user IDs across all directory nodes
+        const allDirectoryUserIds = Array.from(
+          new Set(
+            [...Object.values(studentsData || {}), ...Object.values(parentsData || {}), ...Object.values(teachersData || {})]
+              .map((record) => String(record?.userId || "").trim())
+              .filter(Boolean)
+          )
+        );
 
-        const pickChatNode = (userId) => {
-          const candidates = getChatKeyCandidates(financeUserId, userId);
-          const found = candidates
-            .map((key) => ({ key, chat: chatsData[key] }))
-            .filter((x) => Boolean(x.chat));
+        // Only fetch user records for contacts who have summaries or whose IDs are ≤ 200
+        // This avoids downloading the full 22 MB Users node for 11 K+ users
+        const summaryUserIds = new Set(
+          summaries.map((s) => String(s?.contact?.userId || s?.otherUserId || "").trim()).filter(Boolean)
+        );
+        const targetUserIds = allDirectoryUserIds.length <= 200
+          ? allDirectoryUserIds
+          : allDirectoryUserIds.filter((uid) => summaryUserIds.has(uid));
 
-          if (found.length === 0) return { key: candidates[0], chat: {} };
+        const usersById = await loadUserRecordsByIds({
+          rtdbBase: DB_ROOT,
+          schoolCode,
+          userIds: targetUserIds,
+        });
 
-          found.sort(
-            (a, b) =>
-              Number(b?.chat?.lastMessage?.timeStamp || 0) -
-              Number(a?.chat?.lastMessage?.timeStamp || 0)
-          );
-
-          return found[0];
-        };
+        const findUserNode = (userId) => usersById[String(userId || "").trim()] || {};
 
         const buildList = (sourceMap, type) => {
           const rows = Object.entries(sourceMap || {})
@@ -185,8 +194,8 @@ function AllChat() {
               }
 
               const user = findUserNode(userId);
-              const { chat } = pickChatNode(userId);
-              const unread = Number(chat?.unread?.[financeUserId] || 0);
+              const summary = summariesByUserId[String(userId || "").trim()] || null;
+              const unread = Number(summary?.unreadForMe || 0);
 
               return {
                 id,
@@ -195,8 +204,8 @@ function AllChat() {
                 name: user.name || user.username || `${type} ${id}`,
                 profileImage: user.profileImage || "/default-profile.png",
                 lastSeen: user.lastSeen || null,
-                lastMsgTime: Number(chat?.lastMessage?.timeStamp || 0),
-                lastMsgText: chat?.lastMessage?.text || "",
+                lastMsgTime: Number(summary?.lastMessageTime || 0),
+                lastMsgText: summary?.lastMessageText || "",
                 unread,
               };
             })
@@ -277,13 +286,12 @@ function AllChat() {
     let mounted = true;
 
     const resolveKey = async () => {
-      const dbInst = getDatabase();
       const candidates = getChatKeyCandidates(financeUserId, selectedChatUser.userId);
 
       for (const key of candidates) {
         const basePath = DB_PATH ? `${DB_PATH}/Chats/${key}` : `Chats/${key}`;
         try {
-          const snap = await get(ref(dbInst, basePath));
+          const snap = await get(ref(db, basePath));
           if (snap.exists()) {
             if (mounted) setActiveChatKey(key);
             return;
@@ -306,13 +314,12 @@ function AllChat() {
   useEffect(() => {
     if (!activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
     const userPath = DB_PATH ? `${DB_PATH}/Users/${selectedChatUser.userId}/lastSeen` : `Users/${selectedChatUser.userId}/lastSeen`;
 
-    const messagesRef = ref(dbInst, `${basePath}/messages`);
-    const typingRef = ref(dbInst, `${basePath}/typing`);
-    const lastSeenRef = ref(dbInst, userPath);
+    const messagesRef = ref(db, `${basePath}/messages`);
+    const typingRef = ref(db, `${basePath}/typing`);
+    const lastSeenRef = ref(db, userPath);
 
     const unsubMessages = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val() || {};
@@ -357,13 +364,12 @@ function AllChat() {
   const sendMessage = async () => {
     if (!messageInput.trim() || !activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
 
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const messagesRef = ref(dbInst, `${basePath}/messages`);
-    const chatRef = ref(dbInst, basePath);
+    const messagesRef = ref(db, `${basePath}/messages`);
+    const chatRef = ref(db, basePath);
 
     if (editingMsgId) {
-      await update(ref(dbInst, `${basePath}/messages/${editingMsgId}`), {
+      await update(ref(db, `${basePath}/messages/${editingMsgId}`), {
         text: messageInput,
         edited: true,
       });
@@ -390,7 +396,7 @@ function AllChat() {
 
     let unreadNode = {};
     try {
-      const unreadSnap = await get(ref(dbInst, `${basePath}/unread`));
+      const unreadSnap = await get(ref(db, `${basePath}/unread`));
       unreadNode = unreadSnap.val() || {};
     } catch {
       unreadNode = {};
@@ -417,9 +423,8 @@ function AllChat() {
 
   const deleteMessage = async (msgId) => {
     if (!activeChatKey || !msgId) return;
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    await update(ref(dbInst, `${basePath}/messages/${msgId}`), { deleted: true });
+    await update(ref(db, `${basePath}/messages/${msgId}`), { deleted: true });
   };
 
   const handleTyping = async (e) => {
@@ -427,9 +432,8 @@ function AllChat() {
     setMessageInput(text);
 
     if (!activeChatKey || !financeUserId) return;
-    const dbInst = getDatabase();
     const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const typingRef = ref(dbInst, `${basePath}/typing`);
+    const typingRef = ref(db, `${basePath}/typing`);
 
     if (!text.trim()) {
       await set(typingRef, { userId: null });
@@ -583,7 +587,7 @@ function AllChat() {
             {u.unread > 99 ? "99+" : u.unread}
           </span>
         )}
-        <img src={u.profileImage} alt={u.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
+        <ProfileAvatar imageUrl={u.profileImage} name={u.name} size={40} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -633,7 +637,7 @@ function AllChat() {
         {selectedChatUser ? (
           <>
             <div style={threadHeaderStyle}>
-              <img src={selectedChatUser.profileImage} alt={selectedChatUser.name} style={{ width: 40, height: 40, borderRadius: "50%" }} />
+              <ProfileAvatar imageUrl={selectedChatUser.profileImage} name={selectedChatUser.name} size={40} />
               <div>
                 <strong style={{ color: "var(--text-primary)" }}>{selectedChatUser.name}</strong>
                 <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>

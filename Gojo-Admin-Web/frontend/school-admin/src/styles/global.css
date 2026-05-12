@@ -80,7 +80,7 @@ html[data-theme="dark"] {
 .top-navbar {
   width: 100%;
   height: var(--topbar-height);
-  background: var(--surface-overlay);
+  background: #ffffff;
   color: var(--text-primary);
   display: flex;
   justify-content: space-between;

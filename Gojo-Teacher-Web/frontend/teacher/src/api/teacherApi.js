@@ -1,7 +1,12 @@
 import axios from "axios";
 import { getRtdbRoot } from "./rtdbScope";
-
-const API_BASE = "http://127.0.0.1:5000/api";
+import { API_BASE } from "./apiConfig";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { extractSchoolCodeFromRtdbBase } from "../utils/teacherData";
+const TEACHER_CONTEXT_TTL_MS = 10 * 60 * 1000;
+const TEACHER_NODE_TTL_MS = 10 * 60 * 1000;
+const teacherCourseContextCache = new Map();
+const teacherCourseContextInflight = new Map();
 
 const normalizeCourseFragment = (value) =>
   String(value || "")
@@ -11,6 +16,190 @@ const normalizeCourseFragment = (value) =>
     .replace(/^_+|_+$/g, "");
 
 const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
+
+const buildTeacherContextCacheKey = (base, teacher = {}) => {
+  const teacherRefs = [teacher?.teacherId, teacher?.teacherKey, teacher?.userId, teacher?.username]
+    .filter(Boolean)
+    .map(normalizeTeacherRef)
+    .sort()
+    .join("|");
+
+  return `${String(base || "").trim()}|${teacherRefs}`;
+};
+
+const getFreshTeacherContextCache = (cacheKey) => {
+  const entry = teacherCourseContextCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+
+  if (Date.now() - Number(entry.cachedAt || 0) > TEACHER_CONTEXT_TTL_MS) {
+    return null;
+  }
+
+  return entry.data;
+};
+
+const writeTeacherContextCache = (cacheKey, data) => {
+  teacherCourseContextCache.set(cacheKey, {
+    data,
+    cachedAt: Date.now(),
+  });
+  return data;
+};
+
+const isRecordObject = (value) => {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      !value.error &&
+      Object.keys(value).length > 0
+  );
+};
+
+const normalizeIdentifier = (value) => String(value || "").trim();
+
+const readRecordChildValue = (recordKey, record, childPath) => {
+  if (!childPath) {
+    return "";
+  }
+
+  if (childPath === "$key") {
+    return normalizeIdentifier(recordKey);
+  }
+
+  const segments = String(childPath || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  let currentValue = record;
+  for (const segment of segments) {
+    currentValue = currentValue?.[segment];
+  }
+
+  return normalizeIdentifier(currentValue);
+};
+
+const queryScopedCollection = async ({ base, nodePath, childPath, matchValue, ttlMs = TEACHER_NODE_TTL_MS }) => {
+  const normalizedValue = normalizeIdentifier(matchValue);
+  const normalizedBase = String(base || "").trim();
+  if (!normalizedBase || !normalizedValue) {
+    return {};
+  }
+
+  const collectionNode = await fetchCachedJson(`${normalizedBase}/${nodePath}.json`, {
+    ttlMs,
+    fallbackValue: {},
+  });
+
+  return Object.entries(collectionNode || {}).reduce((result, [recordKey, record]) => {
+    if (!isRecordObject(record)) {
+      return result;
+    }
+
+    if (
+      normalizeIdentifier(recordKey) === normalizedValue ||
+      readRecordChildValue(recordKey, record, childPath) === normalizedValue
+    ) {
+      result[recordKey] = record;
+    }
+
+    return result;
+  }, {});
+};
+
+const resolveTeacherEntrySelective = async (base, schoolCode, teacher = {}) => {
+  const directIdentifiers = [teacher?.teacherKey, teacher?.teacherId, teacher?.userId]
+    .map(normalizeIdentifier)
+    .filter(Boolean);
+
+  for (const identifier of directIdentifiers) {
+    const directRecord = await fetchCachedJson(`${base}/Teachers/${encodeURIComponent(identifier)}.json`, {
+      ttlMs: TEACHER_NODE_TTL_MS,
+      fallbackValue: null,
+    });
+
+    if (isRecordObject(directRecord)) {
+      return [identifier, directRecord];
+    }
+  }
+
+  const querySpecs = [
+    { childPath: "teacherId", values: [teacher?.teacherId, teacher?.teacherKey, teacher?.userId, teacher?.username] },
+    { childPath: "teacherKey", values: [teacher?.teacherKey, teacher?.teacherId, teacher?.userId] },
+    { childPath: "userId", values: [teacher?.userId, teacher?.teacherId] },
+  ];
+
+  for (const spec of querySpecs) {
+    const values = [...new Set((spec.values || []).map(normalizeIdentifier).filter(Boolean))];
+    for (const value of values) {
+      const records = await queryScopedCollection({
+        base,
+        nodePath: "Teachers",
+        childPath: spec.childPath,
+        matchValue: value,
+        ttlMs: TEACHER_NODE_TTL_MS,
+      });
+      const [recordKey, record] = Object.entries(records || {})[0] || [];
+      if (isRecordObject(record)) {
+        return [String(recordKey || value).trim(), record];
+      }
+    }
+  }
+
+  return ["", {}];
+};
+
+const loadTeacherAssignmentsSelective = async (base, teacherRefs) => {
+  const assignments = {};
+  const querySpecs = ["teacherId", "teacherUserId", "userId", "teacherRecordKey"];
+  const normalizedRefs = [...new Set((teacherRefs || []).map(normalizeTeacherRef).filter(Boolean))];
+
+  for (const childPath of querySpecs) {
+    for (const teacherRef of normalizedRefs) {
+      const records = await queryScopedCollection({
+        base,
+        nodePath: "TeacherAssignments",
+        childPath,
+        matchValue: teacherRef,
+        ttlMs: TEACHER_NODE_TTL_MS,
+      });
+
+      Object.entries(records || {}).forEach(([recordKey, record]) => {
+        if (isRecordObject(record)) {
+          assignments[recordKey] = record;
+        }
+      });
+    }
+  }
+
+  return assignments;
+};
+
+const loadCoursesByIds = async (base, courseIds) => {
+  const normalizedCourseIds = [...new Set((courseIds || []).map(normalizeIdentifier).filter(Boolean))];
+  if (!normalizedCourseIds.length) {
+    return {};
+  }
+
+  const courseEntries = await Promise.all(
+    normalizedCourseIds.map(async (courseId) => {
+      const courseRecord = await fetchCachedJson(`${base}/Courses/${encodeURIComponent(courseId)}.json`, {
+        ttlMs: TEACHER_NODE_TTL_MS,
+        fallbackValue: null,
+      });
+
+      return [courseId, isRecordObject(courseRecord) ? courseRecord : {}];
+    })
+  );
+
+  return courseEntries.reduce((result, [courseId, courseRecord]) => {
+    result[courseId] = courseRecord;
+    return result;
+  }, {});
+};
 
 const resolveTeacherEntry = (teachers, teacher) => {
   const identifiers = new Set(
@@ -77,105 +266,191 @@ const parseCourseDefaults = (courseId) => {
 
 export const getTeacherCourseContext = async ({ teacher, rtdbBase } = {}) => {
   const base = rtdbBase || getRtdbRoot();
+  const cacheKey = buildTeacherContextCacheKey(base, teacher || {});
+  const cachedContext = getFreshTeacherContextCache(cacheKey);
+  if (cachedContext) {
+    return cachedContext;
+  }
 
-  try {
-    const [coursesRes, teachersRes, assignmentsRes, gradeManagementRes] = await Promise.all([
-      axios.get(`${base}/Courses.json`),
-      axios.get(`${base}/Teachers.json`),
-      axios.get(`${base}/TeacherAssignments.json`),
-      axios.get(`${base}/GradeManagement/grades.json`),
-    ]);
+  const inflightContext = teacherCourseContextInflight.get(cacheKey);
+  if (inflightContext) {
+    return inflightContext;
+  }
 
-    const courses = coursesRes.data || {};
-    const teachers = teachersRes.data || {};
-    const assignments = assignmentsRes.data || {};
-    const gradeManagement = gradeManagementRes.data || {};
+  const schoolCode = extractSchoolCodeFromRtdbBase(base);
 
-    const teacherEntry = resolveTeacherEntry(teachers, teacher || {});
-    if (!teacherEntry) {
-      return { success: false, teacherKey: "", courses: [], courseIds: [], assignmentsByCourseId: {} };
-    }
+  const request = (async () => {
+    try {
+      const [teacherKeyCandidate, teacherRecordCandidate] = await resolveTeacherEntrySelective(base, schoolCode, teacher || {});
+      const teacherRefs = new Set(
+        [
+          teacherKeyCandidate,
+          teacherRecordCandidate?.teacherId,
+          teacherRecordCandidate?.userId,
+          teacherRecordCandidate?.teacherKey,
+          teacher?.teacherId,
+          teacher?.teacherKey,
+          teacher?.userId,
+          teacher?.username,
+        ]
+          .filter(Boolean)
+          .map(normalizeTeacherRef)
+      );
 
-    const [teacherKey, teacherRecord] = teacherEntry;
-    const teacherRefs = new Set(
-      [teacherKey, teacherRecord?.teacherId, teacherRecord?.userId, teacher?.teacherId, teacher?.teacherKey, teacher?.userId]
-        .filter(Boolean)
-        .map(normalizeTeacherRef)
-    );
-
-    const courseIds = [];
-    const seenCourseIds = new Set();
-    const assignmentsByCourseId = {};
-
-    Object.values(assignments).forEach((assignment) => {
-      const teacherId = normalizeTeacherRef(assignment?.teacherId);
-      const courseId = String(assignment?.courseId || "").trim();
-      if (!courseId || !teacherRefs.has(teacherId)) return;
-      if (!seenCourseIds.has(courseId)) {
-        seenCourseIds.add(courseId);
-        courseIds.push(courseId);
+      if (!teacherRefs.size) {
+        return writeTeacherContextCache(cacheKey, {
+          success: false,
+          teacherKey: "",
+          teacherRecord: {},
+          courses: [],
+          courseIds: [],
+          assignmentsByCourseId: {},
+        });
       }
-      assignmentsByCourseId[courseId] = assignment;
-    });
 
-    Object.entries(gradeManagement).forEach(([gradeKey, gradeNode]) => {
-      const sectionTeachers = gradeNode?.sectionSubjectTeachers || {};
-      Object.entries(sectionTeachers).forEach(([sectionKey, subjectMap]) => {
-        Object.entries(subjectMap || {}).forEach(([subjectKey, assignment]) => {
-          const assignmentRefs = [
-            assignment?.teacherId,
-            assignment?.teacherRecordKey,
-            assignment?.teacherUserId,
-            assignment?.userId,
-          ]
-            .filter(Boolean)
-            .map(normalizeTeacherRef);
+      const assignmentsByCourseId = {};
+      const seenCourseIds = new Set();
+      const courseIds = [];
 
-          if (!assignmentRefs.some((ref) => teacherRefs.has(ref))) return;
+      const selectiveAssignments = await loadTeacherAssignmentsSelective(base, [...teacherRefs]);
+      Object.values(selectiveAssignments || {}).forEach((assignment) => {
+        const teacherId = normalizeTeacherRef(
+          assignment?.teacherId || assignment?.teacherUserId || assignment?.userId || assignment?.teacherRecordKey
+        );
+        const courseId = normalizeIdentifier(assignment?.courseId);
+        if (!courseId || (teacherId && !teacherRefs.has(teacherId))) {
+          return;
+        }
 
-          const courseId = resolveCourseIdFromAssignment(courses, assignment, gradeKey, sectionKey, subjectKey);
+        if (!seenCourseIds.has(courseId)) {
+          seenCourseIds.add(courseId);
+          courseIds.push(courseId);
+        }
 
-          if (!courseId) return;
+        assignmentsByCourseId[courseId] = {
+          ...(assignmentsByCourseId[courseId] || {}),
+          ...assignment,
+        };
+      });
+
+      let gradeManagement = {};
+      if (!courseIds.length) {
+        gradeManagement = await fetchCachedJson(`${base}/GradeManagement/grades.json`, {
+          ttlMs: TEACHER_NODE_TTL_MS,
+          fallbackValue: {},
+        });
+
+        Object.entries(gradeManagement || {}).forEach(([gradeKey, gradeNode]) => {
+          const sectionTeachers = gradeNode?.sectionSubjectTeachers || {};
+          Object.entries(sectionTeachers).forEach(([sectionKey, subjectMap]) => {
+            Object.entries(subjectMap || {}).forEach(([subjectKey, assignment]) => {
+              const assignmentRefs = [
+                assignment?.teacherId,
+                assignment?.teacherRecordKey,
+                assignment?.teacherUserId,
+                assignment?.userId,
+              ]
+                .filter(Boolean)
+                .map(normalizeTeacherRef);
+
+              if (!assignmentRefs.some((teacherRef) => teacherRefs.has(teacherRef))) {
+                return;
+              }
+
+              const courseId = resolveCourseIdFromAssignment({}, assignment, gradeKey, sectionKey, subjectKey);
+              if (!courseId) {
+                return;
+              }
+
+              if (!seenCourseIds.has(courseId)) {
+                seenCourseIds.add(courseId);
+                courseIds.push(courseId);
+              }
+
+              assignmentsByCourseId[courseId] = {
+                ...(assignmentsByCourseId[courseId] || {}),
+                ...assignment,
+              };
+            });
+          });
+        });
+      }
+
+      if (!courseIds.length) {
+        const fallbackAssignments = await fetchCachedJson(`${base}/TeacherAssignments.json`, {
+          ttlMs: TEACHER_NODE_TTL_MS,
+          fallbackValue: {},
+        });
+
+        Object.values(fallbackAssignments || {}).forEach((assignment) => {
+          const assignmentTeacherId = normalizeTeacherRef(
+            assignment?.teacherId || assignment?.teacherUserId || assignment?.userId || assignment?.teacherRecordKey
+          );
+          const courseId = normalizeIdentifier(assignment?.courseId);
+          if (!courseId || (assignmentTeacherId && !teacherRefs.has(assignmentTeacherId))) {
+            return;
+          }
 
           if (!seenCourseIds.has(courseId)) {
             seenCourseIds.add(courseId);
             courseIds.push(courseId);
           }
-          assignmentsByCourseId[courseId] = { ...(assignmentsByCourseId[courseId] || {}), ...assignment };
+
+          assignmentsByCourseId[courseId] = {
+            ...(assignmentsByCourseId[courseId] || {}),
+            ...assignment,
+          };
         });
+      }
+
+      const courses = await loadCoursesByIds(base, courseIds);
+      const resolvedCourses = courseIds
+        .map((courseId) => {
+          const storedCourse = courses[courseId] || {};
+          const assignment = assignmentsByCourseId[courseId] || {};
+          const defaults = parseCourseDefaults(courseId);
+
+          return {
+            id: courseId,
+            ...storedCourse,
+            name: storedCourse.name || defaults.name || humanizeSubject(assignment.subject || courseId),
+            subject: storedCourse.subject || defaults.subject || humanizeSubject(assignment.subject || courseId),
+            grade: storedCourse.grade || defaults.grade || String(assignment.grade || "").trim(),
+            section:
+              storedCourse.section ||
+              storedCourse.secation ||
+              defaults.section ||
+              String(assignment.section || "").trim().toUpperCase(),
+            virtual: !courses[courseId] || !Object.keys(courses[courseId] || {}).length,
+          };
+        })
+        .filter((course) => course.id);
+
+      return writeTeacherContextCache(cacheKey, {
+        success: resolvedCourses.length > 0,
+        teacherKey: teacherKeyCandidate || teacher?.teacherKey || teacher?.teacherId || "",
+        teacherRecord: teacherRecordCandidate || {},
+        courses: resolvedCourses,
+        courseIds,
+        assignmentsByCourseId,
       });
-    });
+    } catch (err) {
+      console.error("Teacher course context error:", err.response ? err.response.data : err.message);
+      return writeTeacherContextCache(cacheKey, {
+        success: false,
+        teacherKey: "",
+        teacherRecord: {},
+        courses: [],
+        courseIds: [],
+        assignmentsByCourseId: {},
+      });
+    }
+  })().finally(() => {
+    teacherCourseContextInflight.delete(cacheKey);
+  });
 
-    const resolvedCourses = courseIds
-      .map((courseId) => {
-        const storedCourse = courses[courseId] || {};
-        const assignment = assignmentsByCourseId[courseId] || {};
-        const defaults = parseCourseDefaults(courseId);
-
-        return {
-          id: courseId,
-          ...storedCourse,
-          name: storedCourse.name || defaults.name || humanizeSubject(assignment.subject || courseId),
-          subject: storedCourse.subject || defaults.subject || humanizeSubject(assignment.subject || courseId),
-          grade: storedCourse.grade || defaults.grade || String(assignment.grade || "").trim(),
-          section: storedCourse.section || storedCourse.secation || defaults.section || String(assignment.section || "").trim().toUpperCase(),
-          virtual: !courses[courseId],
-        };
-      })
-      .filter((course) => course.id);
-
-    return {
-      success: true,
-      teacherKey,
-      teacherRecord,
-      courses: resolvedCourses,
-      courseIds,
-      assignmentsByCourseId,
-    };
-  } catch (err) {
-    console.error("Teacher course context error:", err.response ? err.response.data : err.message);
-    return { success: false, teacherKey: "", courses: [], courseIds: [], assignmentsByCourseId: {} };
-  }
+  teacherCourseContextInflight.set(cacheKey, request);
+  return request;
 };
 
 export const loginTeacher = async (username, password) => {
@@ -183,11 +458,54 @@ export const loginTeacher = async (username, password) => {
     const res = await axios.post(`${API_BASE}/teacher_login`, {
       username,
       password,
+    }, {
+      withCredentials: true,
     });
     return res.data;
   } catch (err) {
     console.error("Login error:", err.response ? err.response.data : err.message);
-    return { success: false, message: "Network error or server not reachable" };
+    return {
+      success: false,
+      message:
+        err.response?.data?.message || "Network error or server not reachable",
+    };
+  }
+};
+
+export const getSchoolOptions = async () => {
+  try {
+    const res = await axios.get(`${API_BASE}/schools`);
+    if (res?.data?.success) {
+      return { success: true, schools: res.data.schools || [] };
+    }
+    return { success: false, schools: [], message: res?.data?.message || "Unable to fetch schools" };
+  } catch (err) {
+    console.error("School options error:", err.response ? err.response.data : err.message);
+    return {
+      success: false,
+      schools: [],
+      message: err.response?.data?.message || "Unable to fetch schools",
+    };
+  }
+};
+
+export const loginTeacherWithSchool = async ({ username, password, schoolCode }) => {
+  try {
+    const res = await axios.post(`${API_BASE}/teacher_login`, {
+      username,
+      password,
+      schoolCode,
+    }, {
+      withCredentials: true,
+    });
+    return res.data;
+  } catch (err) {
+    console.error("Login error:", err.response ? err.response.data : err.message);
+    return {
+      success: false,
+      message:
+        err.response?.data?.message || "Network error or server not reachable",
+    };
   }
 };
 

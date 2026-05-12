@@ -1,8 +1,11 @@
 import axios from "axios";
 import { API_BASE } from "./apiConfig";
+import { RTDB_BASE_RAW } from "../config/firebaseClientConfig";
+import { handleUnauthorizedTeacherSession } from "../utils/teacherSession";
 
-const RTDB_BASE_RAW = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const API_ROOT = API_BASE.replace(/\/api\/?$/, "");
+const RTDB_PROXY_BASE = `${API_BASE}/rtdb-proxy`;
+const SESSION_ERROR_CODES = new Set(["teacher_session_required", "teacher_session_scope_violation"]);
 
 const SCOPED_ROOTS = new Set([
   "Users",
@@ -16,15 +19,19 @@ const SCOPED_ROOTS = new Set([
   "Posts",
   "TeacherPosts",
   "Chats",
+  "Chat_Summaries",
   "StudentNotes",
   "LessonPlans",
   "LessonPlanSubmissions",
+  "AcademicYears",
+  "AssessmentTemplates",
   "GradeManagement",
   "StudentCourses",
   "Presence",
   "Curriculum",
   "Exams",
   "Attendance",
+  "SchoolExams",
   "Schedules",
   "counters",
   "Users_counters",
@@ -86,9 +93,57 @@ function scopeRtdbUrl(url) {
   }
 }
 
-function isBackendApiUrl(url) {
-  return typeof url === "string" && url.startsWith(API_ROOT);
+function isRawRtdbUrl(url) {
+  return typeof url === "string" && url.startsWith(RTDB_BASE_RAW);
 }
+
+function rewriteRtdbUrl(url) {
+  if (!isRawRtdbUrl(url)) return url;
+
+  try {
+    const scopedUrl = scopeRtdbUrl(url);
+    const parsed = new URL(scopedUrl);
+    const scopedPath = parsed.pathname.replace(/^\/+/, "");
+    return `${RTDB_PROXY_BASE}/${scopedPath}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+function isBackendApiUrl(url) {
+  if (typeof url !== "string") return false;
+  if (url.startsWith("/api")) return true;
+  if (url.startsWith(API_BASE)) return true;
+
+  try {
+    const origin = typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "http://localhost";
+    const parsed = new URL(url, origin);
+    return parsed.pathname.startsWith("/api");
+  } catch {
+    return Boolean(API_ROOT) && url.startsWith(API_ROOT);
+  }
+}
+
+async function maybeHandleSessionFailure(url, response) {
+  if (!response || !isBackendApiUrl(url) || ![401, 403].includes(response.status)) {
+    return response;
+  }
+
+  try {
+    const data = await response.clone().json();
+    if (SESSION_ERROR_CODES.has(String(data?.errorCode || "").trim())) {
+      handleUnauthorizedTeacherSession();
+    }
+  } catch {
+    // Ignore non-JSON responses.
+  }
+
+  return response;
+}
+
+export { RTDB_BASE_RAW };
 
 function withSchoolCodeHeader(headersLike, schoolCode = getSchoolCode()) {
   if (!schoolCode) return headersLike;
@@ -107,25 +162,25 @@ export function installRtdbInterceptors() {
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
       const url = typeof input === "string" ? input : input?.url;
-      const nextUrl = scopeRtdbUrl(url);
-      const attachSchoolHeader = isBackendApiUrl(url);
+      const nextUrl = rewriteRtdbUrl(url);
+      const attachSchoolHeader = isRawRtdbUrl(url) || isBackendApiUrl(nextUrl) || isBackendApiUrl(url);
 
       if (typeof input === "string") {
         const nextInit = attachSchoolHeader
-          ? { ...init, headers: withSchoolCodeHeader(init?.headers) }
+          ? { ...init, headers: withSchoolCodeHeader(init?.headers), credentials: "include" }
           : init;
-        return originalFetch(nextUrl, nextInit);
+        return originalFetch(nextUrl, nextInit).then((response) => maybeHandleSessionFailure(nextUrl, response));
       }
       if (input && typeof input.url === "string") {
         if (nextUrl !== input.url || attachSchoolHeader) {
           const nextInit = attachSchoolHeader
-            ? { ...init, headers: withSchoolCodeHeader(init?.headers || input.headers) }
+            ? { ...init, headers: withSchoolCodeHeader(init?.headers || input.headers), credentials: "include" }
             : init;
           const req = new Request(nextUrl, input);
-          return originalFetch(req, nextInit);
+          return originalFetch(req, nextInit).then((response) => maybeHandleSessionFailure(nextUrl, response));
         }
       }
-      return originalFetch(input, init);
+      return originalFetch(input, init).then((response) => maybeHandleSessionFailure(url, response));
     };
     window.__gojoFetchScoped = true;
   }
@@ -133,18 +188,32 @@ export function installRtdbInterceptors() {
   if (!window.__gojoAxiosScoped) {
     axios.interceptors.request.use((config) => {
       if (config && typeof config.url === "string") {
-        config.url = scopeRtdbUrl(config.url);
-        if (isBackendApiUrl(config.url)) {
+        const originalUrl = config.url;
+        config.url = rewriteRtdbUrl(config.url);
+        if (isRawRtdbUrl(originalUrl) || isBackendApiUrl(config.url) || isBackendApiUrl(originalUrl)) {
           config.headers = {
             ...(config.headers || {}),
             "X-School-Code": getSchoolCode(),
           };
+          config.withCredentials = true;
         }
       }
       return config;
     });
     window.__gojoAxiosScoped = true;
   }
-}
 
-export { RTDB_BASE_RAW };
+  if (!window.__gojoAxiosSessionAware) {
+    axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        const errorCode = String(error?.response?.data?.errorCode || "").trim();
+        if (SESSION_ERROR_CODES.has(errorCode)) {
+          handleUnauthorizedTeacherSession();
+        }
+        return Promise.reject(error);
+      }
+    );
+    window.__gojoAxiosSessionAware = true;
+  }
+}

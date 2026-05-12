@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
 /* Auth.css */
 
 .auth-container {
@@ -164,4 +166,293 @@
 .submit-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 30px rgba(37,99,235,0.15);
+}
+
+/* Teacher Login V2 */
+
+.teacher-login-page {
+  --tl-bg: #ffffff;
+  --tl-card: #ffffff;
+  --tl-text: #10233f;
+  --tl-muted: #4f6380;
+  --tl-primary: #007afb;
+  --tl-primary-soft: #e7f2ff;
+  --tl-accent: #00b6a9;
+  --tl-danger: #b91c1c;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 10% 15%, rgba(0, 122, 251, 0.17), transparent 38%),
+    radial-gradient(circle at 92% 14%, rgba(0, 182, 169, 0.16), transparent 36%),
+    linear-gradient(180deg, #f7fbff 0%, var(--tl-bg) 100%);
+  color: var(--tl-text);
+  font-family: "Manrope", "Segoe UI", Tahoma, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.teacher-login-glow {
+  position: absolute;
+  width: 460px;
+  height: 460px;
+  border-radius: 999px;
+  filter: blur(44px);
+  pointer-events: none;
+  animation: teacherGlowFloat 7s ease-in-out infinite;
+}
+
+.teacher-login-glow-left {
+  left: -120px;
+  top: -120px;
+  background: rgba(0, 122, 251, 0.21);
+}
+
+.teacher-login-glow-right {
+  right: -120px;
+  bottom: -140px;
+  background: rgba(0, 182, 169, 0.22);
+  animation-delay: 1.4s;
+}
+
+.teacher-login-shell {
+  width: min(1100px, 100%);
+  display: grid;
+  grid-template-columns: 1fr 460px;
+  gap: 28px;
+  align-items: stretch;
+  position: relative;
+  z-index: 1;
+}
+
+.teacher-login-hero {
+  background: linear-gradient(150deg, #007afb 0%, #005fcc 56%, #00a69a 100%);
+  color: #e8f2ff;
+  border-radius: 24px;
+  padding: 38px;
+  box-shadow: 0 24px 70px rgba(11, 45, 76, 0.24);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.teacher-login-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 16px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.18);
+  color: #d9ebff;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  padding: 7px 12px;
+}
+
+.teacher-login-hero h1 {
+  margin: 0;
+  font-size: clamp(34px, 4.2vw, 48px);
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+}
+
+.teacher-login-hero p {
+  margin-top: 16px;
+  margin-bottom: 22px;
+  font-size: 16px;
+  line-height: 1.72;
+  color: #cfe4ff;
+  max-width: 56ch;
+}
+
+.teacher-login-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+  color: #dcecff;
+  font-size: 14px;
+}
+
+.teacher-login-card-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.teacher-login-card {
+  width: 100%;
+  background: var(--tl-card);
+  border: 1px solid #d8e8fb;
+  border-radius: 24px;
+  box-shadow: 0 26px 80px rgba(13, 53, 91, 0.16);
+  padding: 30px;
+}
+
+.teacher-login-card h2 {
+  margin: 0;
+  color: var(--tl-text);
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.teacher-login-sub {
+  margin: 8px 0 18px;
+  color: var(--tl-muted);
+  font-size: 14px;
+}
+
+.teacher-login-alert {
+  margin: 0 0 14px;
+  color: var(--tl-danger);
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.teacher-login-meta {
+  margin: 2px 0 4px;
+  font-size: 12px;
+  color: #2f5f96;
+  background: #eef6ff;
+  border: 1px solid #cfe4ff;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.teacher-login-form {
+  display: grid;
+  gap: 8px;
+}
+
+.teacher-login-form label {
+  font-size: 12px;
+  color: #334155;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-top: 4px;
+}
+
+.teacher-login-form input,
+.teacher-login-form select {
+  width: 100%;
+  padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid #d3deeb;
+  background: #fbfdff;
+  font-size: 14px;
+  color: #0f172a;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.teacher-login-form input:focus,
+.teacher-login-form select:focus {
+  outline: none;
+  border-color: var(--tl-primary);
+  box-shadow: 0 0 0 3px rgba(15, 76, 129, 0.16);
+  transform: translateY(-1px);
+}
+
+.teacher-login-form input:disabled,
+.teacher-login-form select:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.teacher-login-field-error {
+  margin: 0 0 2px;
+  color: var(--tl-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.teacher-login-button {
+  margin-top: 10px;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+  background: linear-gradient(100deg, var(--tl-primary) 0%, #2f8fff 46%, var(--tl-accent) 100%);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+  box-shadow: 0 14px 30px rgba(0, 122, 251, 0.24);
+}
+
+.teacher-login-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.teacher-login-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+  box-shadow: none;
+}
+
+.teacher-login-footer {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--tl-muted);
+}
+
+.teacher-login-footer a {
+  color: var(--tl-primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.teacher-login-footer a:hover {
+  text-decoration: underline;
+}
+
+@keyframes teacherGlowFloat {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(16px) scale(1.05);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 980px) {
+  .teacher-login-shell {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .teacher-login-hero {
+    padding: 24px;
+  }
+
+  .teacher-login-card {
+    padding: 22px;
+  }
+}
+
+@media (max-width: 540px) {
+  .teacher-login-page {
+    padding: 14px;
+  }
+
+  .teacher-login-hero {
+    border-radius: 18px;
+    padding: 20px;
+  }
+
+  .teacher-login-card {
+    border-radius: 18px;
+    padding: 18px;
+  }
 }

@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { fetchCachedJson } from "../utils/rtdbCache";
+
+const STUDENT_DIR_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function StudentChatPage() {
   const location = useLocation();
@@ -16,21 +20,17 @@ function StudentChatPage() {
   useEffect(() => {
     const fetchStudents = async () => {
       try {
-        const studentsRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Students.json");
-        const usersRes = await axios.get("https://bale-house-rental-default-rtdb.firebaseio.com/Users.json");
+        const directoryData = await fetchCachedJson(
+          "https://bale-house-rental-default-rtdb.firebaseio.com/StudentDirectory.json",
+          { ttlMs: STUDENT_DIR_CACHE_TTL_MS, fallbackValue: {} }
+        );
 
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const studentList = Object.keys(studentsData).map(id => {
-          const student = studentsData[id];
-          const user = usersData[student.userId] || {};
-          return {
-            studentId: id,
-            name: user.name || user.username || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
-          };
-        });
+        const studentList = Object.entries(directoryData || {}).map(([id, entry]) => ({
+          studentId: entry.studentId || id,
+          userId: entry.userId || id,
+          name: entry.name || "No Name",
+          profileImage: entry.profileImage || "/default-profile.png",
+        }));
 
         setStudents(studentList);
 
@@ -49,15 +49,15 @@ function StudentChatPage() {
 
   useEffect(() => {
     const fetchMessages = async () => {
-      if (!selectedStudent) return;
+      if (!selectedStudent || !admin.adminId) return;
+      // Read only the single conversation instead of all school messages
+      const chatId = [admin.adminId, selectedStudent.studentId].sort().join("_");
       try {
-        const res = await axios.get(`https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages.json`);
-        const allMessages = res.data || {};
-        const chatMessages = Object.values(allMessages).filter(
-          m =>
-            (m.studentId === selectedStudent.studentId && m.adminId === admin.adminId) ||
-            (m.studentId === admin.adminId && m.adminId === selectedStudent.studentId)
+        const res = await axios.get(
+          `https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages/${chatId}.json`
         );
+        const data = res.data || {};
+        const chatMessages = Object.values(data).filter(Boolean);
         setMessages(chatMessages);
       } catch (err) {
         console.error("Error fetching messages:", err);
@@ -68,8 +68,9 @@ function StudentChatPage() {
   }, [selectedStudent, admin.adminId]);
 
   const handleSendMessage = async () => {
-    if (!messageInput.trim() || !selectedStudent) return;
+    if (!messageInput.trim() || !selectedStudent || !admin.adminId) return;
 
+    const chatId = [admin.adminId, selectedStudent.studentId].sort().join("_");
     const newMessage = {
       studentId: selectedStudent.studentId,
       adminId: admin.adminId,
@@ -78,7 +79,10 @@ function StudentChatPage() {
     };
 
     try {
-      await axios.post(`https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages.json`, newMessage);
+      await axios.post(
+        `https://bale-house-rental-default-rtdb.firebaseio.com/StudentMessages/${chatId}.json`,
+        newMessage
+      );
       setMessages(prev => [...prev, newMessage]);
       setMessageInput("");
     } catch (err) {
@@ -117,7 +121,7 @@ function StudentChatPage() {
               borderBottom: "1px solid var(--border-soft)",
             }}
           >
-            <img src={student.profileImage} alt={student.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
+            <ProfileAvatar src={student.profileImage} name={student.name} alt={student.name} loading="lazy" style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
             <span>{student.name}</span>
           </div>
         ))}
@@ -128,7 +132,7 @@ function StudentChatPage() {
         {selectedStudent ? (
           <>
             <div style={{ padding: "15px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: "15px", background: "var(--surface-panel)" }}>
-              <img src={selectedStudent.profileImage} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
+              <ProfileAvatar src={selectedStudent.profileImage} name={selectedStudent.name} alt={selectedStudent.name} style={{ width: "50px", height: "50px", borderRadius: "50%" }} />
               <strong>{selectedStudent.name}</strong>
             </div>
 

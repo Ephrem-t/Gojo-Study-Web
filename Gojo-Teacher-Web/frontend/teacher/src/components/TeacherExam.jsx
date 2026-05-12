@@ -3,9 +3,15 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
+import { API_BASE } from "../api/apiConfig";
 import { getTeacherCourseContext } from "../api/teacherApi";
-import { getRtdbRoot } from "../api/rtdbScope";
+import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { resolveProfileImage } from "../utils/profileImage";
+import {
+  getStudentUserId,
+  loadStudentRecordsByIds,
+  loadUserRecordsByIds,
+} from "../utils/teacherData";
 
 const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
 
@@ -90,9 +96,11 @@ const resolveGradeKey = (gradeValue) => {
 
 const resolveQuestionBucket = (questionType) => {
   const normalizedType = String(questionType || "written").trim().toLowerCase();
-  if (normalizedType === "written") return "writing";
-  return "grammar";
+  if (["written", "mcq", "true_false", "fill_blank"].includes(normalizedType)) return normalizedType;
+  return "written";
 };
+
+const QUESTION_BANK_READ_BUCKETS = ["mcq", "true_false", "fill_blank", "written", "grammar", "writing"];
 
 const buildQuestionHashKey = (prompt, questionType) => {
   return normalizeNodeKey(`${prompt}_${questionType}`);
@@ -143,6 +151,65 @@ const createInitialFormState = () => ({
   timeLimitMinutes: "",
 });
 
+const toCourseTitle = (value) =>
+  String(value || "")
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const parseCourseIdDefaults = (courseId) => {
+  const normalized = String(courseId || "").trim();
+  if (!normalized.startsWith("course_")) {
+    return {
+      id: normalized,
+      subject: normalized,
+      name: normalized,
+      grade: "",
+      section: "",
+    };
+  }
+
+  const body = normalized.slice("course_".length);
+  const parts = body.split("_").filter(Boolean);
+  const gradeSection = parts.at(-1) || "";
+  const match = gradeSection.match(/^(\d+)([A-Za-z].*)$/);
+  const subject = toCourseTitle(parts.slice(0, -1).join(" "));
+
+  return {
+    id: normalized,
+    subject: subject || normalized,
+    name: subject || normalized,
+    grade: match?.[1] || "",
+    section: String(match?.[2] || "").trim().toUpperCase(),
+  };
+};
+
+const buildResolvedCourseRecord = (courseId, storedCourse = {}) => {
+  const defaults = parseCourseIdDefaults(courseId);
+  return {
+    id: String(courseId || defaults.id || "").trim(),
+    subject: String(storedCourse?.subject || storedCourse?.name || defaults.subject || courseId || "").trim(),
+    name: String(storedCourse?.name || storedCourse?.subject || defaults.name || courseId || "").trim(),
+    grade: String(storedCourse?.grade || defaults.grade || "").trim(),
+    section: String(storedCourse?.section || storedCourse?.secation || defaults.section || "")
+      .trim()
+      .toUpperCase(),
+  };
+};
+
+const toSubmissionEntries = (submissionsNode = {}) => {
+  return Object.entries(submissionsNode || {}).map(([studentId, item]) => ({
+    studentId,
+    submittedAt: item?.submittedAt || item?.updatedAt || item?.createdAt || "",
+    score: item?.score,
+    percent: item?.percent,
+    status: item?.status || "submitted",
+  }));
+};
+
+const isObjectNode = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+
 function TeacherExam() {
   const [teacher, setTeacher] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -185,9 +252,16 @@ function TeacherExam() {
   const [createQuestionsCollapsed, setCreateQuestionsCollapsed] = useState(true);
   const [editQuestionsCollapsed, setEditQuestionsCollapsed] = useState(true);
   const [questionItemCollapsedByIndex, setQuestionItemCollapsedByIndex] = useState({ 0: true });
+  const [showQuestionBankPicker, setShowQuestionBankPicker] = useState(false);
+  const [questionBankLoading, setQuestionBankLoading] = useState(false);
+  const [questionBankError, setQuestionBankError] = useState("");
+  const [questionBankSearch, setQuestionBankSearch] = useState("");
+  const [questionBankTypeFilter, setQuestionBankTypeFilter] = useState("all");
+  const [questionBankItems, setQuestionBankItems] = useState([]);
+  const [RTDB_BASE, setRTDB_BASE] = useState(() => getRtdbRoot());
+  const [schoolBaseResolved, setSchoolBaseResolved] = useState(false);
 
   const navigate = useNavigate();
-  const RTDB_BASE = getRtdbRoot();
   const isMobile = typeof window !== "undefined" && window.innerWidth <= 600;
 
   const resolveStudentNamesByIds = useCallback(
@@ -195,23 +269,15 @@ function TeacherExam() {
       const normalizedIds = [...new Set((studentIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
       if (!normalizedIds.length) return {};
 
-      const [studentsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} })),
-      ]);
+      const studentsMap = await loadStudentRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        studentIds: normalizedIds,
+      });
 
-      const studentsMap = studentsRes.data || {};
-      const usersMap = usersRes.data || {};
-
-      const getUserRecordById = (userId) => {
-        const normalizedUserId = String(userId || "").trim();
-        if (!normalizedUserId) return null;
-        if (usersMap?.[normalizedUserId]) return usersMap[normalizedUserId];
-        const found = Object.values(usersMap).find(
-          (userRecord) => String(userRecord?.userId || "").trim() === normalizedUserId
-        );
-        return found || null;
-      };
+      const usersMap = await loadUserRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        userIds: [...new Set(Object.values(studentsMap).map((studentRecord) => getStudentUserId(studentRecord)).filter(Boolean))],
+      });
 
       const getDisplayNameFromRecord = (record) => {
         if (!record || typeof record !== "object") return "";
@@ -228,27 +294,18 @@ function TeacherExam() {
       const resolvedProfileMap = {};
 
       normalizedIds.forEach((studentId) => {
-        let studentRecord = studentsMap?.[studentId] || null;
-
-        if (!studentRecord) {
-          const foundEntry = Object.entries(studentsMap).find(([studentKey, item]) => {
-            return (
-              String(studentKey || "").trim() === studentId ||
-              String(item?.studentId || "").trim() === studentId ||
-              String(item?.userId || "").trim() === studentId
-            );
-          });
-          studentRecord = foundEntry?.[1] || null;
-        }
+        const studentRecord = studentsMap?.[studentId] || null;
 
         const studentName = getDisplayNameFromRecord(studentRecord);
-        const userRecord = getUserRecordById(studentRecord?.userId || studentId);
+        const userRecord = usersMap?.[getStudentUserId(studentRecord)] || null;
         const userName = getDisplayNameFromRecord(userRecord);
         const resolvedName = studentName || userName;
         const resolvedProfileImage = resolveProfileImage(
           studentRecord?.profileImage,
           studentRecord?.profile,
           studentRecord?.avatar,
+          studentRecord?.basicStudentInformation?.studentPhoto,
+          studentRecord?.studentPhoto,
           userRecord?.profileImage,
           userRecord?.profile,
           userRecord?.avatar
@@ -282,14 +339,97 @@ function TeacherExam() {
     setTeacher(storedTeacher);
   }, [navigate]);
 
+  useEffect(() => {
+    const resolveSchoolBase = async () => {
+      if (!teacher) return;
+      setSchoolBaseResolved(false);
+
+      const rawSchoolCode = String(teacher?.schoolCode || "").trim();
+      if (!rawSchoolCode) {
+        setRTDB_BASE(getRtdbRoot());
+        setSchoolBaseResolved(true);
+        return;
+      }
+
+      if (rawSchoolCode.startsWith("ET-")) {
+        setRTDB_BASE(`${RTDB_BASE_RAW}/Platform1/Schools/${rawSchoolCode}`);
+        setSchoolBaseResolved(true);
+        return;
+      }
+
+      try {
+        const shortCode = rawSchoolCode.toUpperCase();
+        const mapRes = await axios.get(`${RTDB_BASE_RAW}/Platform1/schoolCodeIndex/${shortCode}.json`);
+        const mappedCode = String(mapRes?.data || "").trim();
+        if (mappedCode) {
+          setRTDB_BASE(`${RTDB_BASE_RAW}/Platform1/Schools/${mappedCode}`);
+          setSchoolBaseResolved(true);
+          return;
+        }
+      } catch {
+        // Fallback scan below handles missing code-index entries.
+      }
+
+      try {
+        const schoolsRes = await axios.get(`${RTDB_BASE_RAW}/Platform1/Schools.json`);
+        const schoolsObj = schoolsRes?.data && typeof schoolsRes.data === "object" ? schoolsRes.data : {};
+        const shortCode = rawSchoolCode.toUpperCase();
+        const fallbackMatch = Object.entries(schoolsObj).find(([schoolCode, schoolNode]) => {
+          const nodeShort = String(
+            schoolNode?.schoolInfo?.shortName ||
+              schoolNode?.schoolInfo?.shortCode ||
+              schoolNode?.schoolCode ||
+              ""
+          )
+            .trim()
+            .toUpperCase();
+          return nodeShort === shortCode || String(schoolCode || "").toUpperCase().includes(shortCode);
+        });
+
+        if (fallbackMatch?.[0]) {
+          setRTDB_BASE(`${RTDB_BASE_RAW}/Platform1/Schools/${fallbackMatch[0]}`);
+          setSchoolBaseResolved(true);
+          return;
+        }
+      } catch {
+        // Keep last fallback below.
+      }
+
+      setRTDB_BASE(`${RTDB_BASE_RAW}/Platform1/Schools/${rawSchoolCode}`);
+      setSchoolBaseResolved(true);
+    };
+
+    resolveSchoolBase();
+  }, [teacher]);
+
   const loadWorkspace = useCallback(async () => {
-    if (!teacher) return;
+    if (!teacher || !schoolBaseResolved || !RTDB_BASE) return;
     setLoading(true);
     setError("");
 
     try {
       const context = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
-      const resolvedCourses = context.courses || [];
+      let resolvedCourses = context.courses || [];
+
+      if (!resolvedCourses.length) {
+        const [coursesRes, courseStatsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/Courses.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/SchoolExams/CourseStats.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const coursesMap = coursesRes.data || {};
+        const courseStats = courseStatsRes.data || {};
+
+        const fallbackCourseIds = new Set([
+          ...Object.keys(coursesMap),
+          ...Object.keys(courseStats),
+        ]);
+
+        resolvedCourses = Array.from(fallbackCourseIds)
+          .filter(Boolean)
+          .map((courseId) => buildResolvedCourseRecord(courseId, coursesMap?.[courseId] || {}));
+      }
+
       const teacherRefs = new Set(
         [
           teacher?.teacherId,
@@ -303,59 +443,150 @@ function TeacherExam() {
           .map(normalizeTeacherRef)
       );
 
-      const [assessmentsRes, submissionsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
-      ]);
-
-      const assessments = assessmentsRes.data || {};
-      const submissionIndex = submissionsRes.data || {};
       const courseIdSet = new Set(resolvedCourses.map((course) => course.id));
 
-      const records = Object.entries(assessments)
-        .map(([assessmentId, assessment]) => {
-          const courseId = String(assessment?.courseId || "").trim();
-          const assessmentTeacherId = normalizeTeacherRef(assessment?.teacherId);
-          const submissions = submissionIndex?.[assessmentId] || {};
-          const submissionEntries = Object.entries(submissions).map(([studentId, item]) => ({
-            studentId,
-            submittedAt: item?.submittedAt || item?.updatedAt || item?.createdAt || "",
-            score: item?.score,
-            percent: item?.percent,
-            status: item?.status || "submitted",
-          }));
-
-          if (!courseId) return null;
-          if (!courseIdSet.has(courseId) && !teacherRefs.has(assessmentTeacherId)) return null;
-
-          const questionRefs = assessment?.questionRefs || {};
-          const calculatedQuestionCount = Number(assessment?.questionCount || Object.keys(questionRefs).length || 0);
-
-          return {
-            id: assessmentId,
-            raw: assessment,
-            courseId,
-            title: assessment?.title || "Untitled assessment",
-            type: assessment?.type || "Exam",
-            status: assessment?.status || "draft",
-            published: assessment?.status === "active",
-            totalPoints: Number(assessment?.totalPoints || 0),
-            passPercent: Number(assessment?.passPercent || 0),
-            timeLimitMinutes: Number(assessment?.timeLimitMinutes || 0),
-            questionCount: calculatedQuestionCount,
-            submissionCount: submissionEntries.length,
-            submissionEntries,
-            dueDate: assessment?.dueDate,
-            createdAt: assessment?.createdAt,
-            updatedAt: assessment?.updatedAt,
-          };
+      const courseFeedResults = await Promise.all(
+        resolvedCourses.map(async (course) => {
+          const response = await axios
+            .get(`${RTDB_BASE}/SchoolExams/CourseFeed/${encodeURIComponent(course.id)}.json`)
+            .catch(() => ({ data: {} }));
+          return [course.id, isObjectNode(response.data) ? response.data : {}];
         })
-        .filter(Boolean)
-        .sort((left, right) => {
-          const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
-          const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
-          return rightTime - leftTime;
-        });
+      );
+
+      const courseFeedEntries = courseFeedResults.flatMap(([courseId, feedNode]) => {
+        return Object.entries(feedNode || {}).map(([assessmentId, feedEntry]) => ({
+          courseId,
+          assessmentId: String(feedEntry?.assessmentId || assessmentId || "").trim(),
+          feedEntry: isObjectNode(feedEntry) ? feedEntry : {},
+        }));
+      }).filter((entry) => entry.assessmentId);
+
+      const buildRecordsFromFeed = async () => {
+        if (!courseFeedEntries.length) {
+          return [];
+        }
+
+        const uniqueAssessmentIds = [...new Set(courseFeedEntries.map((entry) => entry.assessmentId))];
+        const assessmentDetails = await Promise.all(
+          uniqueAssessmentIds.map(async (assessmentId) => {
+            const [assessmentRes, submissionsRes] = await Promise.all([
+              axios.get(`${RTDB_BASE}/SchoolExams/Assessments/${encodeURIComponent(assessmentId)}.json`).catch(() => ({ data: null })),
+              axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex/${encodeURIComponent(assessmentId)}.json`).catch(() => ({ data: {} })),
+            ]);
+
+            return [
+              assessmentId,
+              isObjectNode(assessmentRes.data) ? assessmentRes.data : null,
+              isObjectNode(submissionsRes.data) ? submissionsRes.data : {},
+            ];
+          })
+        );
+
+        const assessmentMap = new Map(
+          assessmentDetails.map(([assessmentId, assessment, submissionsNode]) => [
+            assessmentId,
+            {
+              assessment,
+              submissionsNode,
+            },
+          ])
+        );
+        return courseFeedEntries
+          .map(({ courseId, assessmentId, feedEntry }) => {
+            const assessmentDetail = assessmentMap.get(assessmentId) || {};
+            const rawAssessment = isObjectNode(assessmentDetail.assessment) ? assessmentDetail.assessment : null;
+            const submissionsNode = isObjectNode(assessmentDetail.submissionsNode)
+              ? assessmentDetail.submissionsNode
+              : {};
+            const effectiveAssessment = rawAssessment || feedEntry || {};
+            const effectiveCourseId = String(effectiveAssessment?.courseId || courseId || "").trim();
+            const assessmentTeacherId = normalizeTeacherRef(effectiveAssessment?.teacherId);
+            if (!effectiveCourseId) return null;
+            if (!courseIdSet.has(effectiveCourseId) && !teacherRefs.has(assessmentTeacherId)) return null;
+
+            const questionRefs = effectiveAssessment?.questionRefs || {};
+            const submissionEntries = toSubmissionEntries(submissionsNode);
+            const calculatedQuestionCount = Number(
+              effectiveAssessment?.questionCount || Object.keys(questionRefs).length || feedEntry?.questionCount || 0
+            );
+
+            return {
+              id: String(assessmentId || "").trim(),
+              raw: rawAssessment || { ...feedEntry, assessmentId },
+              courseId: effectiveCourseId,
+              title: effectiveAssessment?.title || feedEntry?.title || "Untitled assessment",
+              type: effectiveAssessment?.type || feedEntry?.type || "Exam",
+              status: effectiveAssessment?.status || feedEntry?.status || "draft",
+              published: String(effectiveAssessment?.status || feedEntry?.status || "draft").toLowerCase() === "active",
+              totalPoints: Number(effectiveAssessment?.totalPoints || 0),
+              passPercent: Number(effectiveAssessment?.passPercent || 0),
+              timeLimitMinutes: Number(effectiveAssessment?.timeLimitMinutes || 0),
+              questionCount: calculatedQuestionCount,
+              submissionCount: submissionEntries.length,
+              submissionEntries,
+              dueDate: effectiveAssessment?.dueDate || feedEntry?.dueDate,
+              createdAt: effectiveAssessment?.createdAt || feedEntry?.createdAt,
+              updatedAt: effectiveAssessment?.updatedAt || feedEntry?.updatedAt,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => {
+            const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
+            const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
+            return rightTime - leftTime;
+          });
+      };
+
+      let records = await buildRecordsFromFeed();
+
+      if (!records.length) {
+        const [assessmentsRes, submissionsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const assessments = assessmentsRes.data || {};
+        const submissionIndex = submissionsRes.data || {};
+
+        records = Object.entries(assessments)
+          .map(([assessmentId, assessment]) => {
+            const courseId = String(assessment?.courseId || "").trim();
+            const assessmentTeacherId = normalizeTeacherRef(assessment?.teacherId);
+            const submissionEntries = toSubmissionEntries(submissionIndex?.[assessmentId] || {});
+
+            if (!courseId) return null;
+            if (!courseIdSet.has(courseId) && !teacherRefs.has(assessmentTeacherId)) return null;
+
+            const questionRefs = assessment?.questionRefs || {};
+            const calculatedQuestionCount = Number(assessment?.questionCount || Object.keys(questionRefs).length || 0);
+
+            return {
+              id: assessmentId,
+              raw: assessment,
+              courseId,
+              title: assessment?.title || "Untitled assessment",
+              type: assessment?.type || "Exam",
+              status: assessment?.status || "draft",
+              published: assessment?.status === "active",
+              totalPoints: Number(assessment?.totalPoints || 0),
+              passPercent: Number(assessment?.passPercent || 0),
+              timeLimitMinutes: Number(assessment?.timeLimitMinutes || 0),
+              questionCount: calculatedQuestionCount,
+              submissionCount: submissionEntries.length,
+              submissionEntries,
+              dueDate: assessment?.dueDate,
+              createdAt: assessment?.createdAt,
+              updatedAt: assessment?.updatedAt,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => {
+            const leftTime = parseDateValue(left.updatedAt || left.createdAt)?.getTime() || 0;
+            const rightTime = parseDateValue(right.updatedAt || right.createdAt)?.getTime() || 0;
+            return rightTime - leftTime;
+          });
+      }
 
       const submissionStudentIds = records
         .flatMap((record) => (record.submissionEntries || []).map((entry) => String(entry.studentId || "").trim()))
@@ -378,7 +609,7 @@ function TeacherExam() {
     } finally {
       setLoading(false);
     }
-  }, [teacher, RTDB_BASE, resolveStudentNamesByIds]);
+  }, [teacher, schoolBaseResolved, RTDB_BASE, resolveStudentNamesByIds]);
 
   useEffect(() => {
     loadWorkspace();
@@ -388,6 +619,107 @@ function TeacherExam() {
     () => courses.find((course) => course.id === selectedCourseId) || null,
     [courses, selectedCourseId]
   );
+
+  const loadQuestionBankForSelectedCourse = useCallback(async () => {
+    const gradeKey = resolveGradeKey(selectedCourse?.grade);
+    const subjectKey = normalizeNodeKey(selectedCourse?.subject || selectedCourse?.name || "general");
+
+    setQuestionBankLoading(true);
+    setQuestionBankError("");
+
+    try {
+      const bucketResponses = await Promise.all(
+        QUESTION_BANK_READ_BUCKETS.map((bucket) =>
+          axios
+            .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/${bucket}.json`)
+            .catch(() => ({ data: {} }))
+            .then((response) => ({ bucket, data: response.data || {} }))
+        )
+      );
+
+      const merged = {};
+      bucketResponses.forEach(({ bucket, data }) => {
+        Object.entries(data || {}).forEach(([questionId, rawQuestion]) => {
+          if (!questionId || !rawQuestion) return;
+          const normalized = normalizeQuestionForEdit(rawQuestion);
+          if (!normalized.prompt) return;
+          merged[String(questionId).trim()] = {
+            ...normalized,
+            questionId: String(questionId).trim(),
+            sourceBucket: bucket,
+            usageCount: Math.max(0, Number(rawQuestion?.usageCount || 0)),
+            createdAt: Number(rawQuestion?.createdAt || 0),
+          };
+        });
+      });
+
+      const sorted = Object.values(merged).sort((left, right) => {
+        const usageDelta = Number(right.usageCount || 0) - Number(left.usageCount || 0);
+        if (usageDelta !== 0) return usageDelta;
+        return Number(right.createdAt || 0) - Number(left.createdAt || 0);
+      });
+
+      setQuestionBankItems(sorted);
+      if (!sorted.length) setQuestionBankError("No question bank items found for this course yet.");
+    } catch {
+      setQuestionBankItems([]);
+      setQuestionBankError("Failed to load question bank.");
+    } finally {
+      setQuestionBankLoading(false);
+    }
+  }, [RTDB_BASE, selectedCourse?.grade, selectedCourse?.subject, selectedCourse?.name]);
+
+  const questionBankVisibleItems = useMemo(() => {
+    const normalizedSearch = String(questionBankSearch || "").trim().toLowerCase();
+    return questionBankItems.filter((item) => {
+      const typeMatch = questionBankTypeFilter === "all" || String(item?.type || "").trim() === questionBankTypeFilter;
+      if (!typeMatch) return false;
+      if (!normalizedSearch) return true;
+      const searchable = `${item.prompt || ""} ${item.correctAnswer || ""}`.toLowerCase();
+      return searchable.includes(normalizedSearch);
+    });
+  }, [questionBankItems, questionBankSearch, questionBankTypeFilter]);
+
+  const handleAddQuestionFromBank = useCallback((bankItem) => {
+    const normalized = normalizeQuestionForEdit(bankItem);
+    if (!normalized.prompt) return;
+
+    const candidateHash = buildQuestionHashKey(normalized.prompt, normalized.type);
+    const hasDuplicate = customQuestions.some((item) => {
+      const existing = normalizeQuestionForEdit(item);
+      if (!existing.prompt) return false;
+      return buildQuestionHashKey(existing.prompt, existing.type) === candidateHash;
+    });
+
+    if (hasDuplicate) {
+      setActionMessage("This question is already in the assessment.");
+      return;
+    }
+
+    setCustomQuestions((previous) => {
+      const nextIndex = previous.length;
+      setQuestionItemCollapsedByIndex((collapsedPrevious) => ({
+        ...collapsedPrevious,
+        [nextIndex]: true,
+      }));
+      return [...previous, normalized];
+    });
+    setCreateQuestionsCollapsed(false);
+    setActionMessage("Question added from Question Bank.");
+  }, [customQuestions]);
+
+  useEffect(() => {
+    setShowQuestionBankPicker(false);
+    setQuestionBankSearch("");
+    setQuestionBankTypeFilter("all");
+    setQuestionBankItems([]);
+    setQuestionBankError("");
+  }, [selectedCourseId]);
+
+  useEffect(() => {
+    if (!showQuestionBankPicker) return;
+    loadQuestionBankForSelectedCourse();
+  }, [showQuestionBankPicker, loadQuestionBankForSelectedCourse]);
 
   const filteredExamRecords = useMemo(() => {
     if (!selectedCourseId) return examRecords;
@@ -639,9 +971,9 @@ function TeacherExam() {
     });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const handleFormField = (field, value) => {
@@ -757,19 +1089,18 @@ function TeacherExam() {
     const subjectKey = normalizeNodeKey(courseForRecord?.subject || courseForRecord?.name || selectedCourse?.subject || selectedCourse?.name || "general");
 
     try {
-      const [grammarRes, writingRes] = await Promise.all([
-        axios
-          .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/grammar.json`)
-          .catch(() => ({ data: {} })),
-        axios
-          .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/writing.json`)
-          .catch(() => ({ data: {} })),
-      ]);
+      const bucketResponses = await Promise.all(
+        QUESTION_BANK_READ_BUCKETS.map((bucket) =>
+          axios
+            .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/${bucket}.json`)
+            .catch(() => ({ data: {} }))
+        )
+      );
 
-      const questionMap = {
-        ...(grammarRes.data || {}),
-        ...(writingRes.data || {}),
-      };
+      const questionMap = bucketResponses.reduce((acc, response) => ({
+        ...acc,
+        ...(response.data || {}),
+      }), {});
 
       return refEntries
         .sort((left, right) => {
@@ -799,16 +1130,20 @@ function TeacherExam() {
       courseForRecord?.subject || courseForRecord?.name || selectedCourse?.subject || selectedCourse?.name || "general"
     );
 
-    const [grammarRes, writingRes] = await Promise.all([
-      axios
-        .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/grammar.json`)
-        .catch(() => ({ data: {} })),
-      axios
-        .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/writing.json`)
-        .catch(() => ({ data: {} })),
-    ]);
+    const bucketResponses = await Promise.all(
+      QUESTION_BANK_READ_BUCKETS.map((bucket) =>
+        axios
+          .get(`${RTDB_BASE}/SchoolExams/QuestionBank/${gradeKey}/${subjectKey}/${bucket}.json`)
+          .catch(() => ({ data: {} }))
+      )
+    );
 
-    Object.entries({ ...(grammarRes.data || {}), ...(writingRes.data || {}) }).forEach(
+    Object.entries(
+      bucketResponses.reduce((acc, response) => ({
+        ...acc,
+        ...(response.data || {}),
+      }), {})
+    ).forEach(
       ([questionId, questionItem]) => {
         const normalized = normalizeQuestionForEdit(questionItem);
         if (normalized.prompt) lookup[String(questionId || "").trim()] = normalized;
@@ -1076,31 +1411,59 @@ function TeacherExam() {
     if (!normalizedCourseId) return false;
 
     try {
-      const [assessmentsRes, submissionsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
-        axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
-      ]);
+      const courseFeedRes = await axios
+        .get(`${RTDB_BASE}/SchoolExams/CourseFeed/${encodeURIComponent(normalizedCourseId)}.json`)
+        .catch(() => ({ data: {} }));
+      const courseFeed = isObjectNode(courseFeedRes.data) ? courseFeedRes.data : {};
+      const feedEntries = Object.entries(courseFeed || {})
+        .map(([assessmentId, feedEntry]) => [String(feedEntry?.assessmentId || assessmentId || "").trim(), feedEntry])
+        .filter(([assessmentId]) => assessmentId);
 
-      const allAssessments = assessmentsRes.data || {};
-      const submissionIndex = submissionsRes.data || {};
-
-      const assessmentsByCourse = Object.entries(allAssessments).filter(([, assessment]) => {
-        return String(assessment?.courseId || "").trim() === normalizedCourseId;
-      });
-
-      const activeAssessments = assessmentsByCourse.filter(([, assessment]) => {
-        return String(assessment?.status || "").trim().toLowerCase() === "active";
+      let totalAssessments = feedEntries.length;
+      let activeAssessments = feedEntries.filter(([, feedEntry]) => {
+        return String(feedEntry?.status || "").trim().toLowerCase() === "active";
       }).length;
+      let totalSubmissions = 0;
 
-      const totalSubmissions = assessmentsByCourse.reduce((sum, [assessmentId]) => {
-        return sum + Object.keys(submissionIndex?.[assessmentId] || {}).length;
-      }, 0);
+      if (feedEntries.length) {
+        const submissionNodes = await Promise.all(
+          feedEntries.map(async ([assessmentId]) => {
+            const response = await axios
+              .get(`${RTDB_BASE}/SchoolExams/SubmissionIndex/${encodeURIComponent(assessmentId)}.json`)
+              .catch(() => ({ data: {} }));
+            return isObjectNode(response.data) ? response.data : {};
+          })
+        );
+
+        totalSubmissions = submissionNodes.reduce((sum, submissionNode) => {
+          return sum + Object.keys(submissionNode || {}).length;
+        }, 0);
+      } else {
+        const [assessmentsRes, submissionsRes] = await Promise.all([
+          axios.get(`${RTDB_BASE}/SchoolExams/Assessments.json`).catch(() => ({ data: {} })),
+          axios.get(`${RTDB_BASE}/SchoolExams/SubmissionIndex.json`).catch(() => ({ data: {} })),
+        ]);
+
+        const allAssessments = assessmentsRes.data || {};
+        const submissionIndex = submissionsRes.data || {};
+        const assessmentsByCourse = Object.entries(allAssessments).filter(([, assessment]) => {
+          return String(assessment?.courseId || "").trim() === normalizedCourseId;
+        });
+
+        totalAssessments = assessmentsByCourse.length;
+        activeAssessments = assessmentsByCourse.filter(([, assessment]) => {
+          return String(assessment?.status || "").trim().toLowerCase() === "active";
+        }).length;
+        totalSubmissions = assessmentsByCourse.reduce((sum, [assessmentId]) => {
+          return sum + Object.keys(submissionIndex?.[assessmentId] || {}).length;
+        }, 0);
+      }
 
       await axios.put(`${RTDB_BASE}/SchoolExams/CourseStats/${normalizedCourseId}.json`, {
         courseId: normalizedCourseId,
-        totalAssessments: assessmentsByCourse.length,
+        totalAssessments,
         activeAssessments,
-        draftAssessments: Math.max(0, assessmentsByCourse.length - activeAssessments),
+        draftAssessments: Math.max(0, totalAssessments - activeAssessments),
         totalSubmissions,
         updatedAt: new Date().toISOString(),
       });
@@ -1160,6 +1523,19 @@ function TeacherExam() {
 
     if (!preparedQuestions.length) {
       setActionMessage("Add at least one question before saving.");
+      return;
+    }
+
+    const duplicateHashSet = new Set();
+    const hasDuplicateQuestion = preparedQuestions.some((item) => {
+      const hashKey = buildQuestionHashKey(item.prompt, item.type);
+      if (duplicateHashSet.has(hashKey)) return true;
+      duplicateHashSet.add(hashKey);
+      return false;
+    });
+
+    if (hasDuplicateQuestion) {
+      setActionMessage("Duplicate questions detected. Remove repeated questions before saving.");
       return;
     }
 
@@ -1353,39 +1729,34 @@ function TeacherExam() {
 
   const verifyTeacherDeleteCredentials = useCallback(
     async (usernameInput, passwordInput) => {
-      const normalizedUsername = String(usernameInput || "").trim().toLowerCase();
+      const normalizedUsername = String(usernameInput || "").trim();
       const normalizedPassword = String(passwordInput || "");
-      if (!normalizedUsername || !normalizedPassword) return false;
+      const normalizedSchoolCode = String(
+        teacher?.schoolCode || teacherContext?.teacherRecord?.schoolCode || ""
+      ).trim();
+      const normalizedUserId = String(
+        teacher?.userId || teacherContext?.teacherRecord?.userId || ""
+      ).trim();
 
-      const teacherRefs = new Set(
-        [
-          teacher?.userId,
-          teacher?.teacherId,
-          teacher?.teacherKey,
-          teacherContext?.teacherKey,
-          teacherContext?.teacherRecord?.userId,
-          teacherContext?.teacherRecord?.teacherId,
-        ]
-          .filter(Boolean)
-          .map(normalizeTeacherRef)
-      );
+      if (!normalizedUsername || !normalizedPassword || !normalizedSchoolCode || !normalizedUserId) {
+        return false;
+      }
 
-      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }));
-      const usersMap = usersRes.data || {};
+      try {
+        const response = await axios.post(`${API_BASE}/teacher/verify-password`, {
+          schoolCode: normalizedSchoolCode,
+          userId: normalizedUserId,
+          username: normalizedUsername,
+          password: normalizedPassword,
+        });
 
-      const matchedTeacherUser = Object.entries(usersMap).find(([userKey, user]) => {
-        const username = String(user?.username || "").trim().toLowerCase();
-        const password = String(user?.password || "");
-        if (!username || !password) return false;
-        if (username !== normalizedUsername || password !== normalizedPassword) return false;
-
-        const userRefs = [userKey, user?.userId, user?.teacherId].filter(Boolean).map(normalizeTeacherRef);
-        return userRefs.some((ref) => teacherRefs.has(ref));
-      });
-
-      return Boolean(matchedTeacherUser);
+        return Boolean(response?.data?.success);
+      } catch (error) {
+        console.error("Teacher credential verification failed:", error);
+        return false;
+      }
     },
-    [RTDB_BASE, teacher, teacherContext]
+    [teacher?.schoolCode, teacher?.userId, teacherContext?.teacherRecord?.schoolCode, teacherContext?.teacherRecord?.userId]
   );
 
   const openDeleteAssessmentPopup = (record) => {
@@ -1533,6 +1904,19 @@ function TeacherExam() {
       <style>{`
         .teacher-exam-pro {
           letter-spacing: 0.01em;
+          background: #ffffff !important;
+        }
+
+        .teacher-exam-pro.dashboard-page {
+          background: #ffffff !important;
+        }
+
+        .teacher-exam-pro .google-dashboard {
+          background: #ffffff !important;
+        }
+
+        .teacher-exam-pro .teacher-sidebar-spacer {
+          background: #ffffff !important;
         }
 
         .teacher-exam-pro .exam-scroll-area {
@@ -1604,7 +1988,7 @@ function TeacherExam() {
         .teacher-exam-pro .exam-record-card {
           border-radius: 18px !important;
           border: 1px solid var(--border-soft) !important;
-          background: var(--surface-panel) !important;
+          background: var(--page-bg) !important;
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08) !important;
           transition: transform 160ms ease, box-shadow 160ms ease;
         }
@@ -1677,58 +2061,201 @@ function TeacherExam() {
           border-color: #bfdbfe;
         }
 
-        .teacher-exam-pro .exam-question-preview-item {
-          padding: 12px;
-          border: 1px solid var(--border-soft);
+        .teacher-exam-pro .exam-questions-workspace {
+          display: grid;
+          gap: 12px;
+        }
+
+        .teacher-exam-pro .exam-questions-workspace-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          border: 1px solid rgba(191, 219, 254, 0.8);
+          border-radius: 14px;
+          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        }
+
+        .teacher-exam-pro .exam-questions-workspace-title {
+          font-size: 13px;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: 0.02em;
+        }
+
+        .teacher-exam-pro .exam-questions-workspace-sub {
+          margin-top: 2px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+
+        .teacher-exam-pro .exam-questions-workspace-count {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 28px;
+          padding: 0 12px;
+          border-radius: 999px;
+          border: 1px solid #bfdbfe;
+          background: #eff6ff;
+          color: #007AFB;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.07em;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+
+        .teacher-exam-pro .exam-questions-metrics {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .teacher-exam-pro .exam-questions-metric {
+          border: 1px solid rgba(226, 232, 240, 0.9);
           border-radius: 12px;
+          padding: 9px 10px;
           background: #ffffff;
           display: grid;
-          gap: 8px;
-          box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+          gap: 3px;
+        }
+
+        .teacher-exam-pro .exam-questions-metric-label {
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+
+        .teacher-exam-pro .exam-questions-metric-value {
+          font-size: 18px;
+          font-weight: 900;
+          color: var(--text-primary);
+          line-height: 1.1;
+        }
+
+        .teacher-exam-pro .exam-question-list {
+          display: grid;
+          gap: 10px;
+        }
+
+        .teacher-exam-pro .exam-question-preview-item {
+          padding: 12px;
+          border: 1px solid rgba(203, 213, 225, 0.9);
+          border-radius: 14px;
+          background: #ffffff;
+          display: grid;
+          gap: 9px;
+          box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
         }
 
         .teacher-exam-pro .exam-question-meta-row {
           display: flex;
-          flex-wrap: wrap;
+          justify-content: space-between;
+          align-items: center;
           gap: 10px;
-          font-size: 12px;
-          color: var(--text-muted);
-          font-weight: 700;
+          flex-wrap: wrap;
+        }
+
+        .teacher-exam-pro .exam-question-meta-left {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .teacher-exam-pro .exam-question-index {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 26px;
+          height: 26px;
+          border-radius: 999px;
+          border: 1px solid #bfdbfe;
+          background: #dbeafe;
+          color: var(--text-primary);
+          font-size: 11px;
+          font-weight: 900;
+        }
+
+        .teacher-exam-pro .exam-question-type-pill,
+        .teacher-exam-pro .exam-question-points-pill {
+          display: inline-flex;
+          align-items: center;
+          min-height: 24px;
+          padding: 0 9px;
+          border-radius: 999px;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.07em;
           text-transform: uppercase;
-          letter-spacing: 0.04em;
+          white-space: nowrap;
+        }
+
+        .teacher-exam-pro .exam-question-type-pill {
+          border: 1px solid #bfdbfe;
+          background: #eff6ff;
+          color: #007AFB;
+        }
+
+        .teacher-exam-pro .exam-question-points-pill {
+          border: 1px solid #d1d5db;
+          background: #f8fafc;
+          color: #334155;
         }
 
         .teacher-exam-pro .exam-question-text {
           color: var(--text-primary);
-          font-weight: 800;
+          font-weight: 700;
           font-size: 14px;
-          line-height: 1.45;
+          line-height: 1.5;
         }
 
         .teacher-exam-pro .exam-choice-list {
           display: grid;
-          gap: 4px;
-          padding: 8px 10px;
+          gap: 6px;
+          padding: 10px;
           border-radius: 10px;
-          border: 1px solid var(--border-soft);
+          border: 1px solid #e2e8f0;
           background: #f8fafc;
+        }
+
+        .teacher-exam-pro .exam-choice-list-title {
+          color: var(--text-secondary);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.07em;
+          text-transform: uppercase;
         }
 
         .teacher-exam-pro .exam-choice-item {
           font-weight: 600;
           color: var(--text-secondary);
-          padding-left: 4px;
+          padding: 6px 8px;
+          border-radius: 8px;
+          background: #ffffff;
+          border: 1px solid #e5e7eb;
         }
 
         .teacher-exam-pro .exam-choice-item.is-correct {
-          color: var(--accent-strong);
+          color: #166534;
+          border-color: #86efac;
+          background: #ecfdf5;
           font-weight: 800;
         }
 
         .teacher-exam-pro .exam-answer-row {
-          font-size: 13px;
+          font-size: 12px;
           font-weight: 700;
           color: var(--text-secondary);
+          padding: 8px 10px;
+          border-radius: 10px;
+          border: 1px dashed #cbd5e1;
+          background: #ffffff;
         }
 
         .teacher-exam-pro .exam-field {
@@ -1810,10 +2337,11 @@ function TeacherExam() {
           overflow: hidden;
           border-radius: 18px !important;
           border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border-soft) 82%) !important;
-          background:
-            radial-gradient(circle at top right, color-mix(in srgb, var(--accent-soft) 78%, #ffffff 22%), transparent 40%),
-            linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--accent-soft) 40%, #ffffff 60%) 100%) !important;
-          box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08) !important;
+          background:#FFFFFF;
+          // background:
+          //   radial-gradient(circle at top right, color-mix(in srgb, var(--accent-soft) 78%, #ffffff 22%), transparent 40%),
+          //   linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--accent-soft) 40%, #ffffff 60%) 100%) !important;
+          // box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08) !important;
         }
 
         .teacher-exam-pro .exam-scope-grid {
@@ -1853,7 +2381,7 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-scope-value {
-          color: var(--accent-strong);
+          color: var(--text-primary);
           background: color-mix(in srgb, var(--accent-soft) 70%, #ffffff 30%);
         }
 
@@ -1872,9 +2400,10 @@ function TeacherExam() {
         .teacher-exam-pro .exam-record-card {
           border-radius: 22px !important;
           border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border-soft) 88%) !important;
-          background:
-            radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 34%),
-            linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
+          background: #ffffff !important;
+          // background:
+            // radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 34%),
+            // linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
           box-shadow: 0 22px 44px rgba(15, 23, 42, 0.1) !important;
           position: relative;
           overflow: hidden;
@@ -1971,8 +2500,8 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .btn-soft {
-          background: #eef2ff !important;
-          color: #1e3a8a !important;
+          background: #ffffff !important;
+          color: #007AFB !important;
           border-color: #c7d2fe !important;
         }
 
@@ -2108,7 +2637,7 @@ function TeacherExam() {
           border-radius: 999px;
           border: 1px solid rgba(191, 219, 254, 0.75);
           background: rgba(239, 246, 255, 0.9);
-          color: #1e3a8a;
+          color: #007AFB;
           font-size: 12px;
           font-weight: 800;
         }
@@ -2129,7 +2658,7 @@ function TeacherExam() {
 
         .teacher-exam-pro .exam-card-toggle.is-open {
           background: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%) !important;
-          color: #1e3a8a !important;
+          color: #007AFB !important;
           border-color: #93c5fd !important;
         }
 
@@ -2186,7 +2715,7 @@ function TeacherExam() {
           border-radius: 999px;
           border: 1px solid rgba(191, 219, 254, 0.9);
           background: rgba(239, 246, 255, 0.95);
-          color: #1e3a8a;
+          color:VAR(--accent-strong);
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.08em;
@@ -2205,7 +2734,7 @@ function TeacherExam() {
           gap: 12px;
           width: 100%;
           min-width: 0;
-          color: #1e3a8a;
+          color: var(--accent-strong);
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.08em;
@@ -2240,13 +2769,13 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-expand-panel {
-          border: 1px solid rgba(191, 219, 254, 0.7);
-          border-radius: 18px;
-          padding: 14px;
-          background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(239, 246, 255, 0.88) 100%);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          border-radius: 20px;
+          padding: 18px;
+          background: #ffffff;
+          box-shadow: 0 16px 30px rgba(15, 23, 42, 0.06);
           display: grid;
-          gap: 10px;
+          gap: 12px;
         }
 
         .teacher-exam-pro .exam-expand-panel.is-detail-tab {
@@ -2347,7 +2876,7 @@ function TeacherExam() {
         .teacher-exam-pro .exam-form-shell {
           padding: 18px !important;
           border-radius: 22px !important;
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%) !important;
+          background: #ffffff !important;
           border: 1px solid rgba(191, 219, 254, 0.65) !important;
           box-shadow: 0 20px 42px rgba(15, 23, 42, 0.08) !important;
           position: relative;
@@ -2424,7 +2953,7 @@ function TeacherExam() {
           padding: 14px;
           border-radius: 16px;
           border: 1px solid rgba(191, 219, 254, 0.65);
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%);
+          background: var(--page-bg);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 16px rgba(15, 23, 42, 0.04);
           transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
           text-align: left;
@@ -2537,25 +3066,171 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-actions-hero {
+          border: 1px solid rgba(191, 219, 254, 0.72);
+          border-radius: 18px;
+          padding: 16px;
+          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+          box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+          display: grid;
+          gap: 12px;
+        }
+
+        .teacher-exam-pro .exam-actions-hero-title {
+          font-size: 16px;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: -0.02em;
+        }
+
+        .teacher-exam-pro .exam-questions-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          cursor: pointer;
+          border: 1px solid rgba(68, 132, 210, 0.62);
+          border-radius: 14px;
+          padding: 10px 12px;
+          background: #ffffff;
+        }
+
+        .teacher-exam-pro .exam-questions-title-stack {
+          display: grid;
+          gap: 3px;
+          min-width: 0;
+        }
+
+        .teacher-exam-pro .exam-questions-title-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .teacher-exam-pro .exam-questions-title {
+          font-size: 13px;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: 0.01em;
+        }
+
+        .teacher-exam-pro .exam-questions-counter {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 24px;
+          padding: 0 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(191, 219, 254, 0.85);
+          background: #ffffff;
+          color: var(--accent-strong);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+        }
+
+        .teacher-exam-pro .exam-questions-subtitle {
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .teacher-exam-pro .exam-questions-toolbar {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex: 0 0 auto;
+        }
+
+        .teacher-exam-pro .exam-questions-list {
+          display: grid;
+          gap: 12px;
+          padding: 2px;
+        }
+
+        .teacher-exam-pro .exam-question-bank-panel {
+          border: 1px solid rgba(191, 219, 254, 0.7);
+          border-radius: 14px;
+          padding: 12px;
+          background: #ffffff;
+          display: grid;
+          gap: 10px;
+        }
+
+        .teacher-exam-pro .exam-question-bank-head {
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 10px;
-          padding: 12px;
-          border-radius: 14px;
-          border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border-soft) 78%);
-          background:
-            radial-gradient(circle at top right, color-mix(in srgb, var(--accent-soft) 82%, #ffffff 18%), transparent 44%),
-            linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--accent-soft) 34%, #ffffff 66%) 100%);
-          box-shadow: 0 10px 20px rgba(15, 23, 42, 0.07);
+          flex-wrap: wrap;
         }
 
-        .teacher-exam-pro .exam-actions-hero-title {
+        .teacher-exam-pro .exam-question-bank-title {
           font-size: 13px;
           font-weight: 900;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--accent-strong);
+          color: var(--text-primary);
+          letter-spacing: 0.01em;
+        }
+
+        .teacher-exam-pro .exam-question-bank-controls {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 180px;
+          gap: 8px;
+        }
+
+        .teacher-exam-pro .exam-question-bank-list {
+          display: grid;
+          gap: 8px;
+          max-height: 260px;
+          overflow: auto;
+          padding-right: 2px;
+        }
+
+        .teacher-exam-pro .exam-question-bank-item {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
+          align-items: center;
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          border-radius: 12px;
+          padding: 10px;
+          background: #ffffff;
+        }
+
+        .teacher-exam-pro .exam-question-bank-item-main {
+          min-width: 0;
+          display: grid;
+          gap: 6px;
+        }
+
+        .teacher-exam-pro .exam-question-bank-item-meta {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .teacher-exam-pro .exam-question-bank-item-text {
+          color: var(--text-primary);
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.4;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+        }
+
+        .teacher-exam-pro .exam-question-bank-empty {
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 700;
+          padding: 8px;
+          border: 1px dashed var(--border-strong);
+          border-radius: 10px;
+          background: #f8fafc;
         }
 
         .teacher-exam-pro .exam-actions-hero-sub {
@@ -2621,27 +3296,29 @@ function TeacherExam() {
 
         .teacher-exam-pro .exam-questions-shell {
           margin-top: 14px;
-          border: 1px solid rgba(191, 219, 254, 0.7);
+          border: 1px solid rgba(191, 219, 254, 0.65);
           border-radius: 18px;
           padding: 14px;
-          background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(239, 246, 255, 0.84) 100%);
+          background: #ffffff;
+          // background: linear-gradient(180deg, #ffffff 0%, #fcfdff 100%);
+          box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
         }
 
         .teacher-exam-pro .exam-question-editor {
           display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 10px;
+          grid-template-columns: 1fr;
+          gap: 12px;
           align-items: start;
-          padding: 14px;
-          border-radius: 16px;
-          border: 1px solid rgba(226, 232, 240, 0.95);
-          background: rgba(255, 255, 255, 0.92);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+          padding: 16px;
+          border-radius: 18px;
+          border: 1px solid rgba(203, 213, 225, 0.85);
+          background: #ffffff;
+          box-shadow: 0 10px 20px rgba(15, 23, 42, 0.05);
         }
 
         .teacher-exam-pro .exam-question-editor-main {
           display: grid;
-          gap: 10px;
+          gap: 14px;
         }
 
         .teacher-exam-pro .exam-question-prompt-card,
@@ -2650,11 +3327,11 @@ function TeacherExam() {
         .teacher-exam-pro .exam-question-answer-card {
           display: grid;
           gap: 8px;
-          padding: 12px;
-          border-radius: 14px;
-          border: 1px solid rgba(203, 213, 225, 0.9);
-          background: rgba(255, 255, 255, 0.96);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+          padding: 0;
+          border-radius: 0;
+          border: none;
+          background: transparent;
+          box-shadow: none;
         }
 
         .teacher-exam-pro .exam-question-section-label {
@@ -2668,13 +3345,15 @@ function TeacherExam() {
         .teacher-exam-pro .exam-question-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-          gap: 10px;
+          gap: 14px;
+          padding-top: 2px;
+          border-top: 1px solid rgba(226, 232, 240, 0.9);
         }
 
         .teacher-exam-pro .exam-question-option-grid {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
+          gap: 10px;
         }
 
         .teacher-exam-pro .exam-question-option-item {
@@ -2683,7 +3362,9 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-question-remove {
-          min-width: 108px;
+          min-width: 90px;
+          min-height: 34px;
+          padding: 6px 10px !important;
         }
 
         .teacher-exam-pro .exam-question-editor-top {
@@ -2692,6 +3373,46 @@ function TeacherExam() {
           align-items: center;
           gap: 10px;
           cursor: pointer;
+          border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+          border-radius: 0;
+          padding: 0 0 12px;
+          background: transparent;
+        }
+
+        .teacher-exam-pro .exam-question-editor-top-left {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+          flex-wrap: wrap;
+        }
+
+        .teacher-exam-pro .exam-question-state {
+          display: inline-flex;
+          align-items: center;
+          min-height: 24px;
+          padding: 0 9px;
+          border-radius: 999px;
+          border: 1px solid #d1d5db;
+          background: #f8fafc;
+          color: #334155;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.07em;
+          text-transform: uppercase;
+        }
+
+        .teacher-exam-pro .exam-question-state.is-ready {
+          background: #dcfce7;
+          border-color: #86efac;
+          color: #166534;
+        }
+
+        .teacher-exam-pro .exam-question-editor-top-right {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex: 0 0 auto;
         }
 
         .teacher-exam-pro .exam-question-editor-chevron {
@@ -2701,8 +3422,8 @@ function TeacherExam() {
           width: 26px;
           height: 26px;
           border-radius: 8px;
-          border: 1px solid rgba(191, 219, 254, 0.9);
-          background: rgba(239, 246, 255, 0.92);
+          border: 1px solid rgba(203, 213, 225, 0.95);
+          background: #ffffff;
           color: #1d4ed8;
           font-size: 12px;
           font-weight: 900;
@@ -2714,8 +3435,8 @@ function TeacherExam() {
           min-height: 28px;
           padding: 0 10px;
           border-radius: 999px;
-          background: #dbeafe;
-          color: #1e3a8a;
+          background: #eff6ff;
+          color: var(--accent-strong);
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.08em;
@@ -2754,6 +3475,35 @@ function TeacherExam() {
           margin-top: 14px;
           padding-top: 12px;
           border-top: 1px dashed rgba(148, 163, 184, 0.7);
+        }
+
+        @media (max-width: 760px) {
+          .teacher-exam-pro .exam-questions-head {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .teacher-exam-pro .exam-question-bank-controls {
+            grid-template-columns: 1fr;
+          }
+
+          .teacher-exam-pro .exam-question-bank-item {
+            grid-template-columns: 1fr;
+          }
+
+          .teacher-exam-pro .exam-questions-toolbar {
+            width: 100%;
+            justify-content: space-between;
+          }
+
+          .teacher-exam-pro .exam-question-editor-top {
+            flex-wrap: wrap;
+          }
+
+          .teacher-exam-pro .exam-question-editor-top-right {
+            width: 100%;
+            justify-content: space-between;
+          }
         }
 
         .teacher-exam-pro .exam-inline-edit-actions {
@@ -2897,7 +3647,7 @@ function TeacherExam() {
         .teacher-exam-pro .exam-detail-overlay {
           position: fixed;
           inset: 0;
-          z-index: 9999;
+          z-index: 9998;
           background: rgba(15, 23, 42, 0.48);
           backdrop-filter: blur(4px);
           display: flex;
@@ -2909,21 +3659,29 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-detail-panel {
-          width: min(1400px, calc(100vw - 32px));
+          width: min(1420px, calc(100vw - 32px));
           height: calc(100vh - 32px);
           max-height: calc(100vh - 32px);
           overflow: hidden;
-          background:
-            radial-gradient(circle at top right, rgba(59, 130, 246, 0.1), transparent 35%),
-            linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
-          border-radius: 22px;
+          background: #ffffff;
+          border-radius: 28px;
           border: 1px solid rgba(191, 219, 254, 0.75);
-          box-shadow: 0 28px 60px rgba(15, 23, 42, 0.32);
+          // box-shadow: 0 32px 70px rgba(15, 23, 42, 0.32);
           padding: 0;
           box-sizing: border-box;
           animation: examDetailPanelIn 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
           transform-origin: top center;
           display: flex;
+          position: relative;
+        }
+
+        .teacher-exam-pro .exam-detail-panel::before {
+          content: "";
+          position: absolute;
+          inset: 0 0 auto 0;
+          height: 5px;
+          background: linear-gradient(90deg, #1d4ed8 0%, #2563eb 38%, #60a5fa 100%);
+          z-index: 1;
         }
 
         @keyframes examDetailOverlayIn {
@@ -2953,30 +3711,57 @@ function TeacherExam() {
           }
         }
 
+        @media (max-width: 1080px) {
+          .teacher-exam-pro .exam-detail-hero {
+            grid-template-columns: 1fr;
+          }
+        }
+
         .teacher-exam-pro .exam-detail-shell {
           width: 100%;
           height: 100%;
           overflow-y: auto;
-          padding: 18px;
+          padding: 20px;
           box-sizing: border-box;
           display: grid;
-          gap: 14px;
+          gap: 16px;
+          align-content: start;
         }
 
         .teacher-exam-pro .exam-detail-topbar {
           position: sticky;
           top: 0;
           z-index: 2;
-          background: rgba(248, 251, 255, 0.92);
+          background: rgba(255, 255, 255, 0.92);
           backdrop-filter: blur(6px);
-          border: 1px solid rgba(191, 219, 254, 0.7);
-          border-radius: 16px;
-          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-          padding: 12px;
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          border-radius: 18px;
+          box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+          padding: 14px 16px;
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 10px;
+        }
+
+        .teacher-exam-pro .exam-detail-topbar-copy {
+          display: grid;
+          gap: 4px;
+        }
+
+        .teacher-exam-pro .exam-detail-topbar-kicker {
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--accent-strong);
+        }
+
+        .teacher-exam-pro .exam-detail-topbar-title {
+          font-size: 16px;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: -0.02em;
         }
 
         .teacher-exam-pro .exam-detail-close {
@@ -2986,13 +3771,28 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-detail-header {
-          border-radius: 20px;
+          border-radius: 24px;
           border: 1px solid rgba(191, 219, 254, 0.75);
-          background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-          box-shadow: 0 20px 40px rgba(15, 23, 42, 0.1);
-          padding: 12px;
+          background:#ffffff;
+          // background:
+          //   radial-gradient(circle at top right, rgba(219, 234, 254, 0.9), transparent 34%),
+          //   linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+          box-shadow: 0 22px 42px rgba(15, 23, 42, 0.1);
+          padding: 18px;
           display: grid;
-          gap: 6px;
+          gap: 14px;
+        }
+
+        .teacher-exam-pro .exam-detail-hero {
+          display: grid;
+          grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.9fr);
+          gap: 14px;
+          align-items: start;
+        }
+
+        .teacher-exam-pro .exam-detail-maincopy {
+          display: grid;
+          gap: 10px;
         }
 
         .teacher-exam-pro .exam-detail-header .exam-card-topline {
@@ -3019,10 +3819,8 @@ function TeacherExam() {
         }
 
         .teacher-exam-pro .exam-detail-title-row {
-          display: flex;
-          align-items: baseline;
+          display: grid;
           gap: 8px;
-          flex-wrap: wrap;
         }
 
         .teacher-exam-pro .exam-detail-status-row {
@@ -3039,15 +3837,52 @@ function TeacherExam() {
           font-weight: 700;
         }
 
+        .teacher-exam-pro .exam-detail-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .teacher-exam-pro .exam-detail-summary-card {
+          display: grid;
+          gap: 5px;
+          padding: 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(191, 219, 254, 0.8);
+          background: rgba(255, 255, 255, 0.92);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+        }
+
+        .teacher-exam-pro .exam-detail-summary-label {
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+
+        .teacher-exam-pro .exam-detail-summary-value {
+          font-size: 18px;
+          font-weight: 900;
+          color: var(--text-primary);
+          line-height: 1.1;
+        }
+
+        .teacher-exam-pro .exam-detail-summary-helper {
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--text-secondary);
+        }
+
         .teacher-exam-pro .exam-detail-filters {
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          padding: 10px;
-          border-radius: 14px;
-          border: 1px solid rgba(191, 219, 254, 0.7);
-          background: rgba(255, 255, 255, 0.88);
-          box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+          padding: 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          background: #ffffff;
+          box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
         }
 
         .teacher-exam-pro .exam-detail-filter-btn {
@@ -3254,8 +4089,9 @@ function TeacherExam() {
           padding: 0 10px;
           border-radius: 12px;
           border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border-soft) 76%);
-          background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(238, 245, 255, 0.96) 100%);
+          background: #ffffff;
+          // background:
+          //   linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(238, 245, 255, 0.96) 100%);
           box-shadow: 0 6px 12px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.75);
           white-space: nowrap;
           overflow: hidden;
@@ -3406,7 +4242,7 @@ function TeacherExam() {
           height: 24px;
           border-radius: 999px;
           background: #dbeafe;
-          color: #1e3a8a;
+          color: #007AFB;
           border: 1px solid #bfdbfe;
           font-size: 11px;
           font-weight: 900;
@@ -3469,6 +4305,24 @@ function TeacherExam() {
         }
 
         @media (max-width: 720px) {
+          .teacher-exam-pro .exam-detail-topbar {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .teacher-exam-pro .exam-questions-workspace-head {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .teacher-exam-pro .exam-questions-metrics {
+            grid-template-columns: 1fr;
+          }
+
+          .teacher-exam-pro .exam-detail-summary-grid {
+            grid-template-columns: 1fr;
+          }
+
           .teacher-exam-pro .exam-eval-header {
             flex-direction: column;
             align-items: flex-start;
@@ -3527,18 +4381,18 @@ function TeacherExam() {
         "--surface-panel": "#ffffff",
         "--surface-accent": "#f8fafc",
         "--surface-muted": "#f8fafc",
-        "--surface-strong": "#d1d5db",
-        "--page-bg": "#f3f4f6",
+        "--surface-strong": "#ffffff",
+        "--page-bg": "#ffffff",
         "--border-soft": "#e5e7eb",
         "--border-strong": "#cbd5e1",
         "--text-primary": "#0f172a",
         "--text-secondary": "#334155",
         "--text-muted": "#6b7280",
-        "--accent": "#1d4ed8",
+        "--accent": "#007AFB",
         "--accent-soft": "#e0e7ff",
-        "--accent-strong": "#1e3a8a",
+        "--accent-strong": "#007AFB",
         "--sidebar-width": "clamp(230px, 16vw, 290px)",
-        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
+        "--shadow-soft": "0 10px 24px rgba(255, 255, 255, 0.08)",
       }}
     >
       <div
@@ -3589,11 +4443,11 @@ function TeacherExam() {
         >
           <div style={{ padding: isMobile ? "10px 2vw 132px" : "16px 18px 132px", width: "100%", maxWidth: 1500, margin: 0 }}>
             <div className="section-header-card exam-hero" style={{ marginBottom: 14 }}>
-              <h2 className="section-header-card__title" style={{ fontSize: 24 }}>SchoolExams Workspace</h2>
+              <h2 className="section-header-card__title" style={{ fontSize: 24 }}>School Exams Workspace</h2>
               <div className="section-header-card__meta">
-                <span>{teacher?.name || "Teacher"}</span>
-                <span>{selectedCourse?.subject || "All Subjects"}</span>
-                <span className="section-header-card__chip">Exam</span>
+                <span className="section-header-card__chip">{ "Tr. "+teacher?.name || "Teacher"}  </span>
+                
+                <span className="section-header-card__chip"> {selectedCourse?.subject || "All Subjects"} Exam</span>
               </div>
             </div>
 
@@ -3650,6 +4504,9 @@ function TeacherExam() {
                     onChange={(event) => setSelectedCourseId(event.target.value)}
                     className="exam-input exam-scope-select"
                   >
+                    {!courses.length ? (
+                      <option value="">No assigned courses found</option>
+                    ) : null}
                     {courses.map((course) => (
                       <option key={course.id} value={course.id}>
                         {course.subject || course.name} • Grade {course.grade}
@@ -3749,13 +4606,17 @@ function TeacherExam() {
 
                 <div className="exam-field exam-field-card">
                   <label className="exam-field-label">Assessment type</label>
-                  <input
+                  <select
                     className="exam-input exam-field-input"
                     value={form.type}
                     onChange={(event) => handleFormField("type", event.target.value)}
-                    placeholder="Exam, Quiz, Worksheet"
                     required
-                  />
+                  >
+                    <option value="">Assessment type</option>
+                    <option value="Quiz">Quiz</option>
+                    <option value="Worksheet">Worksheet</option>
+                    <option value="Exam">Exam</option>
+                  </select>
                 </div>
 
                 <div className="exam-field exam-field-card">
@@ -3801,7 +4662,7 @@ function TeacherExam() {
 
               <div className="exam-questions-shell">
                 <div
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, cursor: "pointer" }}
+                  className="exam-questions-head"
                   role="button"
                   tabIndex={0}
                   onClick={() => setCreateQuestionsCollapsed((previous) => !previous)}
@@ -3812,29 +4673,55 @@ function TeacherExam() {
                     }
                   }}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-secondary)" }}>
-                    Questions ({customQuestions.filter((item) => String(item?.prompt || "").trim()).length} added)
+                  <div className="exam-questions-title-stack">
+                    <div className="exam-questions-title-row">
+                      <span className="exam-questions-title">Questions Builder</span>
+                      <span className="exam-questions-counter">
+                        {customQuestions.filter((item) => String(item?.prompt || "").trim()).length} Added
+                      </span>
+                    </div>
+                    <div className="exam-questions-subtitle">
+                      Create clear, structured questions and define the right answer flow.
+                    </div>
                   </div>
                   <div
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    className="exam-questions-toolbar"
                     onClick={(event) => event.stopPropagation()}
                   >
-                    {!createQuestionsCollapsed ? (
-                      <button
-                        className="exam-action-btn btn-soft"
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          handleAddQuestionField();
-                        }}
-                        style={{
-                          borderRadius: 8,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Add Question
-                      </button>
-                    ) : null}
+                    <button
+                      className="exam-action-btn btn-neutral"
+                      type="button"
+                      onClick={async (event) => {
+                        event.stopPropagation();
+                        const nextVisible = !showQuestionBankPicker;
+                        setShowQuestionBankPicker(nextVisible);
+                        if (nextVisible) {
+                          setCreateQuestionsCollapsed(false);
+                          await loadQuestionBankForSelectedCourse();
+                        }
+                      }}
+                      style={{
+                        borderRadius: 8,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {showQuestionBankPicker ? "Hide Bank" : "Question Bank"}
+                    </button>
+                    <button
+                      className="exam-action-btn btn-soft"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleAddQuestionField();
+                        setCreateQuestionsCollapsed(false);
+                      }}
+                      style={{
+                        borderRadius: 8,
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Add Question
+                    </button>
                     <button
                       className="exam-collapse-icon-btn"
                       type="button"
@@ -3853,95 +4740,219 @@ function TeacherExam() {
                   </div>
                 </div>
 
-                {!createQuestionsCollapsed ? (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {customQuestions.map((question, index) => (
-                    <div
-                      key={`question_field_${index}`}
-                      className="exam-question-editor"
-                    >
-                      <div className="exam-question-editor-main">
-                        <div
-                          className="exam-question-editor-top"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => toggleQuestionItemCollapse(index)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              toggleQuestionItemCollapse(index);
-                            }
-                          }}
-                        >
-                          <span className="exam-question-chip">Question {index + 1}</span>
-                          <span className="exam-question-editor-chevron" aria-hidden="true">
-                            {questionItemCollapsedByIndex[index] ? "▾" : "▴"}
-                          </span>
-                        </div>
-                        {!questionItemCollapsedByIndex[index] ? (
-                        <>
-                        <div className="exam-question-prompt-card">
-                          <label className="exam-question-section-label">Question prompt</label>
-                          <textarea
-                            className="exam-input exam-field-input"
-                            value={question.prompt}
-                            onChange={(event) => handleQuestionFieldChange(index, "prompt", event.target.value)}
-                            placeholder={`Question ${index + 1}`}
-                            rows={2}
-                            style={{ resize: "vertical" }}
-                          />
-                        </div>
+                {!createQuestionsCollapsed && showQuestionBankPicker ? (
+                  <div className="exam-question-bank-panel">
+                    <div className="exam-question-bank-head">
+                      <div className="exam-question-bank-title">Add From Question Bank</div>
+                      <button
+                        className="exam-action-btn btn-neutral"
+                        type="button"
+                        onClick={loadQuestionBankForSelectedCourse}
+                        disabled={questionBankLoading}
+                        style={{ borderRadius: 8, cursor: "pointer" }}
+                      >
+                        {questionBankLoading ? "Refreshing..." : "Refresh"}
+                      </button>
+                    </div>
 
-                        <div className="exam-question-grid">
-                          <div className="exam-question-inline-card">
-                            <label className="exam-question-section-label">Question type</label>
-                            <select
-                              className="exam-input exam-field-input"
-                              value={question.type}
-                              onChange={(event) => handleQuestionFieldChange(index, "type", event.target.value)}
+                    <div className="exam-question-bank-controls">
+                      <input
+                        className="exam-input exam-field-input"
+                        value={questionBankSearch}
+                        onChange={(event) => setQuestionBankSearch(event.target.value)}
+                        placeholder="Search question text..."
+                      />
+                      <select
+                        className="exam-input exam-field-input"
+                        value={questionBankTypeFilter}
+                        onChange={(event) => setQuestionBankTypeFilter(event.target.value)}
+                      >
+                        <option value="all">All types</option>
+                        <option value="mcq">MCQ</option>
+                        <option value="true_false">True/False</option>
+                        <option value="fill_blank">Fill Blank</option>
+                        <option value="written">Written</option>
+                      </select>
+                    </div>
+
+                    {questionBankError ? (
+                      <div className="exam-question-bank-empty">{questionBankError}</div>
+                    ) : questionBankLoading ? (
+                      <div className="exam-question-bank-empty">Loading question bank...</div>
+                    ) : questionBankVisibleItems.length === 0 ? (
+                      <div className="exam-question-bank-empty">No matching questions found.</div>
+                    ) : (
+                      <div className="exam-question-bank-list">
+                        {questionBankVisibleItems.slice(0, 40).map((bankQuestion, index) => {
+                          const questionHash = buildQuestionHashKey(bankQuestion.prompt, bankQuestion.type);
+                          const alreadyAdded = customQuestions.some((item) => {
+                            const normalized = normalizeQuestionForEdit(item);
+                            if (!normalized.prompt) return false;
+                            return buildQuestionHashKey(normalized.prompt, normalized.type) === questionHash;
+                          });
+
+                          return (
+                            <div key={`${bankQuestion.questionId || "qb"}_${index}`} className="exam-question-bank-item">
+                              <div className="exam-question-bank-item-main">
+                                <div className="exam-question-bank-item-meta">
+                                  <span className="exam-question-type-pill">
+                                    {String(bankQuestion.type || "written").replace("_", " ").toUpperCase()}
+                                  </span>
+                                  <span className="exam-question-points-pill">{bankQuestion.points || 1} pts</span>
+                                </div>
+                                <div className="exam-question-bank-item-text">{bankQuestion.prompt}</div>
+                              </div>
+                              <button
+                                className="exam-action-btn btn-soft"
+                                type="button"
+                                disabled={alreadyAdded}
+                                onClick={() => handleAddQuestionFromBank(bankQuestion)}
+                                style={{ borderRadius: 8, cursor: alreadyAdded ? "not-allowed" : "pointer" }}
+                              >
+                                {alreadyAdded ? "Added" : "Add"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {!createQuestionsCollapsed ? (
+                <div className="exam-questions-list">
+                  {customQuestions.map((question, index) => {
+                    const questionReady =
+                      String(question?.prompt || "").trim() &&
+                      (question?.type !== "mcq" || ["A", "B", "C", "D"].every((key) => String(question?.options?.[key] || "").trim()));
+
+                    return (
+                      <div
+                        key={`question_field_${index}`}
+                        className="exam-question-editor"
+                      >
+                        <div className="exam-question-editor-main">
+                          <div
+                            className="exam-question-editor-top"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => toggleQuestionItemCollapse(index)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                toggleQuestionItemCollapse(index);
+                              }
+                            }}
+                          >
+                            <div className="exam-question-editor-top-left">
+                              <span className="exam-question-chip">Question {index + 1}</span>
+                              <span className={`exam-question-state ${questionReady ? "is-ready" : ""}`}>
+                                {questionReady ? "Ready" : "Incomplete"}
+                              </span>
+                            </div>
+                            <div
+                              className="exam-question-editor-top-right"
+                              onClick={(event) => event.stopPropagation()}
                             >
-                              <option value="written">Written response</option>
-                              <option value="mcq">Multiple choice (A-D)</option>
-                              <option value="true_false">True / False</option>
-                              <option value="fill_blank">Fill in the blank</option>
-                            </select>
+                              <button
+                                className="exam-action-btn btn-neutral exam-question-remove"
+                                type="button"
+                                onClick={() => handleRemoveQuestionField(index)}
+                                style={{
+                                  borderRadius: 8,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Remove
+                              </button>
+                              <span className="exam-question-editor-chevron" aria-hidden="true">
+                                {questionItemCollapsedByIndex[index] ? "▾" : "▴"}
+                              </span>
+                            </div>
                           </div>
-                          <div className="exam-question-inline-card">
-                            <label className="exam-question-section-label">Points</label>
-                            <input
+                          {!questionItemCollapsedByIndex[index] ? (
+                          <>
+                          <div className="exam-question-prompt-card">
+                            <label className="exam-question-section-label">Question prompt</label>
+                            <textarea
                               className="exam-input exam-field-input"
-                              type="number"
-                              min="1"
-                              value={question.points}
-                              onChange={(event) => handleQuestionFieldChange(index, "points", event.target.value)}
-                              placeholder="Points"
+                              value={question.prompt}
+                              onChange={(event) => handleQuestionFieldChange(index, "prompt", event.target.value)}
+                              placeholder={`Question ${index + 1}`}
+                              rows={2}
+                              style={{ resize: "vertical" }}
                             />
                           </div>
-                        </div>
 
-                        {question.type === "mcq" ? (
-                          <div style={{ display: "grid", gap: 8 }}>
-                            <div className="exam-question-options-card">
-                              <label className="exam-question-section-label">Answer options</label>
-                              <div className="exam-question-option-grid">
-                              {[
-                                ["A", "Option A"],
-                                ["B", "Option B"],
-                                ["C", "Option C"],
-                                ["D", "Option D"],
-                              ].map(([key, placeholder]) => (
-                                <div key={`mcq_${index}_${key}`} className="exam-question-option-item">
-                                  <label className="exam-question-section-label">Option {key}</label>
-                                  <input
-                                    className="exam-input exam-field-input"
-                                    value={question.options?.[key] || ""}
-                                    onChange={(event) => handleQuestionOptionChange(index, key, event.target.value)}
-                                    placeholder={placeholder}
-                                  />
+                          <div className="exam-question-grid">
+                            <div className="exam-question-inline-card">
+                              <label className="exam-question-section-label">Question type</label>
+                              <select
+                                className="exam-input exam-field-input"
+                                value={question.type}
+                                onChange={(event) => handleQuestionFieldChange(index, "type", event.target.value)}
+                              >
+                                <option value="written">Written response</option>
+                                <option value="mcq">Multiple choice (A-D)</option>
+                                <option value="true_false">True / False</option>
+                                <option value="fill_blank">Fill in the blank</option>
+                              </select>
+                            </div>
+                            <div className="exam-question-inline-card">
+                              <label className="exam-question-section-label">Points</label>
+                              <input
+                                className="exam-input exam-field-input"
+                                type="number"
+                                min="1"
+                                value={question.points}
+                                onChange={(event) => handleQuestionFieldChange(index, "points", event.target.value)}
+                                placeholder="Points"
+                              />
+                            </div>
+                          </div>
+
+                          {question.type === "mcq" ? (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <div className="exam-question-options-card">
+                                <label className="exam-question-section-label">Answer options</label>
+                                <div className="exam-question-option-grid">
+                                {[
+                                  ["A", "Option A"],
+                                  ["B", "Option B"],
+                                  ["C", "Option C"],
+                                  ["D", "Option D"],
+                                ].map(([key, placeholder]) => (
+                                  <div key={`mcq_${index}_${key}`} className="exam-question-option-item">
+                                    <label className="exam-question-section-label">Option {key}</label>
+                                    <input
+                                      className="exam-input exam-field-input"
+                                      value={question.options?.[key] || ""}
+                                      onChange={(event) => handleQuestionOptionChange(index, key, event.target.value)}
+                                      placeholder={placeholder}
+                                    />
+                                  </div>
+                                ))}
                                 </div>
-                              ))}
+                              </div>
+                              <div className="exam-question-answer-card">
+                                <label className="exam-question-section-label">Correct answer</label>
+                                <select
+                                  className="exam-input exam-field-input"
+                                  value={question.correctAnswer}
+                                  onChange={(event) => handleQuestionFieldChange(index, "correctAnswer", event.target.value)}
+                                  style={{ maxWidth: 220 }}
+                                >
+                                  <option value="">Correct Answer</option>
+                                  <option value="A">A</option>
+                                  <option value="B">B</option>
+                                  <option value="C">C</option>
+                                  <option value="D">D</option>
+                                </select>
                               </div>
                             </div>
+                          ) : null}
+
+                          {question.type === "true_false" ? (
                             <div className="exam-question-answer-card">
                               <label className="exam-question-section-label">Correct answer</label>
                               <select
@@ -3951,59 +4962,30 @@ function TeacherExam() {
                                 style={{ maxWidth: 220 }}
                               >
                                 <option value="">Correct Answer</option>
-                                <option value="A">A</option>
-                                <option value="B">B</option>
-                                <option value="C">C</option>
-                                <option value="D">D</option>
+                                <option value="true">True</option>
+                                <option value="false">False</option>
                               </select>
                             </div>
-                          </div>
-                        ) : null}
+                          ) : null}
 
-                        {question.type === "true_false" ? (
-                          <div className="exam-question-answer-card">
-                            <label className="exam-question-section-label">Correct answer</label>
-                            <select
-                              className="exam-input exam-field-input"
-                              value={question.correctAnswer}
-                              onChange={(event) => handleQuestionFieldChange(index, "correctAnswer", event.target.value)}
-                              style={{ maxWidth: 220 }}
-                            >
-                              <option value="">Correct Answer</option>
-                              <option value="true">True</option>
-                              <option value="false">False</option>
-                            </select>
-                          </div>
-                        ) : null}
-
-                        {question.type === "fill_blank" ? (
-                          <div className="exam-question-answer-card">
-                            <label className="exam-question-section-label">Correct answer</label>
-                            <input
-                              className="exam-input exam-field-input"
-                              value={question.correctAnswer}
-                              onChange={(event) => handleQuestionFieldChange(index, "correctAnswer", event.target.value)}
-                              placeholder="Correct answer"
-                              style={{ maxWidth: 320 }}
-                            />
-                          </div>
-                        ) : null}
-                        </>
-                        ) : null}
+                          {question.type === "fill_blank" ? (
+                            <div className="exam-question-answer-card">
+                              <label className="exam-question-section-label">Correct answer</label>
+                              <input
+                                className="exam-input exam-field-input"
+                                value={question.correctAnswer}
+                                onChange={(event) => handleQuestionFieldChange(index, "correctAnswer", event.target.value)}
+                                placeholder="Correct answer"
+                                style={{ maxWidth: 320 }}
+                              />
+                            </div>
+                          ) : null}
+                          </>
+                          ) : null}
+                        </div>
                       </div>
-                      <button
-                        className="exam-action-btn btn-neutral exam-question-remove"
-                        type="button"
-                        onClick={() => handleRemoveQuestionField(index)}
-                        style={{
-                          borderRadius: 8,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 ) : null}
               </div>
@@ -4302,7 +5284,10 @@ function TeacherExam() {
                 <div className="exam-detail-panel" onClick={(event) => event.stopPropagation()}>
                   <div className="exam-detail-shell">
                     <div className="exam-detail-topbar">
-                      <div style={{ fontWeight: 800, color: "var(--text-primary)" }}>Exam Detail Workspace</div>
+                      <div className="exam-detail-topbar-copy">
+                        <div className="exam-detail-topbar-kicker">Assessment Workspace</div>
+                        <div className="exam-detail-topbar-title">Exam Detail Workspace</div>
+                      </div>
                       <button
                         className="exam-action-btn btn-neutral exam-detail-close"
                         type="button"
@@ -4314,29 +5299,56 @@ function TeacherExam() {
                     </div>
 
                     <div className="exam-detail-header">
-                      <div className="exam-card-topline">
-                        <div className="exam-card-topline-group">
-                          <span className="exam-top-badge">{selectedExamDetail.courseId}</span>
-                          <span className="exam-top-badge">Due {formatDate(selectedExamDetail.dueDate)}</span>
+                      <div className="exam-detail-hero">
+                        <div className="exam-detail-maincopy">
+                          <div className="exam-card-topline">
+                            <div className="exam-card-topline-group">
+                              <span className="exam-top-badge">{selectedExamDetail.courseId}</span>
+                              <span className="exam-top-badge">Due {formatDate(selectedExamDetail.dueDate)}</span>
+                            </div>
+                            <div className="exam-card-topline-note">Created {formatDate(selectedExamDetail.createdAt)}</div>
+                          </div>
+                          <div className="exam-detail-status-row">
+                            <div className="exam-detail-title-row">
+                              <div className="exam-detail-title">{selectedExamDetail.title}</div>
+                              <div className="exam-detail-subtitle">{selectedExamDetail.type} • Review and controls</div>
+                            </div>
+                            <span
+                              className={`exam-status-chip ${
+                                String(selectedExamDetail.status || "").toLowerCase() === "removed"
+                                  ? "is-removed"
+                                  : selectedExamDetail.published
+                                  ? "is-active"
+                                  : "is-draft"
+                              }`}
+                            >
+                              {selectedExamDetail.status}
+                            </span>
+                          </div>
                         </div>
-                        <div className="exam-card-topline-note">Created {formatDate(selectedExamDetail.createdAt)}</div>
-                      </div>
-                      <div className="exam-detail-status-row">
-                        <div className="exam-detail-title-row">
-                          <div className="exam-detail-title">{selectedExamDetail.title}</div>
-                          <div className="exam-detail-subtitle">{selectedExamDetail.type} • Review and controls</div>
+
+                        <div className="exam-detail-summary-grid">
+                          <div className="exam-detail-summary-card">
+                            <div className="exam-detail-summary-label">Questions</div>
+                            <div className="exam-detail-summary-value">{selectedExamDetail.questionCount}</div>
+                            <div className="exam-detail-summary-helper">Items prepared</div>
+                          </div>
+                          <div className="exam-detail-summary-card">
+                            <div className="exam-detail-summary-label">Submissions</div>
+                            <div className="exam-detail-summary-value">{selectedExamDetail.submissionCount}</div>
+                            <div className="exam-detail-summary-helper">Student attempts</div>
+                          </div>
+                          <div className="exam-detail-summary-card">
+                            <div className="exam-detail-summary-label">Pass Mark</div>
+                            <div className="exam-detail-summary-value">{selectedExamDetail.passPercent}%</div>
+                            <div className="exam-detail-summary-helper">Required result</div>
+                          </div>
+                          <div className="exam-detail-summary-card">
+                            <div className="exam-detail-summary-label">Type</div>
+                            <div className="exam-detail-summary-value">{selectedExamDetail.type}</div>
+                            <div className="exam-detail-summary-helper">Assessment format</div>
+                          </div>
                         </div>
-                        <span
-                          className={`exam-status-chip ${
-                            String(selectedExamDetail.status || "").toLowerCase() === "removed"
-                              ? "is-removed"
-                              : selectedExamDetail.published
-                              ? "is-active"
-                              : "is-draft"
-                          }`}
-                        >
-                          {selectedExamDetail.status}
-                        </span>
                       </div>
                     </div>
 
@@ -4530,56 +5542,88 @@ function TeacherExam() {
                             </div>
                           </div>
                           <div className="exam-expand-body">
-                          {questionPreviewErrorByAssessment?.[selectedExamDetail.id] ? (
-                            <div style={{ color: "var(--text-muted)", fontWeight: 600 }}>
-                              {questionPreviewErrorByAssessment[selectedExamDetail.id]}
-                            </div>
-                          ) : (questionPreviewByAssessment?.[selectedExamDetail.id] || []).length === 0 ? (
-                            <div style={{ color: "var(--text-muted)", fontWeight: 600 }}>No questions available.</div>
-                          ) : (
-                            (questionPreviewByAssessment?.[selectedExamDetail.id] || []).map((question, index) => (
-                              <div
-                                key={`${selectedExamDetail.id}_question_${index}`}
-                                className="exam-question-preview-item"
-                              >
-                                <div className="exam-question-meta-row">
-                                  <span>
-                                    Type: {String(question.type || "written").replace("_", " ").toUpperCase()}
-                                  </span>
-                                  <span>Points: {question.points}</span>
-                                </div>
-
-                                <div className="exam-question-text">
-                                  Q{index + 1}: {question.prompt}
-                                </div>
-
-                                {question.type === "mcq" || question.type === "true_false" ? (
-                                  <div className="exam-choice-list">
-                                    <div style={{ color: "var(--text-primary)", fontWeight: 700 }}>Choices:</div>
-                                    {Object.entries(question.options || {})
-                                      .filter(([, value]) => String(value || "").trim())
-                                      .map(([key, value]) => (
-                                        <div
-                                          key={`${selectedExamDetail.id}_question_${index}_${key}`}
-                                          className={`exam-choice-item ${
-                                            String(question.correctAnswer || "").trim().toUpperCase() === String(key).toUpperCase()
-                                              ? "is-correct"
-                                              : ""
-                                          }`}
-                                        >
-                                          {key}. {String(value || "")}
-                                        </div>
-                                      ))}
-                                  </div>
-                                ) : null}
-                                {question.type === "fill_blank" || question.type === "mcq" || question.type === "true_false" ? (
-                                  <div className="exam-answer-row">
-                                    Correct Answer: <strong>{String(question.correctAnswer || "--")}</strong>
-                                  </div>
-                                ) : null}
+                          <div className="exam-questions-workspace">
+                            <div className="exam-questions-workspace-head">
+                              <div>
+                                <div className="exam-questions-workspace-title">Questions in this assessment</div>
+                                <div className="exam-questions-workspace-sub">Clear read-only preview for quick review before publishing.</div>
                               </div>
-                            ))
-                          )}
+                              <div className="exam-questions-workspace-count">
+                                {(questionPreviewByAssessment?.[selectedExamDetail.id] || []).length} Questions
+                              </div>
+                            </div>
+
+                            <div className="exam-questions-metrics">
+                              <div className="exam-questions-metric">
+                                <div className="exam-questions-metric-label">Question Count</div>
+                                <div className="exam-questions-metric-value">
+                                  {(questionPreviewByAssessment?.[selectedExamDetail.id] || []).length}
+                                </div>
+                              </div>
+                              <div className="exam-questions-metric">
+                                <div className="exam-questions-metric-label">Total Points</div>
+                                <div className="exam-questions-metric-value">{selectedExamDetail.totalPoints || 0}</div>
+                              </div>
+                              <div className="exam-questions-metric">
+                                <div className="exam-questions-metric-label">Assessment Type</div>
+                                <div className="exam-questions-metric-value">{selectedExamDetail.type || "Exam"}</div>
+                              </div>
+                            </div>
+
+                            {questionPreviewErrorByAssessment?.[selectedExamDetail.id] ? (
+                              <div style={{ color: "var(--text-muted)", fontWeight: 600 }}>
+                                {questionPreviewErrorByAssessment[selectedExamDetail.id]}
+                              </div>
+                            ) : (questionPreviewByAssessment?.[selectedExamDetail.id] || []).length === 0 ? (
+                              <div style={{ color: "var(--text-muted)", fontWeight: 600 }}>No questions available.</div>
+                            ) : (
+                              <div className="exam-question-list">
+                                {(questionPreviewByAssessment?.[selectedExamDetail.id] || []).map((question, index) => (
+                                  <div
+                                    key={`${selectedExamDetail.id}_question_${index}`}
+                                    className="exam-question-preview-item"
+                                  >
+                                    <div className="exam-question-meta-row">
+                                      <div className="exam-question-meta-left">
+                                        <span className="exam-question-index">{index + 1}</span>
+                                        <span className="exam-question-type-pill">
+                                          {String(question.type || "written").replace("_", " ").toUpperCase()}
+                                        </span>
+                                      </div>
+                                      <span className="exam-question-points-pill">{question.points} pts</span>
+                                    </div>
+
+                                    <div className="exam-question-text">{question.prompt}</div>
+
+                                    {question.type === "mcq" || question.type === "true_false" ? (
+                                      <div className="exam-choice-list">
+                                        <div className="exam-choice-list-title">Choices</div>
+                                        {Object.entries(question.options || {})
+                                          .filter(([, value]) => String(value || "").trim())
+                                          .map(([key, value]) => (
+                                            <div
+                                              key={`${selectedExamDetail.id}_question_${index}_${key}`}
+                                              className={`exam-choice-item ${
+                                                String(question.correctAnswer || "").trim().toUpperCase() === String(key).toUpperCase()
+                                                  ? "is-correct"
+                                                  : ""
+                                              }`}
+                                            >
+                                              {key}. {String(value || "")}
+                                            </div>
+                                          ))}
+                                      </div>
+                                    ) : null}
+                                    {question.type === "fill_blank" || question.type === "mcq" || question.type === "true_false" ? (
+                                      <div className="exam-answer-row">
+                                        Correct Answer: <strong>{String(question.correctAnswer || "--")}</strong>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                           </div>
                         </div>
                       ) : null}

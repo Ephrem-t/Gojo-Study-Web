@@ -1,21 +1,15 @@
 import React from "react";
 import AppRoutes from "./routes/AppRoutes";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
+import { FinanceShellProvider } from "./context/FinanceShellContext";
 
-
-
- export default function App() {
-      return <AppRoutes />;
-function App() {
+export default function App() {
   return (
     <ThemeProvider>
-    
-  
-
-      <AppRoutes />
+      <FinanceShellProvider>
+        <AppRoutes />
+      </FinanceShellProvider>
     </ThemeProvider>
   );
 }
- }
 

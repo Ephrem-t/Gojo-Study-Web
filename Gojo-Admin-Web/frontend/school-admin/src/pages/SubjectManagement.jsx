@@ -1,12 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Sidebar from "../components/Sidebar";
+import { BACKEND_BASE } from "../config";
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-const GRADE_CACHE_KEY = "gojo_admin_grade_section_grades_v1";
-const TEACHER_CACHE_KEY = "gojo_admin_grade_section_teachers_v1";
-const GRADE_CACHE_TTL_MS = 45 * 1000;
-const TEACHER_CACHE_TTL_MS = 45 * 1000;
+const GRADE_CACHE_TTL_MS = 15 * 60 * 1000;
+const TEACHER_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const readSessionCache = (key, ttlMs) => {
   try {
@@ -37,11 +34,18 @@ export default function SubjectManagementPage() {
       return {};
     }
   })();
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
 
   const schoolCode = String(admin.schoolCode || "").trim();
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const API_BASE = `${BACKEND_BASE}/api`;
+  const GRADE_CACHE_KEY = schoolCode
+    ? `gojo_admin_grade_section_grades_v2:${schoolCode}`
+    : "gojo_admin_grade_section_grades_v2";
+  const TEACHER_CACHE_KEY = schoolCode
+    ? `gojo_admin_grade_section_teachers_v2:${schoolCode}`
+    : "gojo_admin_grade_section_teachers_v2";
 
   const [grades, setGrades] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -56,40 +60,12 @@ export default function SubjectManagementPage() {
   const [assignMessageByTarget, setAssignMessageByTarget] = useState({});
   const [expandedByGrade, setExpandedByGrade] = useState({});
 
-  const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
-  const getSchoolPathUrl = (path) => `${SCHOOL_DB_ROOT}/${path}.json`;
-  const getRootPathUrl = (path) => `${RTDB_BASE}/${path}.json`;
-
-  const readSchoolNode = async (nodeName) => {
-    if (schoolCode) {
-      try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
-        if (schoolRes.data !== null && schoolRes.data !== undefined) {
-          return schoolRes.data;
-        }
-      } catch (readError) {
-      }
-    }
-
-    try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName));
-      return rootRes.data ?? {};
-    } catch (readError) {
-      return {};
-    }
-  };
-
   const putNodeWithFallback = async (path, payload) => {
-    if (schoolCode) {
-      try {
-        await axios.put(getSchoolPathUrl(path), payload);
-        return;
-      } catch (writeError) {
-      }
-    }
-
-    await axios.put(getRootPathUrl(path), payload);
+    await axios.put(`${API_BASE}/school-node`, {
+      schoolCode,
+      path,
+      value: payload,
+    });
   };
 
   const normalizeSubjects = (subjectsNode) => {
@@ -238,30 +214,22 @@ export default function SubjectManagementPage() {
     });
   };
 
-  const normalizeTeacherList = (teachersNode, usersNode) => {
-    const users = usersNode && typeof usersNode === "object" ? usersNode : {};
-    const teachersRaw = teachersNode && typeof teachersNode === "object" ? teachersNode : {};
+  const normalizeTeacherList = (directoryNode) => {
+    const dir = directoryNode && typeof directoryNode === "object" ? directoryNode : {};
 
-    return Object.entries(teachersRaw)
-      .map(([teacherRecordKey, teacherValue]) => {
-        const row = teacherValue && typeof teacherValue === "object" ? teacherValue : {};
-        const user = users[row.userId] || {};
-        const teacherId = String(row.teacherId || teacherRecordKey || "").trim();
-        const name = String(user.name || teacherId || "Teacher").trim();
-
+    return Object.entries(dir)
+      .map(([key, entry]) => {
+        if (!entry) return null;
+        const teacherId = String(entry.teacherId || key || "").trim();
+        const name = String(entry.name || teacherId || "Teacher").trim();
         if (!teacherId) return null;
-        const userIsActive = user?.isActive;
-        const rowIsActive = row?.isActive;
-        const isActive = !(
-          userIsActive === false || userIsActive === "false" ||
-          rowIsActive === false || String(rowIsActive) === "false"
-        );
+        const isActive = entry.isActive !== false;
 
         return {
-          teacherRecordKey: String(teacherRecordKey),
+          teacherRecordKey: key,
           teacherId,
           teacherName: name,
-          userId: String(row.userId || ""),
+          userId: String(entry.userId || ""),
           isActive,
         };
       })
@@ -295,7 +263,11 @@ export default function SubjectManagementPage() {
     setError("");
 
     try {
-      const gradeNode = await readSchoolNode("GradeManagement/grades");
+      const gradeRes = await axios.get(`${API_BASE}/grade-management/grades`, {
+        params: { schoolCode },
+        timeout: 12000,
+      });
+      const gradeNode = gradeRes?.data?.grades || {};
       writeSessionCache(GRADE_CACHE_KEY, gradeNode);
       const normalized = normalizeGrades(gradeNode);
       setGrades(normalized);
@@ -321,7 +293,7 @@ export default function SubjectManagementPage() {
 
   useEffect(() => {
     fetchGrades();
-  }, []);
+  }, [schoolCode]);
 
   useEffect(() => {
     const fetchTeachers = async () => {
@@ -346,20 +318,27 @@ export default function SubjectManagementPage() {
       }
 
       try {
-        const [teachersNode, usersNode, studentsNode] = await Promise.all([
-          readSchoolNode("Teachers"),
-          readSchoolNode("Users"),
-          readSchoolNode("Students"),
+        const [teacherDirectoryRes, studentDirectoryRes] = await Promise.all([
+          axios.get(`${API_BASE}/directory/teachers`, {
+            params: { schoolCode },
+            timeout: 12000,
+          }),
+          axios.get(`${API_BASE}/directory/students`, {
+            params: { schoolCode },
+            timeout: 12000,
+          }),
         ]);
+        const directoryNode = teacherDirectoryRes?.data?.teachers || {};
+        const studentDirectoryNode = studentDirectoryRes?.data?.students || {};
 
-        const teacherList = normalizeTeacherList(teachersNode, usersNode);
+        const teacherList = normalizeTeacherList(directoryNode);
 
         setTeachers(teacherList);
-        setGrades((prev) => mergeSectionsFromStudents(prev, studentsNode));
+        setGrades((prev) => mergeSectionsFromStudents(prev, studentDirectoryNode));
 
         writeSessionCache(TEACHER_CACHE_KEY, {
           teachers: teacherList,
-          students: studentsNode && typeof studentsNode === "object" ? studentsNode : {},
+          students: studentDirectoryNode && typeof studentDirectoryNode === "object" ? studentDirectoryNode : {},
         });
       } catch (teacherError) {
         setTeachers([]);
@@ -371,7 +350,7 @@ export default function SubjectManagementPage() {
     };
 
     fetchTeachers();
-  }, []);
+  }, [API_BASE, schoolCode]);
 
   const totalSubjects = useMemo(
     () => grades.reduce((sum, gradeItem) => sum + (gradeItem.subjects?.length || 0), 0),
@@ -614,7 +593,16 @@ export default function SubjectManagementPage() {
     borderRadius: 16,
     background: "var(--surface-panel)",
     border: "1px solid var(--border-soft)",
-    boxShadow: "var(--shadow-soft)",
+    // boxShadow: "var(--shadow-soft)",
+  };
+
+  const heroCardStyle = {
+    ...shellCardStyle,
+    marginBottom: 14,
+    padding: 20,
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
   };
 
   const contentCardStyle = {
@@ -634,6 +622,8 @@ export default function SubjectManagementPage() {
     padding: 16,
     display: "grid",
     gap: 4,
+    position: "relative",
+    overflow: "hidden",
     background:
       "linear-gradient(180deg, color-mix(in srgb, var(--surface-panel) 92%, var(--surface-accent)) 0%, var(--surface-panel) 100%)",
   };
@@ -643,45 +633,46 @@ export default function SubjectManagementPage() {
     border: "1px solid var(--border-soft)",
     background: "var(--surface-panel)",
     color: "var(--text-primary)",
-    borderRadius: 10,
-    padding: "10px 12px",
+    borderRadius: 12,
+    padding: "11px 12px",
     outline: "none",
     fontSize: 13,
     boxSizing: "border-box",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.72)",
   };
 
   const actionButtonStyle = {
     border: "1px solid var(--border-soft)",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--surface-accent) 80%, var(--surface-panel)) 0%, var(--surface-accent) 100%)",
-    color: "var(--text-primary)",
-    borderRadius: 10,
-    padding: "10px 12px",
+      "linear-gradient(180deg, color-mix(in srgb, var(--surface-accent) 78%, white) 0%, color-mix(in srgb, var(--surface-accent) 96%, var(--surface-panel)) 100%)",
+    color: "var(--accent-strong)",
+    borderRadius: 12,
+    padding: "10px 14px",
     fontWeight: 800,
     cursor: "pointer",
-    boxShadow: "var(--shadow-soft)",
+    boxShadow: "0 10px 22px rgba(0, 122, 251, 0.08)",
   };
 
   const subjectBlockStyle = {
-    borderRadius: 12,
-    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    border: "1px solid color-mix(in srgb, var(--accent) 10%, var(--border-soft))",
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--surface-muted) 88%, var(--surface-panel)) 0%, var(--surface-muted) 100%)",
-    padding: "12px 12px",
+      "linear-gradient(180deg, color-mix(in srgb, var(--surface-muted) 88%, white) 0%, var(--surface-panel) 100%)",
+    padding: "14px 14px",
     color: "var(--text-secondary)",
     fontSize: 13,
     display: "grid",
-    gap: 10,
+    gap: 12,
   };
 
   const sectionAssignmentCardStyle = {
-    border: "1px solid var(--border-soft)",
-    borderRadius: 10,
-    padding: 9,
+    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-soft))",
+    borderRadius: 14,
+    padding: 11,
     display: "grid",
-    gap: 7,
+    gap: 9,
     background:
-      "linear-gradient(180deg, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 0%, var(--surface-panel) 100%)",
+      "linear-gradient(180deg, color-mix(in srgb, var(--surface-panel) 96%, white) 0%, color-mix(in srgb, var(--surface-accent) 18%, var(--surface-panel)) 100%)",
   };
 
   const badgeStyle = {
@@ -690,7 +681,7 @@ export default function SubjectManagementPage() {
     fontWeight: 800,
     padding: "6px 10px",
     borderRadius: 999,
-    border: "1px solid var(--border-soft)",
+    border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-soft))",
     background: "var(--surface-accent)",
     letterSpacing: 0.2,
   };
@@ -701,12 +692,38 @@ export default function SubjectManagementPage() {
     <div
       className="dashboard-page"
       style={{
-        background:
-          "linear-gradient(180deg, color-mix(in srgb, var(--page-bg) 96%, var(--surface-accent)) 0%, var(--page-bg) 100%)",
+        background: BACKGROUND,
         minHeight: "100vh",
-        height: "100vh",
-        overflow: "hidden",
         color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
       }}
     >
       <div
@@ -714,40 +731,51 @@ export default function SubjectManagementPage() {
         style={{
           display: "flex",
           gap: 14,
-          padding: "4px 14px",
-          height: "calc(100vh - 73px)",
-          overflow: "hidden",
-          background: "transparent",
+          padding: "18px 14px",
+          minHeight: "100vh",
+          background: "var(--page-bg)",
           width: "100%",
           boxSizing: "border-box",
+          alignItems: "flex-start",
         }}
       >
-        <Sidebar admin={admin} />
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
         <div
           className="main-content google-main"
           style={{
-            padding: "0 2px",
-            flex: "1.08 1 0",
+            padding: "0 12px 0 2px",
+            flex: "1 1 0",
             minWidth: 0,
             maxWidth: "none",
             boxSizing: "border-box",
-            alignSelf: "stretch",
+            alignSelf: "flex-start",
             margin: "0",
-            height: "100%",
-            overflowY: "auto",
+            minHeight: "calc(100vh - 24px)",
+            overflowY: "visible",
             overflowX: "hidden",
+            position: "relative",
+            top: "auto",
             scrollbarWidth: "thin",
             scrollbarColor: "transparent transparent",
+            display: "flex",
+            justifyContent: "center",
           }}
         >
-          <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
+          <div style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
             <div
               className="section-header-card"
-              style={{
-                marginBottom: 14,
-                padding: 20,
-              }}
+              style={heroCardStyle}
             >
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
               <div
                 className="section-header-card__row"
                 style={{
@@ -782,6 +810,7 @@ export default function SubjectManagementPage() {
               }}
             >
               <div style={statCardStyle}>
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
                 <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 800, letterSpacing: 0.3 }}>
                   TOTAL GRADES
                 </div>
@@ -789,6 +818,7 @@ export default function SubjectManagementPage() {
               </div>
 
               <div style={statCardStyle}>
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, color-mix(in srgb, var(--accent-strong) 88%, white), var(--accent))" }} />
                 <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 800, letterSpacing: 0.3 }}>
                   TOTAL SUBJECTS
                 </div>
@@ -796,6 +826,7 @@ export default function SubjectManagementPage() {
               </div>
 
               <div style={statCardStyle}>
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--success), color-mix(in srgb, var(--success) 62%, white))" }} />
                 <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 800, letterSpacing: 0.3 }}>
                   AVAILABLE TEACHERS
                 </div>
@@ -840,6 +871,7 @@ export default function SubjectManagementPage() {
                     }).length;
                     return sum + perSubjectAssigned;
                   }, 0);
+                  const coveragePct = totalAssignmentSlots ? Math.round((assignedSlots / totalAssignmentSlots) * 100) : 0;
 
                   return (
                     <div key={gradeKey} style={contentCardStyle}>
@@ -854,8 +886,11 @@ export default function SubjectManagementPage() {
                         }}
                       />
 
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                        <div style={{ fontSize: 18, fontWeight: 800 }}>Grade {gradeItem.grade}</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>Grade {gradeItem.grade}</div>
+                          <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)" }}>Manage subject list and section-level teacher assignments.</div>
+                        </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <button
                             type="button"
@@ -884,7 +919,22 @@ export default function SubjectManagementPage() {
                         </div>
                       </div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+                        {[
+                          { label: "Sections", value: sectionsCount },
+                          { label: "Assignments", value: `${assignedSlots}/${totalAssignmentSlots || 0}` },
+                          { label: "Coverage", value: `${coveragePct}%` },
+                        ].map((item) => (
+                          <div key={item.label} style={{ padding: "10px 12px", borderRadius: 14, background: "color-mix(in srgb, var(--surface-accent) 60%, white)", border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-soft))" }}>
+                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>{item.label}</div>
+                            <div style={{ marginTop: 5, fontSize: 18, color: "var(--text-primary)", fontWeight: 900 }}>{item.value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>Add subject to this grade</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
                         <input
                           value={inputValue}
                           onChange={(event) => {
@@ -907,6 +957,7 @@ export default function SubjectManagementPage() {
                         >
                           {isSaving ? "Saving..." : "Add"}
                         </button>
+                        </div>
                       </div>
 
                       {isExpanded ? (
@@ -930,7 +981,15 @@ export default function SubjectManagementPage() {
                                 key={`${gradeKey}-${subject.key}`}
                                 style={subjectBlockStyle}
                               >
-                                <div style={{ color: "var(--text-primary)", fontWeight: 800, fontSize: 14 }}>{subject.name}</div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                  <div style={{ color: "var(--text-primary)", fontWeight: 800, fontSize: 14 }}>{subject.name}</div>
+                                  <div style={{ padding: "5px 9px", borderRadius: 999, background: "#ffffff", border: "1px solid color-mix(in srgb, var(--accent) 8%, var(--border-soft))", fontSize: 11, fontWeight: 800, color: "var(--text-secondary)" }}>
+                                    {(gradeItem.sections || []).filter((sectionItem) => {
+                                      const sectionKey = String(sectionItem.key || sectionItem.name || "");
+                                      return Boolean(getAssignedTeacherRecordKey(gradeItem, sectionKey, String(subject.key || "")));
+                                    }).length}/{gradeItem.sections?.length || 0} assigned
+                                  </div>
+                                </div>
 
                                 {gradeItem.sections?.length ? (
                                   <div style={{ display: "grid", gap: 8 }}>
@@ -963,7 +1022,7 @@ export default function SubjectManagementPage() {
                                             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
                                               Section {sectionItem.name}
                                             </div>
-                                            <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
+                                            <div style={{ fontSize: 11, color: hasAssignment ? "var(--success)" : "var(--text-secondary)", fontWeight: 700, padding: "4px 8px", borderRadius: 999, background: hasAssignment ? "var(--success-soft)" : "#ffffff", border: `1px solid ${hasAssignment ? "var(--success-border)" : "var(--border-soft)"}` }}>
                                               {assignedTeacherName ? `Assigned: ${assignedTeacherName}` : "Not assigned"}
                                             </div>
                                           </div>

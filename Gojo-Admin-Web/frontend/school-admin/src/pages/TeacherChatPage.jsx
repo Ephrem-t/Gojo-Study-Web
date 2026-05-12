@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { fetchCachedJson } from "../utils/rtdbCache";
+
+const TEACHER_DIR_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function TeacherChatPage() {
   const location = useLocation();
@@ -22,23 +26,17 @@ function TeacherChatPage() {
   useEffect(() => {
     const fetchTeachers = async () => {
       try {
-        const teachersRes = await axios.get(`${BASE_URL}/Teachers.json`);
-        const usersRes = await axios.get(`${BASE_URL}/Users.json`);
-
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map((id) => {
-          const teacher = teachersData[id];
-          const user = usersData[teacher.userId] || {};
-
-          return {
-            teacherId: id,
-            userId: teacher.userId, // used for chat
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png",
-          };
+        const directoryData = await fetchCachedJson(`${BASE_URL}/TeacherDirectory.json`, {
+          ttlMs: TEACHER_DIR_CACHE_TTL_MS,
+          fallbackValue: {},
         });
+
+        const teacherList = Object.entries(directoryData || {}).map(([id, entry]) => ({
+          teacherId: entry.teacherId || id,
+          userId: entry.userId || id,
+          name: entry.name || "No Name",
+          profileImage: entry.profileImage || "/default-profile.png",
+        }));
 
         setTeachers(teacherList);
         setRecentChats(teacherList.map((t) => t.teacherId));
@@ -154,17 +152,7 @@ function TeacherChatPage() {
                       : "transparent",
                 }}
               >
-                <img
-                  src={t.profileImage}
-                  alt={t.name}
-                  style={{
-                    width: "40px",
-                    height: "40px",
-                    borderRadius: "50%",
-                    marginRight: "10px",
-                    objectFit: "cover",
-                  }}
-                />
+                <ProfileAvatar src={t.profileImage} name={t.name} alt={t.name} loading="lazy" style={{ width: "40px", height: "40px", borderRadius: "50%", marginRight: "10px", objectFit: "cover" }} />
                 <span>{t.name}</span>
               </div>
             );
@@ -189,11 +177,7 @@ function TeacherChatPage() {
 
           {selectedTeacher ? (
             <>
-              <img
-                src={selectedTeacher.profileImage}
-                alt=""
-                style={{ width: "40px", height: "40px", borderRadius: "50%" }}
-              />
+              <ProfileAvatar src={selectedTeacher.profileImage} name={selectedTeacher.name} alt={selectedTeacher.name} style={{ width: "40px", height: "40px", borderRadius: "50%" }} />
               <strong>{selectedTeacher.name}</strong>
             </>
           ) : (

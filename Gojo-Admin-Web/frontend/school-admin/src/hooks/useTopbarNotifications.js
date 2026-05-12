@@ -1,209 +1,263 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { BACKEND_BASE } from "../config.js";
+import {
+  DEFAULT_PROFILE_IMAGE,
+  getSafeProfileImage,
+  inferContactTypeFromUser,
+} from "../utils/chatRtdb";
 
-export const NOTIFICATION_POLL_MS = 9000;
+export const NOTIFICATION_POLL_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
-export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs = NOTIFICATION_POLL_MS }) {
+const RECENT_POST_LIMIT = 25;
+
+const readAdminSession = () => {
+  const keys = ["admin", "gojo_admin"];
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch {
+      // Ignore malformed localStorage data.
+    }
+  }
+  return {};
+};
+
+const readSchoolCode = () => String(readAdminSession()?.schoolCode || "").trim();
+
+export default function useTopbarNotifications({
+  dbRoot,
+  currentUserId,
+  pollMs = NOTIFICATION_POLL_MS,
+  enabled = true,
+}) {
   const [unreadSenders, setUnreadSenders] = useState({});
   const [unreadPosts, setUnreadPosts] = useState([]);
+  const notificationRefreshPromiseRef = useRef(null);
+  const lastInteractionAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    const markInteraction = () => {
+      lastInteractionAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markInteraction();
+    };
+
+    window.addEventListener("focus", markInteraction);
+    window.addEventListener("online", markInteraction);
+    window.addEventListener("pointerdown", markInteraction, { passive: true });
+    window.addEventListener("touchstart", markInteraction, { passive: true });
+    window.addEventListener("keydown", markInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markInteraction);
+      window.removeEventListener("online", markInteraction);
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("touchstart", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   const fetchUnreadMessages = useCallback(async () => {
-    if (!dbRoot || !currentUserId) {
+    if (!currentUserId) {
       setUnreadSenders({});
       return;
     }
 
-    const senders = {};
+    if (!enabled) {
+      return;
+    }
 
     try {
-      const usersRes = await axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} }));
-      const usersData = usersRes.data || {};
-      const findUserByUserId = (userId) =>
-        Object.values(usersData).find((u) => String(u?.userId) === String(userId));
+      const unreadRes = await axios.get(`${BACKEND_BASE}/api/unread_messages/${encodeURIComponent(currentUserId)}`);
+      const unreadMessages = Array.isArray(unreadRes?.data?.messages) ? unreadRes.data.messages : [];
+      const countsBySender = unreadMessages.reduce((acc, message) => {
+        const senderId = String(message?.senderId || "").trim();
+        if (!senderId) return acc;
+        acc[senderId] = (acc[senderId] || 0) + 1;
+        return acc;
+      }, {});
 
-      const getUnreadCount = async (userId) => {
-        if (!userId) return 0;
-
-        const key1 = `${currentUserId}_${userId}`;
-        const key2 = `${userId}_${currentUserId}`;
-
-        const [r1, r2] = await Promise.all([
-          axios.get(`${dbRoot}/Chats/${key1}/messages.json`).catch(() => ({ data: null })),
-          axios.get(`${dbRoot}/Chats/${key2}/messages.json`).catch(() => ({ data: null })),
-        ]);
-
-        const msgs = [...Object.values(r1.data || {}), ...Object.values(r2.data || {})];
-        return msgs.filter((m) => String(m?.receiverId) === String(currentUserId) && !m?.seen).length;
-      };
-
-      const [teachersRes, studentsRes, parentsRes] = await Promise.all([
-        axios.get(`${dbRoot}/Teachers.json`).catch(() => ({ data: {} })),
-        axios.get(`${dbRoot}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${dbRoot}/Parents.json`).catch(() => ({ data: {} })),
-      ]);
-
-      for (const key in teachersRes.data || {}) {
-        const teacher = teachersRes.data[key];
-        const unread = await getUnreadCount(teacher?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(teacher?.userId);
-          senders[teacher.userId] = {
-            type: "teacher",
-            name: user?.name || "Teacher",
-            profileImage: user?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
+      const senderIds = Object.keys(countsBySender);
+      if (senderIds.length === 0) {
+        setUnreadSenders({});
+        return;
       }
 
-      for (const key in studentsRes.data || {}) {
-        const student = studentsRes.data[key];
-        const unread = await getUnreadCount(student?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(student?.userId);
-          senders[student.userId] = {
-            type: "student",
-            name: user?.name || student?.name || "Student",
-            profileImage: user?.profileImage || student?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
+      const usersRes = await axios.get(`${BACKEND_BASE}/api/users_lookup`, {
+        params: {
+          schoolCode: readSchoolCode(),
+          userIds: senderIds.join(","),
+        },
+      });
+      const usersById = (usersRes?.data?.users && typeof usersRes.data.users === "object") ? usersRes.data.users : {};
 
-      for (const key in parentsRes.data || {}) {
-        const parent = parentsRes.data[key];
-        const unread = await getUnreadCount(parent?.userId);
-        if (unread > 0) {
-          const user = findUserByUserId(parent?.userId);
-          senders[parent.userId] = {
-            type: "parent",
-            name: user?.name || parent?.name || "Parent",
-            profileImage: user?.profileImage || parent?.profileImage || "/default-profile.png",
-            count: unread,
-          };
-        }
-      }
+      const nextSenders = senderIds.reduce((accumulator, senderId) => {
+        const userRecord = usersById[senderId] || {};
+        accumulator[senderId] = {
+          type: inferContactTypeFromUser(userRecord),
+          name: userRecord?.name || userRecord?.username || senderId,
+          profileImage: getSafeProfileImage(userRecord?.profileImage, DEFAULT_PROFILE_IMAGE),
+          count: Number(countsBySender[senderId] || 0),
+        };
+        return accumulator;
+      }, {});
 
-      setUnreadSenders(senders);
+      setUnreadSenders(nextSenders);
     } catch (err) {
       console.error("Unread fetch failed:", err);
       setUnreadSenders({});
     }
-  }, [dbRoot, currentUserId]);
+  }, [currentUserId, enabled]);
 
   const fetchUnreadPosts = useCallback(async () => {
-    if (!dbRoot || !currentUserId) {
+    if (!currentUserId) {
       setUnreadPosts([]);
       return;
     }
 
+    if (!enabled) {
+      return;
+    }
+
     try {
-      const postsRes = await axios.get(`${dbRoot}/Posts.json`).catch(() => ({ data: {} }));
-      const postsNode = postsRes.data || {};
-      const allPosts = Object.entries(postsNode).map(([postId, post]) => ({ postId, ...post }));
-      const unread = allPosts.filter((p) => !p?.seenBy || !p.seenBy[currentUserId]);
+      const postsResponse = await axios.get(`${BACKEND_BASE}/api/get_posts`, {
+        params: {
+          schoolCode: readSchoolCode(),
+          limit: RECENT_POST_LIMIT,
+        },
+      });
+      const sourcePosts = Array.isArray(postsResponse?.data) ? postsResponse.data : [];
 
-      if (unread.length === 0) {
-        setUnreadPosts([]);
-        return;
-      }
+      const recentUnreadPosts = sourcePosts
+        .filter((postValue) => postValue && typeof postValue === "object")
+        .filter((postValue) => !postValue?.seenBy || !postValue.seenBy[currentUserId])
+        .sort(
+          (leftPost, rightPost) =>
+            new Date(rightPost.time || rightPost.createdAt || 0).getTime() -
+            new Date(leftPost.time || leftPost.createdAt || 0).getTime()
+        )
+        .slice(0, RECENT_POST_LIMIT)
+        .map((postValue) => ({
+          ...postValue,
+          notificationId: postValue?.notificationId || postValue?.postId,
+          adminName: postValue?.adminName || "Admin",
+          adminProfile: getSafeProfileImage(
+            postValue?.adminProfile || postValue?.adminProfileImage || postValue?.profileImage,
+            DEFAULT_PROFILE_IMAGE
+          ),
+        }));
 
-      const usersRes = await axios.get(`${dbRoot}/Users.json`).catch(() => ({ data: {} }));
-      const usersData = usersRes.data || {};
-
-      const enriched = await Promise.all(
-        unread.map(async (post) => {
-          let profile = "/default-profile.png";
-
-          try {
-            const financeNode = post?.adminId
-              ? (await axios.get(`${dbRoot}/Finance/${post.adminId}.json`).catch(() => ({ data: null }))).data
-              : null;
-            const schoolAdminNode = !financeNode && post?.adminId
-              ? (await axios.get(`${dbRoot}/School_Admins/${post.adminId}.json`).catch(() => ({ data: null }))).data
-              : null;
-
-            const posterUserId = financeNode?.userId || schoolAdminNode?.userId || post?.userId;
-            if (posterUserId) {
-              const posterUser =
-                Object.values(usersData).find((u) => String(u?.userId) === String(posterUserId)) ||
-                usersData[posterUserId];
-              profile = posterUser?.profileImage || profile;
-            }
-          } catch {
-            // keep fallback image
-          }
-
-          return {
-            ...post,
-            notificationId: post?.notificationId || post?.postId,
-            adminName: post?.adminName || "Admin",
-            adminProfile: profile,
-          };
-        })
-      );
-
-      setUnreadPosts(enriched);
+      setUnreadPosts(recentUnreadPosts);
     } catch (err) {
       console.error("Post notification fetch failed:", err);
       setUnreadPosts([]);
     }
-  }, [dbRoot, currentUserId]);
+  }, [currentUserId, enabled]);
+
+  const refreshNotifications = useCallback(async ({ reason = "active" } = {}) => {
+    if (!currentUserId) {
+      return;
+    }
+
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+    const recentInteraction = Date.now() - lastInteractionAtRef.current < NOTIFICATION_IDLE_GRACE_MS;
+    const isUserDriven = reason !== "passive";
+
+    if (!isUserDriven && (!isVisible || !isOnline || !recentInteraction)) {
+      return;
+    }
+
+    if (notificationRefreshPromiseRef.current) {
+      return notificationRefreshPromiseRef.current;
+    }
+
+    const refreshPromise = Promise.all([fetchUnreadMessages(), fetchUnreadPosts()]).finally(() => {
+      if (notificationRefreshPromiseRef.current === refreshPromise) {
+        notificationRefreshPromiseRef.current = null;
+      }
+    });
+
+    notificationRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
+  }, [currentUserId, fetchUnreadMessages, fetchUnreadPosts]);
 
   useEffect(() => {
-    if (!dbRoot || !currentUserId) return;
+    if (!enabled || !currentUserId) return undefined;
 
-    fetchUnreadMessages();
-    const messageInterval = setInterval(fetchUnreadMessages, pollMs);
-    return () => clearInterval(messageInterval);
-  }, [dbRoot, currentUserId, pollMs, fetchUnreadMessages]);
+    const runFocusedRefresh = () => {
+      lastInteractionAtRef.current = Date.now();
+      void refreshNotifications({ reason: "active" });
+    };
 
-  useEffect(() => {
-    if (!dbRoot || !currentUserId) return;
+    const runPassiveRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
 
-    fetchUnreadPosts();
-    const postInterval = setInterval(fetchUnreadPosts, pollMs);
-    return () => clearInterval(postInterval);
-  }, [dbRoot, currentUserId, pollMs, fetchUnreadPosts]);
+      void refreshNotifications({ reason: "passive" });
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+
+    const intervalId = pollMs > 0 ? window.setInterval(runPassiveRefresh, pollMs) : null;
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [currentUserId, enabled, pollMs, refreshNotifications]);
 
   const markMessagesAsSeen = useCallback(
     async (userId) => {
-      if (!dbRoot || !currentUserId || !userId) return;
-
-      const key1 = `${currentUserId}_${userId}`;
-      const key2 = `${userId}_${currentUserId}`;
-
-      const [r1, r2] = await Promise.all([
-        axios.get(`${dbRoot}/Chats/${key1}/messages.json`).catch(() => ({ data: null })),
-        axios.get(`${dbRoot}/Chats/${key2}/messages.json`).catch(() => ({ data: null })),
-      ]);
-
-      const updates = {};
-      const collectUpdates = (data, basePath) => {
-        Object.entries(data || {}).forEach(([msgId, msg]) => {
-          if (String(msg?.receiverId) === String(currentUserId) && !msg?.seen) {
-            updates[`${basePath}/${msgId}/seen`] = true;
-          }
-        });
-      };
-
-      collectUpdates(r1.data, `Chats/${key1}/messages`);
-      collectUpdates(r2.data, `Chats/${key2}/messages`);
-
-      if (Object.keys(updates).length > 0) {
-        await axios.patch(`${dbRoot}/.json`, updates);
-      }
+      if (!currentUserId || !userId) return;
+      await axios.post(`${BACKEND_BASE}/api/mark_messages_read`, {
+        adminId: currentUserId,
+        senderId: userId,
+      });
     },
-    [dbRoot, currentUserId]
+    [currentUserId]
   );
 
   const markPostAsSeen = useCallback(
     async (postId) => {
-      if (!dbRoot || !currentUserId || !postId) return;
-      await axios.put(`${dbRoot}/Posts/${postId}/seenBy/${currentUserId}.json`, true);
+      if (!currentUserId || !postId) return;
+      await axios.post(`${BACKEND_BASE}/api/mark_post_seen`, {
+        postId,
+        userId: currentUserId,
+      });
       setUnreadPosts((prev) => prev.filter((post) => String(post?.postId) !== String(postId)));
     },
-    [dbRoot, currentUserId]
+    [currentUserId]
   );
 
   const messageCount = useMemo(
@@ -222,6 +276,7 @@ export default function useTopbarNotifications({ dbRoot, currentUserId, pollMs =
     totalNotifications,
     fetchUnreadMessages,
     fetchUnreadPosts,
+    refreshNotifications,
     markMessagesAsSeen,
     markPostAsSeen,
   };

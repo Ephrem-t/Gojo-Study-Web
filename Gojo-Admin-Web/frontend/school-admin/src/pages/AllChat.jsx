@@ -1,255 +1,788 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { FaArrowLeft, FaPaperPlane, FaCheck } from "react-icons/fa";
-import { getDatabase, ref, onValue, push, set, update, get } from "firebase/database";
-import { db } from "../firebase";
+import { FaArrowLeft, FaPaperPlane, FaCheck, FaImage, FaTimes, FaFilter } from "react-icons/fa";
+import axios from "axios";
+import { ref, onValue, push, runTransaction, update, get, set } from "firebase/database";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, storage } from "../firebase";
+import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  getConversationSortTime,
+  mapInBatches,
+  normalizeChatSummaryValue,
+  resolveExistingChatKey,
+} from "../utils/chatRtdb";
+import ProfileAvatar from "../components/ProfileAvatar";
 import "../styles/global.css";
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const RTDB_BASE = FIREBASE_DATABASE_URL;
+const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
+const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const PRESENCE_BATCH_SIZE = 12;
+// Contact-list data changes rarely — cache for 15 minutes to avoid re-downloading on every navigation
+const CONTACT_LIST_CACHE_TTL_MS = 15 * 60 * 1000;
 
-function AllChat() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const admin = JSON.parse(localStorage.getItem("admin")) || {};
-  const adminUserId = admin.userId;
-  const schoolCode = String(
-    admin.schoolCode ||
-      (() => {
-        try {
-          const stored = JSON.parse(localStorage.getItem("gojo_admin") || "{}");
-          return stored?.schoolCode || "";
-        } catch {
-          return "";
+const sortedChatId = (id1, id2) => {
+  const a = String(id1 || "").trim();
+  const b = String(id2 || "").trim();
+  return [a, b].sort().join("_");
+};
+
+const normalizeTab = (tab) => {
+  const value = String(tab || "").toLowerCase();
+  if (value === "teacher" || value === "teachers") return "teacher";
+  if (value === "student" || value === "students") return "student";
+  if (value === "parent" || value === "parents") return "parent";
+  if (
+    value === "management" ||
+    value === "managements" ||
+    value === "office" ||
+    value === "offices" ||
+    value === "hr" ||
+    value === "finance" ||
+    value === "registerer" ||
+    value === "registerers" ||
+    value === "registrar"
+  ) {
+    return "management";
+  }
+  return null;
+};
+
+const getInitials = (name) => {
+  const words = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return "U";
+  if (words.length === 1) return words[0].charAt(0).toUpperCase();
+  return `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase();
+};
+
+const createPlaceholderAvatar = (name) => {
+  const initials = getInitials(name);
+  const svg = `
+<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'>
+  <defs>
+    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='#2563eb'/>
+      <stop offset='100%' stop-color='#0ea5e9'/>
+    </linearGradient>
+  </defs>
+  <rect width='160' height='160' rx='80' fill='url(#g)'/>
+  <text x='50%' y='53%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='Segoe UI, Arial, sans-serif' font-size='56' font-weight='700'>${initials}</text>
+</svg>`;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const sanitizeProfileImage = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return DEFAULT_PROFILE_IMAGE;
+
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("file://") || lower.startsWith("content://")) {
+    return DEFAULT_PROFILE_IMAGE;
+  }
+
+  return raw;
+};
+
+const resolveAvatarSrc = (rawValue, name) => {
+  const sanitized = sanitizeProfileImage(rawValue);
+  if (!sanitized || sanitized === DEFAULT_PROFILE_IMAGE) {
+    return DEFAULT_PROFILE_IMAGE;
+  }
+  return sanitized;
+};
+
+const loadImageFromFile = (file) =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Failed to load image file"));
+    };
+    image.src = objectUrl;
+  });
+
+const compressImageToJpeg = async (file, { maxWidth = 1280, maxHeight = 1280, quality = 0.72 } = {}) => {
+  const image = await loadImageFromFile(file);
+
+  let width = image.naturalWidth || image.width;
+  let height = image.naturalHeight || image.height;
+
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  width = Math.max(1, Math.round(width * ratio));
+  height = Math.max(1, Math.round(height * ratio));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context unavailable");
+  }
+
+  context.drawImage(image, 0, 0, width, height);
+
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (output) => {
+        if (!output) {
+          reject(new Error("Image compression failed"));
+          return;
         }
-      })()
-  ).trim();
+        resolve(output);
+      },
+      "image/jpeg",
+      quality
+    );
+  });
 
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
-  const SCHOOL_NODE_PREFIX = schoolCode ? `Platform1/Schools/${schoolCode}` : "";
-  const chatsNodePath = SCHOOL_NODE_PREFIX ? `${SCHOOL_NODE_PREFIX}/Chats` : "Chats";
-  const usersNodePath = SCHOOL_NODE_PREFIX ? `${SCHOOL_NODE_PREFIX}/Users` : "Users";
+  return blob;
+};
 
-  const getChatKey = (a, b) => [a, b].sort().join("_");
+const isActiveRecord = (record = {}) => {
+  const raw = record?.status ?? record?.isActive;
+  if (typeof raw === "boolean") return raw;
+  const normalized = String(raw || "active").toLowerCase();
+  return normalized === "active" || normalized === "true" || normalized === "1";
+};
 
-  const { userId, userType, name, profileImage } = location.state || {};
-  const passedUser = location.state?.user || null;
+const pickFirstNonEmpty = (...values) => {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+};
 
-  // State
+const uniqueNonEmptyValues = (values) => {
+  const seen = new Set();
+  const normalizedValues = [];
+
+  values.forEach((value) => {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) return;
+
+    const normalizedKey = normalizedValue.toLowerCase();
+    if (seen.has(normalizedKey)) return;
+
+    seen.add(normalizedKey);
+    normalizedValues.push(normalizedValue);
+  });
+
+  return normalizedValues;
+};
+
+const pickPreferredSchoolScopeCode = (candidateCodes) => {
+  const normalizedCandidates = uniqueNonEmptyValues(candidateCodes);
+  return (
+    normalizedCandidates.find((candidateCode) => String(candidateCode || "").toUpperCase().startsWith("ET-")) ||
+    normalizedCandidates.find((candidateCode) => String(candidateCode || "").includes("-")) ||
+    normalizedCandidates[0] ||
+    ""
+  );
+};
+
+const officeRoleLabel = (role) => {
+  if (role === "hr") return "HR";
+  if (role === "finance") return "Finance";
+  if (role === "registerer") return "Registerer";
+  return "Management";
+};
+
+const sortContactsBySummary = (left, right) => {
+  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+    sensitivity: "base",
+  });
+};
+
+export default function AllChat() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const chatEndRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const contactScrollRef = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
+  const lastContactScrollTopRef = useRef(0);
+  const suppressAutoCardToggleRef = useRef(false);
+  const autoCardToggleTimeoutRef = useRef(null);
+  const lastChatActivityAtRef = useRef(Date.now());
+
+  const admin = JSON.parse(localStorage.getItem("admin") || localStorage.getItem("gojo_admin") || "{}") || {};
+  const API_BASE = `${BACKEND_BASE}/api`;
+  const adminUserId = String(admin.userId || "").trim();
+  const schoolCode = String(admin.schoolCode || "").trim();
+  const [resolvedSchoolScopeCode, setResolvedSchoolScopeCode] = useState(() =>
+    schoolCode.includes("-") ? schoolCode : ""
+  );
+  const effectiveSchoolScopeCode = String(resolvedSchoolScopeCode || schoolCode || "").trim();
+  const schoolNodePrefix = effectiveSchoolScopeCode ? `Platform1/Schools/${effectiveSchoolScopeCode}` : "";
+  const scopedPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    if (!effectiveSchoolScopeCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: {
+          schoolCode: effectiveSchoolScopeCode,
+          path,
+        },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
   const [parents, setParents] = useState([]);
-  const [selectedTab, setSelectedTab] = useState("teacher");
-  const [selectedChatUser, setSelectedChatUser] = useState(passedUser);
-  const [popupMessages, setPopupMessages] = useState([]);
-  const [popupInput, setPopupInput] = useState("");
-  const [editingMsgId, setEditingMsgId] = useState(null);
-  const [activeMessageId, setActiveMessageId] = useState(null);
-  const [typing, setTyping] = useState(false);
-  const [lastSeen, setLastSeen] = useState(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeChatKey, setActiveChatKey] = useState("");
+  const [managements, setManagements] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [presence, setPresence] = useState({});
   const [isMobile, setIsMobile] = useState(false);
-  const chatEndRef = useRef(null);
-  const typingRef = useRef(null);
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [selectedStudentGrade, setSelectedStudentGrade] = useState("All");
+  const [selectedStudentSection, setSelectedStudentSection] = useState("All");
+  const [showStudentFilters, setShowStudentFilters] = useState(false);
+  const [showSearchFilterCard, setShowSearchFilterCard] = useState(true);
 
-  const resolveChatRefKey = async (otherUserId) => {
-    if (!otherUserId || !adminUserId) return "";
-    const sortedKey = getChatKey(adminUserId, otherUserId);
+  const incomingState = location.state || {};
+  const incomingContact = incomingState.contact || incomingState.user || null;
+  const incomingTab = normalizeTab(incomingState.tab || incomingState.userType || incomingContact?.type) || "teacher";
+
+  const [selectedTab, setSelectedTab] = useState(incomingTab);
+  const [selectedChatUser, setSelectedChatUser] = useState(incomingContact || null);
+  const [currentChatKey, setCurrentChatKey] = useState(null);
+  const [clickedMessageId, setClickedMessageId] = useState(null);
+  const [editingMessages, setEditingMessages] = useState({});
+  const [imageSending, setImageSending] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState("");
+  const [imageMenu, setImageMenu] = useState({ open: false, message: null });
+  const [textMenu, setTextMenu] = useState({ open: false, message: null });
+
+  const resolveLegacyChatKey = async (otherUserId) => {
+    if (!otherUserId || !adminUserId) return null;
+    const sortedKey = sortedChatId(adminUserId, otherUserId);
     const directKey = `${adminUserId}_${otherUserId}`;
     const reverseKey = `${otherUserId}_${adminUserId}`;
     const candidates = Array.from(new Set([sortedKey, directKey, reverseKey]));
 
     for (const key of candidates) {
-      const snap = await get(ref(db, `${chatsNodePath}/${key}/messages`));
-      if (snap.exists()) return key;
+      try {
+        const snapshot = await get(ref(db, scopedPath(`Chats/${key}/messages`)));
+        if (snapshot.exists()) return key;
+      } catch {
+        // ignore candidate lookup failures
+      }
     }
+
     return sortedKey;
   };
 
-  // ------------------- Fetch users with unread badge -------------------
+  const allowedUserIds = useMemo(() => {
+    const ids = new Set();
+    teachers.forEach((user) => ids.add(String(user.userId || "")));
+    students.forEach((user) => ids.add(String(user.userId || "")));
+    parents.forEach((user) => ids.add(String(user.userId || "")));
+    managements.forEach((user) => ids.add(String(user.userId || "")));
+    return ids;
+  }, [teachers, students, parents, managements]);
+
+  const availableStudentGrades = useMemo(() => {
+    return [...new Set(students.map((student) => String(student?.grade || "").trim()).filter(Boolean))].sort((a, b) => {
+      const numericDiff = Number(a) - Number(b);
+      if (!Number.isNaN(numericDiff) && numericDiff !== 0) return numericDiff;
+      return a.localeCompare(b);
+    });
+  }, [students]);
+
+  const availableStudentSections = useMemo(() => {
+    const base = selectedStudentGrade === "All"
+      ? students
+      : students.filter((student) => String(student?.grade || "").trim() === selectedStudentGrade);
+    return [...new Set(base.map((student) => String(student?.section || "").trim().toUpperCase()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  }, [students, selectedStudentGrade]);
+
   useEffect(() => {
+    let cancelled = false;
+
+    const resolveSchoolScopeCode = async () => {
+      const seedCodes = uniqueNonEmptyValues([schoolCode]);
+      if (seedCodes.length === 0) {
+        if (!cancelled) {
+          setResolvedSchoolScopeCode("");
+        }
+        return;
+      }
+
+      const resolvedCandidates = [...seedCodes];
+
+      if (!cancelled) {
+        setResolvedSchoolScopeCode(pickPreferredSchoolScopeCode(resolvedCandidates) || seedCodes[0] || "");
+      }
+    };
+
+    resolveSchoolScopeCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [schoolCode]);
+
+  useEffect(() => {
+    const markChatActivity = () => {
+      lastChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markChatActivity();
+    };
+
+    window.addEventListener("focus", markChatActivity);
+    window.addEventListener("online", markChatActivity);
+    window.addEventListener("pointerdown", markChatActivity, { passive: true });
+    window.addEventListener("touchstart", markChatActivity, { passive: true });
+    window.addEventListener("keydown", markChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markChatActivity);
+      window.removeEventListener("online", markChatActivity);
+      window.removeEventListener("pointerdown", markChatActivity);
+      window.removeEventListener("touchstart", markChatActivity);
+      window.removeEventListener("keydown", markChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedStudentSection === "All") return;
+    if (!availableStudentSections.includes(selectedStudentSection)) {
+      setSelectedStudentSection("All");
+    }
+  }, [availableStudentSections, selectedStudentSection]);
+
+  useEffect(() => {
+    return () => {
+      if (autoCardToggleTimeoutRef.current) {
+        clearTimeout(autoCardToggleTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    suppressAutoCardToggleRef.current = false;
+    if (autoCardToggleTimeoutRef.current) {
+      clearTimeout(autoCardToggleTimeoutRef.current);
+      autoCardToggleTimeoutRef.current = null;
+    }
+    setShowSearchFilterCard(true);
+    lastContactScrollTopRef.current = 0;
+  }, [selectedTab]);
+
+  const setSearchFilterCardVisibility = (nextVisible) => {
+    if (showSearchFilterCard === nextVisible) return;
+
+    suppressAutoCardToggleRef.current = true;
+    if (autoCardToggleTimeoutRef.current) {
+      clearTimeout(autoCardToggleTimeoutRef.current);
+    }
+
+    setShowSearchFilterCard(nextVisible);
+
+    autoCardToggleTimeoutRef.current = setTimeout(() => {
+      suppressAutoCardToggleRef.current = false;
+      autoCardToggleTimeoutRef.current = null;
+    }, 280);
+  };
+
+  const handleContactListScroll = (event) => {
+    const target = event?.currentTarget;
+    if (!target) return;
+
+    const currentTop = Number(target.scrollTop || 0);
+    const previousTop = lastContactScrollTopRef.current;
+    const delta = currentTop - previousTop;
+    const maxScrollable = Math.max(0, Number(target.scrollHeight || 0) - Number(target.clientHeight || 0));
+    const nearTop = currentTop <= 8;
+    const nearBottom = maxScrollable - currentTop <= 6;
+
+    if (maxScrollable <= 8) {
+      setSearchFilterCardVisibility(true);
+      lastContactScrollTopRef.current = currentTop;
+      return;
+    }
+
+    if (suppressAutoCardToggleRef.current) {
+      lastContactScrollTopRef.current = currentTop;
+      return;
+    }
+
+    if (nearTop) {
+      setSearchFilterCardVisibility(true);
+      lastContactScrollTopRef.current = currentTop;
+      return;
+    }
+
+    if (delta > 14 && showSearchFilterCard && !nearBottom) {
+      setSearchFilterCardVisibility(false);
+    } else if (delta < -14 && !showSearchFilterCard) {
+      setSearchFilterCardVisibility(true);
+    }
+
+    lastContactScrollTopRef.current = currentTop;
+  };
+
+  useEffect(() => {
+    if (!adminUserId) return;
+
     const fetchUsers = async () => {
+      setLoadingContacts(true);
       try {
-        const [teachersRes, studentsRes, parentsRes, usersRes, chatsRes] = await Promise.all([
-          fetch(`${SCHOOL_DB_ROOT}/Teachers.json`).then(res => res.json()),
-          fetch(`${SCHOOL_DB_ROOT}/Students.json`).then(res => res.json()),
-          fetch(`${SCHOOL_DB_ROOT}/Parents.json`).then(res => res.json()),
-          fetch(`${SCHOOL_DB_ROOT}/Users.json`).then(res => res.json()),
-          fetch(`${SCHOOL_DB_ROOT}/Chats.json`).then(res => res.json())
+        // Use directory nodes (lightweight summaries) instead of full role nodes.
+        // Users.json is dropped — it's keyed by push-key so usersMap[userId] always
+        // returned {} anyway; role/directory nodes already carry name & profileImage.
+        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, ownersRaw, teachersRaw, studentsRaw, parentsRaw, ownerSummariesRes] = await Promise.all([
+          readSchoolNodeApi("TeacherDirectory", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
+          readSchoolNodeApi("ParentDirectory", {}),
+          readSchoolNodeApi("HR", {}),
+          readSchoolNodeApi("Finance", {}),
+          readSchoolNodeApi("Registerers", {}),
+          readSchoolNodeApi("Users", {}),
+          readSchoolNodeApi("Teachers", {}),
+          readSchoolNodeApi("Students", {}),
+          readSchoolNodeApi("Parents", {}),
+          readSchoolNodeApi(buildOwnerChatSummariesPath(adminUserId), {}),
         ]);
+        const usersById = Object.values(ownersRaw || {}).reduce((result, userRecord) => {
+          const userId = String(userRecord?.userId || "").trim();
+          if (userId) {
+            result[userId] = userRecord;
+          }
+          return result;
+        }, {});
+        const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
+        const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
+          }
 
-        const usersData = usersRes || {};
-        const chatsData = chatsRes || {};
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
 
-        const formatUsers = (listData) =>
-          Object.keys(listData || {}).map(id => {
-            const userId = listData[id].userId;
-            const user = usersData[userId] || {};
-            const chatKey = getChatKey(adminUserId, userId);
-            const unread = chatsData[chatKey]?.unread?.[adminUserId] || 0;
-            const lastMsg = chatsData[chatKey]?.lastMessage || null;
+          return result;
+        }, {});
 
+        const buildLastMessageMeta = (otherUserId) => {
+          const summary = summaryByOtherUserId[String(otherUserId || "").trim()] || null;
+          const resolvedChatKey = String(summary?.chatId || sortedChatId(adminUserId, otherUserId)).trim();
+
+          return {
+            chatKey: resolvedChatKey,
+            lastMsgTime: getConversationSortTime(summary?.lastMessageTime),
+            lastMsgText: String(summary?.lastMessageText || "").trim(),
+            unread: Math.max(0, Number(summary?.unreadCount || 0) || 0),
+          };
+        };
+
+        const hydrateChatPreviewMeta = async (records) => {
+          const hydratedRecords = await mapInBatches(records, 24, async (record) => ({
+            ...record,
+            ...buildLastMessageMeta(record.userId),
+          }));
+
+          return hydratedRecords;
+        };
+
+        // TeacherDirectory: each entry has { teacherId, userId, name, profileImage, isActive, ... }
+        const teacherDirectoryRecords = Object.entries(teachersRes || {})
+          .map(([teacherId, teacherNode]) => {
+            const userId = String(teacherNode?.userId || "").trim();
+            if (!userId) return null;
+            const name = pickFirstNonEmpty(teacherNode?.name, teacherId, "Teacher");
             return {
-              id,
+              id: teacherId,
+              teacherId,
               userId,
-              name: user.name || "No Name",
-              profileImage: user.profileImage || "/default-profile.png",
-              lastMsgTime: lastMsg?.timeStamp || 0,
-              lastMsgText: lastMsg?.text || "",
-              lastSeen: user.lastSeen || null,
-              unread,
+              type: "teacher",
+              name,
+              profileImage: resolveAvatarSrc(teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.isActive !== false,
             };
-          }).sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
 
-        setTeachers(formatUsers(teachersRes));
-        setStudents(formatUsers(studentsRes));
-        setParents(formatUsers(parentsRes));
-      } catch (err) {
-        console.error("Error fetching users:", err);
+        const teacherFallbackRecords = Object.entries(teachersRaw || {})
+          .map(([teacherId, teacherNode]) => {
+            const userId = String(teacherNode?.userId || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, teacherNode?.name, teacherId, "Teacher");
+            return {
+              id: teacherId,
+              teacherId,
+              userId,
+              type: "teacher",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.status !== "inactive" && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const teacherRecords = teacherDirectoryRecords.length ? teacherDirectoryRecords : teacherFallbackRecords;
+
+        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
+
+        // StudentDirectory: each entry has { studentId, userId, name, profileImage, grade, section, isActive, ... }
+        const studentDirectoryRecords = Object.entries(studentsRes || {})
+          .map(([studentId, studentNode]) => {
+            const userId = String(studentNode?.userId || "").trim();
+            if (!userId) return null;
+            const name = pickFirstNonEmpty(studentNode?.name, studentId, "Student");
+            return {
+              id: studentId,
+              studentId,
+              userId,
+              type: "student",
+              name,
+              grade: String(studentNode?.grade || "").trim(),
+              section: String(studentNode?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(studentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const studentFallbackRecords = Object.entries(studentsRaw || {})
+          .map(([studentId, studentNode]) => {
+            const userId = String(studentNode?.userId || studentNode?.use || studentNode?.user || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const basicInfo = studentNode?.basicStudentInformation || {};
+            const name = pickFirstNonEmpty(
+              userNode?.name,
+              userNode?.username,
+              studentNode?.name,
+              studentNode?.studentName,
+              basicInfo?.name,
+              studentId,
+              "Student"
+            );
+            return {
+              id: studentId,
+              studentId,
+              userId,
+              type: "student",
+              name,
+              grade: String(studentNode?.grade || basicInfo?.grade || "").trim(),
+              section: String(studentNode?.section || basicInfo?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(userNode?.profileImage || studentNode?.profileImage || basicInfo?.studentPhoto, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const studentRecords = studentDirectoryRecords.length ? studentDirectoryRecords : studentFallbackRecords;
+
+        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
+
+        // ParentDirectory: each entry has { userId, name, profileImage, isActive, children, ... }
+        const parentDirectoryRecords = Object.entries(parentsRes || {})
+          .map(([parentId, parentNode]) => {
+            const userId = String(parentNode?.userId || "").trim();
+            if (!userId) return null;
+            const name = pickFirstNonEmpty(parentNode?.name, parentId, "Parent");
+            return {
+              id: parentId,
+              parentId,
+              userId,
+              type: "parent",
+              name,
+              profileImage: resolveAvatarSrc(parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const parentFallbackRecords = Object.entries(parentsRaw || {})
+          .map(([parentId, parentNode]) => {
+            const userId = String(parentNode?.userId || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, parentNode?.name, parentId, "Parent");
+            return {
+              id: parentId,
+              parentId,
+              userId,
+              type: "parent",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const parentRecords = parentDirectoryRecords.length ? parentDirectoryRecords : parentFallbackRecords;
+
+        const mappedParents = (await hydrateChatPreviewMeta(parentRecords)).sort(sortContactsBySummary);
+
+        const mapOfficeRecords = (source, officeRole) =>
+          Object.entries(source || {})
+            .map(([roleNodeId, roleNode]) => {
+              const userId = String(roleNode?.userId || "").trim();
+              if (!userId) return null;
+              const name = pickFirstNonEmpty(roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
+              return {
+                id: roleNodeId,
+                roleNodeId,
+                userId,
+                type: "management",
+                officeRole,
+                name,
+                profileImage: resolveAvatarSrc(roleNode?.profileImage, name),
+                lastSeen: null,
+                isActive: isActiveRecord(roleNode),
+              };
+            })
+            .filter(Boolean)
+            .filter((record) => record.isActive);
+
+        const managementRecords = [
+          ...mapOfficeRecords(hrRes, "hr"),
+          ...mapOfficeRecords(financeRes, "finance"),
+          ...mapOfficeRecords(registerersRes, "registerer"),
+        ];
+
+        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords)).sort(sortContactsBySummary);
+
+        setTeachers(mappedTeachers);
+        setStudents(mappedStudents);
+        setParents(mappedParents);
+        setManagements(mappedManagements);
+        setUnreadCounts(
+          [...mappedTeachers, ...mappedStudents, ...mappedParents, ...mappedManagements].reduce((acc, item) => {
+            acc[item.userId] = Number(item.unread || 0);
+            return acc;
+          }, {})
+        );
+      } catch (error) {
+        console.error("Error fetching users:", error);
+      } finally {
+        setLoadingContacts(false);
       }
     };
 
     fetchUsers();
-  }, [adminUserId, SCHOOL_DB_ROOT]);
+  }, [adminUserId, effectiveSchoolScopeCode]);
 
-  // ------------------- Select default user -------------------
   useEffect(() => {
-    if (!selectedChatUser) {
-      const firstUser = teachers[0] || students[0] || parents[0] || null;
-      setSelectedChatUser(firstUser);
+    if (!selectedChatUser?.userId) return;
+    if (loadingContacts) return;
+    if (allowedUserIds.size === 0) return;
+    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
+      setSelectedChatUser(null);
+      setCurrentChatKey(null);
+      setMessages([]);
     }
-  }, [teachers, students, parents]);
+  }, [allowedUserIds, loadingContacts, selectedChatUser]);
 
-  // ------------------- Real-time messages -------------------
   useEffect(() => {
-    if (!selectedChatUser || !adminUserId) return;
+    if (!adminUserId) return;
 
-    let isCancelled = false;
-    let unsubscribeMessages = null;
-    let unsubscribeTyping = null;
-    let unsubscribeLastSeen = null;
+    const summaryRef = ref(db, scopedPath(buildOwnerChatSummariesPath(adminUserId)));
+    const unsubscribe = onValue(summaryRef, (snapshot) => {
+      const ownerSummaries = snapshot.val() || {};
+      const summaryByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
+        (result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
+          }
 
-    const dbCheck = async () => {
-      const chatKey = await resolveChatRefKey(selectedChatUser.userId);
-      if (!chatKey || isCancelled) return;
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
 
-      setActiveChatKey(chatKey);
+          return result;
+        },
+        {}
+      );
 
-      const dbInst = getDatabase();
-      const messagesRef = ref(dbInst, `${chatsNodePath}/${chatKey}/messages`);
-      const typingRefDB = ref(dbInst, `${chatsNodePath}/${chatKey}/typing`);
-      const lastSeenRef = ref(dbInst, `${usersNodePath}/${selectedChatUser.userId}/lastSeen`);
+      const nextUnreadCounts = {};
+      const mergeSummary = (record) => {
+        const summary = summaryByOtherUserId[String(record?.userId || "").trim()] || null;
+        const unreadCount = Math.max(0, Number(summary?.unreadCount || 0) || 0);
+        nextUnreadCounts[String(record?.userId || "").trim()] = unreadCount;
 
-      unsubscribeMessages = onValue(messagesRef, (snapshot) => {
-        const data = snapshot.val();
-        const msgs = data
-          ? Object.entries(data).map(([id, m]) => ({ ...m, id, sender: m.senderId === adminUserId ? "admin" : "user" }))
-          : [];
-        setPopupMessages(msgs.sort((a, b) => a.timeStamp - b.timeStamp));
-      });
+        if (!summary) {
+          return {
+            ...record,
+            unread: unreadCount,
+          };
+        }
 
-      unsubscribeTyping = onValue(typingRefDB, (snapshot) => {
-        const val = snapshot.val();
-        setTyping(selectedChatUser.userId === val?.userId);
-      });
+        return {
+          ...record,
+          chatKey: String(summary.chatId || record?.chatKey || "").trim(),
+          lastMsgTime: getConversationSortTime(summary.lastMessageTime),
+          lastMsgText: String(summary.lastMessageText || "").trim(),
+          unread: unreadCount,
+        };
+      };
 
-      unsubscribeLastSeen = onValue(lastSeenRef, (snapshot) => {
-        setLastSeen(snapshot.val());
-      });
-    };
+      setTeachers((previousTeachers) => previousTeachers.map(mergeSummary).sort(sortContactsBySummary));
+      setStudents((previousStudents) => previousStudents.map(mergeSummary).sort(sortContactsBySummary));
+      setParents((previousParents) => previousParents.map(mergeSummary).sort(sortContactsBySummary));
+      setManagements((previousManagements) => previousManagements.map(mergeSummary).sort(sortContactsBySummary));
+      setUnreadCounts(nextUnreadCounts);
+    });
 
-    dbCheck();
-
-    return () => {
-      isCancelled = true;
-      if (typeof unsubscribeMessages === "function") unsubscribeMessages();
-      if (typeof unsubscribeTyping === "function") unsubscribeTyping();
-      if (typeof unsubscribeLastSeen === "function") unsubscribeLastSeen();
-    };
-  }, [selectedChatUser, adminUserId, chatsNodePath, usersNodePath]);
-
-  // ------------------- Send/Edit message -------------------
-  const sendPopupMessage = async () => {
-    if (!popupInput.trim() || !selectedChatUser) return;
-
-    const chatRefKey = activeChatKey || await resolveChatRefKey(selectedChatUser.userId);
-    if (!chatRefKey) return;
-
-    const messagesRef = ref(db, `${chatsNodePath}/${chatRefKey}/messages`);
-    const chatRef = ref(db, `${chatsNodePath}/${chatRefKey}`);
-
-    const newMsg = {
-      senderId: adminUserId,
-      receiverId: selectedChatUser.userId,
-      type: "text",
-      text: popupInput,
-      imageUrl: null,
-      replyTo: null,
-      seen: false,
-      edited: false,
-      deleted: false,
-      timeStamp: Date.now()
-    };
-
-    if (editingMsgId) {
-      await update(ref(db, `${chatsNodePath}/${chatRefKey}/messages/${editingMsgId}`), { text: popupInput, edited: true });
-      setEditingMsgId(null);
-    } else {
-      const msgRef = push(messagesRef);
-      await set(msgRef, newMsg);
-
-      await update(chatRef, {
-        lastMessage: { ...newMsg, messageId: msgRef.key },
-        participants: { [adminUserId]: true, [selectedChatUser.userId]: true },
-        unread: { [adminUserId]: 0, [selectedChatUser.userId]: (selectedChatUser.unread || 0) + 1 }
-      });
-    }
-
-    setPopupInput("");
-  };
-
-  // ------------------- Delete message -------------------
-  const deleteMessage = async (msgId) => {
-    if (!selectedChatUser) return;
-    const chatRefKey = activeChatKey || await resolveChatRefKey(selectedChatUser.userId);
-    if (!chatRefKey) return;
-    const msgRef = ref(db, `${chatsNodePath}/${chatRefKey}/messages/${msgId}`);
-    await update(msgRef, { deleted: true });
-
-    // Update lastMessage if deleted
-    const lastMsgSnapshot = await get(ref(db, `${chatsNodePath}/${chatRefKey}/lastMessage`));
-    if (lastMsgSnapshot.exists() && lastMsgSnapshot.val().messageId === msgId) {
-      const messagesSnapshot = await get(ref(db, `${chatsNodePath}/${chatRefKey}/messages`));
-      const messages = messagesSnapshot.exists() ? Object.entries(messagesSnapshot.val()).map(([id, m]) => ({ ...m, id })) : [];
-      const lastMsg = messages.filter(m => !m.deleted).sort((a, b) => b.timeStamp - a.timeStamp)[0] || null;
-      await update(ref(db, `${chatsNodePath}/${chatRefKey}`), { lastMessage: lastMsg ? { ...lastMsg, messageId: lastMsg.id } : null });
-    }
-  };
-
-  // ------------------- Typing -------------------
-  const handleTyping = async (e) => {
-    setPopupInput(e.target.value);
-    if (!selectedChatUser) return;
-
-    const chatRefKey = activeChatKey || await resolveChatRefKey(selectedChatUser.userId);
-    if (!chatRefKey) return;
-
-    const typingRefDB = ref(db, `${chatsNodePath}/${chatRefKey}/typing`);
-    await set(typingRefDB, { userId: adminUserId });
-
-    if (typingRef.current) clearTimeout(typingRef.current);
-    typingRef.current = setTimeout(async () => {
-      await set(typingRefDB, { userId: null });
-    }, 2000);
-  };
-
-  // ------------------- Scroll to bottom -------------------
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [popupMessages, typing]);
+    return () => unsubscribe();
+  }, [adminUserId, schoolNodePrefix]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -263,6 +796,400 @@ function AllChat() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  useEffect(() => {
+    if (!incomingContact) return;
+    setSelectedChatUser(incomingContact);
+    setCurrentChatKey(null);
+    setSelectedTab(normalizeTab(incomingState.tab || incomingState.userType || incomingContact?.type) || "teacher");
+  }, [incomingContact, incomingState.tab, incomingState.userType]);
+
+  useEffect(() => {
+    const incoming = incomingContact;
+    if (!incoming?.userId) return;
+    const bucket =
+      selectedTab === "teacher"
+        ? teachers
+        : selectedTab === "student"
+        ? students
+        : selectedTab === "parent"
+        ? parents
+        : managements;
+    const found = bucket.find((item) => String(item.userId || "") === String(incoming.userId || ""));
+    if (found) {
+      setSelectedChatUser(found);
+    }
+  }, [incomingContact, selectedTab, teachers, students, parents, managements]);
+
+  useEffect(() => {
+    if (!selectedChatUser || !adminUserId) return;
+
+    let cancelled = false;
+    let unsubscribeMessages = null;
+    let unsubscribePresence = null;
+
+    const connect = async () => {
+      const chatKey = currentChatKey || selectedChatUser.chatKey || await resolveLegacyChatKey(selectedChatUser.userId);
+      if (!chatKey || cancelled) return;
+
+      setCurrentChatKey(chatKey);
+
+      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
+      const lastSeenRef = ref(db, scopedPath(`Users/${selectedChatUser.userId}/lastSeen`));
+
+      unsubscribeMessages = onValue(messagesRef, async (snapshot) => {
+        const data = snapshot.val() || {};
+        const list = Object.entries(data)
+          .map(([id, message]) => ({
+            id,
+            ...message,
+            isAdmin: String(message.senderId) === String(adminUserId),
+          }))
+          .sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
+
+        setMessages(list);
+
+        const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (message) => String(message?.receiverId) === String(adminUserId) && !message?.seen
+        );
+        const seenAt = Date.now();
+        Object.entries(data).forEach(([messageId, message]) => {
+          if (String(message?.receiverId) === String(adminUserId) && !message?.seen) {
+            updates[`${scopedPath(`Chats/${chatKey}/messages/${messageId}/seen`)}`] = true;
+          }
+        });
+
+        try {
+          if (Object.keys(updates).length) {
+            await update(ref(db), updates);
+          }
+        } catch {
+          // ignore read receipt write failures
+        }
+
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: seenAt,
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadCounts((previousCounts) => ({
+          ...previousCounts,
+          [selectedChatUser.userId]: 0,
+        }));
+      });
+
+      unsubscribePresence = onValue(lastSeenRef, (snapshot) => {
+        setPresence((prev) => ({
+          ...prev,
+          [selectedChatUser.userId]: snapshot.val(),
+        }));
+      });
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribeMessages === "function") unsubscribeMessages();
+      if (typeof unsubscribePresence === "function") unsubscribePresence();
+    };
+  }, [selectedChatUser, adminUserId, currentChatKey, schoolNodePrefix]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const activeContacts = selectedTab === "student"
+      ? students
+      : selectedTab === "parent"
+        ? parents
+        : selectedTab === "management"
+          ? managements
+          : teachers;
+
+    const presenceUserIds = [...new Set([
+      ...activeContacts.map((contact) => String(contact?.userId || "").trim()).filter(Boolean),
+      String(selectedChatUser?.userId || "").trim(),
+    ].filter(Boolean))];
+
+    if (!presenceUserIds.length) {
+      setPresence({});
+      return undefined;
+    }
+
+    const loadPresence = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
+
+      try {
+        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
+          const data = await readSchoolNodeApi(`Presence/${userId}`, null);
+
+          return [userId, data];
+        });
+
+        const nextPresence = entries.reduce((result, [userId, value]) => {
+          result[userId] = value;
+          return result;
+        }, {});
+
+        if (!cancelled) {
+          setPresence(nextPresence);
+        }
+      } catch (error) {
+        console.warn("Presence polling unavailable:", error);
+        if (!cancelled) {
+          setPresence({});
+        }
+      }
+    };
+
+    const handleFocusedPresenceRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastChatActivityAtRef.current = Date.now();
+      void loadPresence({ force: true });
+    };
+
+    void loadPresence({ force: true });
+    const intervalId = window.setInterval(() => {
+      void loadPresence();
+    }, PRESENCE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedPresenceRefresh);
+    window.addEventListener("online", handleFocusedPresenceRefresh);
+    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedPresenceRefresh);
+      window.removeEventListener("online", handleFocusedPresenceRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
+    };
+  }, [selectedTab, selectedChatUser?.userId, effectiveSchoolScopeCode, teachers, students, parents, managements]);
+
+  const getActiveChatKey = async () => {
+    if (!selectedChatUser || !adminUserId) return null;
+    if (currentChatKey) return currentChatKey;
+    if (selectedChatUser.chatKey) {
+      setCurrentChatKey(selectedChatUser.chatKey);
+      return selectedChatUser.chatKey;
+    }
+    const resolved = await resolveLegacyChatKey(selectedChatUser.userId);
+    setCurrentChatKey(resolved);
+    return resolved;
+  };
+
+  const sendMessage = async () => {
+    if (!input.trim() || !selectedChatUser) return;
+    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) return;
+
+    const editingId = Object.keys(editingMessages).find((id) => editingMessages[id]);
+    const chatKey = await getActiveChatKey();
+    if (!chatKey) return;
+
+    if (editingId) {
+      await update(ref(db, scopedPath(`Chats/${chatKey}/messages/${editingId}`)), {
+        text: input,
+        edited: true,
+      });
+      setEditingMessages({});
+      setClickedMessageId(null);
+      setInput("");
+      return;
+    }
+
+    const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
+    const messageData = {
+      senderId: adminUserId,
+      receiverId: selectedChatUser.userId,
+      type: "text",
+      text: input,
+      seen: false,
+      edited: false,
+      deleted: false,
+      timeStamp: Date.now(),
+    };
+
+    await push(messagesRef, messageData);
+
+    await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
+      [adminUserId]: true,
+      [selectedChatUser.userId]: true,
+    });
+
+    await Promise.all([
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedChatUser.userId,
+          unreadCount: 0,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+    ]);
+
+    try {
+      await runTransaction(
+        ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+        (current) => Number(current || 0) + 1
+      );
+      await set(ref(db, scopedPath(`Chats/${chatKey}/typing`)), { userId: null });
+    } catch {
+      // ignore unread increment failures
+    }
+
+    setInput("");
+  };
+
+  const sendImageMessage = async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file || !selectedChatUser || !adminUserId) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+
+    const chatKey = await getActiveChatKey();
+    if (!chatKey) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+
+    try {
+      setImageSending(true);
+
+      const compressedBlob = await compressImageToJpeg(file, {
+        maxWidth: 1280,
+        maxHeight: 1280,
+        quality: 0.72,
+      });
+
+      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
+      const messageRef = push(messagesRef);
+      const messageId = messageRef.key;
+      const timeStamp = Date.now();
+
+      const uploadRef = storageRef(storage, `chatImages/${chatKey}/${messageId}.jpg`);
+      await uploadBytes(uploadRef, compressedBlob, { contentType: "image/jpeg" });
+      const imageUrl = await getDownloadURL(uploadRef);
+
+      const messageData = {
+        messageId,
+        senderId: adminUserId,
+        receiverId: selectedChatUser.userId,
+        type: "image",
+        text: "",
+        imageUrl,
+        seen: false,
+        edited: false,
+        deleted: false,
+        timeStamp,
+      };
+
+      await update(messageRef, messageData);
+
+      await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
+        [adminUserId]: true,
+        [selectedChatUser.userId]: true,
+      });
+
+      await Promise.all([
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
+
+      try {
+        await runTransaction(
+          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+          (current) => Number(current || 0) + 1
+        );
+      } catch {
+        // ignore unread increment failures
+      }
+    } catch (error) {
+      console.error("Image send failed:", error);
+    } finally {
+      setImageSending(false);
+      if (event?.target) event.target.value = "";
+    }
+  };
+
+  const handleEditMessage = (id) => {
+    const message = messages.find((item) => item.id === id);
+    if (!message) return;
+    setEditingMessages({ [id]: true });
+    setClickedMessageId(id);
+    setInput(String(message.text || ""));
+  };
+
+  const handleDeleteMessage = async (id) => {
+    const chatKey = await getActiveChatKey();
+    if (!chatKey) return;
+    await update(ref(db, scopedPath(`Chats/${chatKey}/messages/${id}`)), { deleted: true });
+  };
 
   const formatTime = (timestamp) => {
     if (!timestamp) return "";
@@ -283,9 +1210,22 @@ function AllChat() {
     return msgDate.toLocaleDateString();
   };
 
+  const displayItems = useMemo(() => {
+    const items = [];
+    let lastLabel = null;
+    messages.forEach((message) => {
+      const label = formatDateLabel(message.timeStamp);
+      if (label && label !== lastLabel) {
+        items.push({ type: "date", id: `date-${message.id}`, label });
+        lastLabel = label;
+      }
+      items.push({ type: "message", ...message });
+    });
+    return items;
+  }, [messages]);
+
   const isOnlineFromLastSeen = (seenTs) => {
-    if (!seenTs) return false;
-    const ts = Number(seenTs);
+    const ts = Number(seenTs || 0);
     if (!Number.isFinite(ts) || ts <= 0) return false;
     return Date.now() - ts < 60_000;
   };
@@ -305,8 +1245,120 @@ function AllChat() {
     return `last seen on ${new Date(ts).toLocaleDateString()}`;
   };
 
-  const list = (selectedTab === "teacher" ? teachers : selectedTab === "student" ? students : parents)
-    .filter((u) => u.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const beginImageLongPress = (message) => {
+    clearTimeout(longPressTimerRef.current);
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      setImageMenu({ open: true, message });
+    }, 520);
+  };
+
+  const cancelImageLongPress = () => {
+    clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  };
+
+  const beginTextLongPress = (message) => {
+    clearTimeout(longPressTimerRef.current);
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      setTextMenu({ open: true, message });
+    }, 520);
+  };
+
+  const handleTextBubbleClick = (messageId) => {
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+    setClickedMessageId(messageId);
+  };
+
+  const handleImageClick = (imageUrl) => {
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+    setPreviewImageUrl(imageUrl);
+  };
+
+  const handleDownloadImage = async (message) => {
+    try {
+      const url = String(message?.imageUrl || "").trim();
+      if (!url) return;
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `chat-image-${message?.timeStamp || Date.now()}.jpg`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      console.error("Download failed:", error);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(longPressTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const list = useMemo(() => {
+    let base =
+      selectedTab === "teacher"
+        ? teachers
+        : selectedTab === "student"
+        ? students
+        : selectedTab === "parent"
+        ? parents
+        : managements;
+
+    if (selectedTab === "student") {
+      if (selectedStudentGrade !== "All") {
+        base = base.filter((student) => String(student?.grade || "").trim() === selectedStudentGrade);
+      }
+      if (selectedStudentSection !== "All") {
+        base = base.filter((student) => String(student?.section || "").trim().toUpperCase() === selectedStudentSection);
+      }
+    }
+
+    const query = searchText.trim().toLowerCase();
+    if (!query) return base;
+    return base.filter((user) => {
+      const haystack = [user?.name, user?.grade, user?.section, user?.officeRole, officeRoleLabel(user?.officeRole)]
+        .map((value) => String(value || "").toLowerCase())
+        .join(" ");
+      return haystack.includes(query);
+    });
+  }, [selectedTab, teachers, students, parents, managements, searchText, selectedStudentGrade, selectedStudentSection]);
+
+  const isUserOnline = (userId) => {
+    if (!userId) return false;
+    const direct = presence?.[userId];
+    if (typeof direct === "boolean") return direct;
+    if (typeof direct === "number") return isOnlineFromLastSeen(direct);
+    if (typeof direct === "object" && direct) {
+      const ts = direct?.lastSeen || direct?.timeStamp || direct?.timestamp || 0;
+      if (direct?.online === true) return true;
+      return isOnlineFromLastSeen(ts);
+    }
+    const lastSeen = teachers.concat(students, parents, managements).find((user) => String(user.userId || "") === String(userId || ""))?.lastSeen;
+    return isOnlineFromLastSeen(lastSeen);
+  };
+
+  const tabTitle = selectedTab === "management" ? "Management" : selectedTab.charAt(0).toUpperCase() + selectedTab.slice(1);
+  const listCount = list.length;
+  const isStudentFilterActive = selectedStudentGrade !== "All" || selectedStudentSection !== "All";
 
   return (
     <div
@@ -314,13 +1366,11 @@ function AllChat() {
         display: "flex",
         height: "calc(100dvh - var(--topbar-height, 0px))",
         marginTop: "var(--topbar-height, 0px)",
-        background:
-          "radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 38%), linear-gradient(180deg, #f6f9ff 0%, #eef4ff 100%)",
-        width: "100%",
-        boxSizing: "border-box",
+        background: "#ffffff",
         position: "relative",
         padding: isMobile ? 0 : 14,
         gap: isMobile ? 0 : 12,
+        fontFamily: "Segoe UI, Arial, sans-serif",
       }}
     >
       <div
@@ -343,261 +1393,887 @@ function AllChat() {
       >
         <div
           style={{
-            width: isMobile && !selectedChatUser ? "100vw" : sidebarOpen ? (isMobile ? 220 : 280) : 0,
+            width: isMobile && !selectedChatUser ? "100vw" : sidebarOpen ? (isMobile ? 230 : 320) : 0,
             height: isMobile && !selectedChatUser ? "calc(100dvh - var(--topbar-height, 0px))" : "auto",
-            background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+            background: "#ffffff",
             padding: sidebarOpen || (isMobile && !selectedChatUser) ? 16 : 0,
-            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? "0 16px 30px rgba(15, 23, 42, 0.12)" : "none",
-            border: sidebarOpen || (isMobile && !selectedChatUser) ? "1px solid rgba(191, 219, 254, 0.9)" : "none",
-            borderRadius: isMobile ? 0 : 14,
+            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? "0 16px 30px rgba(15, 23, 42, 0.08)" : "none",
+            border: sidebarOpen || (isMobile && !selectedChatUser) ? "1px solid #e2e8f0" : "none",
+            borderRadius: isMobile ? 0 : 22,
             display: sidebarOpen || (isMobile && !selectedChatUser) ? "flex" : "none",
             flexDirection: "column",
             transition: "width 180ms ease",
             overflowY: isMobile && !selectedChatUser ? "auto" : "visible",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-            <button onClick={() => navigate(-1)} style={{ border: "1px solid #bfdbfe", background: "linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%)", padding: 6, cursor: "pointer", borderRadius: 999, color: "#1e40af", boxShadow: "0 8px 16px rgba(30, 64, 175, 0.15)" }}>
-              <FaArrowLeft size={18} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={() => navigate(-1)}
+              style={{
+                border: "1px solid #dbeafe",
+                background: "#ffffff",
+                padding: 8,
+                cursor: "pointer",
+                borderRadius: 999,
+                color: "#007AFB",
+                boxShadow: "0 2px 8px rgba(15, 23, 42, 0.08)",
+              }}
+              aria-label="Go back"
+            >
+              <FaArrowLeft size={16} />
             </button>
-            <div style={{ display: "flex", gap: 6, margin: "12px 0", alignItems: "center", background: "#ffffff", border: "1px solid #dbeafe", borderRadius: 999, padding: 4, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.9), 0 6px 14px rgba(15,23,42,0.05)" }}>
-              {["teacher", "student", "parent"].map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => {
-                    setSelectedTab(tab);
-                    setSelectedChatUser(null);
-                    setActiveChatKey("");
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: 8,
-                    borderRadius: 20,
-                    border: "none",
-                    background: selectedTab === tab ? "linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%)" : "transparent",
-                    color: selectedTab === tab ? "#fff" : "#475569",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 800,
-                    boxShadow: selectedTab === tab ? "0 8px 16px rgba(37,99,235,0.25)" : "none",
-                  }}
-                >
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                </button>
-              ))}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>Chats</div>
+              <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>Telegram-like focus, school-safe communication</div>
             </div>
           </div>
 
-          <input
-            type="text"
-            placeholder="Search..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ width: "100%", marginBottom: 10, padding: 10, borderRadius: 999, border: "1px solid #cbd5e1", outline: "none", background: "#f8fafc", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.06)" }}
-          />
-
-          <div style={{ marginTop: 8, overflowY: "auto", flex: 1 }}>
-            {list.map((u) => (
-              <div
-                key={u.userId}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+              gap: 4,
+              paddingBlock: 4,
+              paddingInline: 2,
+              marginBottom: 10,
+              alignItems: "center",
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 999,
+              padding: 4,
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7)",
+            }}
+          >
+            {["teacher", "student", "parent", "management"].map((tab) => (
+              <button
+                key={tab}
                 onClick={() => {
-                  setSelectedChatUser(u);
-                  setActiveChatKey("");
-                  if (isMobile) setSidebarOpen(false);
+                  setSelectedTab(tab);
+                  setSelectedChatUser(null);
+                  setCurrentChatKey(null);
+                  if (tab !== "student") {
+                    setShowStudentFilters(false);
+                    setSelectedStudentGrade("All");
+                    setSelectedStudentSection("All");
+                  }
                 }}
                 style={{
+                  padding: 8,
+                  borderRadius: 999,
+                  border: "none",
+                  background: selectedTab === tab ? "#007AFB" : "transparent",
+                  color: selectedTab === tab ? "#fff" : "#475569",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: 0.2,
+                  boxShadow: selectedTab === tab ? "0 8px 16px rgba(0,122,251,0.22)" : "none",
+                }}
+              >
+                {tab === "management" ? "Mgmt" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          <div
+            style={{
+              marginTop: showSearchFilterCard ? 6 : 0,
+              marginBottom: showSearchFilterCard ? 10 : 2,
+              padding: showSearchFilterCard ? "10px 12px" : "0px 12px",
+              background: "#ffffff",
+              border: showSearchFilterCard ? "1px solid #e2e8f0" : "1px solid transparent",
+              borderRadius: 14,
+              maxHeight: showSearchFilterCard ? 360 : 0,
+              opacity: showSearchFilterCard ? 1 : 0,
+              overflow: "hidden",
+              transform: showSearchFilterCard ? "translateY(0)" : "translateY(-8px)",
+              transition: "max-height 220ms ease, opacity 200ms ease, transform 220ms ease, margin 220ms ease, padding 220ms ease, border-color 220ms ease",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, color: "#334155", fontSize: 12, fontWeight: 700 }}>
+              <span>{tabTitle} Contacts</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {selectedTab === "student" ? (
+                  <button
+                    onClick={() => setShowStudentFilters((value) => !value)}
+                    style={{
+                      border: "1px solid #bfdbfe",
+                      background: showStudentFilters ? "#007AFB" : "#ffffff",
+                      color: showStudentFilters ? "#ffffff" : "#007AFB",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <FaFilter size={11} />
+                    {showStudentFilters ? "Hide Filters" : "Filters"}
+                    {!showStudentFilters && isStudentFilterActive ? (
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: 999,
+                          background: showStudentFilters ? "#ffffff" : "#007AFB",
+                          boxShadow: "0 0 0 2px rgba(37,99,235,0.18)",
+                        }}
+                      />
+                    ) : null}
+                  </button>
+                ) : null}
+                <span style={{ color: "#007AFB" }}>{listCount}</span>
+              </div>
+            </div>
+            <input
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder={`Search ${selectedTab}s...`}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", outline: "none", fontSize: 13 }}
+            />
+
+            {selectedTab === "student" && showStudentFilters ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px",
+                  border: "1px solid #dbeafe",
+                  borderRadius: 12,
+                  background: "#ffffff",
+                  boxShadow: "0 5px 12px rgba(15,23,42,0.06)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "#007AFB" }}>Filter Students</span>
+                  <button
+                    onClick={() => {
+                      setSelectedStudentGrade("All");
+                      setSelectedStudentSection("All");
+                    }}
+                    style={{
+                      border: "1px solid #bfdbfe",
+                      background: "#ffffff",
+                      color: "#007AFB",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      padding: "3px 8px",
+                      borderRadius: 999,
+                    }}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+                  <select
+                    value={selectedStudentGrade}
+                    onChange={(event) => {
+                      setSelectedStudentGrade(event.target.value);
+                      setSelectedStudentSection("All");
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      fontSize: 12,
+                      color: "#0f172a",
+                      fontWeight: 500,
+                      outline: "none",
+                    }}
+                  >
+                    <option value="All">All Grades</option>
+                    {availableStudentGrades.map((grade) => (
+                      <option key={grade} value={grade}>{`Grade ${grade}`}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={selectedStudentSection}
+                    onChange={(event) => setSelectedStudentSection(event.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      fontSize: 12,
+                      color: "#0f172a",
+                      fontWeight: 500,
+                      outline: "none",
+                    }}
+                  >
+                    <option value="All">All Sections</option>
+                    {availableStudentSections.map((section) => (
+                      <option key={section} value={section}>{`Section ${section}`}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : null}
+
+            {selectedTab === "student" && !showStudentFilters && isStudentFilterActive ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "7px 8px",
+                  borderRadius: 10,
+                  border: "1px solid #bfdbfe",
+                  background: "#eff6ff",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  gap: 10,
-                  padding: isMobile ? 18 : 10,
-                  borderRadius: 14,
-                  cursor: "pointer",
-                  marginBottom: 8,
-                  background: selectedChatUser?.userId === u.userId ? "linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%)" : "#ffffff",
-                  border: selectedChatUser?.userId === u.userId ? "1px solid #93c5fd" : "1px solid #e2e8f0",
-                  boxShadow: selectedChatUser?.userId === u.userId ? "0 10px 20px rgba(37, 99, 235, 0.20)" : "0 4px 10px rgba(15,23,42,0.05)",
-                  fontSize: isMobile ? 18 : 15,
+                  gap: 8,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ position: "relative" }}>
-                    <img
-                      src={u.profileImage}
-                      alt={u.name}
-                      onError={(e) => (e.currentTarget.src = "/default-profile.png")}
-                      style={{ width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 4px 10px rgba(15,23,42,0.12)" }}
-                    />
-                    <span
-                      style={{
-                        position: "absolute",
-                        right: -2,
-                        bottom: -2,
-                        width: 12,
-                        height: 12,
-                        borderRadius: 12,
-                        border: "2px solid #fff",
-                        background: isOnlineFromLastSeen(u.lastSeen) ? "#34D399" : "#cbd5e1",
-                      }}
-                    />
-                  </div>
-                  <span style={{ fontWeight: 500 }}>{u.name}</span>
-                </div>
-
-                {u.unread > 0 ? (
-                  <div style={{ minWidth: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", color: "#fff", borderRadius: 14, padding: "0 6px", fontSize: 12, fontWeight: 600 }}>
-                    {u.unread > 99 ? "99+" : u.unread}
-                  </div>
-                ) : (
-                  <div style={{ width: 26 }} />
-                )}
+                <span style={{ fontSize: 10, color: "#1e3a8a", fontWeight: 700 }}>
+                  Active filter: {selectedStudentGrade !== "All" ? `Grade ${selectedStudentGrade}` : "All Grades"}
+                  {" · "}
+                  {selectedStudentSection !== "All" ? `Section ${selectedStudentSection}` : "All Sections"}
+                </span>
+                <button
+                  onClick={() => {
+                    setSelectedStudentGrade("All");
+                    setSelectedStudentSection("All");
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "#007AFB",
+                    fontSize: 10,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  Reset
+                </button>
               </div>
-            ))}
+            ) : null}
+
+            <div style={{ marginTop: 8, fontSize: 11, color: "#64748b" }}>
+              {teachers.length} Teachers · {students.length} Students · {parents.length} Parents · {managements.length} Management
+            </div>
+          </div>
+
+          <div
+            ref={contactScrollRef}
+            onScroll={handleContactListScroll}
+            style={{ marginTop: 4, overflowY: "auto", flex: 1, paddingRight: 2 }}
+          >
+            {loadingContacts ? (
+              <div style={{ padding: "12px 8px", color: "#64748b", fontSize: 13 }}>Loading permitted contacts...</div>
+            ) : list.length === 0 ? (
+              <div style={{ padding: "12px 8px", color: "#64748b", fontSize: 13 }}>
+                {searchText.trim() ? "No matching contacts." : `No permitted ${selectedTab} contacts.`}
+              </div>
+            ) : null}
+
+            {list.map((user) => {
+              const isActive = selectedChatUser?.userId === user.userId;
+              const unread = unreadCounts[user.userId] || 0;
+
+              return (
+                <div
+                  key={user.userId}
+                  onClick={() => {
+                    setSelectedChatUser(user);
+                    setCurrentChatKey(null);
+                    if (isMobile) setSidebarOpen(false);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: isMobile ? 16 : 11,
+                    borderRadius: 14,
+                    cursor: "pointer",
+                    marginBottom: 9,
+                    background: "#ffffff",
+                    border: isActive ? "1px solid #93c5fd" : "1px solid #e5e7eb",
+                    boxShadow: isActive ? "inset 3px 0 0 #007AFB, 0 8px 18px rgba(0,122,251,0.12)" : "0 2px 8px rgba(15,23,42,0.05)",
+                    transition: "all 160ms ease",
+                    fontSize: isMobile ? 17 : 14,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <div style={{ position: "relative", flexShrink: 0 }}>
+                      <ProfileAvatar src={user.profileImage} name={user.name} alt={user.name} loading="lazy" style={{ width: isMobile ? 38 : 42, height: isMobile ? 38 : 42, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 4px 10px rgba(15,23,42,0.12)" }} />
+                      <span
+                        style={{
+                          position: "absolute",
+                          right: -2,
+                          bottom: -2,
+                          width: 12,
+                          height: 12,
+                          borderRadius: 12,
+                          border: "2px solid #fff",
+                          background: isUserOnline(user.userId) ? "#22c55e" : "#cbd5e1",
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                      <span style={{ fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</span>
+                      <span style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {isUserOnline(user.userId)
+                          ? "Online now"
+                          : getLastSeenText(presence?.[user.userId] || user.lastSeen) || (selectedTab === "student" ? `Grade ${user.grade || "-"} · ${user.section || "-"}` : selectedTab === "management" ? officeRoleLabel(user.officeRole) : tabTitle)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {unread > 0 ? (
+                    <div
+                      style={{
+                        minWidth: 26,
+                        height: 26,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        background: "#ef4444",
+                        color: "#fff",
+                        borderRadius: 14,
+                        padding: "0 6px",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        boxShadow: "0 4px 10px rgba(239,68,68,0.25)",
+                      }}
+                    >
+                      {unread > 99 ? "99+" : unread}
+                    </div>
+                  ) : (
+                    <div style={{ width: 26 }} />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        <div style={{ width: 28, display: "flex", alignItems: "flex-start", justifyContent: "center" }}>
-          <button onClick={() => setSidebarOpen((s) => !s)} style={{ border: "1px solid #bfdbfe", background: "linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%)", borderRadius: 10, padding: 4, boxShadow: "0 8px 16px rgba(15, 23, 42, 0.12)", cursor: "pointer", marginTop: 8, color: "#1e40af" }} aria-label="Toggle sidebar">
-            {sidebarOpen ? "‹" : "›"}
-          </button>
-        </div>
+        {!isMobile && (
+          <div style={{ width: 44, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 10 }}>
+            <button
+              onClick={() => setSidebarOpen((value) => !value)}
+              style={{
+                width: 40,
+                height: 74,
+                border: "1px solid #007AFB",
+                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 90%, #e5eaf0 100%)",
+                borderRadius: 18,
+                padding: 0,
+                boxShadow: "0 14px 24px rgba(15, 23, 42, 0.1)",
+                cursor: "pointer",
+                color: "#007AFB",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
+              }}
+              title={sidebarOpen ? "Collapse contacts" : "Expand contacts"}
+              aria-label="Toggle sidebar"
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 4,
+                  height: 24,
+                  borderRadius: 999,
+                  background: "linear-gradient(180deg, #bfdbfe 0%, #60a5fa 100%)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.75)",
+                }}
+              />
+              <span
+                aria-hidden="true"
+                style={{
+                  fontSize: 18,
+                  lineHeight: 1,
+                  fontWeight: 800,
+                  letterSpacing: "-0.08em",
+                  transform: sidebarOpen ? "translateX(-1px)" : "translateX(1px)",
+                }}
+              >
+                {sidebarOpen ? "‹" : "›"}
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
-      <div style={{ flex: 1, padding: isMobile ? 10 : 14, display: "flex", flexDirection: "column", background: "linear-gradient(180deg, #ffffff 0%, #f9fbff 100%)", border: "1px solid #dbeafe", borderRadius: isMobile ? 0 : 16, boxShadow: "0 16px 30px rgba(15, 23, 42, 0.10)" }}>
+      <div
+        style={{
+          flex: 1,
+          padding: isMobile ? 10 : 14,
+          display: "flex",
+          flexDirection: "column",
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: isMobile ? 0 : 18,
+          boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)",
+        }}
+      >
         {selectedChatUser ? (
           <>
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
+                justifyContent: "space-between",
                 gap: 12,
-                padding: "10px 12px",
-                borderBottom: "1px solid #e2e8f0",
-                boxShadow: "0 8px 18px rgba(15, 23, 42, 0.08)",
-                background: "linear-gradient(180deg, #ffffff 0%, #f1f5ff 100%)",
-                borderRadius: 10,
-                marginBottom: 8,
+                padding: "12px 14px",
+                borderBottom: "1px solid #eef2f7",
+                boxShadow: "none",
+                background: "#ffffff",
+                borderRadius: 12,
+                marginBottom: 10,
               }}
             >
-              {isMobile && (
-                <button
-                  onClick={() => setSelectedChatUser(null)}
-                  style={{ border: "none", background: "none", padding: 4, marginRight: 8, cursor: "pointer", fontSize: 20 }}
-                  aria-label="Back to user list"
-                >
-                  <FaArrowLeft size={22} />
-                </button>
-              )}
-              <img
-                src={selectedChatUser.profileImage}
-                alt={selectedChatUser.name}
-                onError={(e) => (e.currentTarget.src = "/default-profile.png")}
-                style={{ width: isMobile ? 40 : 50, height: isMobile ? 40 : 50, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 4px 10px rgba(15,23,42,0.12)" }}
-              />
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <span style={{ fontWeight: 600, fontSize: 16 }}>{selectedChatUser.name}</span>
-                <div style={{ fontSize: 12, color: isOnlineFromLastSeen(lastSeen) ? "#16A34A" : "#666" }}>
-                  {typing
-                    ? "Typing..."
-                    : isOnlineFromLastSeen(lastSeen)
-                    ? "Online"
-                    : getLastSeenText(lastSeen) || "last seen recently"}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                {isMobile && (
+                  <button
+                    onClick={() => setSelectedChatUser(null)}
+                    style={{ border: "none", background: "none", padding: 4, cursor: "pointer", color: "#1d4ed8" }}
+                    aria-label="Back to user list"
+                  >
+                    <FaArrowLeft size={20} />
+                  </button>
+                )}
+
+                <ProfileAvatar src={selectedChatUser.profileImage} name={selectedChatUser.name} alt={selectedChatUser.name} style={{ width: isMobile ? 42 : 50, height: isMobile ? 42 : 50, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 6px 12px rgba(15,23,42,0.12)" }} />
+
+                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{selectedChatUser.name}</span>
+                  <span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? "#16A34A" : "#64748b" }}>
+                    {isUserOnline(selectedChatUser.userId)
+                      ? "Online"
+                      : getLastSeenText(presence?.[selectedChatUser.userId] || selectedChatUser.lastSeen) || tabTitle}
+                  </span>
                 </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#007AFB", background: "#FFFFFF", border: "1px solid #007AFB", padding: "5px 10px", borderRadius: 999 }}>
+                  {selectedTab === "management" ? officeRoleLabel(selectedChatUser?.officeRole) : tabTitle}
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", background: "#f8fafc", border: "1px solid #e2e8f0", padding: "5px 10px", borderRadius: 999 }}>
+                  {messages.length} messages
+                </span>
               </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", background: "linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%)", borderRadius: 12, border: "1px solid #e2e8f0" }}>
-              {popupMessages.length === 0 ? (
-                <p style={{ color: "#475569", textAlign: "center", marginTop: 20 }}>Start chatting with {selectedChatUser.name}...</p>
-              ) : popupMessages.map(m => {
-                const isAdmin = m.sender === "admin";
-                const isSelected = activeMessageId === m.id;
-                if (m.deleted) return null;
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: "14px 16px",
+                display: "flex",
+                flexDirection: "column",
+                background: "#ffffff",
+                borderRadius: 14,
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              {displayItems.map((item, index) => {
+                if (item.type === "date") {
+                  return (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "center", margin: "8px 0 10px" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 999, padding: "6px 12px" }}>
+                        {item.label}
+                      </div>
+                    </div>
+                  );
+                }
+
+                const message = item;
+                const isAdmin = message.isAdmin;
+                const isEditing = !!editingMessages[message.id];
+                const isImageMessage = String(message?.type || "").toLowerCase() === "image" && !!message?.imageUrl;
+                const isDeletedMessage = !!message?.deleted;
+                const prev = index > 0 ? displayItems[index - 1] : null;
+                const prevSameSender = prev && prev.type === "message" && prev.senderId === message.senderId;
 
                 return (
                   <div
-                    key={m.id}
-                    onClick={() => setActiveMessageId(m.id)}
+                    key={message.id}
                     style={{
                       display: "flex",
                       flexDirection: "column",
                       alignItems: isAdmin ? "flex-end" : "flex-start",
-                      marginBottom: 12,
+                      marginBottom: 8,
                     }}
                   >
-                    {/* Message Bubble */}
                     <div
+                      onClick={() => handleTextBubbleClick(message.id)}
+                      onMouseDown={isAdmin && !message.deleted && !isImageMessage ? () => beginTextLongPress(message) : undefined}
+                      onMouseUp={isAdmin && !message.deleted && !isImageMessage ? cancelImageLongPress : undefined}
+                      onMouseLeave={isAdmin && !message.deleted && !isImageMessage ? cancelImageLongPress : undefined}
+                      onTouchStart={isAdmin && !message.deleted && !isImageMessage ? () => beginTextLongPress(message) : undefined}
+                      onTouchEnd={isAdmin && !message.deleted && !isImageMessage ? cancelImageLongPress : undefined}
+                      onTouchCancel={isAdmin && !message.deleted && !isImageMessage ? cancelImageLongPress : undefined}
+                      onContextMenu={isAdmin && !message.deleted && !isImageMessage ? (event) => {
+                        event.preventDefault();
+                        setTextMenu({ open: true, message });
+                      } : undefined}
                       style={{
-                        maxWidth: isMobile ? "85%" : "70%",
-                        background: isAdmin ? "linear-gradient(135deg, #1d4ed8, #2563eb 55%, #3b82f6)" : "#ffffff",
-                        color: isAdmin ? "#fff" : "#0f172a",
-                        padding: "8px 12px",
-                        borderRadius: 16,
-                        borderTopRightRadius: isAdmin ? 0 : 16,
-                        borderTopLeftRadius: isAdmin ? 16 : 0,
-                        boxShadow: isAdmin ? "0 10px 18px rgba(37, 99, 235, 0.28)" : "0 6px 12px rgba(15, 23, 42, 0.10)",
-                        border: isAdmin ? "none" : "1px solid #e2e8f0",
+                        maxWidth: isMobile ? "88%" : "76%",
+                        background: isAdmin ? "#007AFB" : "#f6f7fb",
+                        color: isAdmin ? "#fff" : "#111827",
+                        padding: isImageMessage ? 6 : "9px 13px",
+                        borderRadius: 14,
+                        borderTopRightRadius: isAdmin ? 6 : 14,
+                        borderTopLeftRadius: isAdmin ? 14 : 6,
+                        boxShadow: "0 2px 8px rgba(15, 23, 42, 0.08)",
+                        border: isAdmin ? "none" : "1px solid #e5e7eb",
                         wordBreak: "break-word",
-                        display: "flex",
-                        flexDirection: "column",
                         cursor: "pointer",
                         position: "relative",
+                        overflow: "visible",
+                        marginRight: isAdmin ? -12 : 0,
                       }}
                     >
-                      <div>{m.text}</div>
-                      {m.edited && <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>edited</div>}
-                      <div style={{ fontSize: 10, opacity: 0.9, display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
-                        <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
-                        <span>{formatTime(m.timeStamp)}</span>
-                        {isAdmin && !m.deleted && (
-                          <span style={{ display: "flex", gap: 0 }}>
-                            <FaCheck size={10} color="#fff" style={{ opacity: 0.8 }} />
-                            {m.seen && <FaCheck size={10} color="#f3f7f8" style={{ marginLeft: 2, opacity: 0.95 }} />}
+                      {!isAdmin && !prevSameSender ? (
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: -6,
+                            bottom: -2,
+                            width: 0,
+                            height: 0,
+                            borderLeft: "6px solid transparent",
+                            borderRight: "6px solid transparent",
+                            borderBottom: "8px solid #f6f7fb",
+                            transform: "rotate(180deg)",
+                          }}
+                        />
+                      ) : null}
+
+                      {isAdmin && !prevSameSender ? (
+                        <div
+                          style={{
+                            position: "absolute",
+                            right: -20,
+                            bottom: -2,
+                            width: 0,
+                            height: 0,
+                            borderLeft: "6px solid transparent",
+                            borderRight: "6px solid transparent",
+                            borderBottom: "8px solid #007AFB",
+                          }}
+                        />
+                      ) : null}
+
+                      {isDeletedMessage ? (
+                        <>
+                          <span style={{ fontStyle: "italic", color: isAdmin ? "rgba(255,255,255,0.92)" : "#64748b" }}>
+                            This message is deleted
                           </span>
-                        )}
-                      </div>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 10, color: isAdmin ? "rgba(255,255,255,0.85)" : "#64748b" }}>
+                            <span>{formatTime(message.timeStamp)}</span>
+                            {isAdmin ? (
+                              <span style={{ display: "flex", gap: 0 }}>
+                                <FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />
+                                {message.seen ? <FaCheck size={10} color="#ffffff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}
+                              </span>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : isImageMessage ? (
+                        <div
+                          style={{ width: isMobile ? 214 : 240, position: "relative" }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleImageClick(message.imageUrl);
+                          }}
+                          onMouseDown={() => beginImageLongPress(message)}
+                          onMouseUp={cancelImageLongPress}
+                          onMouseLeave={cancelImageLongPress}
+                          onTouchStart={() => beginImageLongPress(message)}
+                          onTouchEnd={cancelImageLongPress}
+                          onTouchCancel={cancelImageLongPress}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setImageMenu({ open: true, message });
+                          }}
+                        >
+                          <img
+                            src={message.imageUrl}
+                            alt="Chat"
+                            style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 12, display: "block", background: isAdmin ? "#0b61c3" : "#e2e8f0" }}
+                            onError={(event) => {
+                              event.currentTarget.style.opacity = 0.45;
+                            }}
+                          />
+                          <div
+                            style={{
+                              position: "absolute",
+                              right: 8,
+                              bottom: 8,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              background: isAdmin ? "rgba(2,6,23,0.24)" : "rgba(255,255,255,0.82)",
+                              borderRadius: 999,
+                              padding: "2px 8px",
+                              fontSize: 10,
+                              color: isAdmin ? "#f8fafc" : "#475569",
+                            }}
+                          >
+                            <span>{formatTime(message.timeStamp)}</span>
+                            {isAdmin && !message.deleted ? (
+                              <span style={{ display: "flex", alignItems: "center" }}>
+                                <FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />
+                                {message.seen ? <FaCheck size={10} color="#ffffff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          {message.text}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 10, color: isAdmin ? "rgba(255,255,255,0.85)" : "#64748b" }}>
+                            {message.edited ? <span style={{ fontSize: 10, fontStyle: "italic", opacity: 0.95 }}>edited</span> : null}
+                            <span>{formatTime(message.timeStamp)}</span>
+                            {isAdmin && !message.deleted ? (
+                              <span style={{ display: "flex", gap: 0 }}>
+                                <FaCheck size={10} color="#fff" style={{ opacity: 0.82 }} />
+                                {message.seen ? <FaCheck size={10} color="#ffffff" style={{ marginLeft: 2, opacity: 0.98 }} /> : null}
+                              </span>
+                            ) : null}
+                          </div>
+                        </>
+                      )}
                     </div>
 
-                    {isSelected && isAdmin && (
-                      <div style={{ display: "flex", gap: 6, marginTop: 4, fontSize: 12, justifyContent: "flex-end" }}>
-                        <button
-                          onClick={() => { setPopupInput(m.text); setEditingMsgId(m.id); }}
-                          style={{ padding: "3px 8px", borderRadius: 999, border: "1px solid #cbd5e1", cursor: "pointer", background: "#f8fafc", color: "#334155", fontWeight: 600 }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => deleteMessage(m.id)}
-                          style={{ padding: "3px 8px", borderRadius: 999, border: "1px solid #fecaca", cursor: "pointer", background: "#fef2f2", color: "#b91c1c", fontWeight: 600 }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
+                    {isEditing ? null : null}
                   </div>
                 );
               })}
-              <div ref={chatEndRef}></div>
+              <div ref={chatEndRef} />
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginTop: 10, padding: 8, borderRadius: 12, background: "#ffffff", border: "1px solid #dbeafe", boxShadow: "0 8px 18px rgba(15,23,42,0.08)" }}>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, padding: 8, borderRadius: 14, background: "#ffffff", border: "1px solid #e2e8f0", boxShadow: "0 6px 14px rgba(15,23,42,0.06)" }}>
               <input
-                value={popupInput}
-                onChange={handleTyping}
-                onKeyDown={e => e.key === "Enter" && sendPopupMessage()}
-                placeholder="Type a message..."
-                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 999, border: "1px solid #cbd5e1", outline: "none", background: "#f8fafc", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.06)" }}
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={sendImageMessage}
               />
-              <button onClick={sendPopupMessage} style={{ width: isMobile ? 40 : 45, height: isMobile ? 40 : 45, borderRadius: "50%", background: "linear-gradient(135deg, #1d4ed8, #2563eb 60%, #3b82f6)", border: "none", color: "#fff", display: "flex", justifyContent: "center", alignItems: "center", boxShadow: "0 10px 22px rgba(37, 99, 235, 0.32)" }}>
+              <button
+                onClick={() => imageInputRef.current?.click()}
+                style={{
+                  width: isMobile ? 42 : 46,
+                  height: isMobile ? 42 : 46,
+                  borderRadius: "50%",
+                  background: "#eff6ff",
+                  border: "1px solid #dbeafe",
+                  color: "#007AFB",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  cursor: imageSending ? "not-allowed" : "pointer",
+                  opacity: imageSending ? 0.65 : 1,
+                }}
+                disabled={imageSending}
+                aria-label="Attach image"
+              >
+                <FaImage />
+              </button>
+              <input
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && sendMessage()}
+                placeholder={Object.values(editingMessages).some(Boolean) ? "Edit your message..." : "Type a message..."}
+                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 999, border: "1px solid #d1d5db", outline: "none", background: "#ffffff", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.04)" }}
+              />
+              <button
+                onClick={sendMessage}
+                style={{
+                  width: isMobile ? 42 : 46,
+                  height: isMobile ? 42 : 46,
+                  borderRadius: "50%",
+                  background: "#007AFB",
+                  border: "none",
+                  color: "#fff",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  boxShadow: "0 8px 18px rgba(0, 122, 251, 0.25)",
+                  cursor: "pointer",
+                }}
+                aria-label="Send message"
+                disabled={imageSending}
+              >
                 <FaPaperPlane />
               </button>
             </div>
+
+            {previewImageUrl ? (
+              <div
+                onClick={() => setPreviewImageUrl("")}
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(2,6,23,0.85)",
+                  zIndex: 1200,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 20,
+                }}
+              >
+                <button
+                  onClick={() => setPreviewImageUrl("")}
+                  style={{
+                    position: "absolute",
+                    top: 18,
+                    right: 18,
+                    width: 36,
+                    height: 36,
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "rgba(15,23,42,0.5)",
+                    color: "#fff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                  }}
+                  aria-label="Close image"
+                >
+                  <FaTimes />
+                </button>
+                <img
+                  src={previewImageUrl}
+                  alt="Preview"
+                  onClick={(event) => event.stopPropagation()}
+                  style={{ maxWidth: "92vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 14 }}
+                />
+              </div>
+            ) : null}
+
+            {imageMenu.open ? (
+              <div
+                onClick={() => setImageMenu({ open: false, message: null })}
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(2,6,23,0.45)",
+                  zIndex: 1250,
+                  display: "flex",
+                  alignItems: "flex-end",
+                  justifyContent: "center",
+                  padding: 18,
+                }}
+              >
+                <div
+                  onClick={(event) => event.stopPropagation()}
+                  style={{
+                    width: "min(420px, 96vw)",
+                    background: "#fff",
+                    borderRadius: 16,
+                    border: "1px solid #e2e8f0",
+                    boxShadow: "0 20px 45px rgba(2,6,23,0.3)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <button
+                    onClick={async () => {
+                      await handleDownloadImage(imageMenu.message);
+                      setImageMenu({ open: false, message: null });
+                    }}
+                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#0f172a", cursor: "pointer" }}
+                  >
+                    Download image
+                  </button>
+                  {imageMenu?.message?.isAdmin ? (
+                    <button
+                      onClick={() => {
+                        if (imageMenu?.message?.id) {
+                          handleDeleteMessage(imageMenu.message.id);
+                        }
+                        setImageMenu({ open: false, message: null });
+                      }}
+                      style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#b91c1c", cursor: "pointer" }}
+                    >
+                      Delete image
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={() => setImageMenu({ open: false, message: null })}
+                    style={{ width: "100%", border: "none", background: "#fff", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#475569", cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {textMenu.open ? (
+              <div
+                onClick={() => setTextMenu({ open: false, message: null })}
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(2,6,23,0.45)",
+                  zIndex: 1251,
+                  display: "flex",
+                  alignItems: "flex-end",
+                  justifyContent: "center",
+                  padding: 18,
+                }}
+              >
+                <div
+                  onClick={(event) => event.stopPropagation()}
+                  style={{ width: "min(420px, 96vw)", background: "#fff", borderRadius: 16, border: "1px solid #e2e8f0", boxShadow: "0 20px 45px rgba(2,6,23,0.3)", overflow: "hidden" }}
+                >
+                  <button
+                    onClick={() => {
+                      if (textMenu?.message?.id) {
+                        handleEditMessage(textMenu.message.id);
+                      }
+                      setTextMenu({ open: false, message: null });
+                    }}
+                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#0f172a", cursor: "pointer" }}
+                  >
+                    Edit message
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (textMenu?.message?.id) {
+                        handleDeleteMessage(textMenu.message.id);
+                      }
+                      setTextMenu({ open: false, message: null });
+                    }}
+                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#b91c1c", cursor: "pointer" }}
+                  >
+                    Delete message
+                  </button>
+                  <button
+                    onClick={() => setTextMenu({ open: false, message: null })}
+                    style={{ width: "100%", border: "none", background: "#fff", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#475569", cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </>
         ) : (
           <div style={{ display: "grid", placeItems: "center", flex: 1 }}>
-            <div style={{ textAlign: "center", padding: 24, borderRadius: 16, border: "1px solid #dbeafe", background: "linear-gradient(180deg, #ffffff 0%, #eff6ff 100%)", boxShadow: "0 14px 28px rgba(15,23,42,0.10)" }}>
-              <h3 style={{ margin: 0, color: "#0f172a" }}>Select a user to start chatting 💬</h3>
-              <div style={{ marginTop: 8, color: "#475569", fontSize: 13 }}>Choose a teacher, student, or parent from the left panel.</div>
+            <div style={{ textAlign: "center", maxWidth: 420, padding: 26, borderRadius: 18, border: "1px solid #e2e8f0", background: "#ffffff", boxShadow: "0 8px 22px rgba(15,23,42,0.06)" }}>
+              <h3 style={{ margin: 0, color: "#0f172a", fontSize: 22 }}>Select a contact to start chatting</h3>
+              <div style={{ marginTop: 8, color: "#475569", fontSize: 14, lineHeight: 1.5 }}>
+                Choose from teachers, students, or parents in your school workspace.
+              </div>
             </div>
           </div>
         )}
@@ -605,5 +2281,3 @@ function AllChat() {
     </div>
   );
 }
-
-export default AllChat;

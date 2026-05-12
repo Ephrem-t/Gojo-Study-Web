@@ -1,11 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { FaSearch, FaUserShield, FaComments, FaChalkboardTeacher, FaUsers, FaExclamationTriangle, FaPlus } from "react-icons/fa";
-import Sidebar from "../components/Sidebar";
+import { FIREBASE_DATABASE_URL } from "../config.js";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  fetchJson,
+  mapInBatches,
+  parseChatParticipantIds,
+} from "../utils/chatRtdb";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
-const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const ROLE_SET_CACHE_TTL_MS = 15 * 60 * 1000;
+
+const RTDB_BASE = FIREBASE_DATABASE_URL;
 const DEFAULT_ALERT_KEYWORDS = ["abuse", "insult", "harass", "threat", "meeting outside", "money transfer"];
 const ALERT_KEYWORDS_STORAGE_KEY = "message_control_alert_keywords";
+const REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+const REFRESH_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 const readStoredAdmin = () => {
   try {
@@ -115,8 +127,12 @@ export default function MessageControl() {
   const [keywordsInput, setKeywordsInput] = useState(DEFAULT_ALERT_KEYWORDS.join(", "));
   const [draftKeywordsInput, setDraftKeywordsInput] = useState("");
   const [showKeywordModal, setShowKeywordModal] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
   const hasLoadedRef = useRef(false);
+  const refreshPromiseRef = useRef(null);
+  const lastMonitorInteractionAtRef = useRef(Date.now());
+  const userRecordCacheRef = useRef(new Map());
+  const [selectedConversationMessages, setSelectedConversationMessages] = useState([]);
+  const [selectedConversationMessagesLoading, setSelectedConversationMessagesLoading] = useState(false);
   const [isCompactLayout, setIsCompactLayout] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.innerWidth < 1180;
@@ -150,87 +166,187 @@ export default function MessageControl() {
   }, []);
 
   useEffect(() => {
-    if (!schoolCode) return;
-    const timerId = window.setInterval(() => {
-      setRefreshTick((value) => value + 1);
-    }, 7000);
+    const markInteraction = () => {
+      lastMonitorInteractionAtRef.current = Date.now();
+    };
 
-    return () => window.clearInterval(timerId);
-  }, [schoolCode]);
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markInteraction();
+    };
+
+    window.addEventListener("focus", markInteraction);
+    window.addEventListener("online", markInteraction);
+    window.addEventListener("pointerdown", markInteraction, { passive: true });
+    window.addEventListener("touchstart", markInteraction, { passive: true });
+    window.addEventListener("keydown", markInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markInteraction);
+      window.removeEventListener("online", markInteraction);
+      window.removeEventListener("pointerdown", markInteraction);
+      window.removeEventListener("touchstart", markInteraction);
+      window.removeEventListener("keydown", markInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!schoolCode) {
       setConversations([]);
       setSelectedChatId("");
+      setSelectedConversationMessages([]);
       hasLoadedRef.current = false;
+      refreshPromiseRef.current = null;
       return;
     }
 
-    const loadMonitorData = async () => {
-      setLoading(!hasLoadedRef.current);
-      setError("");
-      try {
-        const [
-          chatsRes,
-          usersRes,
-          teachersRes,
-          studentsRes,
-          parentsRes,
-          managementRes,
-          hrRes,
-          registerersRes,
-          schoolAdminsRes,
-        ] = await Promise.all([
-          axios.get(`${SCHOOL_DB_ROOT}/Chats.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Teachers.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Management.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/HR.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/Registerers.json`).catch(() => ({ data: {} })),
-          axios.get(`${SCHOOL_DB_ROOT}/School_Admins.json`).catch(() => ({ data: {} })),
-        ]);
+    const loadMonitorData = async ({ reason = "active" } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const recentInteraction = Date.now() - lastMonitorInteractionAtRef.current < REFRESH_IDLE_GRACE_MS;
+      const isUserDriven = reason !== "passive";
 
-        const chats = chatsRes.data || {};
-        const users = usersRes.data || {};
+      if (!isUserDriven && (!isVisible || !isOnline || !recentInteraction)) {
+        return;
+      }
 
-        const toUserSet = (source) =>
-          new Set(
-            Object.values(source || {})
-              .map((item) => String(item?.userId || "").trim())
-              .filter(Boolean)
+      if (refreshPromiseRef.current) {
+        return refreshPromiseRef.current;
+      }
+
+      const requestPromise = (async () => {
+        setLoading(!hasLoadedRef.current);
+        setError("");
+        try {
+          const readUserRecord = async (userId) => {
+            const normalizedUserId = String(userId || "").trim();
+            if (!normalizedUserId) {
+              return {};
+            }
+
+            const cacheKey = `${schoolCode}:${normalizedUserId}`;
+            if (userRecordCacheRef.current.has(cacheKey)) {
+              return userRecordCacheRef.current.get(cacheKey) || {};
+            }
+
+            let record = {};
+            try {
+              record = await fetchJson(
+                `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(normalizedUserId)}.json`,
+                {}
+              );
+            } catch {
+              record = {};
+            }
+
+            if (!record || typeof record !== "object" || Array.isArray(record)) {
+              record = {};
+            }
+
+            if (!Object.keys(record).length) {
+              const orderByUserId = encodeURIComponent('"userId"');
+              const equalToUserId = encodeURIComponent(`"${normalizedUserId}"`);
+              const queriedUsers = await fetchJson(
+                `${SCHOOL_DB_ROOT}/Users.json?orderBy=${orderByUserId}&equalTo=${equalToUserId}&limitToFirst=1`,
+                {}
+              );
+              const firstMatch = Object.values(queriedUsers || {}).find(
+                (candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)
+              );
+              record = firstMatch || {};
+            }
+
+            userRecordCacheRef.current.set(cacheKey, record);
+            return record;
+          };
+
+          const [
+            teachersRes,
+            studentsRes,
+            parentsRes,
+            managementRes,
+            hrRes,
+            registerersRes,
+            schoolAdminsRes,
+            chatIndex,
+          ] = await Promise.all([
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/TeacherDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/StudentDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchCachedJson(`${SCHOOL_DB_ROOT}/ParentDirectory.json`, { ttlMs: ROLE_SET_CACHE_TTL_MS, fallbackValue: {} }),
+            fetchJson(`${SCHOOL_DB_ROOT}/Management.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/HR.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/Registerers.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/School_Admins.json`, {}),
+            fetchJson(`${SCHOOL_DB_ROOT}/Chats.json?shallow=true`, {}),
+          ]);
+
+          const chatIds = Object.keys(chatIndex || {});
+
+          const toUserSet = (source) =>
+            new Set(
+              Object.values(source || {})
+                .map((item) => String(item?.userId || "").trim())
+                .filter(Boolean)
+            );
+
+          const roleSets = {
+            teachers: toUserSet(teachersRes),
+            students: toUserSet(studentsRes),
+            parents: toUserSet(parentsRes),
+            registerers: toUserSet(registerersRes),
+            finance: toUserSet(hrRes),
+            academic: new Set([...toUserSet(managementRes), ...toUserSet(schoolAdminsRes)]),
+          };
+
+          const parsedChatMetadata = await mapInBatches(chatIds, 20, async (chatId) => {
+            const encodedChatId = encodeURIComponent(chatId);
+            const [participantsNode, messageKeys, lastMessageNode] = await Promise.all([
+              fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/participants.json`, {}),
+              fetchJson(`${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?shallow=true`, {}),
+              fetchJson(
+                `${SCHOOL_DB_ROOT}/Chats/${encodedChatId}/messages.json?orderBy=${encodeURIComponent('"$key"')}&limitToLast=1`,
+                {}
+              ),
+            ]);
+            const participantIds = parseChatParticipantIds(chatId, participantsNode);
+            const lastMessageValue = Object.values(lastMessageNode || {})[0] || {};
+
+            return {
+              chatId,
+              participantIds,
+              messageCount: Object.keys(messageKeys || {}).length,
+              lastMessageText: String(lastMessageValue?.text || lastMessageValue?.message || "").trim(),
+              lastMessageTime: Number(
+                lastMessageValue?.timeStamp || lastMessageValue?.timestamp || lastMessageValue?.sentAt || 0
+              ),
+            };
+          });
+
+          const uniqueParticipantIds = Array.from(
+            new Set(
+              parsedChatMetadata
+                .flatMap((chat) => chat?.participantIds || [])
+                .map((value) => String(value || "").trim())
+                .filter(Boolean)
+            )
           );
 
-        const roleSets = {
-          teachers: toUserSet(teachersRes.data),
-          students: toUserSet(studentsRes.data),
-          parents: toUserSet(parentsRes.data),
-          registerers: toUserSet(registerersRes.data),
-          finance: toUserSet(hrRes.data),
-          academic: new Set([...toUserSet(managementRes.data), ...toUserSet(schoolAdminsRes.data)]),
-        };
+          const usersById = new Map();
+          await mapInBatches(uniqueParticipantIds, 24, async (participantUserId) => {
+            const userRecord = await readUserRecord(participantUserId);
+            usersById.set(participantUserId, userRecord || {});
+            return null;
+          });
 
-        const parsedChats = Object.entries(chats)
-          .map(([chatId, chatNode]) => {
-            const participantsFromNode = Object.keys(chatNode?.participants || {});
-            const participantsFromKey = String(chatId || "").split("_").filter(Boolean);
-            const participantIds = Array.from(new Set([...participantsFromNode, ...participantsFromKey]));
-
-            const messages = Object.entries(chatNode?.messages || {})
-              .map(([messageId, messageValue]) => ({
-                id: messageId,
-                ...messageValue,
-                timeStamp: Number(messageValue?.timeStamp || 0),
-              }))
-              .sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0));
-
-            const lastMessageFromNode = chatNode?.lastMessage || null;
-            const lastMessageFromMessages = messages[messages.length - 1] || null;
-            const lastMessage = lastMessageFromNode || lastMessageFromMessages;
-
-            const participants = participantIds.slice(0, 2).map((id) => {
-              const userNode = users[id] || {};
+          const parsedChats = parsedChatMetadata.map((chatMetadata) => {
+            const participants = (chatMetadata.participantIds || []).slice(0, 2).map((id) => {
+              const userNode = usersById.get(id) || {};
               const role = resolveUserRole(id, userNode, roleSets);
 
               return {
@@ -244,43 +360,89 @@ export default function MessageControl() {
             const leftRole = participants[0]?.role || "user";
             const rightRole = participants[1]?.role || "user";
             const category = getPairCategory(leftRole, rightRole);
-            const unreadNode = chatNode?.unread || {};
-            const unreadTotal = Object.values(unreadNode).reduce(
-              (sum, value) => sum + Number(value || 0),
-              0
-            );
 
             return {
-              chatId,
+              chatId: chatMetadata.chatId,
               participants,
               category,
               categoryLabel: pairCategoryLabel[category] || "Other",
-              messageCount: messages.length,
-              unreadTotal,
-              lastMessageText: String(lastMessage?.text || "").trim() || "No text",
-              lastMessageTime: Number(lastMessage?.timeStamp || 0),
-              messages,
+              messageCount: Number(chatMetadata.messageCount || 0),
+              unreadTotal: 0,
+              lastMessageText: String(chatMetadata.lastMessageText || "").trim(),
+              lastMessageTime: Number(chatMetadata.lastMessageTime || 0),
+              messages: [],
             };
           })
-          .sort((left, right) => Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0));
+            .filter(Boolean)
+            .sort((left, right) => Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0));
 
-        setConversations(parsedChats);
-        setSelectedChatId((previousChatId) => {
-          if (previousChatId && parsedChats.some((chat) => chat.chatId === previousChatId)) {
-            return previousChatId;
+          if (cancelled) {
+            return;
           }
-          return "";
-        });
-      } catch (requestError) {
-        setError("Failed to load chat monitor data.");
-      } finally {
-        hasLoadedRef.current = true;
-        setLoading(false);
-      }
+
+          setConversations(parsedChats);
+          setSelectedChatId((previousChatId) => {
+            if (previousChatId && parsedChats.some((chat) => chat.chatId === previousChatId)) {
+              return previousChatId;
+            }
+            return "";
+          });
+        } catch (requestError) {
+          if (!cancelled) {
+            setError("Failed to load chat monitor data.");
+          }
+        } finally {
+          if (!cancelled) {
+            hasLoadedRef.current = true;
+            setLoading(false);
+          }
+        }
+      })();
+
+      refreshPromiseRef.current = requestPromise;
+      requestPromise.finally(() => {
+        if (refreshPromiseRef.current === requestPromise) {
+          refreshPromiseRef.current = null;
+        }
+      });
+
+      return requestPromise;
     };
 
-    loadMonitorData();
-  }, [SCHOOL_DB_ROOT, schoolCode, refreshTick]);
+    const runFocusedRefresh = () => {
+      lastMonitorInteractionAtRef.current = Date.now();
+      void loadMonitorData({ reason: "active" });
+    };
+
+    const runPassiveRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      void loadMonitorData({ reason: "passive" });
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+
+    const intervalId = window.setInterval(runPassiveRefresh, REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [SCHOOL_DB_ROOT, schoolCode]);
 
   const filteredConversations = useMemo(() => {
     const query = String(searchQuery || "").trim().toLowerCase();
@@ -302,21 +464,28 @@ export default function MessageControl() {
   const enrichedConversations = useMemo(
     () =>
       filteredConversations.map((conversation) => {
-        const flaggedMessages = conversation.messages.filter((message) => {
-          const matches = getMatchedKeywords(message?.text, alertKeywords);
-          return matches.length > 0;
-        });
+        const flaggedMessages = conversation.chatId === selectedChatId
+          ? selectedConversationMessages.filter((message) => {
+              const matches = getMatchedKeywords(message?.text, alertKeywords);
+              return matches.length > 0;
+            })
+          : getMatchedKeywords(conversation.lastMessageText, alertKeywords).length > 0
+            ? [{ id: `${conversation.chatId}-last-message-flag` }]
+            : [];
 
         return {
           ...conversation,
           flaggedCount: flaggedMessages.length,
         };
       }),
-    [filteredConversations, alertKeywords]
+    [alertKeywords, filteredConversations, selectedChatId, selectedConversationMessages]
   );
 
   const selectedConversation =
     enrichedConversations.find((conversation) => conversation.chatId === selectedChatId) || null;
+
+  const displayedSelectedConversationMessages =
+    selectedConversation?.chatId === selectedChatId ? selectedConversationMessages : [];
 
   const stats = useMemo(() => {
     const base = {
@@ -336,7 +505,9 @@ export default function MessageControl() {
   }, [enrichedConversations]);
 
   const handleSelectConversation = async (chatId) => {
+    const selectedConversation = conversations.find((conversation) => conversation.chatId === chatId) || null;
     setSelectedChatId(chatId);
+    setSelectedConversationMessages([]);
     setConversations((previousConversations) =>
       previousConversations.map((conversation) =>
         conversation.chatId === chatId
@@ -346,24 +517,88 @@ export default function MessageControl() {
     );
 
     try {
-      const unreadSnapshot = await axios
-        .get(`${SCHOOL_DB_ROOT}/Chats/${chatId}/unread.json`)
-        .catch(() => ({ data: {} }));
-      const unreadNode = unreadSnapshot.data || {};
-      const resetPayload = Object.keys(unreadNode).reduce((payload, key) => {
-        payload[key] = 0;
-        return payload;
-      }, {});
-
-      if (Object.keys(resetPayload).length > 0) {
-        await axios.patch(`${SCHOOL_DB_ROOT}/Chats/${chatId}/unread.json`, resetPayload);
-      }
+      const participants = Array.isArray(selectedConversation?.participants) ? selectedConversation.participants : [];
+      await Promise.all(
+        participants
+          .filter((participant) => String(participant?.userId || "").trim())
+          .map((participant) => {
+            const otherParticipant = participants.find(
+              (candidate) => String(candidate?.userId || "").trim() !== String(participant?.userId || "").trim()
+            );
+            return axios.patch(
+              `${SCHOOL_DB_ROOT}/${buildChatSummaryPath(participant.userId, chatId)}.json`,
+              buildChatSummaryUpdate({
+                chatId,
+                otherUserId: otherParticipant?.userId || "",
+                unreadCount: 0,
+              })
+            );
+          })
+      );
     } catch {
       // keep UI updated even if remote reset fails
     }
   };
 
+  useEffect(() => {
+    if (!selectedChatId || !schoolCode) {
+      setSelectedConversationMessages([]);
+      setSelectedConversationMessagesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadConversationMessages = async () => {
+      setSelectedConversationMessagesLoading(true);
+      try {
+        const messagesNode = await fetchJson(
+          `${SCHOOL_DB_ROOT}/Chats/${encodeURIComponent(selectedChatId)}/messages.json`,
+          {}
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        const parsedMessages = Object.entries(messagesNode || {})
+          .map(([messageId, messageValue]) => ({
+            id: messageId,
+            ...messageValue,
+            timeStamp: Number(messageValue?.timeStamp || 0),
+          }))
+          .sort((left, right) => Number(left.timeStamp || 0) - Number(right.timeStamp || 0));
+
+        setSelectedConversationMessages(parsedMessages);
+        setConversations((previousConversations) =>
+          previousConversations.map((conversation) =>
+            conversation.chatId === selectedChatId
+              ? { ...conversation, messageCount: parsedMessages.length }
+              : conversation
+          )
+        );
+      } catch {
+        if (!cancelled) {
+          setSelectedConversationMessages([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setSelectedConversationMessagesLoading(false);
+        }
+      }
+    };
+
+    loadConversationMessages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [SCHOOL_DB_ROOT, schoolCode, selectedChatId]);
+
   const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
   const FEED_SECTION_STYLE = {
     width: "100%",
     maxWidth: FEED_MAX_WIDTH,
@@ -382,6 +617,18 @@ export default function MessageControl() {
     padding: "8px 10px",
     borderRadius: 12,
     minWidth: 0,
+  };
+  const headerCardStyle = {
+    ...shellCardStyle,
+    width: "100%",
+    maxWidth: FEED_MAX_WIDTH,
+    margin: "0 auto",
+    alignSelf: "stretch",
+    color: "var(--text-primary)",
+    padding: "18px 20px",
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
   };
 
   const handleOpenKeywordModal = () => {
@@ -402,20 +649,66 @@ export default function MessageControl() {
   };
 
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        <Sidebar admin={admin} />
-        <div className="main-content" style={{ margin: 0, padding: "0 2px 20px", flex: 1, minWidth: 0, boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden" }}>
-          <div className="main-inner" style={{ ...FEED_SECTION_STYLE, marginTop: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className="section-header-card" style={{ ...shellCardStyle, margin: 0, padding: "16px", background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-accent) 100%)" }}>
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
+
+        <div className="main-content" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: 0, boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", padding: "0 12px 0 2px", display: "flex", justifyContent: "center" }}>
+          <div className="main-inner" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
+            <div style={headerCardStyle}>
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 <div>
-                  <h2 className="section-header-card__title" style={{ fontSize: "20px", margin: 0 }}>Message Control</h2>
+                  <h2 className="section-header-card__title" style={{ fontSize: "24px", margin: 0, fontWeight: 800, letterSpacing: "0.01em" }}>Message Control</h2>
                   <div className="section-header-card__subtitle" style={{ marginTop: 8, color: "var(--text-secondary)", fontSize: 13 }}>
                     Monitor teachers, students, parents, academic office, finance, and registerer chats for educational purpose.
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 800, color: "var(--accent-strong)", padding: "8px 12px", borderRadius: 999, background: "var(--surface-panel)", border: "1px solid var(--border-soft)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 800, color: "var(--accent-strong)", padding: "8px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-muted) 86%, white)", border: "1px solid var(--border-soft)" }}>
                   <FaUserShield /> Admin Monitoring
                 </div>
               </div>
@@ -448,7 +741,7 @@ export default function MessageControl() {
               </div>
             </div>
 
-            <div style={{ ...shellCardStyle, padding: 12, background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-overlay) 100%)", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ ...shellCardStyle, padding: 12, background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-overlay) 100%)", display: "flex", flexDirection: "column", gap: 8, borderRadius: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: 8 }}>
                   <FaExclamationTriangle style={{ color: "#ea580c" }} /> Alert Keywords Control
@@ -579,9 +872,10 @@ export default function MessageControl() {
                 fontSize: 13,
                 display: "grid",
                 gridTemplateColumns: isCompactLayout ? "1fr" : "340px minmax(0, 1fr)",
-                height: isCompactLayout ? 700 : 560,
+                height: isCompactLayout ? 700 : 620,
                 minHeight: 0,
                 overflow: "hidden",
+                borderRadius: 18,
               }}
             >
               <div style={{ borderRight: isCompactLayout ? "none" : "1px solid var(--border-soft)", borderBottom: isCompactLayout ? "1px solid var(--border-soft)" : "none", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-overlay) 100%)" }}>
@@ -714,10 +1008,12 @@ export default function MessageControl() {
                     </div>
 
                     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 12, background: "linear-gradient(180deg, var(--surface-overlay) 0%, var(--surface-panel) 100%)" }}>
-                      {selectedConversation.messages.length === 0 ? (
+                      {selectedConversationMessagesLoading ? (
+                        <div style={{ color: "var(--text-muted)", textAlign: "center", marginTop: 20 }}>Loading messages...</div>
+                      ) : displayedSelectedConversationMessages.length === 0 ? (
                         <div style={{ color: "var(--text-muted)", textAlign: "center", marginTop: 20 }}>No messages in this conversation.</div>
                       ) : (
-                        selectedConversation.messages.map((message) => {
+                        displayedSelectedConversationMessages.map((message) => {
                           const sender = selectedConversation.participants.find((participant) => String(participant.userId) === String(message.senderId));
                           const isFirst = String(message.senderId) === String(selectedConversation.participants[0]?.userId || "");
                           const messageText = message.deleted ? "[deleted message]" : message.text || "[no text]";

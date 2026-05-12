@@ -1,16 +1,25 @@
 import React, { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
-import { FaRegHeart, FaHeart, FaCalendarAlt, FaPlus } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
+import { FaRegHeart, FaHeart, FaCalendarAlt, FaPlus, FaThumbsUp, FaBookOpen } from "react-icons/fa";
 import axios from "axios";
 import EthiopicCalendar from "ethiopic-calendar";
 import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
-import { db, schoolPath } from "../firebase";
-import { ref, get } from "firebase/database";
-import { getRtdbRoot } from "../api/rtdbScope";
-
-const RTDB_BASE = getRtdbRoot();
+import { RTDB_BASE_RAW } from "../api/rtdbScope";
+import QuickLessonPlanCheckModal from "./settings/QuickLessonPlanCheckModal";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
+import {
+  buildSchoolRtdbBase,
+  clearCachedChatSummary,
+  fetchTeacherConversationSummaries,
+  loadUserRecordById,
+  readSessionResource,
+  resolveTeacherSchoolCode,
+  writeSessionResource,
+} from "../utils/teacherData";
 
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
@@ -216,6 +225,64 @@ const buildDefaultCalendarEvents = (ethiopianYear) =>
     };
   });
 
+const formatIsoDate = (year, month, day) => {
+  if (!year || !month || !day) return "";
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+};
+
+const toCalendarBucketKey = (isoDate) => {
+  const match = String(isoDate || "").trim().match(/^(\d{4}-\d{2})-/);
+  return match?.[1] || "";
+};
+
+const collectCalendarBucketKeysBetween = (startIsoDate, endIsoDate) => {
+  const startMatch = String(startIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
+  const endMatch = String(endIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
+  if (!startMatch || !endMatch) return [];
+
+  let currentYear = Number(startMatch[1]);
+  let currentMonth = Number(startMatch[2]);
+  const endYear = Number(endMatch[1]);
+  const endMonth = Number(endMatch[2]);
+  const keys = [];
+
+  while (currentYear < endYear || (currentYear === endYear && currentMonth <= endMonth)) {
+    keys.push(`${currentYear}-${String(currentMonth).padStart(2, "0")}`);
+    currentMonth += 1;
+    if (currentMonth > 12) {
+      currentMonth = 1;
+      currentYear += 1;
+    }
+  }
+
+  return keys;
+};
+
+const buildCalendarBucketKeys = ({
+  visibleMonthStartIsoDate,
+  visibleMonthEndIsoDate,
+  todayIsoDate,
+  deadlineEndIsoDate,
+}) => {
+  return [...new Set([
+    ...collectCalendarBucketKeysBetween(visibleMonthStartIsoDate, visibleMonthEndIsoDate),
+    ...collectCalendarBucketKeysBetween(todayIsoDate, deadlineEndIsoDate),
+  ])];
+};
+
+const toCalendarStoragePayload = (eventValue = {}) => ({
+  title: String(eventValue?.title || "").trim(),
+  type: String(eventValue?.type || "").trim(),
+  category: String(eventValue?.category || "no-class").trim(),
+  subType: String(eventValue?.subType || "general").trim(),
+  notes: String(eventValue?.notes || "").trim(),
+  gregorianDate: String(eventValue?.gregorianDate || "").trim(),
+  ethiopianDate: eventValue?.ethiopianDate || null,
+  createdAt: eventValue?.createdAt || "",
+  createdBy: eventValue?.createdBy || "",
+  showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
+});
+
 function getSafeProfileImage(profileImage) {
   if (!profileImage) return "/default-profile.png";
   if (
@@ -229,22 +296,100 @@ function getSafeProfileImage(profileImage) {
   return profileImage;
 }
 
+function normalizePostLikes(likes) {
+  if (Array.isArray(likes)) {
+    return likes.reduce((accumulator, value) => {
+      const normalizedKey = String(value || "").trim();
+      if (normalizedKey) {
+        accumulator[normalizedKey] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  if (likes && typeof likes === "object") {
+    return Object.entries(likes).reduce((accumulator, [key, value]) => {
+      const normalizedKey = String(key || "").trim();
+      if (normalizedKey && value) {
+        accumulator[normalizedKey] = true;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  return {};
+}
+
+function isPostLikedByActor(post, actorId) {
+  const normalizedActorId = String(actorId || "").trim();
+  if (!normalizedActorId) {
+    return false;
+  }
+
+  return Boolean(normalizePostLikes(post?.likes)[normalizedActorId]);
+}
+
+function getResolvedLikeCount(post) {
+  const explicitCount = Number(post?.likeCount);
+  if (Number.isFinite(explicitCount) && explicitCount >= 0) {
+    return explicitCount;
+  }
+
+  return Object.keys(normalizePostLikes(post?.likes)).length;
+}
+
+function readTeacherSettingsPreferences(teacherUserId) {
+  if (!teacherUserId) {
+    return {
+      emailAlerts: true,
+      pushAlerts: true,
+      weeklyDigest: false,
+      compactCards: false,
+    };
+  }
+
+  try {
+    return {
+      emailAlerts: true,
+      pushAlerts: true,
+      weeklyDigest: false,
+      compactCards: false,
+      ...(JSON.parse(localStorage.getItem(`teacher_settings_preferences_${teacherUserId}`) || "{}") || {}),
+    };
+  } catch {
+    return {
+      emailAlerts: true,
+      pushAlerts: true,
+      weeklyDigest: false,
+      compactCards: false,
+    };
+  }
+}
+
 export default function Dashboard() {
+  const PRIMARY = "#007AFB";
+  const BACKGROUND = "#FFFFFF";
+  const ACCENT = "#00B6A9";
   const CALENDAR_MANAGER_ROLES = new Set([
     "registrar",
     "registerer",
     "admin",
+    "admins",
     "school_admin",
-    "school-admin",
+    "school_admins",
   ]);
   const CALENDAR_WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState(null);
   const [posts, setPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [expandedPostIds, setExpandedPostIds] = useState({});
+  const [pendingLikePostIds, setPendingLikePostIds] = useState({});
   const [notifications, setNotifications] = useState([]);
   const [highlightedPostId, setHighlightedPostId] = useState(null);
   const [conversations, setConversations] = useState([]);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
   const [calendarViewDate, setCalendarViewDate] = useState(() => ({
     year: EthiopicCalendar.ge(
       new Date().getFullYear(),
@@ -273,50 +418,231 @@ export default function Dashboard() {
   const [calendarActionMessage, setCalendarActionMessage] = useState("");
   const [showCalendarEventModal, setShowCalendarEventModal] = useState(false);
   const [calendarModalContext, setCalendarModalContext] = useState("calendar");
+  const [quickLessonCheckOpen, setQuickLessonCheckOpen] = useState(false);
+  const [quickLessonFeedback, setQuickLessonFeedback] = useState({ type: "", text: "" });
+  const [compactCards, setCompactCards] = useState(() =>
+    Boolean(readTeacherSettingsPreferences(JSON.parse(localStorage.getItem("teacher") || "{}").userId).compactCards)
+  );
   const postRefs = useRef({});
   const teacherId = teacher?.userId || null;
-  const role = String(teacher?.role || teacher?.userType || "teacher").trim().toLowerCase();
+  const role = String(teacher?.role || teacher?.userType || "teacher").trim().toLowerCase().replace(/-/g, "_");
   const canManageCalendar = CALENDAR_MANAGER_ROLES.has(role);
-  const isOverlayModalOpen = showCalendarEventModal;
+  const isOverlayModalOpen = showCalendarEventModal || quickLessonCheckOpen;
   const schoolCode =
     teacher?.schoolCode ||
     JSON.parse(localStorage.getItem("teacher") || "{}").schoolCode ||
     "";
-  const DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${schoolCode}`
-    : RTDB_BASE;
+  const effectiveSchoolCode = String(
+    resolvedSchoolCode ||
+      (String(schoolCode || "").includes("-") ? schoolCode : "") ||
+      ""
+  ).trim();
+  const DB_ROOT = effectiveSchoolCode
+    ? `${RTDB_BASE_RAW}/Platform1/Schools/${effectiveSchoolCode}`
+    : RTDB_BASE_RAW;
+
+  const resolveSchoolCode = (candidateTeacher) => {
+    const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+    const directSchoolCode = String(candidateTeacher?.schoolCode || storedTeacher?.schoolCode || "").trim();
+    if (directSchoolCode) {
+      return directSchoolCode;
+    }
+
+    const usernameCandidate = String(
+      candidateTeacher?.username ||
+      candidateTeacher?.teacherId ||
+      storedTeacher?.username ||
+      storedTeacher?.teacherId ||
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+    const inferredPrefix = usernameCandidate.replace(/[^A-Z]/g, "").slice(0, 3);
+    return inferredPrefix;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveDashboardSchoolCode = async () => {
+      if (!schoolCode) {
+        setResolvedSchoolCode("");
+        return;
+      }
+
+      const resolved = await resolveTeacherSchoolCode(schoolCode);
+      if (!cancelled) {
+        setResolvedSchoolCode(resolved);
+      }
+    };
+
+    resolveDashboardSchoolCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [schoolCode]);
+
+  const getPostsCacheKey = (candidateSchoolCode) =>
+    `teacher_posts_cache_v2_${String(candidateSchoolCode || "global").toUpperCase()}`;
+  const getDashboardPostsSessionKey = (candidateSchoolCode) =>
+    `dashboard_posts_${String(candidateSchoolCode || "global").toUpperCase()}`;
+  const getDashboardConversationsSessionKey = (candidateSchoolCode, teacherUserId) =>
+    `dashboard_conversations_${String(candidateSchoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
+  const getDashboardCalendarSessionKey = (candidateSchoolCode, bucketKeys = []) =>
+    `dashboard_calendar_${String(candidateSchoolCode || "global").toUpperCase()}_${(bucketKeys || []).filter(Boolean).join("_") || "none"}`;
+
+  const MESSAGE_PREVIEW_LIMIT = 220;
+
+  const getNormalizedTargetRole = (post) => {
+    if (!post || typeof post !== "object") {
+      return "";
+    }
+
+    const directTarget =
+      post.targetRole ??
+      post.TargetRole ??
+      post.targetrole ??
+      post.target ??
+      post.targetUserType ??
+      post.targetAudience ??
+      "";
+
+    if (Array.isArray(directTarget)) {
+      return directTarget
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(",");
+    }
+
+    return String(directTarget || "").trim().toLowerCase();
+  };
+
+  const isTeacherVisiblePost = (post) => {
+    const normalizedTargetRole = getNormalizedTargetRole(post);
+    const targetParts = normalizedTargetRole
+      .split(/[\s,|]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (targetParts.length === 0) {
+      return true;
+    }
+
+    if (targetParts.includes("all")) {
+      return true;
+    }
+
+    return targetParts.includes("teacher") || targetParts.includes("teachers");
+  };
 
   const softPanelStyle = {
-    background: "var(--surface-muted)",
-    border: "1px solid var(--border-soft)",
-    borderRadius: 10,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
+    borderRadius: compactCards ? 8 : 10,
+  };
+  const rightRailCardStyle = {
+    background: "var(--surface-panel)",
+    borderRadius: compactCards ? 10 : 12,
+    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
   };
   const widgetCardStyle = {
-    background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-accent) 100%)",
-    borderRadius: 16,
-    boxShadow: "var(--shadow-soft)",
-    padding: "11px",
-    border: "1px solid var(--border-soft)",
+    ...rightRailCardStyle,
+    padding: compactCards ? "10px" : "12px",
   };
   const smallStatStyle = {
-    padding: "5px 8px",
-    borderRadius: 12,
-    background: "var(--surface-panel)",
-    border: "1px solid var(--border-soft)",
+    padding: compactCards ? "8px 10px" : "10px 12px",
+    borderRadius: compactCards ? 8 : 10,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    minWidth: 72,
+    gap: 2,
+    minWidth: compactCards ? 76 : 84,
+  };
+  const rightRailIconStyle = {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    background: "#F8FAFC",
+    color: "var(--text-primary)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+  };
+  const rightRailIconButtonStyle = {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "#F8FAFC",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    lineHeight: 1,
+  };
+  const rightRailPillStyle = {
+    padding: "4px 8px",
+    borderRadius: 999,
+    background: "#F8FAFC",
+    border: "1px solid rgba(15, 23, 42, 0.06)",
+    fontSize: 9,
+    color: "var(--text-secondary)",
+    fontWeight: 800,
+  };
+  const rightRailActionButtonStyle = {
+    height: 34,
+    padding: "0 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(0, 122, 251, 0.18)",
+    background: "#007AFB",
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: "pointer",
+  };
+  const rightRailSecondaryButtonStyle = {
+    height: 34,
+    padding: "0 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(15, 23, 42, 0.08)",
+    background: "var(--surface-panel)",
+    color: "var(--text-primary)",
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: "pointer",
   };
   const FEED_SECTION_STYLE = {
     width: "100%",
-    maxWidth: 560,
+    maxWidth: 680,
   };
   const shellCardStyle = {
     background: "var(--surface-panel)",
     border: "1px solid var(--border-soft)",
     boxShadow: "var(--shadow-soft)",
   };
+
+  useEffect(() => {
+    setCompactCards(Boolean(readTeacherSettingsPreferences(teacher?.userId).compactCards));
+  }, [teacher?.userId]);
+
+  useEffect(() => {
+    const syncPreferences = () => {
+      const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+      setCompactCards(Boolean(readTeacherSettingsPreferences(storedTeacher.userId).compactCards));
+    };
+
+    window.addEventListener("storage", syncPreferences);
+    window.addEventListener("teacher-settings-preferences-changed", syncPreferences);
+    return () => {
+      window.removeEventListener("storage", syncPreferences);
+      window.removeEventListener("teacher-settings-preferences-changed", syncPreferences);
+    };
+  }, []);
 
   const CALENDAR_EVENT_META = {
     academic: {
@@ -360,6 +686,11 @@ export default function Dashboard() {
     };
   };
 
+  const normalizeCalendarEventsFromNode = (calendarNode = {}) =>
+    Object.entries(calendarNode || {})
+      .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
+      .filter((eventItem) => eventItem.gregorianDate);
+
   const sortCalendarEvents = (events) =>
     [...events].sort((leftEvent, rightEvent) => {
       const dateComparison = String(leftEvent.gregorianDate || "").localeCompare(
@@ -386,6 +717,79 @@ export default function Dashboard() {
     });
   };
 
+  const formatPostTimestamp = (timestamp) => {
+    if (!timestamp) return "";
+
+    const parsedDate = new Date(timestamp);
+    if (Number.isNaN(parsedDate.getTime())) return "";
+
+    const diffInMinutes = Math.max(
+      0,
+      Math.floor((Date.now() - parsedDate.getTime()) / 60000)
+    );
+
+    if (diffInMinutes < 1) return "Just now";
+    if (diffInMinutes < 60) return `${diffInMinutes}m`;
+
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    if (diffInHours < 24) return `${diffInHours}h`;
+
+    const diffInDays = Math.floor(diffInHours / 24);
+    if (diffInDays < 7) return `${diffInDays}d`;
+
+    const dateOptions =
+      parsedDate.getFullYear() === new Date().getFullYear()
+        ? { month: "short", day: "numeric" }
+        : { month: "short", day: "numeric", year: "numeric" };
+
+    return parsedDate.toLocaleDateString("en-US", dateOptions);
+  };
+
+  const getConversationSortTime = (rawValue) => {
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      return rawValue;
+    }
+
+    if (typeof rawValue === "string") {
+      const trimmedValue = rawValue.trim();
+      if (!trimmedValue) {
+        return 0;
+      }
+
+      const numericValue = Number(trimmedValue);
+      if (Number.isFinite(numericValue)) {
+        return numericValue;
+      }
+
+      const parsedTime = new Date(trimmedValue).getTime();
+      if (!Number.isNaN(parsedTime)) {
+        return parsedTime;
+      }
+    }
+
+    return 0;
+  };
+
+  const hasTeacherSentMessage = (chatValue, teacherUserId) => {
+    const normalizedTeacherUserId = String(teacherUserId || "").trim();
+    if (!chatValue || !normalizedTeacherUserId) return false;
+
+    if (
+      String(chatValue?.lastMessage?.senderId || "").trim() ===
+      normalizedTeacherUserId
+    ) {
+      return true;
+    }
+
+    const messages = chatValue?.messages;
+    if (!messages || typeof messages !== "object") return false;
+
+    return Object.values(messages).some(
+      (messageValue) =>
+        String(messageValue?.senderId || "").trim() === normalizedTeacherUserId
+    );
+  };
+
   const getSeenPosts = (teacherUserId) => {
     return JSON.parse(localStorage.getItem(`seen_posts_${teacherUserId}`)) || [];
   };
@@ -400,15 +804,50 @@ export default function Dashboard() {
     }
   };
 
-  const fetchPostsAndAdmins = async () => {
+  const fetchPostsAndAdmins = async (candidateTeacher = teacher) => {
+    const resolvedSchoolCode = resolveSchoolCode(candidateTeacher);
+    const cacheKey = getPostsCacheKey(resolvedSchoolCode);
+    const sessionCacheKey = getDashboardPostsSessionKey(resolvedSchoolCode);
+
+    setPostsLoading(true);
+
+    const cachedSessionPosts = readSessionResource(sessionCacheKey, {
+      ttlMs: 60 * 1000,
+    });
+    if (Array.isArray(cachedSessionPosts) && cachedSessionPosts.length > 0) {
+      setPosts(cachedSessionPosts);
+    }
+
+    const cachedPostsRaw = localStorage.getItem(cacheKey);
+    if (cachedPostsRaw) {
+      try {
+        const cachedPosts = JSON.parse(cachedPostsRaw);
+        if (Array.isArray(cachedPosts) && cachedPosts.length > 0) {
+          const teacherCachedPosts = cachedPosts.filter(isTeacherVisiblePost);
+          if (teacherCachedPosts.length > 0) {
+            setPosts(teacherCachedPosts);
+          }
+        }
+      } catch {
+        localStorage.removeItem(cacheKey);
+      }
+    }
+
     try {
-      const postsResp = await axios.get(`${API_BASE}/get_posts`);
+      const postsResp = await axios.get(`${API_BASE}/get_posts`, {
+        params: resolvedSchoolCode
+          ? { schoolCode: resolvedSchoolCode, viewerRole: "teacher", limit: 25 }
+          : { viewerRole: "teacher", limit: 25 },
+        headers: resolvedSchoolCode ? { "X-School-Code": resolvedSchoolCode } : {},
+      });
       let postsData = postsResp.data || [];
       if (!Array.isArray(postsData) && typeof postsData === "object") {
         postsData = Object.values(postsData);
       }
 
-      const finalPosts = postsData.map((post) => {
+      const teacherVisiblePosts = postsData.filter(isTeacherVisiblePost);
+
+      const finalPosts = teacherVisiblePosts.map((post) => {
         const postId = post.postId || post.id || post.key || "";
         let likesArray = [];
 
@@ -436,10 +875,19 @@ export default function Dashboard() {
         return tb - ta;
       });
 
-      setPosts(finalPosts);
+      setExpandedPostIds({});
 
-      const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
-      const seenPosts = getSeenPosts(storedTeacher?.userId);
+      setPosts(finalPosts);
+      if (finalPosts.length > 0) {
+        localStorage.setItem(cacheKey, JSON.stringify(finalPosts));
+        writeSessionResource(sessionCacheKey, finalPosts);
+      } else {
+        localStorage.removeItem(cacheKey);
+        writeSessionResource(sessionCacheKey, []);
+      }
+
+      const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+      const seenPosts = getSeenPosts(storedTeacher?.userId || candidateTeacher?.userId);
 
       const notifs = finalPosts
         .filter((p) => !seenPosts.includes(p.postId))
@@ -454,84 +902,36 @@ export default function Dashboard() {
       setNotifications(notifs);
     } catch (err) {
       console.error("Error fetching posts/admins handshake:", err);
+    } finally {
+      setPostsLoading(false);
     }
   };
 
   const fetchConversations = async (currentTeacher = teacher) => {
     try {
       const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
-      if (!t || !t.userId) {
+      if (!t || !t.userId || !effectiveSchoolCode) {
         setConversations([]);
         return;
       }
 
-      const [chatsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Chats.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-      ]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
+      const sessionCacheKey = getDashboardConversationsSessionKey(effectiveSchoolCode, t.userId);
+      const cachedConversations = readSessionResource(sessionCacheKey, {
+        ttlMs: 20 * 1000,
+      });
+      if (Array.isArray(cachedConversations)) {
+        setConversations(cachedConversations);
+      }
 
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+      const convs = await fetchTeacherConversationSummaries({
+        rtdbBase: DB_ROOT,
+        schoolCode: effectiveSchoolCode,
+        teacherUserId: t.userId,
+        unreadOnly: false,
+        limit: 5,
       });
 
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find(
-            (p) => p !== t.userId
-          );
-          if (!otherKeyCandidate) return null;
-
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-
-          if (!otherRecord) {
-            const mappedPushKey = userKeyByUserId[otherKeyCandidate];
-            if (mappedPushKey) {
-              otherPushKey = mappedPushKey;
-              otherRecord = usersByKey[mappedPushKey];
-            }
-          }
-
-          if (!otherRecord) {
-            otherRecord = {
-              userId: otherKeyCandidate,
-              name: otherKeyCandidate,
-              profileImage: "/default-profile.png",
-            };
-          }
-
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: getSafeProfileImage(
-              otherRecord.profileImage || otherRecord.profile || ""
-            ),
-          };
-
-          const lastMessage = chat.lastMessage || {};
-
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+      writeSessionResource(sessionCacheKey, convs);
 
       setConversations(convs);
     } catch (err) {
@@ -549,16 +949,19 @@ export default function Dashboard() {
 
     const fetchTeacherProfile = async () => {
       try {
-        const usersRef = ref(db, schoolPath("Users"));
-        const snapshot = await get(usersRef);
-        const usersData = snapshot.val() || {};
-
-        const teacherEntry = Object.values(usersData).find(
-          (u) => u.userId === stored.userId
-        );
+        const resolvedSchoolCode = await resolveTeacherSchoolCode(stored?.schoolCode);
+        const teacherEntry = await loadUserRecordById({
+          rtdbBase: resolvedSchoolCode ? buildSchoolRtdbBase(resolvedSchoolCode) : DB_ROOT,
+          schoolCode: resolvedSchoolCode,
+          userId: stored.userId,
+        });
 
         if (teacherEntry) {
-          const merged = { ...stored, ...teacherEntry };
+          const merged = {
+            ...stored,
+            ...teacherEntry,
+            schoolCode: resolvedSchoolCode || stored?.schoolCode || "",
+          };
           setTeacher(merged);
           localStorage.setItem("teacher", JSON.stringify(merged));
         } else {
@@ -570,9 +973,21 @@ export default function Dashboard() {
     };
 
     fetchTeacherProfile();
-    fetchPostsAndAdmins();
-    fetchConversations(stored);
   }, [navigate]);
+
+  useEffect(() => {
+    const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+    if (!storedTeacher?.userId) {
+      return;
+    }
+
+    const teacherForScopedFetch = effectiveSchoolCode
+      ? { ...storedTeacher, schoolCode: effectiveSchoolCode }
+      : storedTeacher;
+
+    fetchPostsAndAdmins(teacherForScopedFetch);
+    fetchConversations(teacherForScopedFetch);
+  }, [effectiveSchoolCode]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -587,36 +1002,106 @@ export default function Dashboard() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const handleLike = async (postId) => {
-    try {
-      if (!teacherId) return;
+  useEffect(() => {
+    if (!quickLessonFeedback.text) return undefined;
 
+    const timeoutId = window.setTimeout(() => {
+      setQuickLessonFeedback({ type: "", text: "" });
+    }, 3600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [quickLessonFeedback.text]);
+
+  const handleLike = async (postId) => {
+    const normalizedPostId = String(postId || "").trim();
+    if (!teacherId || !normalizedPostId || pendingLikePostIds[normalizedPostId]) return;
+
+    const currentPost = posts.find((post) => String(post?.postId || "") === normalizedPostId);
+    if (!currentPost) return;
+
+    const previousLikes = normalizePostLikes(currentPost.likes);
+    const wasLiked = Boolean(previousLikes[String(teacherId)]);
+    const nextLikes = { ...previousLikes };
+
+    if (wasLiked) {
+      delete nextLikes[String(teacherId)];
+    } else {
+      nextLikes[String(teacherId)] = true;
+    }
+
+    const optimisticLikeCount = Object.keys(nextLikes).length;
+    const cacheKey = getPostsCacheKey(effectiveSchoolCode || schoolCode);
+
+    setPendingLikePostIds((prev) => ({
+      ...prev,
+      [normalizedPostId]: true,
+    }));
+
+    setPosts((prevPosts) => {
+      const nextPosts = prevPosts.map((post) =>
+        post.postId === normalizedPostId
+          ? {
+              ...post,
+              likeCount: optimisticLikeCount,
+              likes: nextLikes,
+            }
+          : post
+      );
+
+      localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
+      return nextPosts;
+    });
+
+    try {
       const res = await axios.post(`${API_BASE}/like_post`, {
-        postId,
+        postId: normalizedPostId,
         teacherId,
+        schoolCode,
       });
 
       if (res.data.success) {
         const liked = res.data.liked;
         const likeCount = res.data.likeCount;
+        const responseLikes = normalizePostLikes(res.data.likes);
+        const syncedLikes = Object.keys(responseLikes).length > 0 ? responseLikes : nextLikes;
 
-        setPosts((prevPosts) =>
-          prevPosts.map((post) =>
-            post.postId === postId
+        setPosts((prevPosts) => {
+          const nextPosts = prevPosts.map((post) =>
+            post.postId === normalizedPostId
               ? {
                   ...post,
-                  likeCount,
-                  likes: {
-                    ...(post.likes || {}),
-                    [teacherId]: liked ? true : undefined,
-                  },
+                  likeCount: typeof likeCount === "number" ? likeCount : Object.keys(syncedLikes).length,
+                  likes: syncedLikes,
                 }
               : post
-          )
-        );
+          );
+
+          localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
+          return nextPosts;
+        });
       }
     } catch (err) {
       console.error("Error liking post:", err);
+      setPosts((prevPosts) => {
+        const nextPosts = prevPosts.map((post) =>
+          post.postId === normalizedPostId
+            ? {
+                ...post,
+                likeCount: Object.keys(previousLikes).length,
+                likes: previousLikes,
+              }
+            : post
+        );
+
+        localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
+        return nextPosts;
+      });
+    } finally {
+      setPendingLikePostIds((prev) => {
+        const next = { ...prev };
+        delete next[normalizedPostId];
+        return next;
+      });
     }
   };
 
@@ -637,17 +1122,33 @@ export default function Dashboard() {
     navigate("/all-chat", { state: { contact, chatId } });
 
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacherId}.json`, null);
+      await axios.patch(
+        `${DB_ROOT}/${buildChatSummaryPath(teacherId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
+      clearCachedChatSummary({ rtdbBase: DB_ROOT, chatId, teacherUserId: teacherId });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
 
-    setConversations((prev) => prev.filter((item) => item.chatId !== chatId));
+    setConversations((prev) =>
+      prev.map((item) =>
+        item.chatId === chatId
+          ? { ...item, unreadForMe: 0 }
+          : item
+      )
+    );
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   const totalUnreadMessages = conversations.reduce(
@@ -672,14 +1173,18 @@ export default function Dashboard() {
     .map((conv) => ({
       userId: conv.contact?.userId || conv.contact?.pushKey || conv.chatId,
       chatId: conv.chatId,
+      conversation: conv,
       name: conv.displayName || "User",
       profileImage: conv.profile || "/default-profile.png",
       type: "user",
+      unreadCount: Number(conv.unreadForMe || 0),
       lastMessage:
         conv.lastMessageText ||
-        `${Number(conv.unreadForMe || 0)} unread message${
-          Number(conv.unreadForMe || 0) === 1 ? "" : "s"
-        }`,
+        (Number(conv.unreadForMe || 0) > 0
+          ? `${Number(conv.unreadForMe || 0)} unread message${
+              Number(conv.unreadForMe || 0) === 1 ? "" : "s"
+            }`
+          : "Open chat"),
     }))
     .slice(0, 4);
 
@@ -726,6 +1231,16 @@ export default function Dashboard() {
     calendarViewDate.year,
     calendarViewDate.month,
     calendarDaysInMonth
+  );
+  const calendarMonthStartIsoDate = formatIsoDate(
+    calendarMonthStartGregorian.year,
+    calendarMonthStartGregorian.month,
+    calendarMonthStartGregorian.day
+  );
+  const calendarMonthEndIsoDate = formatIsoDate(
+    calendarMonthEndGregorian.year,
+    calendarMonthEndGregorian.month,
+    calendarMonthEndGregorian.day
   );
   const calendarFirstWeekday = new Date(
     calendarMonthStartGregorian.year,
@@ -794,12 +1309,22 @@ export default function Dashboard() {
 
   const deadlineWindowEnd = new Date(calendarNow);
   deadlineWindowEnd.setDate(deadlineWindowEnd.getDate() + 30);
-  const deadlineWindowEndIsoDate = `${deadlineWindowEnd.getFullYear()}-${String(
-    deadlineWindowEnd.getMonth() + 1
-  ).padStart(2, "0")}-${String(deadlineWindowEnd.getDate()).padStart(2, "0")}`;
-  const calendarTodayIsoDate = `${calendarNow.getFullYear()}-${String(
-    calendarNow.getMonth() + 1
-  ).padStart(2, "0")}-${String(calendarNow.getDate()).padStart(2, "0")}`;
+  const deadlineWindowEndIsoDate = formatIsoDate(
+    deadlineWindowEnd.getFullYear(),
+    deadlineWindowEnd.getMonth() + 1,
+    deadlineWindowEnd.getDate()
+  );
+  const calendarTodayIsoDate = formatIsoDate(
+    calendarNow.getFullYear(),
+    calendarNow.getMonth() + 1,
+    calendarNow.getDate()
+  );
+  const calendarBucketKeys = buildCalendarBucketKeys({
+    visibleMonthStartIsoDate: calendarMonthStartIsoDate,
+    visibleMonthEndIsoDate: calendarMonthEndIsoDate,
+    todayIsoDate: calendarTodayIsoDate,
+    deadlineEndIsoDate: deadlineWindowEndIsoDate,
+  });
 
   const upcomingDeadlineEvents = calendarEvents
     .filter(
@@ -839,21 +1364,75 @@ export default function Dashboard() {
     calendarDays.length,
   ]);
 
-  const loadCalendarEvents = async () => {
-    if (!schoolCode) {
+  const loadCalendarEvents = async (options = {}) => {
+    if (!effectiveSchoolCode) {
       setCalendarEvents([]);
       return;
     }
 
+    const forceRefresh = Boolean(options?.force);
     setCalendarEventsLoading(true);
     try {
-      const res = await axios.get(`${DB_ROOT}/CalendarEvents.json`);
-      const rawEvents = res.data || {};
-      const normalizedEvents = Object.entries(rawEvents)
-        .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
-        .filter((eventItem) => eventItem.gregorianDate);
+      const sessionCacheKey = getDashboardCalendarSessionKey(
+        effectiveSchoolCode,
+        calendarBucketKeys
+      );
+      const cachedCalendarEvents = !forceRefresh
+        ? readSessionResource(sessionCacheKey, {
+            ttlMs: 5 * 60 * 1000,
+          })
+        : null;
+      if (!forceRefresh && Array.isArray(cachedCalendarEvents)) {
+        setCalendarEvents(cachedCalendarEvents);
+      }
 
-      setCalendarEvents(sortCalendarEvents(normalizedEvents));
+      const bucketNodes = await Promise.all(
+        calendarBucketKeys.map((bucketKey) =>
+          fetchCachedJson(`${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}.json`, {
+            ttlMs: 5 * 60 * 1000,
+            fallbackValue: {},
+            force: forceRefresh,
+          })
+        )
+      );
+
+      let normalizedEvents = bucketNodes.flatMap((bucketNode) =>
+        normalizeCalendarEventsFromNode(bucketNode)
+      );
+
+      if (!normalizedEvents.length) {
+        const rawEvents = await fetchCachedJson(`${DB_ROOT}/CalendarEvents.json`, {
+          ttlMs: 5 * 60 * 1000,
+          fallbackValue: {},
+          force: forceRefresh,
+        });
+
+        normalizedEvents = normalizeCalendarEventsFromNode(rawEvents).filter((eventItem) =>
+          calendarBucketKeys.includes(toCalendarBucketKey(eventItem.gregorianDate))
+        );
+
+        if (normalizedEvents.length) {
+          await Promise.all(
+            normalizedEvents
+              .map((eventItem) => {
+                const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
+                if (!bucketKey || !eventItem.id) return null;
+
+                return axios
+                  .put(
+                    `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`,
+                    toCalendarStoragePayload(eventItem)
+                  )
+                  .catch(() => null);
+              })
+              .filter(Boolean)
+          );
+        }
+      }
+
+      const sortedEvents = sortCalendarEvents(normalizedEvents);
+      writeSessionResource(sessionCacheKey, sortedEvents);
+      setCalendarEvents(sortedEvents);
     } catch (err) {
       console.error("Failed to load calendar events:", err);
       setCalendarEvents([]);
@@ -880,6 +1459,9 @@ export default function Dashboard() {
 
     setCalendarEventSaving(true);
     try {
+      const existingEvent = editingCalendarEventId
+        ? calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId) || null
+        : null;
       const normalizedCategory =
         calendarModalContext === "deadline" ? "academic" : calendarEventForm.category;
       const selectedEventMeta = getCalendarEventMeta(normalizedCategory);
@@ -891,10 +1473,7 @@ export default function Dashboard() {
         notes: calendarEventForm.notes.trim(),
         showInUpcomingDeadlines:
           calendarModalContext === "deadline" ||
-          Boolean(
-            calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId)
-              ?.showInUpcomingDeadlines
-          ),
+          Boolean(existingEvent?.showInUpcomingDeadlines),
         gregorianDate: selectedCalendarDay.isoDate,
         ethiopianDate: {
           year: calendarViewDate.year,
@@ -904,12 +1483,35 @@ export default function Dashboard() {
         createdAt: new Date().toISOString(),
         createdBy: teacherId || "",
       };
+      const nextBucketKey = toCalendarBucketKey(payload.gregorianDate);
 
       if (editingCalendarEventId) {
         await axios.patch(`${DB_ROOT}/CalendarEvents/${editingCalendarEventId}.json`, payload);
+        if (nextBucketKey) {
+          await axios.put(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`,
+            payload
+          );
+        }
+
+        const previousBucketKey = toCalendarBucketKey(existingEvent?.gregorianDate);
+        if (previousBucketKey && previousBucketKey !== nextBucketKey) {
+          await axios
+            .delete(
+              `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(previousBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`
+            )
+            .catch(() => null);
+        }
         setCalendarActionMessage("Calendar event updated successfully.");
       } else {
-        await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        const createRes = await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        const createdEventId = String(createRes?.data?.name || "").trim();
+        if (createdEventId && nextBucketKey) {
+          await axios.put(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(createdEventId)}.json`,
+            payload
+          );
+        }
         setCalendarActionMessage("Calendar event saved successfully.");
       }
 
@@ -917,7 +1519,7 @@ export default function Dashboard() {
       setEditingCalendarEventId("");
       setShowCalendarEventModal(false);
       setCalendarModalContext("calendar");
-      await loadCalendarEvents();
+      await loadCalendarEvents({ force: true });
     } catch (err) {
       console.error("Failed to save calendar event:", err);
       alert("Failed to save calendar event.");
@@ -976,12 +1578,20 @@ export default function Dashboard() {
     setCalendarEventSaving(true);
     try {
       await axios.delete(`${DB_ROOT}/CalendarEvents/${eventItem.id}.json`);
+      const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
+      if (bucketKey) {
+        await axios
+          .delete(
+            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`
+          )
+          .catch(() => null);
+      }
       if (editingCalendarEventId === eventItem.id) {
         setEditingCalendarEventId("");
         setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
       }
       setCalendarActionMessage("Calendar event deleted successfully.");
-      await loadCalendarEvents();
+      await loadCalendarEvents({ force: true });
     } catch (err) {
       console.error("Failed to delete calendar event:", err);
       alert("Failed to delete calendar event.");
@@ -1030,47 +1640,48 @@ export default function Dashboard() {
   useEffect(() => {
     setShowAllUpcomingDeadlines(false);
     loadCalendarEvents();
-  }, [schoolCode]);
+  }, [effectiveSchoolCode, calendarViewDate.year, calendarViewDate.month]);
 
   return (
     <div
       className="dashboard-page"
       style={{
-        background: "#f5f8ff",
+        background: BACKGROUND,
         minHeight: "100vh",
-        height: "100vh",
-        overflow: "hidden",
-        "--surface-panel": "#ffffff",
-        "--surface-accent": "#eff6ff",
-        "--surface-muted": "#f8fafc",
-        "--surface-strong": "#e2e8f0",
-        "--page-bg": "#f5f8ff",
-        "--border-soft": "#e2e8f0",
-        "--border-strong": "#cbd5e1",
+        height: "auto",
+        overflowX: "hidden",
+        overflowY: "auto",
+        "--surface-panel": BACKGROUND,
+        "--surface-accent": "#F1F8FF",
+        "--surface-muted": "#F7FBFF",
+        "--surface-strong": "#DCEBFF",
+        "--page-bg": BACKGROUND,
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
         "--text-primary": "#0f172a",
         "--text-secondary": "#334155",
         "--text-muted": "#64748b",
-        "--accent": "#2563eb",
-        "--accent-soft": "#dbeafe",
-        "--accent-strong": "#1d4ed8",
-        "--success": "#15803d",
-        "--success-soft": "#dcfce7",
-        "--success-border": "#86efac",
-        "--warning": "#a16207",
-        "--warning-soft": "#fef9c3",
-        "--warning-border": "#facc15",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": "#005FCC",
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
         "--danger": "#b91c1c",
         "--danger-border": "#fca5a5",
         "--sidebar-width": "clamp(230px, 16vw, 290px)",
-        "--surface-overlay": "#f1f5f9",
-        "--input-bg": "#ffffff",
-        "--input-border": "#cbd5e1",
-        "--shadow-soft": "0 10px 24px rgba(15, 23, 42, 0.08)",
-        "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
-        "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
       }}
     >
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: compactCards ? 10 : 14, padding: compactCards ? "12px 10px" : "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
         <Sidebar
           active="dashboard"
           sidebarOpen={sidebarOpen}
@@ -1089,86 +1700,151 @@ export default function Dashboard() {
           }}
         />
 
-        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", height: "calc(100vh - 24px)", overflowY: "auto", overflowX: "hidden", position: "sticky", top: 24, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: "0 12px 0 2px", display: "flex", justifyContent: "center", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
+        <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", top: "auto", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: compactCards ? "0 8px 0 0" : "0 12px 0 2px", display: "flex", justifyContent: "center", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
           <div style={{ width: "100%", maxWidth: FEED_SECTION_STYLE.maxWidth }}>
-          <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: "0 auto 14px" }}>
+          <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: compactCards ? "0 auto 10px" : "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
             <div className="section-header-card__subtitle">Post announcements, payment reminders, and notices.</div>
           </div>
 
-          <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: 12 }}>
-            {posts.length === 0 ? (
-              <div style={{ ...shellCardStyle, borderRadius: 10, padding: "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
+          <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: compactCards ? 8 : 12 }}>
+            {postsLoading ? (
+              <div style={{ ...shellCardStyle, borderRadius: compactCards ? 8 : 10, padding: compactCards ? "12px" : "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
+                Loading posts...
+              </div>
+            ) : posts.length === 0 ? (
+              <div style={{ ...shellCardStyle, borderRadius: compactCards ? 8 : 10, padding: compactCards ? "12px" : "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
                 No posts available right now.
               </div>
             ) : posts.map((post) => {
-              const isLikedByTeacher = Array.isArray(post.likes)
-                ? post.likes.includes(teacherId)
-                : Boolean(post.likes && teacherId && post.likes[teacherId]);
+              const messageText = String(post.message || "");
+              const isLongMessage = messageText.length > MESSAGE_PREVIEW_LIMIT;
+              const isExpandedMessage = Boolean(expandedPostIds[post.postId]);
+              const normalizedTargetRole = getNormalizedTargetRole(post);
+              const targetParts = normalizedTargetRole
+                .split(/[\s,|]+/)
+                .map((value) => value.trim())
+                .filter(Boolean);
+              const isPublicPost = targetParts.includes("all");
+              const targetRoleLabel = isPublicPost ? "Visible to everyone" : "Visible to teachers";
+              const audienceBadgeLabel = isPublicPost ? "Public update" : "Teacher-only update";
+              const postTimeLabel = formatPostTimestamp(post.time);
+              const postTimestampTitle = post.time ? new Date(post.time).toLocaleString() : "";
+              const likeCount = getResolvedLikeCount(post);
+              const isLikedByTeacher = isPostLikedByActor(post, teacherId);
+              const isLikePending = Boolean(pendingLikePostIds[post.postId]);
 
               return (
                 <div
-                  className="post-card facebook-post-card"
+                  className="facebook-post-card"
                   key={post.postId}
                   id={`post-${post.postId}`}
                   ref={(el) => (postRefs.current[post.postId] = el)}
-                  style={{ ...shellCardStyle, borderRadius: 10, overflow: "hidden", border: highlightedPostId === post.postId ? "2px solid #4b6cb7" : shellCardStyle.border, backgroundColor: highlightedPostId === post.postId ? "#fff9c4" : "var(--surface-panel)", transition: "background-color 0.4s, border 0.2s" }}
+                  style={{
+                    ...shellCardStyle,
+                    borderRadius: compactCards ? 10 : 12,
+                    overflow: "hidden",
+                    border:
+                      highlightedPostId === post.postId
+                        ? "1px solid var(--accent)"
+                        : "1px solid rgba(15, 23, 42, 0.08)",
+                    background:
+                      highlightedPostId === post.postId
+                        ? "linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 72%, white 28%) 0%, var(--surface-panel) 100%)"
+                        : "var(--surface-panel)",
+                    boxShadow:
+                      highlightedPostId === post.postId
+                        ? "0 0 0 2px rgba(0, 122, 251, 0.12), 0 18px 34px rgba(15, 23, 42, 0.08)"
+                        : "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)",
+                    transition: "background 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease",
+                  }}
                 >
-                  <div className="post-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "12px 16px 8px" }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0, flex: 1 }}>
-                      <div className="img-circle" style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                        <img src={getSafeProfileImage(post.adminProfile)} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <div className="facebook-post-card__header" style={{ padding: compactCards ? "10px 12px 8px" : "12px 14px 10px" }}>
+                    <div className="facebook-post-card__header-main">
+                      <div className="facebook-post-card__avatar">
+                        <ProfileAvatar
+                          src={post.adminProfile}
+                          name={post.adminName || "Admin"}
+                          alt={post.adminName || "Admin"}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
                       </div>
-                      <div className="post-info" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                        <h4 style={{ margin: 0, fontSize: 15, color: "var(--text-primary)", fontWeight: 700, lineHeight: 1.2 }}>{post.adminName || "Admin"}</h4>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2, fontSize: 13, color: "var(--text-muted)", fontWeight: 500 }}>
-                          <span>{post.time ? new Date(post.time).toLocaleString() : ""}</span>
-                          <span>·</span>
-                          <span>Visible to everyone</span>
+                      <div className="facebook-post-card__identity">
+                        <div className="facebook-post-card__identity-row">
+                          <h4>{post.adminName || "Admin"}</h4>
+                          <span className="facebook-post-card__page-badge">School Page</span>
+                        </div>
+                        <div className="facebook-post-card__meta" title={postTimestampTitle || undefined}>
+                          <span>{postTimeLabel || postTimestampTitle || "Recent update"}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{targetRoleLabel}</span>
                         </div>
                       </div>
                     </div>
+                    <div className="facebook-post-card__type-chip">Announcement</div>
                   </div>
 
-                  {post.message ? (
-                    <div style={{ padding: "0 16px 12px", color: "var(--text-primary)", fontSize: 15, lineHeight: 1.3333, wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
-                      {post.message}
+                  {messageText ? (
+                    <div className="facebook-post-card__body" style={{ padding: compactCards ? "0 12px 10px" : "0 14px 12px" }}>
+                      <div className="facebook-post-card__message">
+                        {isLongMessage && !isExpandedMessage
+                          ? `${messageText.slice(0, MESSAGE_PREVIEW_LIMIT).trimEnd()}...`
+                          : messageText}
+                      </div>
+                      {isLongMessage ? (
+                        <button
+                          type="button"
+                          className="facebook-post-card__read-more"
+                          onClick={() => setExpandedPostIds((prev) => ({
+                            ...prev,
+                            [post.postId]: !prev[post.postId],
+                          }))}
+                        >
+                          {isExpandedMessage ? "See less" : "Read more"}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
 
                   {post.postUrl ? (
-                    <div className="facebook-post-media-wrap" style={{ background: "#000", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <img className="facebook-post-media" src={post.postUrl} alt="post media" style={{ width: "100%", height: "auto", maxHeight: "min(78vh, 720px)", objectFit: "contain", display: "block", margin: "0 auto" }} />
+                    <div className="facebook-post-card__media-shell">
+                      <img className="facebook-post-card__media" src={post.postUrl} alt="post media" />
                     </div>
                   ) : null}
 
-                  <div className="post-actions" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, padding: "0 16px 12px" }}>
+                  <div className="facebook-post-card__stats" style={{ padding: compactCards ? "8px 12px 7px" : "10px 14px 8px" }}>
+                    <div className="facebook-post-card__stats-left">
+                      {likeCount > 0 ? (
+                        <>
+                          <span className="facebook-post-card__reaction-bubble">
+                            <FaThumbsUp style={{ width: 10, height: 10 }} />
+                          </span>
+                          <span>{`${likeCount} ${likeCount === 1 ? "like" : "likes"}`}</span>
+                        </>
+                      ) : (
+                        <span>Be the first to react</span>
+                      )}
+                    </div>
+                    <div className="facebook-post-card__stats-right" title={targetRoleLabel}>
+                      <span>{audienceBadgeLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="facebook-post-card__actions" style={{ padding: compactCards ? "3px 8px 8px" : "4px 10px 10px" }}>
                     <button
+                      type="button"
+                      aria-pressed={isLikedByTeacher}
                       onClick={() => handleLike(post.postId)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        padding: "6px 12px",
-                        background: "#f0f2f5",
-                        border: "none",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontSize: "14px",
-                        fontWeight: "500",
-                        color: isLikedByTeacher ? "#e0245e" : "#555",
-                        transition: "all 0.2s ease",
-                      }}
+                      disabled={isLikePending}
+                      className={`facebook-post-card__action-button${isLikedByTeacher ? " is-active" : ""}`}
+                      style={{ opacity: isLikePending ? 0.82 : 1, cursor: isLikePending ? "progress" : "pointer" }}
                     >
                       {isLikedByTeacher ? (
-                        <FaHeart style={{ color: "#e0245e", fontSize: "14px" }} />
+                        <FaHeart style={{ width: 14, height: 14 }} />
                       ) : (
-                        <FaRegHeart style={{ fontSize: "14px" }} />
+                        <FaRegHeart style={{ width: 14, height: 14 }} />
                       )}
-                      {isLikedByTeacher ? "Liked" : "Like"}
-                      <span style={{ marginLeft: 6, fontSize: "13px", color: "#777" }}>
-                        {post.likeCount || 0}
-                      </span>
+                      <span>{isLikedByTeacher ? "Liked" : "Like"}</span>
                     </button>
                   </div>
                 </div>
@@ -1190,10 +1866,14 @@ export default function Dashboard() {
           }}
         />
 
-        <div className="dashboard-widgets" style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, flex: "0 0 clamp(300px, 21vw, 360px)", display: "flex", flexDirection: "column", gap: 12, alignSelf: "flex-start", height: "calc(100vh -  60px)", overflowY: "auto", overflowX: "hidden", position: "fixed", top: 74, right: 14, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, paddingLeft: 12, marginLeft: 10, marginRight: 0, borderLeft: "1px solid var(--border-soft)", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease", zIndex: 20 }}>
+        <div
+          className="dashboard-widgets"
+          onWheel={(event) => event.stopPropagation()}
+          style={{ width: "clamp(300px, 21vw, 360px)", minWidth: 300, maxWidth: 360, flex: "0 0 clamp(300px, 21vw, 360px)", display: "flex", flexDirection: "column", gap: compactCards ? 10 : 12, alignSelf: "flex-start", height: "calc(100vh - 88px)", maxHeight: "calc(100vh - 88px)", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", position: "fixed", top: 74, right: 14, scrollbarWidth: "thin", scrollbarColor: "transparent transparent", paddingRight: 2, paddingLeft: compactCards ? 10 : 14, paddingBottom: compactCards ? 10 : 14, marginLeft: 10, marginRight: 0, borderLeft: "none", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease", zIndex: 20 }}
+        >
           <div style={widgetCardStyle}>
-            <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Quick Statistics</h4>
-            <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", justifyContent: "center", flexWrap: "nowrap" }}>
+            <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Quick Statistics</h4>
+            <div style={{ display: "flex", gap: compactCards ? 8 : 10, marginTop: compactCards ? 8 : 10, alignItems: "center", justifyContent: "center", flexWrap: "nowrap" }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div style={smallStatStyle}>
                   <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>Total Posts</div>
@@ -1211,9 +1891,53 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ ...widgetCardStyle, padding: "10px" }}>
-              <h4 style={{ fontSize: 12, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Today's Activity</h4>
+          <div style={widgetCardStyle}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <div style={rightRailIconStyle}>
+                <FaBookOpen style={{ width: 14, height: 14 }} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Quick Lesson Check</h4>
+                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 3 }}>
+                  Open this week&apos;s lesson status and submit ready entries from here.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10, ...softPanelStyle, padding: "8px 10px", fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              Submitted, ready to submit, and missing lesson entries are all shown in one simple view.
+            </div>
+
+            {quickLessonFeedback.text ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: quickLessonFeedback.type === "error" ? "1px solid rgba(220, 38, 38, 0.18)" : "1px solid rgba(0, 122, 251, 0.16)",
+                  background: quickLessonFeedback.type === "error" ? "#FFF5F5" : "#F5FAFF",
+                  color: quickLessonFeedback.type === "error" ? "#B42318" : "var(--text-primary)",
+                  fontSize: 10,
+                  fontWeight: 700,
+                }}
+              >
+                {quickLessonFeedback.text}
+              </div>
+            ) : null}
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+              <button type="button" style={rightRailActionButtonStyle} onClick={() => setQuickLessonCheckOpen(true)}>
+                Open Quick Check
+              </button>
+              <button type="button" style={rightRailSecondaryButtonStyle} onClick={() => navigate("/lesson-plan")}>
+                Lesson Plan Page
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: compactCards ? 8 : 10 }}>
+            <div style={widgetCardStyle}>
+              <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Today's Activity</h4>
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", ...softPanelStyle, padding: "7px 8px", fontSize: 10 }}>
                   <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>New Posts</span>
@@ -1234,16 +1958,16 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     recentContacts.map((contact) => {
-                      const conv = conversations.find((item) => item.chatId === contact.chatId);
                       return (
                         <button
                           key={contact.userId}
                           type="button"
-                          onClick={() => handleOpenConversation(conv)}
+                          onClick={() => handleOpenConversation(contact.conversation)}
                           style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", ...softPanelStyle, padding: "5px 6px", cursor: "pointer" }}
                         >
-                          <img
+                          <ProfileAvatar
                             src={contact.profileImage || "/default-profile.png"}
+                            name={contact.name}
                             alt={contact.name}
                             style={{ width: 24, height: 24, borderRadius: "50%", objectFit: "cover" }}
                           />
@@ -1255,6 +1979,11 @@ export default function Dashboard() {
                               {contact.lastMessage || "Open chat"}
                             </div>
                           </div>
+                          {contact.unreadCount > 0 ? (
+                            <div style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--accent)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, flexShrink: 0 }}>
+                              {contact.unreadCount > 99 ? "99+" : contact.unreadCount}
+                            </div>
+                          ) : null}
                         </button>
                       );
                     })
@@ -1262,13 +1991,12 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-
-            <div style={{ background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)", borderRadius: 20, boxShadow: "var(--shadow-panel)", padding: "10px", border: "1px solid var(--border-soft)", overflow: "hidden", position: "relative" }}>
-              <div style={{ position: "absolute", top: -40, right: -30, width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 72%)", pointerEvents: "none" }} />
-              <div style={{ margin: "-10px -10px 10px", padding: "12px 10px 10px", background: "linear-gradient(135deg, var(--accent-soft) 0%, var(--surface-muted) 55%, var(--surface-panel) 100%)", borderBottom: "1px solid var(--border-soft)", position: "relative" }}>
+                {/* //  */}
+            <div style={{ ...rightRailCardStyle, overflow: "hidden", position: "relative" }}>
+              <div style={{ padding: compactCards ? "12px 12px 10px" : "14px 14px 12px", background: "var(--surface-panel)", borderBottom: "1px solid rgba(15, 23, 42, 0.08)", position: "relative" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 12, background: "linear-gradient(135deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 20%, transparent) 100%)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "inset 0 1px 0 color-mix(in srgb, white 30%, transparent), var(--shadow-glow)" }}>
+                    <div style={rightRailIconStyle}>
                       <FaCalendarAlt style={{ width: 14, height: 14 }} />
                     </div>
                     <div>
@@ -1283,7 +2011,7 @@ export default function Dashboard() {
                     <button
                       type="button"
                       onClick={() => handleCalendarMonthChange(-1)}
-                      style={{ width: 28, height: 28, borderRadius: 9, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 17, lineHeight: 1, boxShadow: "var(--shadow-soft)" }}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
                       aria-label="Previous month"
                       title="Previous month"
                     >
@@ -1292,7 +2020,7 @@ export default function Dashboard() {
                     <button
                       type="button"
                       onClick={() => handleCalendarMonthChange(1)}
-                      style={{ width: 28, height: 28, borderRadius: 9, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 17, lineHeight: 1, boxShadow: "var(--shadow-soft)" }}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
                       aria-label="Next month"
                       title="Next month"
                     >
@@ -1303,17 +2031,17 @@ export default function Dashboard() {
 
                 <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, flexWrap: "wrap" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <div style={{ padding: "4px 8px", borderRadius: 999, background: "var(--surface-panel)", border: "1px solid var(--border-soft)", fontSize: 9, color: "var(--accent-strong)", fontWeight: 800 }}>
+                    <div style={{ ...rightRailPillStyle, color: "var(--text-primary)" }}>
                       {monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? "" : "s"}
                     </div>
-                    <div style={{ padding: "4px 8px", borderRadius: 999, background: canManageCalendar ? "var(--success-soft)" : "var(--warning-soft)", border: canManageCalendar ? "1px solid var(--success-border)" : "1px solid var(--warning-border)", fontSize: 9, color: canManageCalendar ? "var(--success)" : "var(--warning)", fontWeight: 800 }}>
+                    <div style={{ ...rightRailPillStyle, color: canManageCalendar ? "var(--text-primary)" : "var(--text-secondary)" }}>
                       {canManageCalendar ? "Manage access" : "View only"}
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div style={{ background: "linear-gradient(180deg, var(--surface-muted) 0%, color-mix(in srgb, var(--surface-muted) 92%, var(--page-bg) 8%) 100%)", border: "1px solid var(--border-soft)", borderRadius: 16, padding: "10px", boxShadow: "inset 0 1px 0 color-mix(in srgb, white 22%, transparent)" }}>
+              <div style={{ margin: compactCards ? "10px" : "12px", background: "#F8FAFC", border: "1px solid rgba(15, 23, 42, 0.06)", borderRadius: 12, padding: "10px" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 4, marginBottom: 6 }}>
                   {CALENDAR_WEEK_DAYS.map((day) => (
                     <div key={day} style={{ textAlign: "center", fontSize: 9, fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.03em", textTransform: "uppercase" }}>
@@ -1334,16 +2062,16 @@ export default function Dashboard() {
                     const isHovered = day?.isoDate === hoveredCalendarIsoDate;
                     const dayBackground = day
                       ? isToday
-                        ? "linear-gradient(145deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 26%, transparent) 100%)"
+                        ? "var(--accent-soft)"
                         : isSelected
-                          ? "linear-gradient(145deg, var(--surface-accent) 0%, var(--accent-soft) 55%, color-mix(in srgb, var(--accent) 26%, transparent) 100%)"
+                          ? "color-mix(in srgb, var(--accent-soft) 72%, white 28%)"
                           : isNoClassDay
-                            ? "linear-gradient(145deg, color-mix(in srgb, var(--warning-soft) 78%, var(--surface-panel) 22%) 0%, var(--warning-soft) 100%)"
+                            ? "color-mix(in srgb, var(--warning-soft) 58%, white 42%)"
                             : isAcademicDay
-                              ? "linear-gradient(145deg, color-mix(in srgb, var(--success-soft) 78%, var(--surface-panel) 22%) 0%, var(--success-soft) 100%)"
+                              ? "color-mix(in srgb, var(--accent-soft) 46%, white 54%)"
                               : isWeekend
-                                ? "linear-gradient(145deg, var(--surface-muted) 0%, color-mix(in srgb, var(--surface-muted) 84%, var(--page-bg) 16%) 100%)"
-                                : "linear-gradient(145deg, var(--surface-panel) 0%, var(--surface-muted) 100%)"
+                                ? "color-mix(in srgb, var(--surface-muted) 82%, white 18%)"
+                                : "var(--surface-panel)"
                       : "transparent";
 
                     return (
@@ -1366,9 +2094,9 @@ export default function Dashboard() {
                               ? "1px solid var(--accent-strong)"
                               : isHovered
                                 ? "1px solid var(--border-strong)"
-                                : isNoClassDay
-                                  ? "1px solid var(--warning-border)"
-                                  : "1px solid transparent",
+                                    : isNoClassDay
+                                      ? "1px solid var(--warning-border)"
+                                      : "1px solid var(--border-soft)",
                           background: dayBackground,
                           color: isToday ? "var(--accent-strong)" : day ? "var(--text-secondary)" : "transparent",
                           fontSize: 10,
@@ -1379,20 +2107,14 @@ export default function Dashboard() {
                           justifyContent: "center",
                           gap: 1,
                           padding: "5px 2px",
-                          boxShadow: day && !isToday
-                            ? isSelected
-                              ? "var(--shadow-glow)"
-                              : isHovered
-                                ? "var(--shadow-soft)"
-                                : "var(--shadow-soft)"
-                            : "none",
+                          boxShadow: day && isSelected ? "0 8px 18px rgba(0, 122, 251, 0.12)" : "none",
                           cursor: day ? "pointer" : "default",
                           outline: "none",
                           transform: day && isSelected
                             ? "translateY(-2px) scale(1.03)"
                             : day && isHovered
-                              ? "translateY(-1px) scale(1.015)"
-                              : "translateY(0) scale(1)",
+                              ? "translateY(-1px)"
+                              : "translateY(0)",
                           transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease",
                           position: "relative",
                           overflow: "hidden",
@@ -1412,7 +2134,6 @@ export default function Dashboard() {
                                     height: 5,
                                     borderRadius: "50%",
                                     background: getCalendarEventMeta(eventItem.category).color,
-                                    boxShadow: "0 0 0 2px color-mix(in srgb, var(--surface-panel) 84%, transparent)",
                                   }}
                                 />
                               ))}
@@ -1425,18 +2146,18 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "var(--warning-soft)", border: "1px solid var(--warning-border)", borderRadius: 999, padding: "5px 8px" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "0 12px 0", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "#F8FAFC", border: "1px solid rgba(220, 38, 38, 0.18)", borderRadius: 999, padding: "5px 8px" }}>
                   <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--warning)" }} /> No class
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "var(--success-soft)", border: "1px solid var(--success-border)", borderRadius: 999, padding: "5px 8px" }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--success)" }} /> Academic
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, color: "var(--text-secondary)", fontWeight: 800, background: "#F8FAFC", border: "1px solid rgba(0, 122, 251, 0.18)", borderRadius: 999, padding: "5px 8px" }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)" }} /> Academic
                 </div>
                 {canManageCalendar ? (
                   <button
                     type="button"
                     onClick={handleOpenCalendarEventModal}
-                    style={{ width: 30, height: 30, borderRadius: 999, border: "1px solid var(--border-strong)", background: "linear-gradient(135deg, var(--accent-soft) 0%, color-mix(in srgb, var(--accent) 20%, transparent) 100%)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "var(--shadow-glow)" }}
+                    style={{ ...rightRailIconButtonStyle, width: 30, height: 30, borderRadius: 999, color: "var(--text-primary)" }}
                     aria-label="Add school calendar event"
                     title="Add school calendar event"
                   >
@@ -1446,12 +2167,12 @@ export default function Dashboard() {
               </div>
 
               {calendarActionMessage ? (
-                <div style={{ marginTop: 10, borderRadius: 12, border: "1px solid var(--success-border)", background: "linear-gradient(180deg, color-mix(in srgb, var(--success-soft) 76%, var(--surface-panel) 24%) 0%, var(--success-soft) 100%)", color: "var(--success)", fontSize: 10, fontWeight: 800, padding: "8px 10px", boxShadow: "var(--shadow-soft)" }}>
+                <div style={{ margin: "10px 12px 0", borderRadius: 12, border: "1px solid rgba(0, 122, 251, 0.12)", background: "#F8FAFC", color: "var(--text-primary)", fontSize: 10, fontWeight: 800, padding: "8px 10px" }}>
                   {calendarActionMessage}
                 </div>
               ) : null}
 
-              <div style={{ marginTop: 12, background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: "10px", boxShadow: "var(--shadow-soft)" }}>
+              <div style={{ margin: "12px", background: "#F8FAFC", border: "1px solid rgba(15, 23, 42, 0.06)", borderRadius: 12, padding: "10px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                   <div>
                     <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-primary)" }}>
@@ -1486,7 +2207,7 @@ export default function Dashboard() {
                             display: "flex",
                             alignItems: "flex-start",
                             gap: 7,
-                            background: eventMeta.background,
+                            background: "var(--surface-panel)",
                             border: `1px solid ${eventMeta.border}`,
                             borderRadius: 10,
                             padding: "7px 8px",
@@ -1531,14 +2252,14 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div style={{ background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)", borderRadius: 16, boxShadow: "var(--shadow-soft)", padding: "11px", border: "1px solid var(--border-soft)" }}>
+            <div style={{ ...widgetCardStyle, padding: compactCards ? "10px" : "12px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                 <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Upcoming Deadlines</h4>
                 {canManageCalendar ? (
                   <button
                     type="button"
                     onClick={handleOpenDeadlineModal}
-                    style={{ width: 28, height: 28, borderRadius: 999, border: "1px solid var(--success-border)", background: "linear-gradient(135deg, color-mix(in srgb, var(--success-soft) 72%, var(--surface-panel) 28%) 0%, var(--success-soft) 100%)", color: "var(--success)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "var(--shadow-soft)" }}
+                    style={{ ...rightRailIconButtonStyle, borderRadius: 999, color: "var(--text-primary)" }}
                     aria-label="Add upcoming deadline"
                     title="Add upcoming deadline"
                   >
@@ -1548,17 +2269,17 @@ export default function Dashboard() {
               </div>
               <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                 {calendarEventsLoading ? (
-                  <div style={{ padding: "8px 9px", borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
+                  <div style={{ padding: "8px 9px", borderRadius: 10, border: "1px solid rgba(15, 23, 42, 0.06)", background: "#F8FAFC", fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
                     Loading deadlines...
                   </div>
                 ) : upcomingDeadlineEvents.length === 0 ? (
-                  <div style={{ padding: "8px 9px", borderRadius: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)", fontSize: 10, color: "var(--text-muted)" }}>
+                  <div style={{ padding: "8px 9px", borderRadius: 10, border: "1px solid rgba(15, 23, 42, 0.06)", background: "#F8FAFC", fontSize: 10, color: "var(--text-muted)" }}>
                     No upcoming deadlines in the next 30 days.
                     {canManageCalendar ? (
                       <button
                         type="button"
                         onClick={handleOpenDeadlineModal}
-                        style={{ marginTop: 8, height: 28, padding: "0 10px", borderRadius: 999, border: "1px solid var(--success-border)", background: "var(--surface-panel)", color: "var(--success)", fontSize: 9, fontWeight: 800, cursor: "pointer" }}
+                        style={{ marginTop: 8, height: 28, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(15, 23, 42, 0.08)", background: "var(--surface-panel)", color: "var(--text-primary)", fontSize: 9, fontWeight: 800, cursor: "pointer" }}
                       >
                         Add deadline
                       </button>
@@ -1575,7 +2296,7 @@ export default function Dashboard() {
                           padding: "8px 9px",
                           borderRadius: 10,
                           border: `1px solid ${eventMeta.border}`,
-                          background: eventMeta.background,
+                          background: "#F8FAFC",
                           display: "flex",
                           alignItems: "flex-start",
                           justifyContent: "space-between",
@@ -1602,7 +2323,7 @@ export default function Dashboard() {
                   <button
                     type="button"
                     onClick={() => setShowAllUpcomingDeadlines((currentValue) => !currentValue)}
-                    style={{ alignSelf: "flex-start", height: 28, padding: "0 10px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--accent-strong)", fontSize: 9, fontWeight: 800, cursor: "pointer" }}
+                    style={{ alignSelf: "flex-start", height: 28, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(15, 23, 42, 0.08)", background: "var(--surface-panel)", color: "var(--text-primary)", fontSize: 9, fontWeight: 800, cursor: "pointer" }}
                   >
                     {showAllUpcomingDeadlines ? "See less" : `See more (${upcomingDeadlineEvents.length - 3})`}
                   </button>
@@ -1611,15 +2332,22 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div style={{ background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)", borderRadius: 16, boxShadow: "var(--shadow-soft)", padding: "13px", border: "1px solid var(--border-soft)" }}>
+          <div style={{ ...widgetCardStyle, padding: compactCards ? "10px" : "12px" }}>
             <h4 style={{ fontSize: 14, fontWeight: 800, margin: 0, color: "var(--text-primary)" }}>Sponsored Links</h4>
             <ul style={{ margin: "10px 0 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 7, fontSize: 13 }}>
-              <li style={{ color: "var(--accent-strong)", fontWeight: 600 }}>Gojo Study App</li>
-              <li style={{ color: "var(--accent-strong)", fontWeight: 600 }}>Finance Portal</li>
-              <li style={{ color: "var(--accent-strong)", fontWeight: 600 }}>HR Management</li>
+              <li style={{ ...softPanelStyle, color: "var(--text-primary)", fontWeight: 700, padding: "8px 10px" }}>Gojo Study App</li>
+              <li style={{ ...softPanelStyle, color: "var(--text-primary)", fontWeight: 700, padding: "8px 10px" }}>Finance Portal</li>
+              <li style={{ ...softPanelStyle, color: "var(--text-primary)", fontWeight: 700, padding: "8px 10px" }}>HR Management</li>
             </ul>
           </div>
         </div>
+
+        <QuickLessonPlanCheckModal
+          open={quickLessonCheckOpen}
+          teacher={teacher}
+          onClose={() => setQuickLessonCheckOpen(false)}
+          flashMessage={(type, text) => setQuickLessonFeedback({ type, text })}
+        />
 
         {showCalendarEventModal ? (
           <div
@@ -1868,6 +2596,207 @@ export default function Dashboard() {
             margin-left: auto;
             margin-right: auto;
             margin-top: 12px;
+          }
+          .facebook-post-card {
+            width: 100%;
+            max-width: 680px;
+            margin: 0 auto;
+            position: relative;
+            isolation: isolate;
+          }
+          .facebook-post-card:hover {
+            transform: translateY(-2px);
+          }
+          .facebook-post-card__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+          }
+          .facebook-post-card__header-main {
+            min-width: 0;
+            flex: 1;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+          }
+          .facebook-post-card__avatar {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            overflow: hidden;
+            flex-shrink: 0;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+            background: #fff;
+          }
+          .facebook-post-card__identity {
+            min-width: 0;
+            flex: 1;
+          }
+          .facebook-post-card__identity-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+          .facebook-post-card__identity-row h4 {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.25;
+            font-weight: 800;
+            color: var(--text-primary);
+          }
+          .facebook-post-card__page-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #e7f3ff;
+            color: #0866ff;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+          }
+          .facebook-post-card__meta {
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            font-size: 11px;
+            font-weight: 600;
+            color: #65676b;
+          }
+          .facebook-post-card__type-chip {
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            padding: 5px 9px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #f0f6ff 0%, #e7f3ff 100%);
+            border: 1px solid #bfdcff;
+            color: #0866ff;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+          }
+          .facebook-post-card__body {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          }
+          .facebook-post-card__message {
+            color: var(--text-primary);
+            font-size: 14px;
+            line-height: 1.45;
+            word-break: break-word;
+            white-space: pre-wrap;
+          }
+          .facebook-post-card__read-more {
+            align-self: flex-start;
+            padding: 0;
+            border: none;
+            background: transparent;
+            color: #0866ff;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 800;
+          }
+          .facebook-post-card__media-shell {
+            background: #eff2f5;
+            border-top: 1px solid rgba(15, 23, 42, 0.08);
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .facebook-post-card__media {
+            width: 100%;
+            height: auto;
+            max-height: min(68vh, 540px);
+            object-fit: contain;
+            display: block;
+            background: #eff2f5;
+          }
+          .facebook-post-card__stats {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+          }
+          .facebook-post-card__stats-left,
+          .facebook-post-card__stats-right {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #65676b;
+          }
+          .facebook-post-card__stats-right {
+            justify-content: flex-end;
+            text-align: right;
+          }
+          .facebook-post-card__reaction-bubble {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: #0866ff;
+            color: #fff;
+            box-shadow: 0 6px 16px rgba(8, 102, 255, 0.22);
+          }
+          .facebook-post-card__actions {
+            display: flex;
+          }
+          .facebook-post-card__action-button {
+            width: 100%;
+            min-height: 36px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            cursor: pointer;
+            color: #65676b;
+            font-size: 13px;
+            font-weight: 800;
+            transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+          }
+          .facebook-post-card__action-button:hover {
+            background: #f2f4f7;
+          }
+          .facebook-post-card__action-button.is-active {
+            background: #e7f3ff;
+            color: #0866ff;
+          }
+          .facebook-post-card__action-button:active {
+            transform: translateY(1px);
+          }
+          @media (max-width: 720px) {
+            .facebook-post-card__header {
+              flex-wrap: wrap;
+            }
+            .facebook-post-card__type-chip {
+              order: 3;
+            }
+            .facebook-post-card__stats {
+              flex-direction: column;
+              align-items: flex-start;
+            }
+            .facebook-post-card__stats-right {
+              justify-content: flex-start;
+              text-align: left;
+            }
           }
           @media (max-width: 600px) {
             .posts-container {

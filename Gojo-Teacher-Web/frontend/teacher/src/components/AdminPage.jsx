@@ -1,8 +1,18 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
-import { ref, onValue, off, update } from "firebase/database";
-import { db, schoolPath } from "../firebase";
+import {
+  buildChatMessageQuery,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  filterChatMessageRows,
+  getLastChatMessageKey,
+} from "../utils/chatRtdb";
+import {
+  clearCachedChatSummary,
+  fetchTeacherConversationSummaries,
+  loadUserRecordsByIds,
+} from "../utils/teacherData";
 import {
   FaHome,
   FaUsers,
@@ -19,6 +29,7 @@ import {
 } from "react-icons/fa";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 const getChatId = (id1, id2) => [id1, id2].sort().join("_");
 
@@ -44,9 +55,240 @@ const formatDateLabel = (ts) => {
   return msgDate.toLocaleDateString();
 };
 
+const QUICK_CHAT_HISTORY_LIMIT = 50;
+const QUICK_CHAT_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
+
+const normalizeIdentifier = (value) => String(value || "").trim();
+
+const createQuickChatMessageId = () =>
+  `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+const buildQuickChatMessageRows = (messagesNode = {}, teacherUserId = "") =>
+  Object.entries(messagesNode || {})
+    .map(([id, message]) => ({
+      id,
+      messageId: id,
+      ...message,
+      isTeacher: String(message?.senderId || "") === String(teacherUserId || ""),
+    }))
+    .sort(
+      (leftMessage, rightMessage) =>
+        Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+    );
+
+const mergeChatMessages = (...groups) => {
+  const merged = new Map();
+
+  groups
+    .flat()
+    .filter(Boolean)
+    .forEach((message) => {
+      const key = String(message?.id || message?.messageId || "").trim();
+      if (!key) return;
+
+      const previous = merged.get(key) || {};
+      merged.set(key, {
+        ...previous,
+        ...message,
+        id: key,
+        messageId: key,
+      });
+    });
+
+  return [...merged.values()].sort(
+    (leftMessage, rightMessage) =>
+      Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
+  );
+};
+
+const normalizeRole = (value) => String(value || "").trim().toLowerCase();
+
+const isActiveRecord = (record = {}) => {
+  const raw = record?.status ?? record?.isActive;
+  if (typeof raw === "boolean") return raw;
+  const normalized = String(raw || "active").toLowerCase();
+  return normalized === "active" || normalized === "true" || normalized === "1";
+};
+
+const isAcademicAdmin = ({ schoolAdmin = {}, user = {} } = {}) => {
+  const role = normalizeRole(user?.role || user?.userType || schoolAdmin?.role);
+  const text = [
+    schoolAdmin?.title,
+    schoolAdmin?.department,
+    schoolAdmin?.office,
+    schoolAdmin?.position,
+    schoolAdmin?.responsibility,
+    user?.title,
+    user?.department,
+    user?.position,
+    user?.responsibility,
+    role,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (!text.trim()) {
+    return role === "admin" || role === "school_admin" || role === "school_admins";
+  }
+
+  return ["academic", "academics", "principal", "vice principal", "dean", "curriculum"].some((k) => text.includes(k));
+};
+
+const isManagementEligible = ({ source = "", record = {}, user = {} } = {}) => {
+  const role = normalizeRole(user?.role || user?.userType || record?.role || source);
+  const text = [
+    source,
+    role,
+    record?.title,
+    record?.department,
+    record?.office,
+    record?.position,
+    record?.responsibility,
+    user?.title,
+    user?.department,
+    user?.position,
+    user?.responsibility,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return [
+    "academic",
+    "academics",
+    "principal",
+    "vice principal",
+    "dean",
+    "curriculum",
+    "admin",
+    "management",
+    "hr",
+    "human resource",
+    "register",
+    "registrar",
+  ].some((keyword) => text.includes(keyword));
+};
+
+const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+
+const getInitials = (name) => {
+  const words = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!words.length) return "U";
+  if (words.length === 1) return words[0].charAt(0).toUpperCase();
+  return `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase();
+};
+
+const createPlaceholderAvatar = (name) => {
+  const initials = getInitials(name);
+  const svg = `
+<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'>
+  <defs>
+    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='#2563eb'/>
+      <stop offset='100%' stop-color='#0ea5e9'/>
+    </linearGradient>
+  </defs>
+  <rect width='160' height='160' rx='80' fill='url(#g)'/>
+  <text x='50%' y='53%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='Segoe UI, Arial, sans-serif' font-size='56' font-weight='700'>${initials}</text>
+</svg>`;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const sanitizeProfileImage = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return DEFAULT_PROFILE_IMAGE;
+
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("file://") || lower.startsWith("content://")) {
+    return DEFAULT_PROFILE_IMAGE;
+  }
+
+  return raw;
+};
+
+const resolveAvatarSrc = (rawValue, name) => {
+  const sanitized = sanitizeProfileImage(rawValue);
+  if (!sanitized || sanitized === DEFAULT_PROFILE_IMAGE) {
+    return createPlaceholderAvatar(name);
+  }
+  return sanitized;
+};
+
+const normalizeValueForCompare = (value) => String(value ?? "").trim().toLowerCase();
+
+const normalizeFieldLabel = (value) =>
+  String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const formatDateTime = (value) => {
+  if (!value && value !== 0) return "";
+  const asNumber = Number(value);
+  const date = Number.isFinite(asNumber) && asNumber > 0 ? new Date(asNumber) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString();
+};
+
+const uniqueRows = (rows = [], blocked = new Set()) => {
+  const seen = new Set();
+
+  return rows.filter((row) => {
+    const label = normalizeFieldLabel(row?.label);
+    const value = String(row?.value || "").trim();
+    if (!label || !value) return false;
+
+    const valueKey = normalizeValueForCompare(value);
+    const labelKey = normalizeValueForCompare(label);
+    const signature = `${labelKey}__${valueKey}`;
+
+    if (seen.has(signature)) return false;
+    if (blocked.has(valueKey)) return false;
+
+    seen.add(signature);
+    return true;
+  });
+};
+
+const getStoredTeacher = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("teacher");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    window.__gojoClearTeacherState?.();
+    return null;
+  }
+};
+
+const isPortraitViewport = () => {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth < window.innerHeight;
+};
+
 import { API_BASE } from "../api/apiConfig";
-import { getRtdbRoot } from "../api/rtdbScope";
-const RTDB_BASE = getRtdbRoot();
+import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
+
+const getResolvedSchoolCodeFromBase = (baseValue, fallback = "") => {
+  const base = String(baseValue || "").trim();
+  const marker = "/Platform1/Schools/";
+  const markerIndex = base.indexOf(marker);
+
+  if (markerIndex >= 0) {
+    return base.slice(markerIndex + marker.length).replace(/\/+$/, "");
+  }
+
+  return String(fallback || "").trim();
+};
 
 // Admin item component
 const AdminItem = ({ admin, selected, onClick, number }) => (
@@ -60,9 +302,11 @@ const AdminItem = ({ admin, selected, onClick, number }) => (
       alignItems: "center",
       gap: "12px",
       cursor: "pointer",
-      background: selected ? "#e0e7ff" : "var(--surface-panel)",
-      border: selected ? "2px solid #4b6cb7" : "1px solid var(--border-soft)",
-      boxShadow: selected ? "0 6px 15px rgba(75,108,183,0.3)" : "0 2px 6px rgba(0,0,0,0.06)",
+      background: "#ffffff",
+      border: selected ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+      boxShadow: selected
+        ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+        : "0 4px 10px rgba(15, 23, 42, 0.06)",
       transition: "all 0.3s ease",
     }}
   >
@@ -70,8 +314,8 @@ const AdminItem = ({ admin, selected, onClick, number }) => (
       width: 36,
       height: 36,
       borderRadius: "50%",
-      background: selected ? "#4b6cb7" : "#f1f5f9",
-      color: selected ? "#fff" : "#374151",
+      background: selected ? "#1d4ed8" : "#eef2ff",
+      color: selected ? "#fff" : "#334155",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -81,22 +325,26 @@ const AdminItem = ({ admin, selected, onClick, number }) => (
     }}>{number}</div>
 
     <img
-      src={admin.profileImage || "/default-profile.png"}
+      src={resolveAvatarSrc(admin.profileImage, admin.name)}
       alt={admin.name}
       onError={(event) => {
-        event.currentTarget.src = "/default-profile.png";
+        const fallback = createPlaceholderAvatar(admin?.name || "Management");
+        if (event.currentTarget.src === fallback) return;
+        event.currentTarget.src = fallback;
       }}
       style={{
         width: "48px",
         height: "48px",
         borderRadius: "50%",
         objectFit: "cover",
-        border: selected ? "3px solid #4b6cb7" : "3px solid #ddd",
+        border: selected ? "3px solid #2563eb" : "3px solid #dbeafe",
       }}
     />
     <div>
       <h3 style={{ margin: 0, fontSize: 14 }}>{admin.name}</h3>
-      <p style={{ margin: "4px 0", color: "#555", fontSize: 11 }}>{admin.username || admin.email}</p>
+      <p style={{ margin: "4px 0", color: "#555", fontSize: 11 }}>
+        {admin.title || admin.username || admin.email || "Management"}
+      </p>
     </div>
   </div>
 );
@@ -113,14 +361,23 @@ function AdminPage() {
   const [adminTab, setAdminTab] = useState("details");
   const [adminChatOpen, setAdminChatOpen] = useState(false);
 
-  const [messages, setMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState("");
+  const [liveQuickChatMessages, setLiveQuickChatMessages] = useState([]);
+  const [olderQuickChatMessages, setOlderQuickChatMessages] = useState([]);
+  const [quickChatLoading, setQuickChatLoading] = useState(false);
+  const [quickChatLoadingOlder, setQuickChatLoadingOlder] = useState(false);
+  const [quickChatHasOlder, setQuickChatHasOlder] = useState(false);
+  const [quickChatTarget, setQuickChatTarget] = useState(null);
   const messagesEndRef = useRef(null);
+  const quickChatMessagesRef = useRef(null);
+  const quickChatScrollRestoreRef = useRef(null);
+  const lastQuickChatActivityAtRef = useRef(Date.now());
+  const lastQuickChatMessageKeyRef = useRef("");
 
   const [teacher, setTeacher] = useState(null);
-  const teacherData = JSON.parse(localStorage.getItem("teacher")) || {};
-  const teacherUserId = String(teacherData.userId || "");
-  const [selectedChatUser, setSelectedChatUser] = useState(null);
+  const [rtdbBase, setRtdbBase] = useState(() => getRtdbRoot());
+  const [schoolBaseResolved, setSchoolBaseResolved] = useState(false);
+  const teacherUserId = String(teacher?.userId || "");
 
   // Notifications
   const [notifications, setNotifications] = useState([]);
@@ -133,9 +390,76 @@ function AdminPage() {
   const [conversations, setConversations] = useState([]); // conversations with unread messages for this admin
 
   const navigate = useNavigate();
+  const resolvedSchoolCode = useMemo(
+    () => getResolvedSchoolCodeFromBase(rtdbBase, teacher?.schoolCode),
+    [rtdbBase, teacher?.schoolCode]
+  );
+  const buildRtdbUrl = (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`;
+
+  const fetchQuickChatMessagesPage = async ({ chatId, beforeMessageKey, afterMessageKey } = {}) => {
+    if (!chatId) {
+      return { messages: [], overflowed: false };
+    }
+
+    const response = await axios.get(buildRtdbUrl(`Chats/${chatId}/messages`), {
+      params: buildChatMessageQuery({
+        pageSize: QUICK_CHAT_HISTORY_LIMIT,
+        beforeMessageKey,
+        afterMessageKey,
+      }),
+    });
+    const messagesNode = response?.data && typeof response.data === "object" ? response.data : {};
+    const messageList = filterChatMessageRows(buildQuickChatMessageRows(messagesNode, teacherUserId), {
+      beforeMessageKey,
+      afterMessageKey,
+    });
+
+    return {
+      messages: messageList,
+      overflowed: Boolean(afterMessageKey) && messageList.length > QUICK_CHAT_HISTORY_LIMIT,
+    };
+  };
+
+  const patchQuickChatSummary = async (ownerUserId, chatId, patch) => {
+    const normalizedOwnerUserId = normalizeIdentifier(ownerUserId);
+    if (!normalizedOwnerUserId || !chatId || !patch || typeof patch !== "object") {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(buildChatSummaryPath(normalizedOwnerUserId, chatId)), patch);
+  };
+
+  const updateQuickChatParticipants = async (chatId, participantIds = []) => {
+    const participantPatch = (participantIds || []).reduce((result, participantId) => {
+      const normalizedParticipantId = normalizeIdentifier(participantId);
+      if (normalizedParticipantId) {
+        result[normalizedParticipantId] = true;
+      }
+      return result;
+    }, {});
+
+    if (!Object.keys(participantPatch).length) {
+      return;
+    }
+
+    await axios.patch(buildRtdbUrl(`Chats/${chatId}/participants`), participantPatch);
+  };
+
+  const syncQuickChatSummaryCache = (chatId) => {
+    clearCachedChatSummary({
+      rtdbBase,
+      chatId,
+      teacherUserId,
+    });
+  };
+
+  const messages = useMemo(
+    () => mergeChatMessages(olderQuickChatMessages, liveQuickChatMessages),
+    [olderQuickChatMessages, liveQuickChatMessages]
+  );
 
   useEffect(() => {
-    const storedTeacher = JSON.parse(localStorage.getItem("teacher"));
+    const storedTeacher = getStoredTeacher();
     if (!storedTeacher) {
       navigate("/login");
       return;
@@ -143,140 +467,485 @@ function AdminPage() {
     setTeacher(storedTeacher);
   }, [navigate]);
 
+  useEffect(() => {
+    const resolveSchoolBase = async () => {
+      if (!teacher) return;
+      setSchoolBaseResolved(false);
+
+      const rawSchoolCode = String(teacher?.schoolCode || "").trim();
+      if (!rawSchoolCode) {
+        setRtdbBase(getRtdbRoot());
+        setSchoolBaseResolved(true);
+        return;
+      }
+
+      if (rawSchoolCode.startsWith("ET-")) {
+        setRtdbBase(`${RTDB_BASE_RAW}/Platform1/Schools/${rawSchoolCode}`);
+        setSchoolBaseResolved(true);
+        return;
+      }
+
+      try {
+        const shortCode = rawSchoolCode.toUpperCase();
+        const mapRes = await axios.get(`${RTDB_BASE_RAW}/Platform1/schoolCodeIndex/${shortCode}.json`);
+        const mappedCode = String(mapRes?.data || "").trim();
+        if (mappedCode) {
+          setRtdbBase(`${RTDB_BASE_RAW}/Platform1/Schools/${mappedCode}`);
+          setSchoolBaseResolved(true);
+          return;
+        }
+      } catch {
+        // Fallback scan handles missing mapping entries.
+      }
+
+      try {
+        const schoolsRes = await axios.get(`${RTDB_BASE_RAW}/Platform1/Schools.json`);
+        const schoolsObj = schoolsRes?.data && typeof schoolsRes.data === "object" ? schoolsRes.data : {};
+        const shortCode = rawSchoolCode.toUpperCase();
+        const fallbackMatch = Object.entries(schoolsObj).find(([schoolCode, schoolNode]) => {
+          const nodeShort = String(
+            schoolNode?.schoolInfo?.shortName ||
+              schoolNode?.schoolInfo?.shortCode ||
+              schoolNode?.schoolCode ||
+              ""
+          )
+            .trim()
+            .toUpperCase();
+          return nodeShort === shortCode || String(schoolCode || "").toUpperCase().includes(shortCode);
+        });
+
+        if (fallbackMatch?.[0]) {
+          setRtdbBase(`${RTDB_BASE_RAW}/Platform1/Schools/${fallbackMatch[0]}`);
+          setSchoolBaseResolved(true);
+          return;
+        }
+      } catch {
+        // Keep final fallback below.
+      }
+
+      setRtdbBase(`${RTDB_BASE_RAW}/Platform1/Schools/${rawSchoolCode}`);
+      setSchoolBaseResolved(true);
+    };
+
+    resolveSchoolBase();
+  }, [teacher]);
+
   // fetch conversations when teacher is available
   useEffect(() => {
     if (teacher) fetchConversations(teacher);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teacher]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
+  };
+
+  const closeAdminQuickChat = () => {
+    setAdminChatOpen(false);
+    setQuickChatTarget(null);
+  };
+
+  const openAdminQuickChat = () => {
+    const targetUserId = normalizeIdentifier(selectedAdmin?.userId);
+    if (!targetUserId) return;
+
+    setQuickChatTarget({
+      ...selectedAdmin,
+      userId: targetUserId,
+      profileImage: resolveAvatarSrc(selectedAdmin?.profileImage, selectedAdmin?.name),
+    });
+    setAdminChatOpen(true);
   };
 
   // ---------------- FETCH ADMINS ----------------
   useEffect(() => {
-  async function fetchAdmins() {
-    try {
-      setLoading(true);
-      const [usersRes, schoolAdminsRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/School_Admins.json`),
-      ]);
-      const users = usersRes.data || {};
-      const schoolAdmins = schoolAdminsRes.data || {};
+    async function fetchAdmins() {
+      try {
+        if (!schoolBaseResolved || !rtdbBase) return;
+        setLoading(true);
+        const [schoolAdminsNode, managementNode, hrNode, registerersNode] = await Promise.all([
+          fetchCachedJson(`${rtdbBase}/School_Admins.json`, { ttlMs: 5 * 60 * 1000, fallbackValue: {} }),
+          fetchCachedJson(`${rtdbBase}/Management.json`, { ttlMs: 5 * 60 * 1000, fallbackValue: {} }),
+          fetchCachedJson(`${rtdbBase}/HR.json`, { ttlMs: 5 * 60 * 1000, fallbackValue: {} }),
+          fetchCachedJson(`${rtdbBase}/Registerers.json`, { ttlMs: 5 * 60 * 1000, fallbackValue: {} }),
+        ]);
 
-      // Build a map of userId => schoolAdmin entry
-      const adminByUserId = {};
-      Object.entries(schoolAdmins).forEach(([adminKey, sa]) => {
-        if (sa.userId) adminByUserId[sa.userId] = { ...sa, adminKey };
-      });
+        const schoolAdmins = schoolAdminsNode && typeof schoolAdminsNode === "object" ? schoolAdminsNode : {};
+        const management = managementNode && typeof managementNode === "object" ? managementNode : {};
+        const hr = hrNode && typeof hrNode === "object" ? hrNode : {};
+        const registerers = registerersNode && typeof registerersNode === "object" ? registerersNode : {};
 
-      const adminsMap = new Map();
-
-      Object.entries(schoolAdmins).forEach(([adminKey, schoolAdmin]) => {
-        const linkedUser = Object.values(users).find(
-          (user) => String(user.userId || "") === String(schoolAdmin.userId || "")
-        ) || {};
-
-        adminsMap.set(adminKey, {
-          adminId: adminKey,
-          userId: schoolAdmin.userId || linkedUser.userId || "",
-          username: linkedUser.username || schoolAdmin.username || "",
-          name: linkedUser.name || schoolAdmin.name || schoolAdmin.title || "Admin",
-          email: linkedUser.email || schoolAdmin.email || "",
-          phone: linkedUser.phone || schoolAdmin.phone || "",
-          profileImage: linkedUser.profileImage || schoolAdmin.profileImage || "/default-profile.png",
-          role: linkedUser.role || schoolAdmin.role || "school_admin",
-          status: schoolAdmin.status || linkedUser.status || "active",
-          title: schoolAdmin.title || "",
-          schoolAdminKey: adminKey,
+        const managementCandidates = [];
+        Object.entries(schoolAdmins).forEach(([recordKey, record]) => {
+          managementCandidates.push({ source: "school_admin", recordKey, record });
         });
-      });
+        Object.entries(management).forEach(([recordKey, record]) => {
+          managementCandidates.push({ source: "management", recordKey, record });
+        });
+        Object.entries(hr).forEach(([recordKey, record]) => {
+          managementCandidates.push({ source: "hr", recordKey, record });
+        });
+        Object.entries(registerers).forEach(([recordKey, record]) => {
+          managementCandidates.push({ source: "registerer", recordKey, record });
+        });
 
-      Object.entries(users).forEach(([key, user]) => {
-        const role = (user.role || user.userType || "").toLowerCase();
-        if (role !== "admin" && role !== "school_admin" && role !== "school_admins") {
-          return;
+        const userIds = [...new Set(
+          managementCandidates
+            .map(({ record, recordKey }) => record?.userId || record?.userID || recordKey)
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        )];
+        const users = await loadUserRecordsByIds({
+          rtdbBase,
+          schoolCode: resolvedSchoolCode,
+          userIds,
+        });
+
+        const allAdmins = managementCandidates
+          .map(({ source, recordKey, record }) => {
+            const userId = String(record?.userId || "").trim();
+            const user = users?.[userId] || {};
+            const resolvedUserId = userId || String(user?.userId || recordKey || "").trim();
+
+            return {
+              adminId: record?.adminId || record?.managementId || record?.hrId || record?.registererId || recordKey,
+              source,
+              recordKey,
+              userId: resolvedUserId,
+              username: user?.username || record?.username || "",
+              name: user?.name || record?.name || record?.title || "Management",
+              email: user?.email || record?.email || "",
+              phone: user?.phone || record?.phone || "",
+              profileImage: resolveAvatarSrc(user.profileImage || user.profile || user.avatar || record.profileImage || record.profile, user?.name || record?.name || record?.title || "Management"),
+              title:
+                record?.title ||
+                user?.title ||
+                user?.role ||
+                source.replace("_", " "),
+              role: user?.role || record?.role || source,
+              status: record?.status || user?.status || (user?.isActive === true ? "active" : "inactive"),
+              schoolCode: record?.schoolCode || user?.schoolCode || teacher?.schoolCode || "",
+              department: record?.department || user?.department || "",
+              office: record?.office || user?.office || "",
+              position: record?.position || user?.position || "",
+              responsibility: record?.responsibility || user?.responsibility || "",
+              record,
+              user,
+            };
+          })
+          .filter((candidate) => candidate.userId)
+          .filter((candidate) => isActiveRecord(candidate.record || candidate.user))
+          .filter((candidate) => {
+            if (candidate.source === "school_admin") {
+              return isAcademicAdmin({ schoolAdmin: candidate.record, user: candidate.user });
+            }
+            return isManagementEligible({ source: candidate.source, record: candidate.record, user: candidate.user });
+          })
+          .filter((candidate) => candidate.name || candidate.email || candidate.userId)
+          .filter((item, index, array) => array.findIndex((entry) => entry.userId === item.userId) === index)
+          .sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+
+        setAdmins(allAdmins);
+        setError(allAdmins.length === 0 ? "No management contacts found" : "");
+      } catch (err) {
+        console.error(err);
+        setError("Failed to fetch management contacts");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchAdmins();
+  }, [teacher?.schoolCode, schoolBaseResolved, rtdbBase, resolvedSchoolCode]);
+
+  useEffect(() => {
+    if (selectedAdmin || !adminChatOpen) return;
+    closeAdminQuickChat();
+  }, [selectedAdmin, adminChatOpen]);
+
+  useEffect(() => {
+    const restoreSnapshot = quickChatScrollRestoreRef.current;
+    const scrollContainer = quickChatMessagesRef.current;
+
+    if (restoreSnapshot && scrollContainer) {
+      scrollContainer.scrollTop =
+        restoreSnapshot.previousScrollTop +
+        (scrollContainer.scrollHeight - restoreSnapshot.previousScrollHeight);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
+
+    if (!adminChatOpen) return;
+    messagesEndRef.current?.scrollIntoView({
+      behavior: messages.length > QUICK_CHAT_HISTORY_LIMIT ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [adminChatOpen, messages]);
+
+  useEffect(() => {
+    if (!adminChatOpen) {
+      return undefined;
+    }
+
+    const markQuickChatActivity = () => {
+      lastQuickChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markQuickChatActivity();
+    };
+
+    window.addEventListener("focus", markQuickChatActivity);
+    window.addEventListener("online", markQuickChatActivity);
+    window.addEventListener("pointerdown", markQuickChatActivity, { passive: true });
+    window.addEventListener("touchstart", markQuickChatActivity, { passive: true });
+    window.addEventListener("keydown", markQuickChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markQuickChatActivity);
+      window.removeEventListener("online", markQuickChatActivity);
+      window.removeEventListener("pointerdown", markQuickChatActivity);
+      window.removeEventListener("touchstart", markQuickChatActivity);
+      window.removeEventListener("keydown", markQuickChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [adminChatOpen]);
+
+  useEffect(() => {
+    if (!adminChatOpen || !teacherUserId || !quickChatTarget?.userId || !schoolBaseResolved) {
+      lastQuickChatMessageKeyRef.current = "";
+      setLiveQuickChatMessages([]);
+      setOlderQuickChatMessages([]);
+      setQuickChatLoading(false);
+      setQuickChatLoadingOlder(false);
+      setQuickChatHasOlder(false);
+      quickChatScrollRestoreRef.current = null;
+      return;
+    }
+
+    const chatKey = getChatId(teacherUserId, quickChatTarget.userId);
+
+    setQuickChatLoading(true);
+  lastQuickChatMessageKeyRef.current = "";
+    let cancelled = false;
+    let syncInFlight = false;
+
+    const syncLatestMessages = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastQuickChatActivityAtRef.current <= QUICK_CHAT_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
+
+      if (syncInFlight) return;
+      syncInFlight = true;
+
+      try {
+        const afterMessageKey = !force ? lastQuickChatMessageKeyRef.current : "";
+        let replaceMessages = !afterMessageKey;
+        let appliedMessages = [];
+
+        if (afterMessageKey) {
+          const incrementalResult = await fetchQuickChatMessagesPage({
+            chatId: chatKey,
+            afterMessageKey,
+          });
+
+          if (incrementalResult.overflowed) {
+            const snapshotResult = await fetchQuickChatMessagesPage({ chatId: chatKey });
+            appliedMessages = snapshotResult.messages;
+            replaceMessages = true;
+          } else {
+            appliedMessages = incrementalResult.messages;
+            replaceMessages = false;
+          }
+        } else {
+          const snapshotResult = await fetchQuickChatMessagesPage({ chatId: chatKey });
+          appliedMessages = snapshotResult.messages;
         }
 
-        const schoolAdminInfo = adminByUserId[user.userId];
-        const mapKey = (schoolAdminInfo && schoolAdminInfo.adminKey) || key;
-        if (!adminsMap.has(mapKey)) {
-          adminsMap.set(mapKey, {
-            adminId: mapKey,
-            ...user,
-            status: (schoolAdminInfo && schoolAdminInfo.status) || user.status || "active",
-            title: (schoolAdminInfo && schoolAdminInfo.title) || "",
-            schoolAdminKey: schoolAdminInfo?.adminKey,
+        if (cancelled) return;
+
+        if (replaceMessages) {
+          lastQuickChatMessageKeyRef.current = getLastChatMessageKey(appliedMessages);
+          setLiveQuickChatMessages(appliedMessages);
+          setQuickChatHasOlder((previousValue) => previousValue || appliedMessages.length >= QUICK_CHAT_HISTORY_LIMIT);
+        } else if (appliedMessages.length) {
+          setLiveQuickChatMessages((previousMessages) => {
+            const nextMessages = mergeChatMessages(previousMessages, appliedMessages);
+            lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+            return nextMessages;
           });
         }
+        setQuickChatLoading(false);
+
+        const unseenMessages = appliedMessages.filter(
+          (message) => String(message?.receiverId || "") === String(teacherUserId) && !message?.seen
+        );
+        if (!unseenMessages.length) return;
+
+        const seenAt = Date.now();
+        const seenPatch = unseenMessages.reduce((result, message) => {
+          const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+          if (!messageKey) return result;
+          result[`messages/${messageKey}/seen`] = true;
+          result[`messages/${messageKey}/seenAt`] = seenAt;
+          return result;
+        }, {});
+
+        try {
+          await Promise.all([
+            axios.patch(buildRtdbUrl(`Chats/${chatKey}`), seenPatch),
+            patchQuickChatSummary(
+              teacherUserId,
+              chatKey,
+              buildChatSummaryUpdate({
+                chatId: chatKey,
+                otherUserId: quickChatTarget.userId,
+                unreadCount: 0,
+                lastMessageSeen: true,
+                lastMessageSeenAt: seenAt,
+              })
+            ),
+          ]);
+
+          if (cancelled) return;
+
+          setLiveQuickChatMessages((previousMessages) =>
+            previousMessages.map((message) => {
+              const messageKey = normalizeIdentifier(message?.id || message?.messageId);
+              if (!messageKey || !seenPatch[`messages/${messageKey}/seen`]) {
+                return message;
+              }
+
+              return {
+                ...message,
+                seen: true,
+                seenAt,
+              };
+            })
+          );
+          syncQuickChatSummaryCache(chatKey);
+        } catch (chatError) {
+          console.error("Failed to mark messages seen:", chatError);
+        }
+      } catch (chatError) {
+        console.error("Failed to load quick chat messages:", chatError);
+        if (!cancelled) {
+          lastQuickChatMessageKeyRef.current = "";
+          setLiveQuickChatMessages([]);
+          setOlderQuickChatMessages([]);
+          setQuickChatHasOlder(false);
+          setQuickChatLoading(false);
+        }
+      } finally {
+        syncInFlight = false;
+      }
+    };
+
+    const handleFocusedRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastQuickChatActivityAtRef.current = Date.now();
+      void syncLatestMessages({ force: true });
+    };
+
+    void syncLatestMessages({ force: true });
+    const intervalId = window.setInterval(() => {
+      void syncLatestMessages();
+    }, QUICK_CHAT_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedRefresh);
+    window.addEventListener("online", handleFocusedRefresh);
+    document.addEventListener("visibilitychange", handleFocusedRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedRefresh);
+      window.removeEventListener("online", handleFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedRefresh);
+    };
+  }, [adminChatOpen, teacherUserId, quickChatTarget?.userId, schoolBaseResolved, rtdbBase]);
+
+  const loadOlderMessages = async () => {
+    if (
+      quickChatLoading ||
+      quickChatLoadingOlder ||
+      !adminChatOpen ||
+      !teacherUserId ||
+      !quickChatTarget?.userId ||
+      messages.length === 0
+    ) {
+      return;
+    }
+
+    const oldestMessageKey = normalizeIdentifier(messages[0]?.id || messages[0]?.messageId);
+    if (!oldestMessageKey) {
+      setQuickChatHasOlder(false);
+      return;
+    }
+
+    const scrollContainer = quickChatMessagesRef.current;
+    if (scrollContainer) {
+      quickChatScrollRestoreRef.current = {
+        previousScrollHeight: scrollContainer.scrollHeight,
+        previousScrollTop: scrollContainer.scrollTop,
+      };
+    }
+
+    setQuickChatLoadingOlder(true);
+
+    try {
+      const chatId = getChatId(teacherUserId, quickChatTarget.userId);
+      const { messages: olderMessagesPage } = await fetchQuickChatMessagesPage({
+        chatId,
+        beforeMessageKey: oldestMessageKey,
       });
 
-      const adminsArray = Array.from(adminsMap.values());
-      setAdmins(adminsArray);
-      setError(adminsArray.length === 0 ? "No admins found" : "");
-    } catch (err) {
-      console.error(err);
-      setError("Failed to fetch admins");
+      if (!olderMessagesPage.length) {
+        setQuickChatHasOlder(false);
+        quickChatScrollRestoreRef.current = null;
+        return;
+      }
+
+      setOlderQuickChatMessages((previousMessages) =>
+        mergeChatMessages(olderMessagesPage, previousMessages)
+      );
+      setQuickChatHasOlder(olderMessagesPage.length >= QUICK_CHAT_HISTORY_LIMIT);
+    } catch (chatError) {
+      console.error("Failed to load older quick chat messages:", chatError);
+      quickChatScrollRestoreRef.current = null;
     } finally {
-      setLoading(false);
+      setQuickChatLoadingOlder(false);
     }
-  }
-  fetchAdmins();
-}, []);
-  // Auto-scroll messages
+  };
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ---------------- Real-time messages for popup/chat window ----------------
-  useEffect(() => {
-    if (!teacherUserId || !selectedChatUser) return;
-    const chatKey = getChatId(teacherUserId, selectedChatUser.userId);
-    const messagesRef = ref(db, schoolPath(`Chats/${chatKey}/messages`));
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val() || {};
-      const msgs = Object.entries(data)
-        .map(([id, m]) => ({
-          id,
-          ...m,
-          isTeacher: m.senderId === teacherUserId,
-        }))
-        .sort((a, b) => a.timeStamp - b.timeStamp);
-      setMessages(msgs);
-
-      // mark seen for messages where teacher is receiver and set seenAt
-      Object.entries(data).forEach(([id, m]) => {
-        if (m && !m.seen && m.receiverId === teacherUserId) {
-          const ts = Date.now();
-          update(ref(db, schoolPath(`Chats/${chatKey}/messages/${id}`)), { seen: true, seenAt: ts }).catch(() => {});
-        }
-      });
-
-      // reset unread count for this teacher in this chat
-      update(ref(db, schoolPath(`Chats/${chatKey}/unread`)), { [teacherUserId]: 0 }).catch(() => {});
-    });
-
-    return () => off(messagesRef);
-  }, [teacherUserId, selectedChatUser]);
-
-  // ---------------- Send Message ----------------
   const sendMessage = async () => {
-    if (!newMessageText.trim() || !selectedAdmin) return;
+    const text = String(newMessageText || "").trim();
+    if (!text || !quickChatTarget?.userId || !teacherUserId) return;
 
     const senderId = teacherUserId;
-    const receiverId = selectedAdmin.userId;
+    const receiverId = quickChatTarget.userId;
     const chatId = getChatId(senderId, receiverId);
     const timeStamp = Date.now();
 
     const message = {
+      messageId: createQuickChatMessageId(),
       senderId,
       receiverId,
       type: "text",
-      text: newMessageText,
-      imageUrl: null,
-      replyTo: null,
+      text,
       seen: false,
       edited: false,
       deleted: false,
@@ -284,15 +953,62 @@ function AdminPage() {
     };
 
     try {
-      await axios.post(`${RTDB_BASE}/Chats/${chatId}/messages.json`, message);
-      await axios.patch(`${RTDB_BASE}/Chats/${chatId}.json`, {
-        participants: { [senderId]: true, [receiverId]: true },
-        lastMessage: { text: newMessageText, senderId, seen: false, timeStamp },
-        unread: { [senderId]: 0, [receiverId]: 1 },
+      const receiverSummaryResponse = await axios
+        .get(buildRtdbUrl(buildChatSummaryPath(receiverId, chatId)))
+        .catch(() => ({ data: {} }));
+      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
+
+      await axios.put(buildRtdbUrl(`Chats/${chatId}/messages/${message.messageId}`), message);
+      await updateQuickChatParticipants(chatId, [senderId, receiverId]);
+
+      await Promise.all([
+        patchQuickChatSummary(
+          senderId,
+          chatId,
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: receiverId,
+            unreadCount: 0,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        patchQuickChatSummary(
+          receiverId,
+          chatId,
+          buildChatSummaryUpdate({
+            chatId,
+            otherUserId: senderId,
+            unreadCount: nextUnreadCount,
+            lastMessageText: text,
+            lastMessageType: "text",
+            lastMessageTime: timeStamp,
+            lastSenderId: senderId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
+
+      syncQuickChatSummaryCache(chatId);
+      setLiveQuickChatMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [
+          {
+            id: message.messageId,
+            ...message,
+            isTeacher: true,
+          },
+        ]);
+        lastQuickChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
       });
       setNewMessageText("");
     } catch (err) {
-      console.error("Send message error:", err);
+      console.error("Failed to send quick chat message:", err);
     }
   };
 
@@ -301,52 +1017,66 @@ function AdminPage() {
   // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
    // ---------------- FETCH NOTIFICATIONS (ENRICHED WITH ADMIN INFO) ----------------
   useEffect(() => {
-  const fetchNotifications = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/get_posts`);
-      let postsData = res.data || [];
-      if (!Array.isArray(postsData) && typeof postsData === "object") {
-        postsData = Object.values(postsData);
-      }
+    const fetchNotifications = async () => {
+      try {
+        if (!schoolBaseResolved || !rtdbBase) return;
 
-      const [adminsRes, usersRes] = await Promise.all([
-        axios.get(`${RTDB_BASE}/School_Admins.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-      ]);
-      const schoolAdmins = adminsRes.data || {};
-      const users = usersRes.data || {};
-
-      // Get teacher from localStorage so we know who's seen what
-      const teacher = JSON.parse(localStorage.getItem("teacher"));
-      const seenPosts = getSeenPosts(teacher?.userId);
-
-      // ...resolveAdminInfo as before...
-
-      const resolveAdminInfo = (post) => {
-        const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
-        // ...same as your code...
-        if (adminId && schoolAdmins[adminId]) {
-          const schoolAdminRec = schoolAdmins[adminId];
-          const userKey = schoolAdminRec.userId;
-          const userRec = users[userKey] || null;
-          const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
-          const profile = (userRec && userRec.profileImage) || schoolAdminRec.profileImage || post.adminProfile || "/default-profile.png";
-          return { name, profile };
+        const res = await axios.get(`${API_BASE}/get_posts`);
+        let postsData = res.data || [];
+        if (!Array.isArray(postsData) && typeof postsData === "object") {
+          postsData = Object.values(postsData);
         }
-        return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
-      };
 
-      const latest = postsData
-        .slice()
-        .sort((a, b) => {
-          const ta = a.time ? new Date(a.time).getTime() : 0;
-          const tb = b.time ? new Date(b.time).getTime() : 0;
-          return tb - ta;
-        })
-        // ONLY SHOW NOTIFICATIONS FOR UNSEEN POSTS
-        .filter((post) => post.postId && !seenPosts.includes(post.postId))
-        .slice(0, 5)
-        .map((post) => {
+        const schoolAdminsNode = await fetchCachedJson(`${rtdbBase}/School_Admins.json`, {
+          ttlMs: 5 * 60 * 1000,
+          fallbackValue: {},
+        });
+        const schoolAdmins = schoolAdminsNode && typeof schoolAdminsNode === "object" ? schoolAdminsNode : {};
+
+        const currentTeacher = getStoredTeacher();
+        const seenPosts = getSeenPosts(currentTeacher?.userId);
+        const unreadPosts = postsData
+          .slice()
+          .sort((a, b) => {
+            const ta = a.time ? new Date(a.time).getTime() : 0;
+            const tb = b.time ? new Date(b.time).getTime() : 0;
+            return tb - ta;
+          })
+          .filter((post) => post.postId && !seenPosts.includes(post.postId))
+          .slice(0, 5);
+
+        const adminUserIds = [...new Set(
+          unreadPosts
+            .map((post) => {
+              const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+              return adminId ? schoolAdmins?.[adminId]?.userId : "";
+            })
+            .filter(Boolean)
+        )];
+
+        const users = await loadUserRecordsByIds({
+          rtdbBase,
+          schoolCode: resolvedSchoolCode,
+          userIds: adminUserIds,
+        });
+
+        const resolveAdminInfo = (post) => {
+          const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+          if (adminId && schoolAdmins[adminId]) {
+            const schoolAdminRec = schoolAdmins[adminId];
+            const userRec = users?.[schoolAdminRec.userId] || null;
+            const name = (userRec && userRec.name) || schoolAdminRec.name || post.adminName || "Admin";
+            const profile =
+              (userRec && (userRec.profileImage || userRec.profile || userRec.avatar)) ||
+              schoolAdminRec.profileImage ||
+              post.adminProfile ||
+              "/default-profile.png";
+            return { name, profile };
+          }
+          return { name: post.adminName || "Admin", profile: post.adminProfile || "/default-profile.png" };
+        };
+
+        const latest = unreadPosts.map((post) => {
           const info = resolveAdminInfo(post);
           return {
             id: post.postId,
@@ -356,14 +1086,14 @@ function AdminPage() {
           };
         });
 
-      setNotifications(latest);
-    } catch (err) {
-      console.error("Error fetching notifications:", err);
-    }
-  };
+        setNotifications(latest);
+      } catch (err) {
+        console.error("Error fetching notifications:", err);
+      }
+    };
 
-  fetchNotifications();
-}, []);
+    fetchNotifications();
+  }, [schoolBaseResolved, rtdbBase, resolvedSchoolCode]);
 
 
 // --- 3. Handler to remove notification after clicked (and mark seen) ---
@@ -378,7 +1108,11 @@ const handleNotificationClick = (postId) => {
 };
 
 function getSeenPosts(teacherId) {
-  return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+  try {
+    return JSON.parse(localStorage.getItem(`seen_posts_${teacherId}`)) || [];
+  } catch {
+    return [];
+  }
 }
 
 function saveSeenPost(teacherId, postId) {
@@ -390,68 +1124,18 @@ function saveSeenPost(teacherId, postId) {
   // ---------------- MESSENGER: fetch conversations with unread messages (same as Dashboard) ----------------
   const fetchConversations = async (currentTeacher = teacher) => {
     try {
-      const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
+      const t = currentTeacher || getStoredTeacher();
       if (!t || !t.userId) {
         setConversations([]);
         return;
       }
-
-      const [chatsRes, usersRes] = await Promise.all([axios.get(`${RTDB_BASE}/Chats.json`), axios.get(`${RTDB_BASE}/Users.json`)]);
-      const chats = chatsRes.data || {};
-      const users = usersRes.data || {};
-
-      // build maps
-      const usersByKey = users || {};
-      const userKeyByUserId = {};
-      Object.entries(usersByKey).forEach(([pushKey, u]) => {
-        if (u && u.userId) userKeyByUserId[u.userId] = pushKey;
+      const convs = await fetchTeacherConversationSummaries({
+        rtdbBase,
+        schoolCode: resolvedSchoolCode,
+        teacherUserId: t.userId,
+        contactCandidates: admins,
+        unreadOnly: true,
       });
-
-      const convs = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadMap = chat.unread || {};
-          const unreadForMe = unreadMap[t.userId] || 0;
-          if (!unreadForMe) return null;
-          const participants = chat.participants || {};
-          const otherKeyCandidate = Object.keys(participants || {}).find((p) => p !== t.userId);
-          if (!otherKeyCandidate) return null;
-
-          let otherPushKey = otherKeyCandidate;
-          let otherRecord = usersByKey[otherPushKey];
-
-          if (!otherRecord) {
-            const mapped = userKeyByUserId[otherKeyCandidate];
-            if (mapped) {
-              otherPushKey = mapped;
-              otherRecord = usersByKey[mapped];
-            }
-          }
-
-          if (!otherRecord) {
-            otherRecord = { userId: otherKeyCandidate, name: otherKeyCandidate, profileImage: "/default-profile.png" };
-          }
-
-          const contact = {
-            pushKey: otherPushKey,
-            userId: otherRecord.userId || otherKeyCandidate,
-            name: otherRecord.name || otherRecord.username || otherKeyCandidate,
-            profileImage: otherRecord.profileImage || otherRecord.profile || "/default-profile.png",
-          };
-
-          const lastMessage = chat.lastMessage || {};
-
-          return {
-            chatId,
-            contact,
-            displayName: contact.name,
-            profile: contact.profileImage,
-            lastMessageText: lastMessage.text || "",
-            lastMessageTime: lastMessage.timeStamp || lastMessage.time || null,
-            unreadForMe,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
 
       setConversations(convs);
     } catch (err) {
@@ -474,7 +1158,17 @@ function saveSeenPost(teacherId, postId) {
 
     // Clear unread for this teacher in DB
     try {
-      await axios.put(`${RTDB_BASE}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.patch(
+        `${rtdbBase}/${buildChatSummaryPath(teacher.userId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
+      clearCachedChatSummary({ rtdbBase, chatId, teacherUserId: teacher.userId });
     } catch (err) {
       console.error("Failed to clear unread in DB:", err);
     }
@@ -485,11 +1179,11 @@ function saveSeenPost(teacherId, postId) {
 
   const totalUnreadMessages = conversations.reduce((sum, c) => sum + (c.unreadForMe || 0), 0);
 
-const [isPortrait, setIsPortrait] = React.useState(window.innerWidth < window.innerHeight);
+const [isPortrait, setIsPortrait] = React.useState(() => isPortraitViewport());
 
 React.useEffect(() => {
   const handleResize = () => {
-    setIsPortrait(window.innerWidth < window.innerHeight);
+    setIsPortrait(isPortraitViewport());
   };
 
   // initialize
@@ -518,6 +1212,89 @@ const listShellWidth = isPortrait ? "92%" : "560px";
     return haystack.includes(normalizedSearch);
   });
 
+  const detailBlockedValues = useMemo(() => {
+    if (!selectedAdmin) return new Set();
+
+    const statusLabel = selectedAdmin.status
+      ? `${selectedAdmin.status.charAt(0).toUpperCase()}${selectedAdmin.status.slice(1)}`
+      : "";
+
+    const values = [
+      selectedAdmin.adminId || selectedAdmin.userId,
+      String(selectedAdmin.source || "management").replace("_", " "),
+      selectedAdmin.email,
+      selectedAdmin.phone,
+      selectedAdmin.title,
+      selectedAdmin.role,
+      selectedAdmin.department,
+      selectedAdmin.office,
+      selectedAdmin.position,
+      selectedAdmin.schoolCode,
+      statusLabel,
+      selectedAdmin.userId,
+    ]
+      .map((v) => normalizeValueForCompare(v))
+      .filter(Boolean);
+
+    return new Set(values);
+  }, [selectedAdmin]);
+
+  const statusRows = useMemo(() => {
+    if (!selectedAdmin) return [];
+
+    const record = selectedAdmin.record || {};
+    const user = selectedAdmin.user || {};
+    const active = isActiveRecord(record) || isActiveRecord(user);
+
+    const rows = [
+      { label: "Account Activity", value: active ? "Active" : "Inactive" },
+      { label: "Verification", value: user?.isVerified === true || record?.isVerified === true ? "Verified" : "Not verified" },
+      { label: "Approval", value: record?.approvalStatus || user?.approvalStatus || "" },
+      { label: "Created", value: formatDateTime(record?.createdAt || user?.createdAt) },
+      { label: "Last Updated", value: formatDateTime(record?.updatedAt || user?.updatedAt) },
+      { label: "Last Login", value: formatDateTime(user?.lastLogin || user?.lastLoginAt || record?.lastLogin || record?.lastLoginAt) },
+      { label: "Employment Type", value: record?.employmentType || user?.employmentType || "" },
+      { label: "Assigned Campus", value: record?.campus || user?.campus || "" },
+      { label: "Shift", value: record?.shift || user?.shift || "" },
+      { label: "Responsibility", value: selectedAdmin?.responsibility || "" },
+    ];
+
+    return uniqueRows(rows, detailBlockedValues);
+  }, [selectedAdmin, detailBlockedValues]);
+
+  const notesRows = useMemo(() => {
+    if (!selectedAdmin) return [];
+
+    const record = selectedAdmin.record || {};
+    const user = selectedAdmin.user || {};
+    const blocked = new Set([...detailBlockedValues]);
+    statusRows.forEach((item) => blocked.add(normalizeValueForCompare(item?.value)));
+
+    const candidateEntries = [
+      ["Responsibilities", selectedAdmin?.responsibility || record?.responsibility],
+      ["Summary", record?.summary || user?.summary],
+      ["Bio", record?.bio || user?.bio],
+      ["Specialization", record?.specialization || user?.specialization],
+      ["Qualification", record?.qualification || user?.qualification],
+      ["Experience", record?.experience || user?.experience],
+      ["Office Hours", record?.officeHours || user?.officeHours],
+      ["Address", record?.address || user?.address],
+      ["Notes", record?.notes || user?.notes],
+      ["Remarks", record?.remarks || user?.remarks],
+      ["Emergency Contact", record?.emergencyContact || user?.emergencyContact],
+      ["Alternate Phone", record?.alternatePhone || user?.alternatePhone],
+    ];
+
+    const rows = candidateEntries.map(([label, value]) => {
+      if (value && typeof value === "object") {
+        return { label, value: Object.entries(value).map(([k, v]) => `${normalizeFieldLabel(k)}: ${String(v || "").trim()}`).filter(Boolean).join(" | ") };
+      }
+      return { label, value: String(value || "").trim() };
+    });
+
+    return uniqueRows(rows, blocked);
+  }, [selectedAdmin, detailBlockedValues, statusRows]);
+
 
 
 
@@ -532,9 +1309,9 @@ const listShellWidth = isPortrait ? "92%" : "560px";
         color: "var(--text-primary)",
         "--surface-panel": "#ffffff",
         "--surface-accent": "#eff6ff",
-        "--surface-muted": "#f8fafc",
+        "--surface-muted": "#ffffff",
         "--surface-strong": "#e2e8f0",
-        "--page-bg": "#f5f8ff",
+        "--page-bg": "#ffffff",
         "--border-soft": "#e2e8f0",
         "--border-strong": "#cbd5e1",
         "--text-primary": "#0f172a",
@@ -549,7 +1326,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
         "--shadow-glow": "0 0 0 2px rgba(37, 99, 235, 0.18)",
       }}
     >
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px", height: "calc(100vh - 73px)", overflow: "hidden", background: "#ffffff" }}>
         <Sidebar
           active="admins"
           sidebarOpen={sidebarOpen}
@@ -569,7 +1346,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
         />
 
         {/* MAIN */}
-        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box" }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflowY: "auto", overflowX: "hidden", display: "flex", justifyContent: "flex-start", padding: "10px 20px 20px", boxSizing: "border-box", background: "#ffffff" }}>
           <div
             className="admin-list-card-responsive"
             style={{
@@ -577,6 +1354,11 @@ const listShellWidth = isPortrait ? "92%" : "560px";
               position: "relative",
               marginLeft: 0,
               marginRight: isPortrait ? 0 : "24px",
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 18,
+              boxShadow: "0 10px 26px rgba(15, 23, 42, 0.08)",
+              padding: 14,
             }}
           >
             <style>{`
@@ -590,7 +1372,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
               }
             `}</style>
             <div className="section-header-card" style={{ marginBottom: 12 }}>
-              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Admins</h2>
+              <h2 className="section-header-card__title" style={{ fontSize: 20 }}>Management</h2>
               <div className="section-header-card__meta">
                 <span>Total: {filteredAdmins.length}</span>
                 <span className="section-header-card__chip">Teacher View</span>
@@ -617,7 +1399,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search admins..."
+                  placeholder="Search management..."
                   style={{
                     width: "100%",
                     border: "none",
@@ -641,7 +1423,6 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                   selected={selectedAdmin?.adminId === a.adminId}
                   onClick={(admin) => {
                     setSelectedAdmin(admin);
-                    setSelectedChatUser(admin);
                   }}
                 />
               ))}
@@ -706,10 +1487,12 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                 <div style={{ textAlign: "center", margin: "-14px -14px 12px", padding: "16px 10px", background: "linear-gradient(135deg, var(--accent-strong), var(--accent))" }}>
                   <div style={{ width: 70, height: 70, margin: "0 auto 10px", borderRadius: "50%", overflow: "hidden", border: "3px solid rgba(255,255,255,0.8)" }}>
                     <img
-                      src={selectedAdmin.profileImage || "/default-profile.png"}
+                      src={resolveAvatarSrc(selectedAdmin.profileImage, selectedAdmin.name)}
                       alt={selectedAdmin.name}
                       onError={(event) => {
-                        event.currentTarget.src = "/default-profile.png";
+                        const fallback = createPlaceholderAvatar(selectedAdmin?.name || "Management");
+                        if (event.currentTarget.src === fallback) return;
+                        event.currentTarget.src = fallback;
                       }}
                       style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     />
@@ -719,7 +1502,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                 </div>
 
                 <div style={{ display: "flex", marginBottom: "10px", borderBottom: "1px solid var(--border-soft)" }}>
-                  {["details", "Plan", "Report"].map((tab) => (
+                  {["details", "status", "notes"].map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setAdminTab(tab)}
@@ -735,7 +1518,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                         borderBottom: adminTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
                       }}
                     >
-                      {tab.toUpperCase()}
+                      {tab === "details" ? "DETAILS" : tab === "status" ? "STATUS" : "NOTES"}
                     </button>
                   ))}
                 </div>
@@ -767,7 +1550,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                             color: "var(--text-primary)",
                           }}
                         >
-                          Administrator Details
+                          Management Profile
                         </div>
 
                         <div
@@ -779,12 +1562,18 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                           }}
                         >
                           {[
-                            ["Admin ID", selectedAdmin.adminId || selectedAdmin.userId],
+                            ["ID", selectedAdmin.adminId || selectedAdmin.userId],
+                            ["Source", String(selectedAdmin.source || "management").replace("_", " ")],
                             ["Email", selectedAdmin.email],
                             ["Phone", selectedAdmin.phone],
-                            ["Gender", selectedAdmin.gender ? (selectedAdmin.gender.charAt(0).toUpperCase() + selectedAdmin.gender.slice(1)) : null],
                             ["Title", selectedAdmin.title],
+                            ["Role", selectedAdmin.role],
+                            ["Department", selectedAdmin.department],
+                            ["Office", selectedAdmin.office],
+                            ["Position", selectedAdmin.position],
+                            ["School Code", selectedAdmin.schoolCode],
                             ["Status", selectedAdmin.status ? (selectedAdmin.status.charAt(0).toUpperCase() + selectedAdmin.status.slice(1)) : null],
+                            ["User ID", selectedAdmin.userId, true],
                           ].map(([label, value]) => (
                             <div
                               key={label}
@@ -794,6 +1583,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                                 background: "var(--surface-panel)",
                                 border: "1px solid var(--border-soft)",
                                 boxShadow: "none",
+                                gridColumn: label === "User ID" ? "span 2" : "span 1",
                               }}
                             >
                               <div
@@ -813,6 +1603,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                                   fontSize: 10,
                                   fontWeight: 600,
                                   color: "var(--text-primary)",
+                                  wordBreak: label === "User ID" ? "break-all" : "normal",
                                 }}
                               >
                                 {value || "—"}
@@ -824,21 +1615,103 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                     </div>
                   )}
 
-                  {adminTab === "Plan" && (
-                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
-                      <p>Plan data here.</p>
+                  {adminTab === "status" && (
+                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12, display: "grid", gap: 10 }}>
+                      <div
+                        style={{
+                          borderRadius: 12,
+                          border: "1px solid #dbeafe",
+                          background: "linear-gradient(135deg, #eff6ff 0%, #ffffff 72%)",
+                          padding: "10px 12px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#1e3a8a" }}>Current Status</div>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            color: isActiveRecord(selectedAdmin?.record || selectedAdmin?.user) ? "#166534" : "#b91c1c",
+                            background: isActiveRecord(selectedAdmin?.record || selectedAdmin?.user) ? "#dcfce7" : "#fee2e2",
+                            border: isActiveRecord(selectedAdmin?.record || selectedAdmin?.user) ? "1px solid #86efac" : "1px solid #fecaca",
+                            borderRadius: 999,
+                            padding: "3px 8px",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.3px",
+                          }}
+                        >
+                          {isActiveRecord(selectedAdmin?.record || selectedAdmin?.user) ? "Active" : "Inactive"}
+                        </span>
+                      </div>
+
+                      {statusRows.length === 0 ? (
+                        <div style={{ fontSize: 11, color: "#64748b" }}>No additional status information found.</div>
+                      ) : (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          {statusRows.map((item, index) => (
+                            <div
+                              key={`${item.label}-${index}`}
+                              style={{
+                                padding: 8,
+                                borderRadius: 10,
+                                border: "1px solid var(--border-soft)",
+                                background: "#ffffff",
+                              }}
+                            >
+                              <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.55px" }}>
+                                {item.label}
+                              </div>
+                              <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-primary)", fontWeight: 700, wordBreak: "break-word" }}>
+                                {item.value}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {adminTab === "Report" && (
-                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12 }}>
-                      <p>Report data here.</p>
+                  {adminTab === "notes" && (
+                    <div style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", borderRadius: 12, boxShadow: "var(--shadow-soft)", padding: 12, display: "grid", gap: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#0f172a" }}>Notes & Context</div>
+
+                      {notesRows.length === 0 ? (
+                        <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.5 }}>
+                          No unique notes available beyond Details and Status for this management profile.
+                        </div>
+                      ) : (
+                        <div style={{ display: "grid", gap: 8 }}>
+                          {notesRows.map((item, index) => (
+                            <div
+                              key={`${item.label}-${index}`}
+                              style={{
+                                borderRadius: 10,
+                                border: "1px solid var(--border-soft)",
+                                background: "#ffffff",
+                                padding: "9px 10px",
+                                display: "grid",
+                                gap: 4,
+                              }}
+                            >
+                              <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.55px" }}>
+                                {item.label}
+                              </div>
+                              <div style={{ fontSize: 11, color: "var(--text-primary)", lineHeight: 1.5, wordBreak: "break-word" }}>
+                                {item.value}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
 
                 {!adminChatOpen && selectedAdmin && (
                   <div
-                    onClick={() => setAdminChatOpen(true)}
+                    onClick={openAdminQuickChat}
                     style={{
                       position: "fixed",
                       bottom: "20px",
@@ -873,7 +1746,7 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                       <FaCommentDots size={18} />
                     </span>
                     <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
-                      <span style={{ fontWeight: 800, fontSize: 13 }}>Admin Chat</span>
+                      <span style={{ fontWeight: 800, fontSize: 13 }}>Management Chat</span>
                     </div>
                     <span
                       style={{
@@ -903,9 +1776,9 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                       right: "20px",
                       width: "360px",
                       height: "480px",
-                      background: "var(--surface-panel)",
+                      background: "#fff",
                       borderRadius: "16px",
-                      boxShadow: "var(--shadow-panel)",
+                      boxShadow: "0 12px 30px rgba(0,0,0,0.25)",
                       zIndex: 2000,
                       display: "flex",
                       flexDirection: "column",
@@ -915,31 +1788,43 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                     <div
                       style={{
                         padding: "14px",
-                        borderBottom: "1px solid var(--border-soft)",
+                        borderBottom: "1px solid #eee",
                         display: "flex",
                         justifyContent: "space-between",
                         alignItems: "center",
-                        background: "var(--surface-muted)",
+                        background: "#fafafa",
                       }}
                     >
-                      <strong>{selectedAdmin.name}</strong>
+                      <strong>{quickChatTarget?.name || selectedAdmin.name}</strong>
                       <div style={{ display: "flex", gap: "10px" }}>
                         <button
                           onClick={() => {
-                            setAdminChatOpen(false);
-                            navigate("/all-chat", { state: { contact: selectedAdmin, tab: "admin" } });
+                            const targetUserId = normalizeIdentifier(quickChatTarget?.userId);
+                            if (!targetUserId) return;
+
+                            closeAdminQuickChat();
+                            const chatId = getChatId(teacherUserId, targetUserId);
+                            navigate("/all-chat", {
+                              state: {
+                                user: quickChatTarget || selectedAdmin,
+                                contact: quickChatTarget || selectedAdmin,
+                                chatId,
+                                tab: "admin",
+                              },
+                            });
                           }}
                           style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px" }}
                         >
                           ⤢
                         </button>
-                        <button onClick={() => setAdminChatOpen(false)} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>
+                        <button onClick={closeAdminQuickChat} style={{ background: "none", border: "none", fontSize: "20px", cursor: "pointer" }}>
                           ×
                         </button>
                       </div>
                     </div>
 
                     <div
+                      ref={quickChatMessagesRef}
                       style={{
                         flex: 1,
                         padding: "12px",
@@ -947,36 +1832,75 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                         display: "flex",
                         flexDirection: "column",
                         gap: "6px",
-                        background: "var(--surface-muted)",
+                        background: "#f9f9f9",
                       }}
                     >
-                      {messages.length === 0 ? (
-                        <p style={{ textAlign: "center", color: "#aaa" }}>Start chatting with {selectedAdmin.name}</p>
+                      {(quickChatHasOlder || quickChatLoadingOlder) && !quickChatLoading && (
+                        <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                          <button
+                            onClick={loadOlderMessages}
+                            disabled={quickChatLoadingOlder}
+                            style={{
+                              border: "1px solid #bfdbfe",
+                              background: quickChatLoadingOlder ? "#eff6ff" : "#ffffff",
+                              color: "#007AFB",
+                              borderRadius: 999,
+                              padding: "6px 12px",
+                              fontSize: 10,
+                              fontWeight: 800,
+                              cursor: quickChatLoadingOlder ? "default" : "pointer",
+                            }}
+                          >
+                            {quickChatLoadingOlder ? "Loading older messages..." : "Load older messages"}
+                          </button>
+                        </div>
+                      )}
+
+                      {quickChatLoading ? (
+                        <p style={{ textAlign: "center", color: "#64748b" }}>
+                          Loading recent chat...
+                        </p>
+                      ) : messages.length === 0 ? (
+                        <p style={{ textAlign: "center", color: "#aaa" }}>
+                          Start chatting with {quickChatTarget?.name || selectedAdmin.name}
+                        </p>
                       ) : (
-                        messages.map((m) => (
-                          <div key={m.id} style={{ display: "flex", flexDirection: m.isTeacher ? "row-reverse" : "row", alignItems: "flex-end", marginBottom: 10 }}>
-                            <div style={{ maxWidth: "75%", display: "flex", flexDirection: "column", alignItems: m.isTeacher ? "flex-end" : "flex-start" }}>
+                        messages.map((m) => {
+                          const isTeacher = String(m?.senderId || "") === String(teacherUserId);
+
+                          return (
+                            <div key={m.messageId || m.id} style={{ display: "flex", flexDirection: "column", alignItems: isTeacher ? "flex-end" : "flex-start", marginBottom: 10 }}>
                               <div
                                 style={{
-                                  background: m.isTeacher ? "#4b6cb7" : "#fff",
-                                  color: m.isTeacher ? "#fff" : "#0f172a",
+                                  maxWidth: "70%",
+                                  background: isTeacher ? "#4facfe" : "#fff",
+                                  color: isTeacher ? "#fff" : "#000",
                                   padding: "10px 14px",
                                   borderRadius: 18,
-                                  boxShadow: "0 2px 6px rgba(0,0,0,0.04)",
+                                  borderTopRightRadius: isTeacher ? 0 : 18,
+                                  borderTopLeftRadius: isTeacher ? 18 : 0,
+                                  boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
                                   wordBreak: "break-word",
+                                  cursor: "default",
                                   position: "relative",
-                                  paddingBottom: "26px",
                                 }}
                               >
-                                <div>{m.text}</div>
-                                <div style={{ position: "absolute", right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: m.isTeacher ? "rgba(255,255,255,0.9)" : "#64748b" }}>
-                                  <span style={{ fontSize: 11 }}>{formatTime(m.timeStamp)}</span>
-                                  {m.isTeacher && <FaCheck size={12} color={m.seen ? "#10b981" : "#94a3b8"} />}
+                                {m.text} {m.edited && <small style={{ fontSize: 10 }}> (edited)</small>}
+
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6, fontSize: 11, color: isTeacher ? "#fff" : "#888" }}>
+                                  <span style={{ marginRight: 6, fontSize: 11, opacity: 0.9 }}>{formatDateLabel(m.timeStamp)}</span>
+                                  <span>{formatTime(m.timeStamp)}</span>
+                                  {isTeacher && !m.deleted && (
+                                    <span style={{ display: "flex", gap: 0, alignItems: "center" }}>
+                                      <FaCheck size={12} color={isTeacher ? "#fff" : "#888"} style={{ opacity: 0.85, marginLeft: 6 }} />
+                                      {m.seen && <FaCheck size={12} color={isTeacher ? "#f3f7f8" : "#ccc"} style={{ marginLeft: 2, opacity: 0.95 }} />}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                       <div ref={messagesEndRef} />
                     </div>
@@ -984,10 +1908,10 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                     <div
                       style={{
                         padding: "10px",
-                        borderTop: "1px solid var(--border-soft)",
+                        borderTop: "1px solid #eee",
                         display: "flex",
                         gap: "8px",
-                        background: "var(--surface-panel)",
+                        background: "#fff",
                       }}
                     >
                       <input
@@ -997,32 +1921,30 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                         style={{
                           flex: 1,
                           padding: "10px 14px",
-                          borderRadius: "999px",
-                          border: "1px solid var(--border-strong)",
+                          borderRadius: "25px",
+                          border: "1px solid #ccc",
                           outline: "none",
-                          background: "var(--surface-panel)",
                         }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") sendMessage();
                         }}
                       />
                       <button
-                        onClick={sendMessage}
+                        onClick={() => sendMessage()}
                         style={{
-                          background: "var(--accent-strong)",
+                          width: 45,
+                          height: 45,
                           border: "none",
                           borderRadius: "50%",
-                          width: "42px",
-                          height: "42px",
+                          background: "#4facfe",
                           color: "#fff",
-                          cursor: "pointer",
                           display: "flex",
-                          alignItems: "center",
                           justifyContent: "center",
-                          fontSize: "18px",
+                          alignItems: "center",
+                          cursor: "pointer",
                         }}
                       >
-                        ➤
+                        <FaPaperPlane />
                       </button>
                     </div>
                   </div>
@@ -1089,10 +2011,10 @@ const listShellWidth = isPortrait ? "92%" : "560px";
                   <FaUsers />
                 </div>
                 <h3 style={{ margin: 0, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>
-                  Admin Details
+                  Management Details
                 </h3>
                 <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
-                  Select an admin from the list to view details, plan, report, and chat.
+                  Select a management member to view details and chat.
                 </p>
               </div>
             </div>

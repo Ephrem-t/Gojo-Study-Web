@@ -18,7 +18,17 @@ import {
 } from "react-icons/fa";
 import axios from "axios";
 import { BACKEND_BASE } from "../config";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  loadSchoolInfoNode,
+  loadSchoolParentsNode,
+  loadSchoolStudentsNode,
+  loadSchoolUsersNode,
+} from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
 const PAGE_BG = "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)";
 
@@ -312,8 +322,11 @@ export default function TransferWithdrawal() {
   }, []);
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const initialDbUrl = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(initialDbUrl);
+  const DB_URL = String(resolvedDbUrl || initialDbUrl || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
 
   const admin = {
     name: stored.name || stored.username || "Register Office",
@@ -346,31 +359,57 @@ export default function TransferWithdrawal() {
 
   const notify = (type, text) => setFeedback({ type, text });
 
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbUrl = String(resolvedScope?.dbUrl || initialDbUrl || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbUrl(nextResolvedDbUrl);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve transfer/withdrawal school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbUrl(initialDbUrl);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbUrl]);
+
   const loadBaseData = async () => {
-    if (!schoolCode) {
+    if (!activeSchoolCode) {
       notify("error", "Missing schoolCode in session. Please login again.");
       return;
     }
 
     setLoading(true);
     try {
-      const [yearsRes, dbYearsRes, dbCurrentYearRes, studentsRes, parentsRes] = await Promise.all([
-        axios.get(`${BACKEND_BASE}/api/academic-years`, { params: { schoolCode } }).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/AcademicYears.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo/currentAcademicYear.json`).catch(() => ({ data: "" })),
-        axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Parents.json`).catch(() => ({ data: {} })),
+      const [yearsRes, dbYearsData, schoolInfo, studentsData, parentsData] = await Promise.all([
+        axios.get(`${BACKEND_BASE}/api/academic-years`, { params: { schoolCode: activeSchoolCode } }).catch(() => ({ data: {} })),
+        fetchCachedJson(`${DB_URL}/AcademicYears.json`, { ttlMs: 60000 }).catch(() => ({})),
+        loadSchoolInfoNode({ rtdbBase: DB_URL }),
+        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+        loadSchoolParentsNode({ rtdbBase: DB_URL }),
       ]);
 
       const yearsPayload = yearsRes.data || {};
-      const nextYears = yearsPayload.academicYears || dbYearsRes.data || {};
+      const nextYears = yearsPayload.academicYears || dbYearsData || {};
       const derivedCurrent = Object.entries(nextYears || {}).find(([, row]) => !!row?.isCurrent)?.[0] || "";
-      const nextCurrent = yearsPayload.currentAcademicYear || dbCurrentYearRes.data || derivedCurrent || "";
+      const nextCurrent = yearsPayload.currentAcademicYear || schoolInfo?.currentAcademicYear || derivedCurrent || "";
 
       setAcademicYears(nextYears);
       setCurrentAcademicYear(nextCurrent);
-      setStudentsMap(studentsRes.data || {});
-      setParentsMap(parentsRes.data || {});
+      setStudentsMap(studentsData || {});
+      setParentsMap(parentsData || {});
 
       notify("", "");
     } catch (err) {
@@ -382,7 +421,7 @@ export default function TransferWithdrawal() {
 
   useEffect(() => {
     loadBaseData();
-  }, [schoolCode]);
+  }, [activeSchoolCode, DB_URL]);
 
   const activeStudents = useMemo(() => {
     const list = [];
@@ -482,12 +521,12 @@ export default function TransferWithdrawal() {
         const parentPayload = parentsMap[pid] || {
           parentId: pid,
           name: "Parent",
-          schoolCode,
+          schoolCode: activeSchoolCode,
         };
         await axios.patch(`${DB_URL}/YearHistory/${yearKey}/Parents/${pid}.json`, {
           ...(parentPayload || {}),
           parentId: pid,
-          schoolCode,
+          schoolCode: activeSchoolCode,
           movedAt: new Date().toISOString(),
         });
       })
@@ -495,9 +534,6 @@ export default function TransferWithdrawal() {
   };
 
   const setUsersActiveByStudent = async (studentNode, isActive) => {
-    const usersRes = await axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} }));
-    const users = usersRes.data || {};
-
     const studentId = String(studentNode?.studentId || "");
     const studentUserId = String(studentNode?.userId || studentNode?.systemAccountInformation?.userId || "");
     const usernames = new Set([
@@ -507,12 +543,17 @@ export default function TransferWithdrawal() {
 
     const patchUserIds = new Set();
     if (studentUserId) patchUserIds.add(studentUserId);
-    Object.entries(users).forEach(([uid, row]) => {
-      const user = row || {};
-      const uname = String(user.username || "").toLowerCase();
-      if (String(user.studentId || "") === studentId) patchUserIds.add(uid);
-      if (usernames.has(uname)) patchUserIds.add(uid);
-    });
+
+    // Only load the full Users node when the direct userId is not stored on the student record
+    if (patchUserIds.size === 0) {
+      const users = await loadSchoolUsersNode({ rtdbBase: DB_URL }); // no force — uses 5-min TTL cache
+      Object.entries(users).forEach(([uid, row]) => {
+        const user = row || {};
+        const uname = String(user.username || "").toLowerCase();
+        if (String(user.studentId || "") === studentId) patchUserIds.add(uid);
+        if (usernames.has(uname)) patchUserIds.add(uid);
+      });
+    }
 
     await Promise.all(
       [...patchUserIds].map((uid) => axios.patch(`${DB_URL}/Users/${uid}.json`, { isActive }))
@@ -526,8 +567,6 @@ export default function TransferWithdrawal() {
     const linkedParentIds = getLinkedParentIds(studentNode);
     if (linkedParentIds.length === 0) return;
 
-    const usersRes = await axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} }));
-    const users = usersRes.data || {};
     const remainingStudents = Object.entries(studentsMap || {}).filter(([sid]) => String(sid) !== studentId);
 
     await Promise.all(
@@ -544,13 +583,17 @@ export default function TransferWithdrawal() {
 
           const parentUserIds = new Set();
           const directUserId = String(parentRecord?.userId || studentNode?.parents?.[parentId]?.userId || "").trim();
-          if (directUserId) parentUserIds.add(directUserId);
-
-          Object.entries(users).forEach(([uid, userRow]) => {
-            if (String(userRow?.parentId || "").trim() === String(parentId)) {
-              parentUserIds.add(uid);
-            }
-          });
+          if (directUserId) {
+            parentUserIds.add(directUserId);
+          } else {
+            // Fallback: scan Users only when the parent record lacks a direct userId reference
+            const users = await loadSchoolUsersNode({ rtdbBase: DB_URL }); // no force — uses 5-min TTL cache
+            Object.entries(users).forEach(([uid, userRow]) => {
+              if (String(userRow?.parentId || "").trim() === String(parentId)) {
+                parentUserIds.add(uid);
+              }
+            });
+          }
 
           await Promise.all([...parentUserIds].map((uid) => axios.delete(`${DB_URL}/Users/${uid}.json`).catch(() => {})));
           return;
@@ -657,7 +700,7 @@ export default function TransferWithdrawal() {
         <div className="nav-right">
           <Link className="icon-circle" to="/dashboard"><FaBell /></Link>
           <Link className="icon-circle" to="/all-chat"><FaFacebookMessenger /></Link>
-          <img src={admin.profileImage || "/default-profile.png"} alt="admin" className="profile-img" />
+          <ProfileAvatar imageUrl={admin.profileImage} name={admin.name} size={38} className="profile-img" />
         </div>
       </nav>
 

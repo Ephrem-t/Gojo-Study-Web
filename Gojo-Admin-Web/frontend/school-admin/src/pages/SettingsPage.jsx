@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { FaCamera, FaLock, FaMoon, FaPalette, FaSave, FaUserCog } from "react-icons/fa";
 import axios from "axios";
 import useDarkMode from "../hooks/useDarkMode";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { BACKEND_BASE } from "../config.js";
 
 function SettingsPage() {
   const [admin, setAdmin] = useState(
@@ -14,7 +15,7 @@ function SettingsPage() {
     admin.profileImage || "/default-profile.png"
   );
   const [darkMode, toggleDarkMode] = useDarkMode();
-  const [userNodeKey, setUserNodeKey] = useState("");
+  const [userRecordRef, setUserRecordRef] = useState({ key: "", baseUrl: "" });
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingInfo, setSavingInfo] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
@@ -27,37 +28,117 @@ function SettingsPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const navigate = useNavigate();
   const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const schoolCode = String(admin?.schoolCode || "").trim();
+  const schoolUsersBaseUrl = schoolCode
+    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}/Users`
+    : `${RTDB_BASE}/Users`;
+  const globalUsersBaseUrl = `${RTDB_BASE}/Users`;
+  const shellUsersBaseUrl = schoolCode ? schoolUsersBaseUrl : globalUsersBaseUrl;
+
+  const pageVars = {
+    "--page-bg": darkMode ? "#07111f" : "#ffffff",
+    "--page-bg-secondary": darkMode ? "#0b1728" : "#F7FBFF",
+    "--surface-panel": darkMode ? "#0f1c2e" : "#ffffff",
+    "--surface-muted": darkMode ? "#13243a" : "#F8FBFF",
+    "--surface-accent": darkMode ? "#162b45" : "#EAF4FF",
+    "--surface-strong": darkMode ? "#213958" : "#D7E7FB",
+    "--surface-overlay": darkMode ? "#0d1828" : "#F1F8FF",
+    "--border-soft": darkMode ? "#223753" : "#D7E7FB",
+    "--border-strong": darkMode ? "#33537b" : "#B5D2F8",
+    "--text-primary": darkMode ? "#e5eefb" : "#0f172a",
+    "--text-secondary": darkMode ? "#bfd0e6" : "#334155",
+    "--text-muted": darkMode ? "#8fa6c3" : "#64748b",
+    "--accent": "#007afb",
+    "--accent-soft": darkMode ? "rgba(0,122,251,0.18)" : "#E7F2FF",
+    "--accent-strong": "#007afb",
+    "--success": "#00B6A9",
+    "--success-soft": darkMode ? "rgba(0,182,169,0.16)" : "#E9FBF9",
+    "--success-border": darkMode ? "rgba(0,182,169,0.38)" : "#AAEDE7",
+    "--warning": "#DC2626",
+    "--warning-soft": darkMode ? "rgba(220,38,38,0.16)" : "#FEE2E2",
+    "--warning-border": darkMode ? "rgba(248,113,113,0.38)" : "#FCA5A5",
+    "--danger": "#b91c1c",
+    "--danger-border": darkMode ? "rgba(248,113,113,0.38)" : "#fca5a5",
+    "--sidebar-width": "clamp(230px, 16vw, 290px)",
+    "--input-bg": darkMode ? "#0a1423" : "#ffffff",
+    "--input-border": darkMode ? "#33537b" : "#B5D2F8",
+    "--shadow-soft": darkMode ? "0 14px 28px rgba(0, 0, 0, 0.28)" : "0 10px 24px rgba(0, 122, 251, 0.10)",
+    "--shadow-panel": darkMode ? "0 18px 34px rgba(0, 0, 0, 0.32)" : "0 14px 30px rgba(0, 122, 251, 0.14)",
+    "--shadow-glow": darkMode ? "0 0 0 2px rgba(0, 122, 251, 0.28)" : "0 0 0 2px rgba(0, 122, 251, 0.18)",
+  };
 
   const cardStyle = {
-    background: darkMode ? "#1f2937" : "#ffffff",
+    background: "var(--surface-panel)",
     borderRadius: 16,
-    border: darkMode ? "1px solid #374151" : "1px solid #e5e7eb",
-    boxShadow: darkMode ? "0 10px 24px rgba(0,0,0,0.28)" : "0 10px 24px rgba(15,23,42,0.08)",
+    border: "1px solid var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
     padding: 20,
+  };
+
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    boxShadow: "var(--shadow-soft)",
+  };
+
+  const headerCardStyle = {
+    ...shellCardStyle,
+    width: "100%",
+    maxWidth: "min(1320px, 100%)",
+    margin: "0 auto",
+    alignSelf: "stretch",
+    color: "var(--text-primary)",
+    padding: "18px 20px",
+    position: "relative",
+    overflow: "hidden",
+    background: darkMode
+      ? "linear-gradient(135deg, #0f1c2e 0%, #162b45 100%)"
+      : "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
   };
 
   const inputStyle = {
     width: "100%",
     padding: "12px 14px",
     borderRadius: 10,
-    border: darkMode ? "1px solid #4b5563" : "1px solid #d1d5db",
+    border: "1px solid var(--input-border)",
     outline: "none",
-    background: darkMode ? "#111827" : "#f8fafc",
-    color: darkMode ? "#f3f4f6" : "#111827",
+    background: "var(--input-bg)",
+    color: "var(--text-primary)",
     fontSize: 14,
+    boxSizing: "border-box",
+  };
+
+  const readOnlyInputStyle = {
+    ...inputStyle,
+    background: "var(--surface-muted)",
+    color: "var(--text-secondary)",
+    cursor: "not-allowed",
+    opacity: 0.9,
   };
 
   const primaryButtonStyle = {
     border: "none",
     borderRadius: 999,
     padding: "10px 16px",
-    background: "linear-gradient(135deg, #1d4ed8, #4f46e5)",
+    background: "linear-gradient(135deg, #007afb, #2563eb)",
     color: "#fff",
     fontWeight: 700,
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
     gap: 8,
+    boxShadow: "0 10px 20px rgba(0,122,251,0.22)",
+  };
+
+  const secondaryButtonStyle = {
+    border: "1px solid var(--border-soft)",
+    borderRadius: 999,
+    padding: "10px 16px",
+    background: "var(--surface-panel)",
+    color: "var(--text-secondary)",
+    fontWeight: 700,
+    cursor: "pointer",
   };
 
   const profilePreview = useMemo(() => {
@@ -73,65 +154,98 @@ function SettingsPage() {
     };
   }, [selectedFile, profilePreview]);
 
-  const resolveUserNodeKey = async () => {
-    if (!admin?.userId && !admin?.username) return "";
-    const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-    const usersData = usersRes.data || {};
-    const match = Object.entries(usersData).find(([, user]) => {
-      const userId = String(user?.userId || "").trim();
-      const uname = String(user?.username || "").trim();
-      return (
-        (admin?.userId && userId === String(admin.userId).trim()) ||
-        (admin?.username && uname && uname === String(admin.username).trim())
-      );
-    });
-    return match?.[0] || "";
+  const resolveUserRecordRef = async () => {
+    if (!admin?.userId && !admin?.username) return { key: "", baseUrl: shellUsersBaseUrl };
+    const bases = schoolCode ? [schoolUsersBaseUrl, globalUsersBaseUrl] : [globalUsersBaseUrl];
+
+    for (const baseUrl of bases) {
+      // 1. Try direct push-key lookup by userId (O(1), ~1KB)
+      if (admin?.userId) {
+        const directRes = await axios
+          .get(`${baseUrl}/${encodeURIComponent(admin.userId)}.json`)
+          .catch(() => ({ data: null }));
+        if (directRes.data && typeof directRes.data === "object" && !Array.isArray(directRes.data)) {
+          return { key: admin.userId, baseUrl };
+        }
+      }
+
+      // 2. Query-filter by userId field (avoids downloading all Users)
+      if (admin?.userId) {
+        const orderBy = encodeURIComponent('"userId"');
+        const equalTo = encodeURIComponent(`"${admin.userId}"`);
+        const qRes = await axios
+          .get(`${baseUrl}.json?orderBy=${orderBy}&equalTo=${equalTo}&limitToFirst=1`)
+          .catch(() => ({ data: {} }));
+        const firstKey = Object.keys(qRes.data || {})[0];
+        if (firstKey) return { key: firstKey, baseUrl };
+      }
+
+      // 3. Query-filter by username field as last resort
+      if (admin?.username) {
+        const orderBy = encodeURIComponent('"username"');
+        const equalTo = encodeURIComponent(`"${admin.username}"`);
+        const qRes = await axios
+          .get(`${baseUrl}.json?orderBy=${orderBy}&equalTo=${equalTo}&limitToFirst=1`)
+          .catch(() => ({ data: {} }));
+        const firstKey = Object.keys(qRes.data || {})[0];
+        if (firstKey) return { key: firstKey, baseUrl };
+      }
+    }
+
+    return { key: "", baseUrl: shellUsersBaseUrl };
   };
 
   useEffect(() => {
     let ignore = false;
     const run = async () => {
       try {
-        const key = await resolveUserNodeKey();
-        if (!ignore) setUserNodeKey(key);
+        const resolved = await resolveUserRecordRef();
+        if (!ignore) setUserRecordRef(resolved);
       } catch {
-        if (!ignore) setUserNodeKey("");
+        if (!ignore) setUserRecordRef({ key: "", baseUrl: shellUsersBaseUrl });
       }
     };
     run();
     return () => {
       ignore = true;
     };
-  }, [admin?.userId, admin?.username]);
+  }, [admin?.userId, admin?.username, schoolCode]);
 
   const handleFileChange = (e) => setSelectedFile(e.target.files[0]);
-
-  const readFileAsDataUrl = (file) =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(new Error("Failed to read image file."));
-      reader.readAsDataURL(file);
-    });
 
   const handleProfileSubmit = async () => {
     if (!selectedFile) return setStatus({ type: "error", message: "Select an image first." });
     try {
       setSavingProfile(true);
       setStatus({ type: "", message: "" });
-      const resolvedKey = userNodeKey || (await resolveUserNodeKey());
-      if (!resolvedKey) throw new Error("Unable to find user profile record.");
 
-      const base64Image = await readFileAsDataUrl(selectedFile);
-      await axios.patch(
-        `${RTDB_BASE}/Users/${resolvedKey}.json`,
-        { profileImage: base64Image }
+      // Upload file to Firebase Storage via backend — no base64 in RTDB
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("userId", admin.userId || "");
+      formData.append("schoolCode", schoolCode || "");
+      // Pass old URL so backend can delete orphaned Storage object
+      if (admin.profileImage && admin.profileImage.startsWith("http")) {
+        formData.append("oldUrl", admin.profileImage);
+      }
+
+      const uploadRes = await axios.post(
+        `${BACKEND_BASE}/api/upload-profile-image`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
       );
-      const updatedAdmin = { ...admin, profileImage: base64Image };
+
+      if (!uploadRes.data?.success || !uploadRes.data?.url) {
+        throw new Error(uploadRes.data?.message || "Upload failed");
+      }
+
+      const imageUrl = uploadRes.data.url;
+
+      // The backend already patched RTDB. Just update localStorage and local state.
+      const updatedAdmin = { ...admin, profileImage: imageUrl };
       localStorage.setItem("admin", JSON.stringify(updatedAdmin));
       setAdmin(updatedAdmin);
-      setUserNodeKey(resolvedKey);
-      setProfileImage(base64Image);
+      setProfileImage(imageUrl);
       setSelectedFile(null);
       setStatus({ type: "success", message: "Profile image updated successfully." });
     } catch (err) {
@@ -143,76 +257,25 @@ function SettingsPage() {
   };
 
   const handleInfoUpdate = async () => {
-    const nextName = String(name || "").trim();
-    const nextUsername = String(username || "").trim();
-
-    if (!nextName || !nextUsername) {
-      return setStatus({ type: "error", message: "Name and username are required." });
-    }
-
-    if (!/^[A-Za-z0-9_.-]{3,50}$/.test(nextUsername)) {
-      return setStatus({
-        type: "error",
-        message: "Username must be 3-50 chars and use only letters, numbers, ., _, -",
-      });
-    }
-
-    try {
-      setSavingInfo(true);
-      setStatus({ type: "", message: "" });
-      const resolvedKey = userNodeKey || (await resolveUserNodeKey());
-      if (!resolvedKey) throw new Error("Unable to find user profile record.");
-
-      const usersRes = await axios.get(`${RTDB_BASE}/Users.json`);
-      const usersData = usersRes.data || {};
-      const duplicateUsername = Object.entries(usersData).some(([key, user]) => {
-        if (String(key) === String(resolvedKey)) return false;
-        const sameIdentityByUserId =
-          String(user?.userId || "").trim() &&
-          String(admin?.userId || "").trim() &&
-          String(user.userId).trim() === String(admin.userId).trim();
-        if (sameIdentityByUserId) return false;
-        return String(user?.username || "").trim().toLowerCase() === nextUsername.toLowerCase();
-      });
-
-      if (duplicateUsername) {
-        setStatus({ type: "error", message: "This username is already in use. Please choose another one." });
-        return;
-      }
-
-      await axios.patch(
-        `${RTDB_BASE}/Users/${resolvedKey}.json`,
-        { name: nextName, username: nextUsername }
-      );
-      const updatedAdmin = { ...admin, name: nextName, username: nextUsername };
-      localStorage.setItem("admin", JSON.stringify(updatedAdmin));
-      setAdmin(updatedAdmin);
-      setName(nextName);
-      setUsername(nextUsername);
-      setUserNodeKey(resolvedKey);
-      setStatus({ type: "success", message: "Profile info updated successfully." });
-    } catch (err) {
-      console.error("Error updating info:", err);
-      const serverMessage = err?.response?.data?.message || err?.message || "Failed to update profile info.";
-      setStatus({ type: "error", message: serverMessage });
-    } finally {
-      setSavingInfo(false);
-    }
+    setStatus({
+      type: "error",
+      message: "Admin name and username are locked and cannot be edited from settings.",
+    });
   };
 
   const handlePasswordChange = async () => {
     if (!oldPassword || !password || !confirmPassword) {
       return setStatus({ type: "error", message: "Fill old password, new password, and confirm password." });
     }
-    if (password.length < 6) return setStatus({ type: "error", message: "Password must be at least 6 characters." });
+    if (password.length < 8) return setStatus({ type: "error", message: "Password must be at least 8 characters." });
     if (password !== confirmPassword) return setStatus({ type: "error", message: "Passwords do not match." });
     try {
       setSavingPassword(true);
       setStatus({ type: "", message: "" });
-      const resolvedKey = userNodeKey || (await resolveUserNodeKey());
-      if (!resolvedKey) throw new Error("Unable to find user profile record.");
+      const resolved = userRecordRef.key ? userRecordRef : await resolveUserRecordRef();
+      if (!resolved.key) throw new Error("Unable to find user profile record.");
 
-      const currentUserRes = await axios.get(`${RTDB_BASE}/Users/${resolvedKey}.json`);
+      const currentUserRes = await axios.get(`${resolved.baseUrl}/${resolved.key}.json`);
       const currentUser = currentUserRes.data || {};
       const currentPassword = String(currentUser?.password || "");
       if (String(oldPassword) !== currentPassword) {
@@ -221,13 +284,13 @@ function SettingsPage() {
       }
 
       await axios.patch(
-        `${RTDB_BASE}/Users/${resolvedKey}.json`,
+        `${resolved.baseUrl}/${resolved.key}.json`,
         { password }
       );
       setOldPassword("");
       setPassword("");
       setConfirmPassword("");
-      setUserNodeKey(resolvedKey);
+      setUserRecordRef(resolved);
       setStatus({ type: "success", message: "Password updated successfully." });
     } catch (err) {
       console.error("Error updating password:", err);
@@ -243,48 +306,45 @@ function SettingsPage() {
   };
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", color: "var(--text-primary)", ...pageVars }}>
       <div
         className="google-dashboard"
-        style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: darkMode ? "#0f172a" : "#eef2ff", width: "100%", boxSizing: "border-box" }}
+        style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}
       >
-        <Sidebar admin={admin} />
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         <div
           className="main-content"
           style={{
-            flex: "1.08 1 0",
+            flex: "1 1 0",
             minWidth: 0,
             maxWidth: "none",
-            margin: "0",
+            margin: 0,
             boxSizing: "border-box",
-            alignSelf: "stretch",
+            alignSelf: "flex-start",
             display: "flex",
             flexDirection: "column",
             alignItems: "stretch",
             justifyContent: "flex-start",
-            padding: "0 2px 10px 2px",
+            padding: "0 12px 0 2px",
             width: "100%",
             gap: "8px",
-            height: "100%",
-            overflowY: "auto",
+            minHeight: "calc(100vh - 24px)",
+            overflowY: "visible",
             overflowX: "hidden",
+            position: "relative",
           }}
         >
-          <div style={{ width: "100%", maxWidth: "min(1320px, 100%)", margin: "0", display: "flex", flexDirection: "column", gap: 10 }}>
-            <div
-              className="section-header-card"
-              style={{
-                ...cardStyle,
-                borderRadius: 14,
-                padding: "16px 18px 14px",
-                position: "relative",
-                overflow: "hidden",
-                background: darkMode
-                  ? "linear-gradient(135deg, #0b1220 0%, #111827 100%)"
-                  : "linear-gradient(135deg, color-mix(in srgb, #ffffff 88%, white) 0%, color-mix(in srgb, #ffffff 94%, #eef2ff) 100%)",
-              }}
-            >
+          <div style={{ width: "100%", maxWidth: "min(1320px, 100%)", margin: 0, display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
+            <div className="section-header-card" style={headerCardStyle}>
               <div
                 style={{
                   position: "absolute",
@@ -292,16 +352,16 @@ function SettingsPage() {
                   left: 0,
                   right: 0,
                   height: 4,
-                  background: "linear-gradient(90deg, #4f46e5, #2563eb, #60a5fa)",
+                  background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))",
                 }}
               />
               <div style={{ position: "relative", zIndex: 1 }}>
-                <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em", color: darkMode ? "#f8fafc" : "#0f172a" }}>Settings</div>
-                <div style={{ marginTop: 6, color: darkMode ? "#cbd5e1" : "#475569", fontSize: 14 }}>
+                <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em", color: "var(--text-primary)" }}>Settings</div>
+                <div style={{ marginTop: 6, color: "var(--text-secondary)", fontSize: 14 }}>
                   Manage profile, security, and appearance in one place.
                 </div>
                 {status.message ? (
-                  <div style={{ marginTop: 12, borderRadius: 10, padding: "10px 12px", background: status.type === "success" ? "#ecfdf5" : "#fef2f2", color: status.type === "success" ? "#166534" : "#991b1b", border: status.type === "success" ? "1px solid #bbf7d0" : "1px solid #fecaca", fontWeight: 600 }}>
+                  <div style={{ marginTop: 12, borderRadius: 10, padding: "10px 12px", background: status.type === "success" ? "var(--success-soft)" : "var(--warning-soft)", color: status.type === "success" ? "var(--success)" : "var(--danger)", border: status.type === "success" ? "1px solid var(--success-border)" : "1px solid var(--warning-border)", fontWeight: 600 }}>
                     {status.message}
                   </div>
                 ) : null}
@@ -311,19 +371,15 @@ function SettingsPage() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
             <div style={cardStyle}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, color: darkMode ? "#e5e7eb" : "#0f172a", fontWeight: 800 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-primary)", fontWeight: 800 }}>
                   <FaCamera /> Profile Picture
                 </div>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <img
-                  src={profilePreview}
-                  alt="profile"
-                  style={{ width: 110, height: 110, borderRadius: "50%", objectFit: "cover", border: "3px solid #4f46e5" }}
-                />
+                <ProfileAvatar src={profilePreview} name={name || username || "Admin"} alt="profile" style={{ width: 110, height: 110, borderRadius: "50%", objectFit: "cover", border: "3px solid var(--accent-strong)", boxShadow: "var(--shadow-glow)" }} />
                 <div style={{ flex: 1 }}>
-                  <input type="file" accept="image/*" onChange={handleFileChange} style={{ color: darkMode ? "#e5e7eb" : "#111827" }} />
+                  <input type="file" accept="image/*" onChange={handleFileChange} style={{ color: "var(--text-primary)", width: "100%" }} />
                   <button onClick={handleProfileSubmit} disabled={savingProfile} style={{ ...primaryButtonStyle, marginTop: 12, opacity: savingProfile ? 0.7 : 1 }}>
                     <FaSave /> {savingProfile ? "Saving..." : "Update Profile Image"}
                   </button>
@@ -332,20 +388,31 @@ function SettingsPage() {
             </div>
 
             <div style={cardStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, color: darkMode ? "#e5e7eb" : "#0f172a", fontWeight: 800, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-primary)", fontWeight: 800, marginBottom: 14 }}>
                 <FaUserCog /> Account Information
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <input type="text" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
-                <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} />
-                <button onClick={handleInfoUpdate} disabled={savingInfo} style={{ ...primaryButtonStyle, opacity: savingInfo ? 0.7 : 1 }}>
-                  <FaSave /> {savingInfo ? "Saving..." : "Update Info"}
-                </button>
+                <input type="text" placeholder="Name" value={name} readOnly disabled style={readOnlyInputStyle} />
+                <input type="text" placeholder="Username" value={username} readOnly disabled style={readOnlyInputStyle} />
+                <div
+                  style={{
+                    borderRadius: 12,
+                    padding: "12px 14px",
+                    background: "var(--surface-muted)",
+                    border: "1px solid var(--border-soft)",
+                    color: "var(--text-secondary)",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    fontWeight: 600,
+                  }}
+                >
+                  Name and username are managed centrally for admin accounts and cannot be changed here.
+                </div>
               </div>
             </div>
 
             <div style={cardStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, color: darkMode ? "#e5e7eb" : "#0f172a", fontWeight: 800, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-primary)", fontWeight: 800, marginBottom: 14 }}>
                 <FaLock /> Security
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -359,12 +426,12 @@ function SettingsPage() {
             </div>
 
             <div style={cardStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, color: darkMode ? "#e5e7eb" : "#0f172a", fontWeight: 800, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-primary)", fontWeight: 800, marginBottom: 14 }}>
                 <FaPalette /> Appearance
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderRadius: 12, background: darkMode ? "#111827" : "#f8fafc", border: darkMode ? "1px solid #374151" : "1px solid #e5e7eb" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 700, color: darkMode ? "#e5e7eb" : "#111827" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderRadius: 12, background: "var(--surface-muted)", border: "1px solid var(--border-soft)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 700, color: "var(--text-primary)" }}>
                   <FaMoon /> Dark Mode
                 </div>
                 <label style={{ position: "relative", width: 48, height: 26, display: "inline-block" }}>
@@ -379,7 +446,7 @@ function SettingsPage() {
                       position: "absolute",
                       cursor: "pointer",
                       inset: 0,
-                      background: darkMode ? "#4f46e5" : "#cbd5e1",
+                      background: darkMode ? "var(--accent-strong)" : "var(--border-strong)",
                       borderRadius: 999,
                       transition: "all 0.2s ease",
                     }}
@@ -399,9 +466,13 @@ function SettingsPage() {
                 </label>
               </div>
 
+              <div style={{ marginTop: 14, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Dark mode now updates the same page shell, surfaces, borders, and inputs used by the rest of admin instead of falling back to a separate grey theme.
+              </div>
+
               <button
                 onClick={handleLogout}
-                style={{ marginTop: 16, border: "1px solid #ef4444", borderRadius: 999, padding: "10px 16px", background: "#fff", color: "#b91c1c", fontWeight: 700, cursor: "pointer" }}
+                style={{ ...secondaryButtonStyle, marginTop: 16, border: "1px solid var(--danger-border)", background: darkMode ? "rgba(127,29,29,0.18)" : "#fff", color: "var(--danger)" }}
               >
                 Sign Out
               </button>

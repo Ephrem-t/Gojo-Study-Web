@@ -31,6 +31,8 @@ import {
   Line,
 } from "recharts";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import { getOrLoad } from "../utils/requestCache";
+import { loadManagedGrades, loadSchoolPeople, sortGradeValues } from "../utils/chatRtdb";
 
 const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -60,6 +62,7 @@ function Analatics() {
 
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
+  const [gradeOptions, setGradeOptions] = useState([]);
   const [monthlyPaidRaw, setMonthlyPaidRaw] = useState({});
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [selectedMonth, setSelectedMonth] = useState(MONTHS[new Date().getMonth()]);
@@ -111,33 +114,33 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsRes, usersRes, monthlyPaidRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} })),
+        const [studentList, managedGrades, monthlyPaidData] = await Promise.all([
+          loadSchoolPeople(DB_ROOT, "student"),
+          loadManagedGrades(DB_ROOT),
+          getOrLoad(
+            `finance:analytics:monthlyPaid:${DB_ROOT}`,
+            async () => {
+              const response = await axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} }));
+              return response.data || {};
+            },
+            { ttlMs: 5 * 60 * 1000 }
+          ),
         ]);
 
         if (cancelled) return;
 
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
-          const userNode = usersData?.[studentNode.userId] || {};
-          const genderRaw = userNode.gender || studentNode.gender || "Unknown";
-
-          return {
-            studentId,
-            userId: studentNode.userId || "",
-            grade: String(studentNode.grade || "Unknown"),
-            section: studentNode.section || "N/A",
-            gender: String(genderRaw).toLowerCase(),
-            name: userNode.name || userNode.username || studentNode.name || "Student",
-          };
-        });
+        const list = (studentList || []).map((student) => ({
+          studentId: student.studentId || student.id || "",
+          userId: student.userId || "",
+          grade: String(student.grade || "Unknown"),
+          section: student.section || "N/A",
+          gender: String(student.gender || "Unknown").toLowerCase(),
+          name: student.name || student.username || "Student",
+        }));
 
         setStudents(list);
-        setMonthlyPaidRaw(monthlyPaidRes.data || {});
+        setGradeOptions(managedGrades.length ? managedGrades : sortGradeValues(list.map((student) => student?.grade)));
+        setMonthlyPaidRaw(monthlyPaidData || {});
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -149,6 +152,28 @@ function Analatics() {
       cancelled = true;
     };
   }, [DB_ROOT]);
+
+  const sortBreakdownRows = (rows) => {
+    const orderedGrades = sortGradeValues([
+      ...(gradeOptions || []),
+      ...rows.map((row) => row?.grade),
+    ]);
+    const orderMap = new Map(orderedGrades.map((grade, index) => [String(grade), index]));
+
+    return [...rows].sort((left, right) => {
+      const leftOrder = orderMap.get(String(left?.grade || ""));
+      const rightOrder = orderMap.get(String(right?.grade || ""));
+
+      if (leftOrder !== undefined && rightOrder !== undefined && leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return String(left?.grade || "").localeCompare(String(right?.grade || ""), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  };
 
   useEffect(() => {
     const closeDropdown = (e) => {
@@ -246,8 +271,8 @@ function Analatics() {
       else map[key].unpaid += 1;
     });
 
-    return Object.values(map).sort((a, b) => Number(a.grade) - Number(b.grade));
-  }, [students, monthlyPaidRaw, selectedMonthKey]);
+    return sortBreakdownRows(Object.values(map));
+  }, [students, monthlyPaidRaw, selectedMonthKey, gradeOptions]);
 
   const genderBreakdown = useMemo(() => {
     const monthNode = monthlyPaidRaw?.[selectedMonthKey] || {};
@@ -344,8 +369,8 @@ function Analatics() {
       });
     });
 
-    return Object.values(map).sort((a, b) => Number(a.grade) - Number(b.grade));
-  }, [students, monthlyPaidRaw, selectedYear]);
+    return sortBreakdownRows(Object.values(map));
+  }, [students, monthlyPaidRaw, selectedYear, gradeOptions]);
 
   const yearlyGenderBreakdown = useMemo(() => {
     const base = {
@@ -690,47 +715,7 @@ function Analatics() {
       </nav>
 
       <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "12px" }}>
-        <div className="google-sidebar" style={{ width: "220px", padding: "12px", borderRadius: 16, background: "#ffffff", border: "1px solid #e5e7eb", boxShadow: "0 10px 24px rgba(15,23,42,0.06)", height: "fit-content" }}>
-          <div className="sidebar-profile" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingBottom: 6 }}>
-            <div className="sidebar-img-circle" style={{ width: 48, height: 48, borderRadius: "50%", overflow: "hidden", border: "2px solid #e6eefc" }}>
-              <img src={finance.profileImage || "/default-profile.png"} alt="profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>{finance.name || "Finance"}</h3>
-            <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{finance.username || finance.userId || finance.financeId || "finance"}</p>
-          </div>
-
-          <div className="sidebar-menu" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <Link className="sidebar-btn" to="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaHome style={{ width: 18, height: 18 }} /> Home
-            </Link>
-            <Link className="sidebar-btn" to="/my-posts" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaFileAlt style={{ width: 18, height: 18 }} /> My Posts
-            </Link>
-            <Link className="sidebar-btn" to="/students" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Students
-            </Link>
-            <Link className="sidebar-btn" to="/parents" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}>
-              <FaChalkboardTeacher style={{ width: 18, height: 18 }} /> Parents
-            </Link>
-            <Link className="sidebar-btn" to="/analytics" style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13, backgroundColor: "#1d4ed8", color: "#fff", borderRadius: 10, boxShadow: "0 8px 18px rgba(29,78,216,0.25)" }}>
-              <FaChartLine style={{ width: 18, height: 18 }} /> Analytics
-            </Link>
-
-            <button
-              className="sidebar-btn logout-btn"
-              onClick={() => {
-                localStorage.removeItem("finance");
-                localStorage.removeItem("admin");
-                window.location.href = "/login";
-              }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", fontSize: 13 }}
-            >
-              <FaSignOutAlt style={{ width: 18, height: 18 }} /> Logout
-            </button>
-          </div>
-        </div>
-
-        <div className="main-content" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
+        <div className="main-content google-main" style={{ padding: "10px 20px 20px", flex: 1, minWidth: 0, boxSizing: "border-box" }}>
           <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ background: "linear-gradient(135deg, #1e3a8a, #2563eb)", color: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 14px 28px rgba(30,58,138,0.22)" }}>
               <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>Financial Analytics Dashboard</h2>

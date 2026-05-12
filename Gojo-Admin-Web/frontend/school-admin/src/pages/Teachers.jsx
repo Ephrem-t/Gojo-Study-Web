@@ -25,10 +25,27 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { BACKEND_BASE } from "../config.js";
-import Sidebar from "../components/Sidebar";
+import LessonPlanInsightsModal from "../components/LessonPlanInsightsModal";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  fetchJson,
+  getConversationSortTime,
+  getSafeProfileImage,
+  mapInBatches,
+  normalizeChatSummaryValue,
+  parseChatParticipantIds,
+} from "../utils/chatRtdb";
+import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 
 
 
+
+const NOTIFICATION_REFRESH_MS = 3 * 60 * 1000;
+const NOTIFICATION_IDLE_GRACE_MS = 5 * 60 * 1000;
 
 function TeachersPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -40,8 +57,8 @@ function TeachersPage() {
     }
   })();
   const bootstrapSchoolCode = String(bootstrapAdmin.schoolCode || "").trim();
-  const TEACHERS_CACHE_KEY = `teachers_page_cache_${bootstrapSchoolCode || "global"}`;
-  const TEACHERS_UI_STATE_KEY = `teachers_page_ui_${bootstrapSchoolCode || "global"}`;
+  const TEACHERS_CACHE_KEY = `teachers_page_cache_v2_${bootstrapSchoolCode || "global"}`;
+  const TEACHERS_UI_STATE_KEY = `teachers_page_ui_v2_${bootstrapSchoolCode || "global"}`;
   const readBootstrapTeachersCache = () => {
     try {
       const rawSession = sessionStorage.getItem(TEACHERS_CACHE_KEY);
@@ -91,16 +108,8 @@ function TeachersPage() {
   const [popupInput, setPopupInput] = useState("");
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const lastNotificationInteractionAtRef = useRef(Date.now());
   const [typingUserId, setTypingUserId] = useState(null);
-
-  const formatDateLabel = (ts) => {
-    if (!ts) return "";
-    try { return new Date(ts).toLocaleDateString(); } catch { return ""; }
-  };
-  const formatTime = (ts) => {
-    if (!ts) return "";
-    try { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ""; }
-  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -137,6 +146,42 @@ function TeachersPage() {
   const [adminVerifying, setAdminVerifying] = useState(false);
   const [pendingToggle, setPendingToggle] = useState(null); // { userId, curBool, newActive }
   const [teachersInitialized, setTeachersInitialized] = useState(Boolean(bootstrapCache));
+
+  const shouldRunPassiveNotificationRefresh = () => {
+    const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+    const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+    const isRecentlyActive = Date.now() - lastNotificationInteractionAtRef.current < NOTIFICATION_IDLE_GRACE_MS;
+    return isVisible && isOnline && isRecentlyActive;
+  };
+
+  useEffect(() => {
+    const markNotificationInteraction = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markNotificationInteraction();
+    };
+
+    window.addEventListener("focus", markNotificationInteraction);
+    window.addEventListener("online", markNotificationInteraction);
+    window.addEventListener("pointerdown", markNotificationInteraction, { passive: true });
+    window.addEventListener("touchstart", markNotificationInteraction, { passive: true });
+    window.addEventListener("keydown", markNotificationInteraction);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markNotificationInteraction);
+      window.removeEventListener("online", markNotificationInteraction);
+      window.removeEventListener("pointerdown", markNotificationInteraction);
+      window.removeEventListener("touchstart", markNotificationInteraction);
+      window.removeEventListener("keydown", markNotificationInteraction);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   // open modal to confirm toggle and collect admin credentials
   const handleToggleActiveTeacher = async () => {
@@ -188,14 +233,26 @@ function TeachersPage() {
       return;
     }
 
+    const teacherId =
+      (selectedTeacher && selectedTeacher.teacherId) ||
+      (selectedTeacherUser && selectedTeacherUser.teacherId) ||
+      Object.values(teachers || {}).find((teacher) => teacher.userId === userId)?.teacherId ||
+      "";
+    const optimisticUsersMap = {
+      ...(usersByUserId || {}),
+      [userId]: { ...((usersByUserId || {})[userId] || {}), isActive: newActive },
+    };
+    const optimisticTeachers = Array.isArray(teachers)
+      ? teachers.map((teacher) => (teacher.userId === userId ? { ...teacher, isActive: newActive } : teacher))
+      : teachers;
+
     // optimistic UI update
     setSelectedTeacherUser((prev) => (prev ? { ...prev, isActive: newActive } : prev));
-    setUsersByUserId((prev) => ({ ...(prev || {}), [userId]: { ...((prev || {})[userId] || {}), isActive: newActive } }));
-    setTeachers((prev) => (Array.isArray(prev) ? prev.map(t => t.userId === userId ? { ...t, isActive: newActive } : t) : prev));
+    setUsersByUserId(optimisticUsersMap);
+    setTeachers(optimisticTeachers);
 
     try {
-      const resp = await axios.get(`${SCHOOL_DB_ROOT}/Users.json`);
-      const allUsers = resp.data || {};
+      const allUsers = await readSchoolNode("Users");
       const normalize = (v) => String(v || "").replace(/^[-]+/, "").trim();
       const pushKeys = Object.keys(allUsers || {}).filter((pk) => {
         const rec = allUsers[pk] || {};
@@ -209,26 +266,39 @@ function TeachersPage() {
         throw new Error('user_record_not_found');
       }
 
-      const pushKey = pushKeys[0];
-      const usersItemUrl = `${SCHOOL_DB_ROOT}/Users/${encodeURIComponent(pushKey)}.json`;
-
-      await axios.patch(usersItemUrl, { isActive: newActive });
+      await axios.put(`${API_BASE}/school-node`, {
+        schoolCode,
+        path: `Users/${encodeURIComponent(pushKeys[0])}/isActive`,
+        value: newActive,
+      });
+      if (teacherId) {
+        await axios.put(`${API_BASE}/school-node`, {
+          schoolCode,
+          path: `TeacherDirectory/${encodeURIComponent(teacherId)}/isActive`,
+          value: newActive,
+        }).catch(() => undefined);
+        writeTeacherDirectoryEntryToCache(teacherId, (previousEntry) => ({
+          ...previousEntry,
+          isActive: newActive,
+        }));
+      }
       setPopupMessages((msgs) => ([{ text: newActive ? 'Teacher activated.' : 'Teacher deactivated.', type: 'success', ts: Date.now() }, ...msgs]));
 
       // If we just deactivated the teacher, also unassign them from courses/grade assignments
       if (newActive === false) {
         try {
-          // try to derive teacherId from selectedTeacher or users map
-          const teacherId = (selectedTeacher && selectedTeacher.teacherId) || (selectedTeacherUser && selectedTeacherUser.teacherId) || Object.values(teachers || []).find(t => t.userId === userId)?.teacherId || null;
           if (teacherId) {
             // 1) Remove TeacherAssignments entries that reference this teacherId
             try {
-              const taRes = await axios.get(`${SCHOOL_DB_ROOT}/TeacherAssignments.json`);
-              const taData = taRes.data || {};
+              const taData = await readSchoolNode("TeacherAssignments");
               for (const [taKey, taVal] of Object.entries(taData)) {
                 if (!taVal) continue;
                 if (String(taVal.teacherId || "").trim() === String(teacherId).trim()) {
-                  await axios.delete(`${SCHOOL_DB_ROOT}/TeacherAssignments/${encodeURIComponent(taKey)}.json`);
+                  await axios.put(`${API_BASE}/school-node`, {
+                    schoolCode,
+                    path: `TeacherAssignments/${encodeURIComponent(taKey)}`,
+                    value: null,
+                  });
                 }
               }
             } catch (e) {
@@ -237,8 +307,7 @@ function TeachersPage() {
 
             // 2) Delete GradeManagement sectionSubjectTeachers entries that reference this teacher
             try {
-              const gmRes = await axios.get(`${SCHOOL_DB_ROOT}/GradeManagement/grades.json`);
-              const gmData = gmRes.data || {};
+              const gmData = await readSchoolNode("GradeManagement/grades");
               for (const [gradeKey, gradeNode] of Object.entries(gmData)) {
                 const sst = gradeNode?.sectionSubjectTeachers || {};
                 for (const [sectionKey, subjectsNode] of Object.entries(sst || {})) {
@@ -246,11 +315,14 @@ function TeachersPage() {
                     if (!assign) continue;
                     const assignedTeacherId = String(assign.teacherId || assign.teacherRecordKey || "").trim();
                     if (assignedTeacherId && assignedTeacherId === String(teacherId).trim()) {
-                      const deleteUrl = `${SCHOOL_DB_ROOT}/GradeManagement/grades/${encodeURIComponent(gradeKey)}/sectionSubjectTeachers/${encodeURIComponent(sectionKey)}/${encodeURIComponent(subjectKey)}.json`;
                       try {
-                        await axios.delete(deleteUrl);
+                        await axios.put(`${API_BASE}/school-node`, {
+                          schoolCode,
+                          path: `GradeManagement/grades/${encodeURIComponent(gradeKey)}/sectionSubjectTeachers/${encodeURIComponent(sectionKey)}/${encodeURIComponent(subjectKey)}`,
+                          value: null,
+                        });
                       } catch (err) {
-                        console.error('Failed deleting sectionSubjectTeachers entry', deleteUrl, err?.response?.data || err.message || err);
+                        console.error('Failed deleting sectionSubjectTeachers entry', err?.response?.data || err.message || err);
                       }
                     }
                   }
@@ -261,13 +333,31 @@ function TeachersPage() {
             }
 
             // 3) Update local UI state to remove their grades/subjects
-            setTeachers((prev) => (Array.isArray(prev) ? prev.map(t => t.teacherId === teacherId ? { ...t, gradesSubjects: [], subjectsUnique: [] } : t) : prev));
-            setUsersByUserId((prev) => ({ ...(prev || {}), [userId]: { ...((prev || {})[userId] || {}), isActive: false } }));
+            const clearedTeachers = Array.isArray(optimisticTeachers)
+              ? optimisticTeachers.map((teacher) => (
+                  teacher.teacherId === teacherId ? { ...teacher, gradesSubjects: [], subjectsUnique: [] } : teacher
+                ))
+              : optimisticTeachers;
+            const clearedUsersMap = {
+              ...optimisticUsersMap,
+              [userId]: { ...(optimisticUsersMap[userId] || {}), isActive: false },
+            };
+            setTeachers(clearedTeachers);
+            setUsersByUserId(clearedUsersMap);
+            writeTeacherDirectoryEntryToCache(teacherId, (previousEntry) => ({
+              ...previousEntry,
+              isActive: false,
+              gradesSubjects: [],
+              subjectsUnique: [],
+            }));
+            persistTeachersCache(clearedTeachers, clearedUsersMap, gradeOptions);
           }
         } catch (e) {
           console.error('Error during unassign steps for deactivated teacher', e);
           setPopupMessages((msgs) => ([{ text: 'Teacher deactivated but failed to fully unassign from courses.', type: 'warning', ts: Date.now() }, ...msgs]));
         }
+      } else {
+        persistTeachersCache(optimisticTeachers, optimisticUsersMap, gradeOptions);
       }
     } catch (err) {
       console.error('submitAdminModal error:', err);
@@ -302,10 +392,12 @@ function TeachersPage() {
   const nowDate = new Date(nowTick);
   const currentDayName = nowDate.toLocaleDateString("en-US", { weekday: "long" });
   const currentMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const SCHOOL_DB_ROOT = schoolCode
-    ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolCode)}`
-    : RTDB_BASE;
+  const RTDB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
+  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
+  const TEACHER_DIRECTORY_URL = `${SCHOOL_DB_ROOT}/TeacherDirectory.json`;
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
 
   const chipStyle = (active) => ({
     padding: "6px 12px",
@@ -395,22 +487,13 @@ function TeachersPage() {
   };
 
   const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getRootNodeUrl = (nodeName) => `${RTDB_BASE}/${nodeName}.json`;
   const readSchoolNode = async (nodeName) => {
-    if (schoolCode) {
-      try {
-        const schoolRes = await axios.get(getSchoolNodeUrl(nodeName), { timeout: 6000 });
-        if (schoolRes.data && typeof schoolRes.data === "object") {
-          return schoolRes.data;
-        }
-      } catch (err) {
-        // fallback to root for legacy paths
-      }
-    }
-
     try {
-      const rootRes = await axios.get(getRootNodeUrl(nodeName), { timeout: 6000 });
-      return rootRes.data || {};
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode, path: nodeName },
+        timeout: 7000,
+      });
+      return response?.data?.data || {};
     } catch (err) {
       return {};
     }
@@ -442,6 +525,33 @@ function TeachersPage() {
     } catch {
       // ignore cache write errors
     }
+  };
+
+  const persistTeachersCache = (teacherList, usersMapValue = usersByUserId, gradeOptionsValue = gradeOptions) => {
+    writeTeachersCache({
+      teacherList,
+      gradeOptions: Array.isArray(gradeOptionsValue) ? gradeOptionsValue : [],
+      usersMap: usersMapValue && typeof usersMapValue === "object" ? usersMapValue : {},
+    });
+  };
+
+  const writeTeacherDirectoryEntryToCache = (teacherId, updater) => {
+    if (!teacherId) {
+      return;
+    }
+
+    const currentDirectory = readCachedJson(TEACHER_DIRECTORY_URL, {
+      ttlMs: 15 * 60 * 1000,
+    });
+    if (!currentDirectory || typeof currentDirectory !== "object") {
+      return;
+    }
+
+    const previousEntry = currentDirectory[teacherId] || {};
+    writeCachedJson(TEACHER_DIRECTORY_URL, {
+      ...currentDirectory,
+      [teacherId]: typeof updater === "function" ? updater(previousEntry) : { ...previousEntry, ...(updater || {}) },
+    });
   };
 
   const handleRefreshTeachers = () => {
@@ -670,11 +780,105 @@ useEffect(() => {
           return (cached.gradeOptions || []).includes(String(prev)) ? prev : "All";
         });
         setLoadingTeachers(false);
+
+        const cachedFetchedAt = Number(cached.fetchedAt || 0);
+        if (cachedFetchedAt && Date.now() - cachedFetchedAt < 5 * 60 * 1000) {
+          setTeachersInitialized(true);
+          return;
+        }
       }
 
       setLoadingTeachers(true);
 
       try {
+        const teacherDirectoryResponse = await axios.get(`${API_BASE}/directory/teachers`, {
+          params: { schoolCode },
+          timeout: 12000,
+        });
+        const teacherDirectoryData = teacherDirectoryResponse?.data?.teachers || {};
+
+        const teacherSummaryList = Object.entries(teacherDirectoryData || {})
+          .map(([teacherId, teacher]) => {
+            const userId = String(teacher?.userId || "").trim();
+            if (!userId) {
+              return null;
+            }
+
+            const gradesSubjects = Array.isArray(teacher?.gradesSubjects)
+              ? teacher.gradesSubjects
+                  .map((entry) => ({
+                    courseId: String(entry?.courseId || "").trim(),
+                    grade: String(entry?.grade || "").trim(),
+                    section: String(entry?.section || "").trim(),
+                    subject: String(entry?.subject || "").trim(),
+                  }))
+                  .filter((entry) => entry.grade && entry.section && entry.subject)
+              : [];
+
+            const subjectsUnique = Array.isArray(teacher?.subjectsUnique)
+              ? teacher.subjectsUnique.filter(Boolean).map((subject) => String(subject).trim()).filter(Boolean)
+              : Array.from(
+                  new Set(
+                    gradesSubjects
+                      .map((entry) => String(entry?.subject || "").trim())
+                      .filter(Boolean)
+                  )
+                );
+
+            return {
+              teacherId: String(teacher?.teacherId || teacherId || "").trim(),
+              userId,
+              name: String(teacher?.name || "").trim() || "Unknown Teacher",
+              profileImage: resolveProfileImage(teacher?.profileImage),
+              gradesSubjects,
+              subjectsUnique,
+              email: teacher?.email || null,
+              phone: teacher?.phone || null,
+              gender: teacher?.gender || null,
+              isActive: teacher?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
+
+        if (teacherSummaryList.length > 0) {
+          const summaryUsersMap = teacherSummaryList.reduce((accumulator, teacher) => {
+            accumulator[teacher.userId] = {
+              userId: teacher.userId,
+              teacherId: teacher.teacherId,
+              role: "teacher",
+              name: teacher.name,
+              profileImage: teacher.profileImage,
+              email: teacher.email,
+              phone: teacher.phone,
+              gender: teacher.gender,
+              isActive: teacher.isActive,
+            };
+            return accumulator;
+          }, {});
+
+          const resolvedGrades = Array.from(
+            new Set(
+              teacherSummaryList
+                .flatMap((teacher) => teacher?.gradesSubjects || [])
+                .map((gradeSubjectItem) => String(gradeSubjectItem?.grade || "").trim())
+                .filter((gradeValue) => isValidGradeKey(gradeValue))
+            )
+          ).sort((a, b) => Number(a) - Number(b));
+
+          setTeachers(teacherSummaryList);
+          setGradeOptions(resolvedGrades);
+          setUsersByUserId(summaryUsersMap);
+          setSelectedGrade((prev) => {
+            if (prev === "All") return prev;
+            return resolvedGrades.includes(String(prev)) ? prev : "All";
+          });
+          setLoadingTeachers(false);
+          setTeachersInitialized(true);
+          persistTeachersCache(teacherSummaryList, summaryUsersMap, resolvedGrades);
+          return;
+        }
+
         const [teachersData, assignmentsData, coursesData, gradesData, employeesData, usersData] = await Promise.all([
           readSchoolNode("Teachers"),
           readSchoolNode("TeacherAssignments"),
@@ -951,11 +1155,7 @@ useEffect(() => {
         setTeachers(finalTeachers);
         setTeachersInitialized(true);
 
-        writeTeachersCache({
-          teacherList: finalTeachers,
-          gradeOptions: resolvedGrades,
-          usersMap,
-        });
+        persistTeachersCache(finalTeachers, usersMap, resolvedGrades);
       } catch (err) {
         console.error("Error fetching teachers:", err);
       } finally {
@@ -1099,16 +1299,6 @@ useEffect(() => {
 }, [selectedTeacher, activeTab]);
 
 
-useEffect(() => {
-    // Replace with your actual API call
-    const fetchUnreadSenders = async () => {
-      const response = await fetch("/api/unreadSenders");
-      const data = await response.json();
-      setUnreadSenders(data);
-    };
-    fetchUnreadSenders();
-  }, []);
-
 
 // Fetch teacher daily lesson plan from RTDB LessonPlans node when Plan tab is active
 useEffect(() => {
@@ -1196,23 +1386,194 @@ useEffect(() => {
             method: d.method || d.methods || '',
             aids: d.aids || d.material || d.materials || '',
             assessment: d.assessment || d.assess || d.evaluation || '',
+            note: d.note || d.notes || '',
           }));
         }
         if (typeof input === 'object') {
           return Object.keys(input).map((key) => {
             const val = input[key] || {};
-            if (typeof val === 'string') return { dayName: key, date: '', topic: val, method: '', aids: '', assessment: '' };
+            const dateFromKey = /^\d{4}-\d{2}-\d{2}$/.test(String(key || '').trim()) ? String(key).trim() : '';
+            if (typeof val === 'string') return { dayName: key, date: dateFromKey, topic: val, method: '', aids: '', assessment: '', note: '' };
             return {
               dayName: (val.dayName || val.name || key).toString(),
-              date: normalizeISODate(val.date || val.dayDate || val.isoDate || val.dayISO || ''),
+              date: normalizeISODate(val.date || val.dayDate || val.isoDate || val.dayISO || dateFromKey || ''),
               topic: val.topic || val.subject || '',
               method: val.method || val.methods || '',
               aids: val.aids || val.material || '',
               assessment: val.assessment || val.assess || '',
+              note: val.note || val.notes || '',
             };
           });
         }
         return [];
+      };
+
+      const getDayNameFromIso = (isoValue) => {
+        const iso = normalizeISODate(isoValue);
+        if (!iso) return '';
+        const dt = new Date(`${iso}T00:00:00`);
+        if (Number.isNaN(dt.getTime())) return '';
+        return dt.toLocaleDateString('en-US', { weekday: 'long' });
+      };
+
+      const normalizeSemesterToken = (value) => {
+        const raw = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+        if (!raw) return '';
+        if (raw === 'sem1' || raw === 'semester1') return 'semester1';
+        if (raw === 'sem2' || raw === 'semester2') return 'semester2';
+        return raw;
+      };
+
+      const normalizeTopicToken = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+      const buildLessonFeedbackKey = ({ courseId, semesterKey, monthKey, weekKey, dateKey, topic }) => {
+        return [
+          String(courseId || '').trim(),
+          normalizeSemesterToken(semesterKey),
+          String(monthKey || '').trim().toLowerCase(),
+          normalizeWeekForKey(weekKey),
+          normalizeISODate(dateKey),
+          normalizeTopicToken(topic),
+        ].join('::');
+      };
+
+      const normalizeUnderstandingLevel = (level, label) => {
+        const raw = String(level || label || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+        if (!raw) return 'unknown';
+        if (raw.includes('excellent') || raw.includes('outstanding')) return 'excellent';
+        if (raw.includes('good') || raw.includes('very_good')) return 'good';
+        if (raw.includes('partial') || raw.includes('medium') || raw.includes('fair')) return 'partial';
+        if (raw.includes('dont_understand') || raw.includes("don't_understand") || raw.includes('poor')) return 'dont_understand';
+        return 'unknown';
+      };
+
+      const summarizeFeedbackEntries = (entries) => {
+        const safeEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+        const responseCount = safeEntries.length;
+        const ratingCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+        const understandingCounts = {
+          excellent: 0,
+          good: 0,
+          partial: 0,
+          dont_understand: 0,
+          unknown: 0,
+        };
+
+        let ratingTotal = 0;
+        safeEntries.forEach((entry) => {
+          const rating = Number(entry?.teacherRating || 0);
+          if (Number.isFinite(rating) && rating >= 1 && rating <= 5) {
+            ratingCounts[rating] += 1;
+            ratingTotal += rating;
+          }
+
+          const understandingKey = normalizeUnderstandingLevel(entry?.understandingLevel, entry?.understandingLabel);
+          understandingCounts[understandingKey] = (understandingCounts[understandingKey] || 0) + 1;
+        });
+
+        const dominantUnderstandingKey = Object.entries(understandingCounts)
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
+
+        const dominantUnderstandingLabel = {
+          excellent: 'Excellent',
+          good: 'Good',
+          partial: 'Partially understood',
+          dont_understand: "Don't understand",
+          unknown: 'No signal',
+        }[dominantUnderstandingKey] || 'No signal';
+
+        return {
+          responseCount,
+          averageRating: responseCount ? Number((ratingTotal / responseCount).toFixed(1)) : 0,
+          ratingCounts,
+          understandingCounts,
+          dominantUnderstandingKey,
+          dominantUnderstandingLabel,
+        };
+      };
+
+      const parseLessonFeedbackPointer = (rawKey, fallbackCourseId = '') => {
+        const pointer = String(rawKey || '').trim();
+        if (!pointer) {
+          return {
+            courseId: String(fallbackCourseId || '').trim(),
+            semesterKey: '',
+            monthKey: '',
+            weekKey: '',
+            dateKey: '',
+            topic: '',
+          };
+        }
+
+        const parts = pointer.split('__');
+        const [courseIdPart, semesterKey = '', monthKey = '', weekKey = '', dateKey = '', ...topicParts] = parts;
+        const hasStructuredPointer = parts.length >= 6;
+        const resolvedCourseId = String(hasStructuredPointer ? (courseIdPart || fallbackCourseId || '') : (fallbackCourseId || courseIdPart || '')).trim();
+        let topic = topicParts.join('__');
+
+        if (hasStructuredPointer && topic) {
+          try {
+            topic = decodeURIComponent(topic);
+          } catch {
+            topic = topic.replace(/%20/g, ' ');
+          }
+        }
+
+        return {
+          courseId: resolvedCourseId,
+          semesterKey: hasStructuredPointer ? semesterKey : '',
+          monthKey: hasStructuredPointer ? monthKey : '',
+          weekKey: hasStructuredPointer ? weekKey : '',
+          dateKey: hasStructuredPointer ? dateKey : '',
+          topic: hasStructuredPointer ? topic : '',
+        };
+      };
+
+      const isFeedbackEntryRecord = (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        return [
+          value.teacherRating,
+          value.understandingLevel,
+          value.understandingLabel,
+          value.teacherId,
+          value.courseId,
+        ].some((field) => field !== undefined && field !== null && String(field).trim() !== '');
+      };
+
+      const collectLessonFeedbackEntries = (root) => {
+        const collected = [];
+
+        const pushEntry = (studentId, entry, lessonKey = '', fallbackCourseId = '') => {
+          if (!isFeedbackEntryRecord(entry)) return;
+          const pointerParts = parseLessonFeedbackPointer(lessonKey, entry?.courseId || fallbackCourseId);
+          collected.push({
+            ...entry,
+            ...pointerParts,
+            courseId: String(entry?.courseId || pointerParts.courseId || fallbackCourseId || '').trim(),
+            lessonKey: String(lessonKey || '').trim(),
+            studentId: String(studentId || '').trim(),
+          });
+        };
+
+        Object.entries(root || {}).forEach(([studentId, studentNode]) => {
+          if (!studentNode || typeof studentNode !== 'object') return;
+
+          Object.entries(studentNode).forEach(([firstKey, firstValue]) => {
+            if (!firstValue || typeof firstValue !== 'object') return;
+
+            if (isFeedbackEntryRecord(firstValue)) {
+              pushEntry(studentId, firstValue, firstKey, firstValue?.courseId || '');
+              return;
+            }
+
+            Object.entries(firstValue).forEach(([secondKey, secondValue]) => {
+              if (!secondValue || typeof secondValue !== 'object') return;
+              pushEntry(studentId, secondValue, secondKey, firstKey);
+            });
+          });
+        });
+
+        return collected;
       };
 
       const pickAcademicYearKey = (obj, preferred = null) => {
@@ -1351,6 +1712,59 @@ useEffect(() => {
         return { node: {}, path: [] };
       };
 
+      const isLikelyCourseEntry = (entryKey, entryValue) => {
+        if (!entryValue || typeof entryValue !== 'object') return false;
+        const key = String(entryKey || '').trim();
+        if (key.startsWith('course_')) return true;
+        if (entryValue.weeks || entryValue.annual || entryValue.dailyLogs || entryValue.submissions) return true;
+        return Object.keys(entryValue || {}).some((childKey) => String(childKey || '').startsWith('week_'));
+      };
+
+      const isCourseCollectionNode = (node) => {
+        if (!node || typeof node !== 'object') return false;
+        return Object.entries(node).some(([entryKey, entryValue]) => isLikelyCourseEntry(entryKey, entryValue));
+      };
+
+      const resolvePlanCourseCollection = (root, preferred) => {
+        if (!root || typeof root !== 'object') return {};
+
+        if (root.courses && isCourseCollectionNode(root.courses)) {
+          return root.courses;
+        }
+
+        if (isCourseCollectionNode(root)) {
+          return root;
+        }
+
+        const resolved = resolveAcademicYearNode(root, preferred);
+        if (resolved?.node?.courses && isCourseCollectionNode(resolved.node.courses)) {
+          return resolved.node.courses;
+        }
+        if (resolved?.node && isCourseCollectionNode(resolved.node)) {
+          return resolved.node;
+        }
+
+        const resolvedAny = resolveAcademicYearNodeAny(root, preferred);
+        if (resolvedAny?.node?.courses && isCourseCollectionNode(resolvedAny.node.courses)) {
+          return resolvedAny.node.courses;
+        }
+        if (resolvedAny?.node && isCourseCollectionNode(resolvedAny.node)) {
+          return resolvedAny.node;
+        }
+
+        for (const value of Object.values(root || {})) {
+          if (!value || typeof value !== 'object') continue;
+          if (value.courses && isCourseCollectionNode(value.courses)) {
+            return value.courses;
+          }
+          if (isCourseCollectionNode(value)) {
+            return value;
+          }
+        }
+
+        return {};
+      };
+
       const ALL_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
       const inferMonthFromWeekDays = (weekDays) => {
         const d = (weekDays || []).find((x) => normalizeISODate(x?.date));
@@ -1373,26 +1787,34 @@ useEffect(() => {
       ].filter(Boolean)));
 
       const candidatePlanRoots = [];
+      const candidateDailyLogRoots = [];
       for (const k of candidatePlanKeys) {
         // eslint-disable-next-line no-await-in-loop
         const results = await Promise.all([
           axios.get(`${SCHOOL_DB_ROOT}/schoolLessonPlan/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
           axios.get(`${RTDB_BASE}/schoolLessonPlan/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/TeachersLessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${RTDB_BASE}/LessonPlans/TeachersLessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/LessonDailyLogs/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
+          axios.get(`${RTDB_BASE}/LessonPlans/LessonDailyLogs/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
           axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
           axios.get(`${RTDB_BASE}/LessonPlans/${encodeURIComponent(k)}.json`).catch(() => ({ data: null })),
         ]);
 
-        results.forEach((res) => {
+        results.forEach((res, index) => {
           if (res && res.data && typeof res.data === 'object' && Object.keys(res.data).length) {
-            candidatePlanRoots.push(res.data);
+            if (index === 4 || index === 5) {
+              candidateDailyLogRoots.push(res.data);
+            } else {
+              candidatePlanRoots.push(res.data);
+            }
           }
         });
       }
 
       let teacherPlansRoot = {};
       for (const rootCandidate of candidatePlanRoots) {
-        const resolvedCandidate = resolveAcademicYearNode(rootCandidate, preferredAcademicYear);
-        const coursesCandidate = resolvedCandidate?.node?.courses;
+        const coursesCandidate = resolvePlanCourseCollection(rootCandidate, preferredAcademicYear);
         if (coursesCandidate && typeof coursesCandidate === 'object' && Object.keys(coursesCandidate).length) {
           teacherPlansRoot = rootCandidate;
           break;
@@ -1402,11 +1824,74 @@ useEffect(() => {
         teacherPlansRoot = candidatePlanRoots[0] || {};
       }
 
-      const resolvedPlans = resolveAcademicYearNode(teacherPlansRoot, preferredAcademicYear);
-      const coursesNode = (resolvedPlans.node && resolvedPlans.node.courses && typeof resolvedPlans.node.courses === 'object') ? resolvedPlans.node.courses : {};
+      const coursesNode = resolvePlanCourseCollection(teacherPlansRoot, preferredAcademicYear);
+      const dailyLogsRoot = candidateDailyLogRoots.find((rootCandidate) => {
+        const resolved = resolvePlanCourseCollection(rootCandidate, preferredAcademicYear);
+        return resolved && typeof resolved === 'object' && Object.keys(resolved).length > 0;
+      }) || candidateDailyLogRoots[0] || {};
+      const dailyLogsCourseNode = resolvePlanCourseCollection(dailyLogsRoot, preferredAcademicYear);
 
       // Submissions are keyed by teacherId in LessonPlanSubmissions (per provided schema)
       const teacherSubmissionId = String(teacherId || teacherUserId || '').trim();
+
+      const feedbackRoots = [];
+      const feedbackResults = await Promise.all([
+        axios.get(`${SCHOOL_DB_ROOT}/LessonPlans/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${RTDB_BASE}/LessonPlans/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${SCHOOL_DB_ROOT}/StudentWhatLearn.json`).catch(() => ({ data: null })),
+        axios.get(`${RTDB_BASE}/StudentWhatLearn.json`).catch(() => ({ data: null })),
+      ]);
+
+      feedbackResults.forEach((res) => {
+        if (res && res.data && typeof res.data === 'object' && Object.keys(res.data).length) {
+          feedbackRoots.push(res.data);
+        }
+      });
+
+      const feedbackBucketsByLessonKey = {};
+      const seenFeedbackEntries = new Set();
+
+      feedbackRoots.forEach((feedbackRoot) => {
+        collectLessonFeedbackEntries(feedbackRoot).forEach((entry) => {
+          const entryTeacherId = String(entry?.teacherId || '').trim();
+          if (teacherSubmissionId && entryTeacherId && entryTeacherId !== teacherSubmissionId) return;
+
+          const feedbackKey = buildLessonFeedbackKey({
+            courseId: entry?.courseId,
+            semesterKey: entry?.normalizedSemesterKey || entry?.semesterKey,
+            monthKey: entry?.monthKey,
+            weekKey: entry?.weekKey,
+            dateKey: entry?.dateKey,
+            topic: entry?.topic,
+          });
+
+          if (!feedbackKey.replace(/:/g, '').trim()) return;
+
+          const dedupeKey = [
+            String(entry?.studentId || '').trim(),
+            String(entry?.lessonKey || '').trim(),
+            String(entry?.courseId || '').trim(),
+            String(entry?.teacherId || '').trim(),
+            String(entry?.createdAt || '').trim(),
+            String(entry?.updatedAt || '').trim(),
+            String(entry?.teacherRating || '').trim(),
+            String(entry?.understandingLevel || entry?.understandingLabel || '').trim(),
+          ].join('::');
+
+          if (seenFeedbackEntries.has(dedupeKey)) return;
+          seenFeedbackEntries.add(dedupeKey);
+
+          if (!feedbackBucketsByLessonKey[feedbackKey]) {
+            feedbackBucketsByLessonKey[feedbackKey] = [];
+          }
+          feedbackBucketsByLessonKey[feedbackKey].push(entry);
+        });
+      });
+
+      const feedbackSummaryByLessonKey = Object.entries(feedbackBucketsByLessonKey).reduce((acc, [lessonKey, entries]) => {
+        acc[lessonKey] = summarizeFeedbackEntries(entries);
+        return acc;
+      }, {});
 
       // Load submissions (optional, for status)
       // Support both node names: LessonPlanSubmissions (legacy) and LessonPlanSubmission (current)
@@ -1425,8 +1910,10 @@ useEffect(() => {
           const urls = [
             `${SCHOOL_DB_ROOT}/LessonPlanSubmissions/${encodeURIComponent(tKey)}.json`,
             `${SCHOOL_DB_ROOT}/LessonPlanSubmission/${encodeURIComponent(tKey)}.json`,
+            `${SCHOOL_DB_ROOT}/LessonPlans/LessonSubmissions/${encodeURIComponent(tKey)}.json`,
             `${RTDB_BASE}/LessonPlanSubmissions/${encodeURIComponent(tKey)}.json`,
             `${RTDB_BASE}/LessonPlanSubmission/${encodeURIComponent(tKey)}.json`,
+            `${RTDB_BASE}/LessonPlans/LessonSubmissions/${encodeURIComponent(tKey)}.json`,
           ];
 
           const results = await Promise.all(
@@ -1438,27 +1925,9 @@ useEffect(() => {
           });
         }
 
-        const preferYearCandidates = Array.from(new Set([
-          preferredAcademicYear,
-          preferredAcademicYear.replaceAll('/', '_'),
-          preferredAcademicYear.replaceAll('/', '-'),
-          preferredAcademicYear.replaceAll('/', ''),
-        ].filter(Boolean)));
-
         submissionRoots.forEach((submissionsRoot) => {
-          const rootKeys = Object.keys(submissionsRoot || {});
-          const matchedYearKey = preferYearCandidates.find((candidate) => rootKeys.includes(candidate));
-          const fallbackYearKey = rootKeys.sort().slice(-1)[0] || null;
-          const yearNodeFromKey = matchedYearKey
-            ? submissionsRoot?.[matchedYearKey]
-            : (fallbackYearKey ? submissionsRoot?.[fallbackYearKey] : null);
-
-          const resolvedSubs = yearNodeFromKey && typeof yearNodeFromKey === 'object'
-            ? { node: yearNodeFromKey }
-            : resolveAcademicYearNodeAny(submissionsRoot, preferredAcademicYear);
-
-          const submissionsYearNode = resolvedSubs.node || {};
-          Object.values(submissionsYearNode || {}).forEach((courseSubNode) => {
+          const submissionsCourseNode = resolvePlanCourseCollection(submissionsRoot, preferredAcademicYear);
+          Object.values(submissionsCourseNode || {}).forEach((courseSubNode) => {
             if (!courseSubNode || typeof courseSubNode !== 'object') return;
             Object.values(courseSubNode).forEach((sub) => {
               if (!sub) return;
@@ -1520,6 +1989,39 @@ useEffect(() => {
                   };
                 }
               }
+            });
+          });
+
+          Object.entries(submissionsCourseNode || {}).forEach(([courseId, semesterNode]) => {
+            if (!semesterNode || typeof semesterNode !== 'object') return;
+            Object.entries(semesterNode).forEach(([semesterKey, monthNode]) => {
+              if (!monthNode || typeof monthNode !== 'object') return;
+              Object.entries(monthNode).forEach(([monthKey, weekNode]) => {
+                if (!weekNode || typeof weekNode !== 'object') return;
+                Object.entries(weekNode).forEach(([weekKey, submissionWeek]) => {
+                  if (!submissionWeek || typeof submissionWeek !== 'object') return;
+                  const submittedDays = submissionWeek?.submittedDays && typeof submissionWeek.submittedDays === 'object'
+                    ? submissionWeek.submittedDays
+                    : {};
+                  Object.entries(submittedDays).forEach(([dateKey, submittedValue]) => {
+                    if (!submittedValue) return;
+                    const logMeta = dailyLogsCourseNode?.[courseId]?.[semesterKey]?.[monthKey]?.[weekKey]?.[dateKey] || {};
+                    const dayName = String(logMeta?.dayName || getDayNameFromIso(dateKey) || '').trim();
+                    const canonical = canonicalSubmissionKey(teacherSubmissionId, courseId, weekKey, dayName || dateKey);
+                    submittedKeySet.add(canonical);
+                    submittedEntriesByKey[canonical] = {
+                      key: canonical,
+                      teacherId: teacherSubmissionId,
+                      courseId: String(courseId || '').trim(),
+                      week: normalizeWeekForKey(weekKey),
+                      dayName: normalizeDayForKey(dayName || dateKey),
+                      submittedAt: String(submissionWeek?.lastSubmittedAt || '').trim(),
+                      date: normalizeISODate(dateKey),
+                      childKey: `${teacherSubmissionId}__${courseId}__${weekKey}__${dayName || dateKey}`,
+                    };
+                  });
+                });
+              });
             });
           });
         });
@@ -1594,18 +2096,39 @@ useEffect(() => {
       });
       setPlanSubmittedEntries(submittedEntries);
 
-      const extractWeeksFromCourse = (courseId, courseEntry) => {
+      const extractWeeksFromCourse = (courseId, courseEntry, courseDailyLogsEntry) => {
         if (!courseEntry) return [];
         const out = [];
 
         const pushWeek = (weekObj, weekFallback = '') => {
           if (!weekObj) return;
-          const weekDays = normalizeWeekDays(weekObj.weekDays || weekObj.days || weekObj.daily || []);
+          const weekNumber = weekObj.week || weekObj.weekNumber || weekFallback || '';
+          const semesterKey = weekObj.semester || weekObj.semesterKey || '';
+          const monthKey = (weekObj.month || weekObj.monthName || '').toString() || inferMonthFromWeekDays(weekObj.weekDays || weekObj.days || weekObj.daily || []);
+          const normalizedSemesterKey = normalizeSemesterToken(semesterKey);
+          const weekDays = normalizeWeekDays(weekObj.weekDays || weekObj.days || weekObj.daily || []).map((day) => {
+            const feedbackKey = buildLessonFeedbackKey({
+              courseId: courseId || weekObj.courseId,
+              semesterKey: normalizedSemesterKey,
+              monthKey,
+              weekKey: weekNumber,
+              dateKey: day?.date,
+              topic: day?.topic,
+            });
+
+            return {
+              ...day,
+              semesterKey,
+              normalizedSemesterKey,
+              monthKey,
+              weekKey: weekNumber,
+              feedback: feedbackSummaryByLessonKey[feedbackKey] || null,
+            };
+          });
           if (!weekDays.length && !(weekObj.topic || weekObj.weekTopic)) return;
-          const month = (weekObj.month || weekObj.monthName || '').toString() || inferMonthFromWeekDays(weekDays);
           out.push({
-            month,
-            week: weekObj.week || weekObj.weekNumber || weekFallback || '',
+            month: monthKey,
+            week: weekNumber,
             topic: weekObj.topic || weekObj.weekTopic || '',
             objective: weekObj.objective || weekObj.objectives || weekObj.weekObjective || weekObj.weekObjectives || '',
             method: weekObj.method || weekObj.teachingMethod || weekObj.methods || '',
@@ -1613,8 +2136,40 @@ useEffect(() => {
             assessment: weekObj.assessment || weekObj.evaluation || weekObj.assessments || '',
             weekDays,
             courseId: courseId || weekObj.courseId || null,
+            semesterKey,
+            normalizedSemesterKey,
           });
         };
+
+        Object.entries(courseEntry || {}).forEach(([semesterKey, semesterNode]) => {
+          if (!semesterNode || typeof semesterNode !== 'object') return;
+          const monthsNode = semesterNode?.months && typeof semesterNode.months === 'object'
+            ? semesterNode.months
+            : semesterNode;
+
+          Object.entries(monthsNode || {}).forEach(([monthKey, monthNode]) => {
+            if (!monthNode || typeof monthNode !== 'object') return;
+            const weeksNode = monthNode?.weeks && typeof monthNode.weeks === 'object'
+              ? monthNode.weeks
+              : monthNode;
+
+            Object.entries(weeksNode || {}).forEach(([weekKey, weekObj]) => {
+              if (!weekObj || typeof weekObj !== 'object') return;
+              const dailyWeekNode = courseDailyLogsEntry?.[semesterKey]?.[monthKey]?.[weekKey] || {};
+              const weekDays = normalizeWeekDays(dailyWeekNode);
+              pushWeek(
+                {
+                  ...weekObj,
+                  semester: semesterKey,
+                  month: monthKey,
+                  week: weekObj?.week || weekKey,
+                  weekDays,
+                },
+                weekObj?.week || weekKey
+              );
+            });
+          });
+        });
 
         // annual rows
         if (courseEntry.annual && typeof courseEntry.annual === 'object') {
@@ -1643,13 +2198,39 @@ useEffect(() => {
           }
         });
 
+        if (!out.length && courseDailyLogsEntry && typeof courseDailyLogsEntry === 'object') {
+          Object.entries(courseDailyLogsEntry).forEach(([semesterKey, monthNode]) => {
+            if (!monthNode || typeof monthNode !== 'object') return;
+            Object.entries(monthNode).forEach(([monthKey, weekNode]) => {
+              if (!weekNode || typeof weekNode !== 'object') return;
+              Object.entries(weekNode).forEach(([weekKey, dailyWeekNode]) => {
+                const weekDays = normalizeWeekDays(dailyWeekNode);
+                if (!weekDays.length) return;
+                pushWeek(
+                  {
+                    semester: semesterKey,
+                    month: monthKey,
+                    week: weekKey,
+                    topic: weekDays[0]?.topic || '',
+                    method: weekDays[0]?.method || '',
+                    material: weekDays[0]?.aids || '',
+                    assessment: weekDays[0]?.assessment || '',
+                    weekDays,
+                  },
+                  weekKey
+                );
+              });
+            });
+          });
+        }
+
         return out;
       };
 
       // Extract weeks across all courses
       let weeks = [];
       Object.entries(coursesNode || {}).forEach(([courseId, courseEntry]) => {
-        weeks = weeks.concat(extractWeeksFromCourse(courseId, courseEntry));
+        weeks = weeks.concat(extractWeeksFromCourse(courseId, courseEntry, dailyLogsCourseNode?.[courseId] || {}));
       });
 
       // Dedupe loosely by courseId+week+month+topic
@@ -1814,13 +2395,8 @@ const ensureChatRoot = async (chatKey, otherUserId) => {
     const existing = res.data || {};
     const participants = { ...(existing.participants || {}), [adminUserId]: true, [otherUserId]: true };
 
-    const unread = { ...(existing.unread || {}) };
-    if (unread[adminUserId] === undefined) unread[adminUserId] = 0;
-    if (unread[otherUserId] === undefined) unread[otherUserId] = 0;
-
-    const patch = { participants, unread };
+    const patch = { participants };
     if (existing.typing === undefined) patch.typing = null;
-    if (existing.lastMessage === undefined) patch.lastMessage = null;
 
     await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}.json`, patch).catch(() => {});
   } catch (e) {
@@ -1828,14 +2404,18 @@ const ensureChatRoot = async (chatKey, otherUserId) => {
   }
 };
 
-const maybeMarkLastMessageSeenForAdmin = async (chatKey) => {
+const maybeMarkLastMessageSeenForAdmin = async (chatKey, otherUserId = "") => {
   try {
-    const res = await axios.get(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`).catch(() => ({ data: null }));
-    const last = res.data;
-    if (!last) return;
-    if (String(last.receiverId) === String(adminUserId) && last.seen === false) {
-      await axios.patch(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`, { seen: true }).catch(() => {});
-    }
+    await axios.patch(
+      `${RTDB_BASE}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+      buildChatSummaryUpdate({
+        chatId: chatKey,
+        otherUserId,
+        unreadCount: 0,
+        lastMessageSeen: true,
+        lastMessageSeenAt: Date.now(),
+      })
+    ).catch(() => {});
   } catch (e) {
     // ignore
   }
@@ -1875,22 +2455,26 @@ const handleTyping = (text) => {
   const fetchUnreadTeachers = async () => {
     const unread = {};
 
-    for (const t of teachers) {
-      const chatKey = getChatKey(adminUserId, t.userId);
-      try {
-        const res = await axios.get(
-          `${RTDB_BASE}/Chats/${chatKey}/messages.json`
-        );
+    try {
+            const unreadRes = await axios.get(`${API_BASE}/unread_messages/${encodeURIComponent(adminUserId)}`, {
+              timeout: 10000,
+            }).catch(() => ({ data: { messages: [] } }));
+            const unreadMessages = Array.isArray(unreadRes?.data?.messages) ? unreadRes.data.messages : [];
+            const summariesByOtherUserId = unreadMessages.reduce((result, msg) => {
+              const senderId = String(msg?.senderId || "").trim();
+              if (!senderId) return result;
+              result[senderId] = Number(result[senderId] || 0) + 1;
+              return result;
+            }, {});
 
-        const msgs = Object.values(res.data || {});
-        const count = msgs.filter(
-          m => m.receiverId === adminUserId && m.seen === false
-        ).length;
-
-        if (count > 0) unread[t.userId] = count;
-      } catch (err) {
-        console.error(err);
-      }
+      teachers.forEach((teacherEntry) => {
+        const count = Number(summariesByOtherUserId[teacherEntry.userId] || 0);
+        if (count > 0) {
+          unread[teacherEntry.userId] = count;
+        }
+      });
+    } catch (err) {
+      console.error(err);
     }
 
     setUnreadTeachers(unread);
@@ -1933,41 +2517,61 @@ const sendPopupMessage = async () => {
     );
     const generatedId = pushRes.data && pushRes.data.name;
 
-    // 2) Update lastMessage with full schema
-    const lastMessage = {
-      messageId: generatedId || `${timestamp}`,
-      senderId: newMessage.senderId,
-      receiverId: newMessage.receiverId,
-      text: newMessage.text || "",
-      type: newMessage.type || "text",
-      timeStamp: newMessage.timeStamp,
-      seen: false,
-      edited: false,
-      deleted: false,
-    };
+    await Promise.all([
+      axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedTeacher.userId,
+          unreadCount: 0,
+          lastMessageText: newMessage.text || "",
+          lastMessageType: newMessage.type || "text",
+          lastMessageTime: newMessage.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+      axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          lastMessageText: newMessage.text || "",
+          lastMessageType: newMessage.type || "text",
+          lastMessageTime: newMessage.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+    ]).catch(() => {});
 
-    await axios.put(
-      `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/lastMessage.json`,
-      lastMessage
-    ).catch(() => {});
-
-    // 3) Increment unread count for receiver (non-atomic: read -> increment -> write)
+    // 3) Increment unread count for receiver summary (non-atomic: read -> increment -> write)
     try {
-      const unreadRes = await axios.get(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`
+      const summaryRes = await axios.get(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`
       );
-      const unread = unreadRes.data || {};
-      const prev = Number(unread[selectedTeacher.userId] || 0);
-      const updated = { ...(unread || {}), [selectedTeacher.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-      await axios.put(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`,
-        updated
+      const summary = normalizeChatSummaryValue(summaryRes.data, {
+        chatId: chatKey,
+        otherUserId: adminUserId,
+      });
+      await axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          unreadCount: Number(summary.unreadCount || 0) + 1,
+        })
       );
     } catch (uErr) {
-      // if unread node missing or failed, set it
-      await axios.put(
-        `${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread.json`,
-        { [selectedTeacher.userId]: 1, [adminUserId]: 0 }
+      await axios.patch(
+        `${RTDB_BASE}/${buildChatSummaryPath(selectedTeacher.userId, chatKey)}.json`,
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          unreadCount: 1,
+        })
       );
     }
 
@@ -2020,16 +2624,6 @@ useEffect(() => {
 }, []);
 
 
-useEffect(() => {
-  if (!admin.userId) return;
-
-  fetchUnreadMessages();
-  const interval = setInterval(fetchUnreadMessages, 5000);
-
-  return () => clearInterval(interval);
-}, [admin.userId]);
-
-
 // ---------------- MARK MESSAGES AS SEEN ----------------
 
 
@@ -2057,9 +2651,7 @@ useEffect(() => {
       try {
         await axios.patch(`${RTDB_BASE}/.json`, updates);
         setUnreadTeachers(prev => ({ ...prev, [selectedTeacher.userId]: 0 }));
-        await ensureChatRoot(chatKey, selectedTeacher.userId);
-        await axios.put(`${RTDB_BASE}/Chats/${encodeURIComponent(chatKey)}/unread/${adminUserId}.json`, 0).catch(() => {});
-        await maybeMarkLastMessageSeenForAdmin(chatKey);
+        await maybeMarkLastMessageSeenForAdmin(chatKey, selectedTeacher.userId);
       } catch (err) {
         console.error('Failed to patch seen updates:', err);
       }
@@ -2094,80 +2686,76 @@ useEffect(() => {
 
 
  const fetchPostNotifications = async () => {
-  if (!adminId) return;
+  if (!adminId || !schoolCode) {
+    setPostNotifications([]);
+    return;
+  }
 
   try {
-    // 1️⃣ Get post notifications
-    const res = await axios.get(`${API_BASE}/get_post_notifications/${adminId}`);
-
-    let notifications = Array.isArray(res.data)
-      ? res.data
-      : Object.values(res.data || {});
-
-    if (notifications.length === 0) {
-      setPostNotifications([]);
-      return;
-    }
-
-    // 2️⃣ Fetch Users & School_Admins
-    const [users, admins] = await Promise.all([
-      readSchoolNode("Users"),
-      readSchoolNode("School_Admins"),
-    ]);
-
-    // 3️⃣ Helpers
-    const findAdminUser = (adminId) => {
-      const admin = admins[adminId];
-      if (!admin) return null;
-
-      return Object.values(users).find(
-        (u) => u.userId === admin.userId
-      );
-    };
-
-    // 4️⃣ Enrich notifications
-    const enriched = notifications.map((n) => {
-      const posterUser = findAdminUser(n.adminId);
-
-      return {
-        ...n,
-        notificationId:
-          n.notificationId ||
-          n.id ||
-          `${n.postId}_${n.adminId}`,
-
-        adminName: posterUser?.name || "Unknown Admin",
-        adminProfile:
-          posterUser?.profileImage || "/default-profile.png",
-      };
+    const response = await axios.get(`${API_BASE}/get_post_notifications/${encodeURIComponent(adminId)}`, {
+      params: { schoolCode },
+      timeout: 12000,
     });
+    const notifications = Array.isArray(response?.data)
+      ? response.data
+      : (Array.isArray(response?.data?.notifications) ? response.data.notifications : []);
 
-    setPostNotifications(enriched);
+    setPostNotifications(notifications);
   } catch (err) {
-    console.error("Post notification fetch failed", err);
-    setPostNotifications([]);
+    // Keep current UI state during transient backend latency/timeouts.
+    if (String(err?.code || "") !== "ECONNABORTED") {
+      console.warn("Post notification fetch failed", err?.message || err);
+    }
   }
 };
 
 
   useEffect(() => {
-    if (!adminId) return;
+    if (!adminId || !schoolCode) return undefined;
 
-    fetchPostNotifications();
-    const interval = setInterval(fetchPostNotifications, 5000);
+    const runFocusedRefresh = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+      fetchPostNotifications();
+    };
 
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminId]);
+    const runPassiveRefresh = () => {
+      if (!shouldRunPassiveNotificationRefresh()) {
+        return;
+      }
+
+      fetchPostNotifications();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+    const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [adminId, schoolCode]);
 
  const handleNotificationClick = async (notification) => {
   try {
     await axios.post(`${API_BASE}/mark_post_notification_read`, {
-      notificationId: notification.notificationId,
+      schoolCode,
       adminId: admin.userId,
+      postId: notification?.postId,
     });
   } catch (err) {
-    console.warn("Failed to delete notification:", err);
+    console.warn("Failed to mark post as seen:", err);
   }
 
   // 🔥 REMOVE FROM UI IMMEDIATELY
@@ -2217,19 +2805,6 @@ useEffect(() => {
     return () => document.removeEventListener("click", closeDropdown);
   }, []);
 
-  useEffect(() => {
-    const fetchUnreadSenders = async () => {
-      try {
-        const response = await fetch("/api/unreadSenders");
-        const data = await response.json();
-        setUnreadSenders(data);
-      } catch (err) {
-        // ignore
-      }
-    };
-    fetchUnreadSenders();
-  }, []);
-
   const handleClick = () => {
     navigate("/all-chat");
   };
@@ -2238,82 +2813,48 @@ useEffect(() => {
   const fetchUnreadMessages = async () => {
     if (!admin.userId) return;
 
-    const senders = {};
-
     try {
-      const [usersData, teachersData, studentsData, parentsData, chatsRes] = await Promise.all([
-        readSchoolNode("Users"),
-        readSchoolNode("Teachers"),
-        readSchoolNode("Students"),
-        readSchoolNode("Parents"),
-        axios.get(`${RTDB_BASE}/Chats.json`).catch(() => ({ data: {} })),
-      ]);
-
-      const usersById = Object.values(usersData || {}).reduce((acc, userRecord) => {
-        const userId = String(userRecord?.userId || "").trim();
-        if (!userId) return acc;
-        acc[userId] = userRecord;
+      const unreadRes = await axios.get(`${API_BASE}/unread_messages/${encodeURIComponent(admin.userId)}`, {
+        timeout: 12000,
+      });
+      const unreadMessages = Array.isArray(unreadRes?.data?.messages) ? unreadRes.data.messages : [];
+      const unreadCounts = unreadMessages.reduce((acc, msg) => {
+        const senderId = String(msg?.senderId || "").trim();
+        if (!senderId) return acc;
+        acc[senderId] = Number(acc[senderId] || 0) + 1;
         return acc;
       }, {});
 
-      const unreadByUser = {};
-      Object.entries(chatsRes?.data || {}).forEach(([chatKey, chatNode]) => {
-        if (!chatNode || typeof chatNode !== "object") return;
+      const senderIds = Object.keys(unreadCounts);
+      if (!senderIds.length) {
+        setUnreadSenders({});
+        return;
+      }
 
-        let otherUserId = null;
-        const participants = chatNode?.participants;
-        if (participants && typeof participants === "object") {
-          const participantIds = Object.keys(participants);
-          otherUserId = participantIds.find((id) => String(id) !== String(admin.userId)) || null;
-        }
+      const usersLookupRes = await axios.get(`${API_BASE}/users_lookup`, {
+        params: { schoolCode, userIds: senderIds.join(",") },
+        timeout: 12000,
+      }).catch(() => ({ data: { users: {} } }));
+      const users = usersLookupRes?.data?.users && typeof usersLookupRes.data.users === "object"
+        ? usersLookupRes.data.users
+        : {};
 
-        if (!otherUserId) {
-          const keyParts = String(chatKey || "").split("_");
-          if (keyParts.length === 2) {
-            otherUserId = keyParts.find((id) => String(id) !== String(admin.userId)) || null;
-          }
-        }
-
-        if (!otherUserId) return;
-
-        const unreadNodeCount = Number(chatNode?.unread?.[admin.userId] || 0);
-        const unreadFromNode = Number.isFinite(unreadNodeCount) ? unreadNodeCount : 0;
-        const unreadCount = unreadFromNode > 0
-          ? unreadFromNode
-          : Object.values(chatNode?.messages || {}).filter(
-              (message) => String(message?.receiverId) === String(admin.userId) && !message?.seen
-            ).length;
-
-        if (unreadCount > 0) {
-          unreadByUser[otherUserId] = (unreadByUser[otherUserId] || 0) + unreadCount;
-        }
-      });
-
-      const appendUnreadSenders = (collection, type, fallbackNameResolver, fallbackImageResolver) => {
-        Object.values(collection || {}).forEach((item) => {
-          const userId = String(item?.userId || "").trim();
-          if (!userId) return;
-
-          const unread = Number(unreadByUser[userId] || 0);
-          if (unread <= 0) return;
-
-          const user = usersById[userId] || {};
-          senders[userId] = {
-            type,
-            name: user?.name || fallbackNameResolver(item),
-            profileImage: user?.profileImage || fallbackImageResolver(item),
-            count: unread,
-          };
-        });
-      };
-
-      appendUnreadSenders(teachersData, "teacher", () => "Teacher", () => "/default-profile.png");
-      appendUnreadSenders(studentsData, "student", (item) => item?.name || "Student", (item) => item?.profileImage || "/default-profile.png");
-      appendUnreadSenders(parentsData, "parent", (item) => item?.name || "Parent", (item) => item?.profileImage || "/default-profile.png");
+      const senders = senderIds.reduce((acc, senderId) => {
+        const user = users[senderId] || {};
+        acc[senderId] = {
+          type: String(user?.role || "").toLowerCase() || "teacher",
+          name: user?.name || user?.username || senderId,
+          profileImage: getSafeProfileImage(user?.profileImage, "/default-profile.png"),
+          count: Number(unreadCounts[senderId] || 0),
+        };
+        return acc;
+      }, {});
 
       setUnreadSenders(senders);
     } catch (err) {
-      console.error("Unread fetch failed:", err);
+      if (String(err?.code || "") !== "ECONNABORTED") {
+        console.warn("Unread fetch failed:", err?.message || err);
+      }
     }
   };
 
@@ -2330,12 +2871,40 @@ useEffect(() => {
   }, []);
 
   useEffect(() => {
-    if (!admin.userId) return;
+    if (!admin.userId) return undefined;
 
-    fetchUnreadMessages();
-    const interval = setInterval(fetchUnreadMessages, 5000);
+    const runFocusedRefresh = () => {
+      lastNotificationInteractionAtRef.current = Date.now();
+      fetchUnreadMessages();
+    };
 
-    return () => clearInterval(interval);
+    const runPassiveRefresh = () => {
+      if (!shouldRunPassiveNotificationRefresh()) {
+        return;
+      }
+
+      fetchUnreadMessages();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      runFocusedRefresh();
+    };
+
+    runFocusedRefresh();
+    const interval = window.setInterval(runPassiveRefresh, NOTIFICATION_REFRESH_MS);
+    window.addEventListener("focus", runFocusedRefresh);
+    window.addEventListener("online", runFocusedRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", runFocusedRefresh);
+      window.removeEventListener("online", runFocusedRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [admin.userId]);
 
   const markMessagesAsSeen = async (userId) => {
@@ -2390,30 +2959,77 @@ useEffect(() => {
 
 
   return (
-    <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        {/* ---------------- SIDEBAR ---------------- */}
-        <Sidebar admin={admin} />
+    <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+        "--on-accent": "#ffffff",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
 
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className="main-content google-main"
           style={{
-            flex: "1.08 1 0",
+            flex: "1 1 0",
             minWidth: 0,
             maxWidth: "none",
             margin: "0",
             boxSizing: "border-box",
-            alignSelf: "stretch",
-            height: "100%",
-            overflowY: "auto",
+            alignSelf: "flex-start",
+            minHeight: "calc(100vh - 24px)",
+            overflowY: "visible",
             overflowX: "hidden",
+            position: "relative",
             scrollbarWidth: "thin",
             scrollbarColor: "transparent transparent",
             padding: `0 ${rightSidebarOffset}px 0 2px`,
+            display: "flex",
+            justifyContent: "center",
           }}
         >
-          <div className="main-inner" style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="main-inner" style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
             <div
               className="section-header-card"
               style={headerCardStyle}
@@ -2422,6 +3038,9 @@ useEffect(() => {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
                 <div>
                   <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em" }}>Teachers</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-secondary)", maxWidth: 620, lineHeight: 1.5 }}>
+                    Manage faculty, schedules, lesson plans, and communication from the same premium admin workspace used across the rest of the platform.
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, position: "relative", zIndex: 1 }}>
@@ -2540,23 +3159,7 @@ useEffect(() => {
                     >
                       {i + 1}
                     </div>
-                    <img
-                      src={t.profileImage}
-                      alt={t.name}
-                      onError={(event) => {
-                        event.currentTarget.onerror = null;
-                        event.currentTarget.src = "/default-profile.png";
-                      }}
-                      style={{
-                        width: isNarrow ? 40 : 48,
-                        height: isNarrow ? 40 : 48,
-                        borderRadius: "50%",
-                        border: selectedTeacher?.teacherId === t.teacherId ? "2px solid var(--accent)" : "2px solid var(--border-soft)",
-                        objectFit: "cover",
-                        transition: "all 0.3s ease",
-                        flex: "0 0 auto"
-                      }}
-                    />
+                    <ProfileAvatar src={t.profileImage} name={t.name} alt={t.name} loading="lazy" style={{ width: isNarrow ? 40 : 48, height: isNarrow ? 40 : 48, borderRadius: "50%", border: selectedTeacher?.teacherId === t.teacherId ? "2px solid var(--accent)" : "2px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease", flex: "0 0 auto" }} />
                     <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                       <h3 style={{ margin: 0, fontSize: isNarrow ? "12px" : "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
@@ -2601,12 +3204,14 @@ useEffect(() => {
       width: isPortrait ? "100%" : "380px",
       position: "fixed",
       left: isPortrait ? 0 : "auto",
-      right: 0,
-      top: isPortrait ? 0 : "55px",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      right: isPortrait ? 0 : 14,
+      top: isPortrait ? 0 : "calc(var(--topbar-height) + 18px)",
+      height: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
+      maxHeight: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
       background: "var(--surface-panel)",
       boxShadow: "var(--shadow-panel)",
-      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+      border: isPortrait ? "none" : "1px solid var(--border-soft)",
+      borderRadius: isPortrait ? 0 : 18,
       zIndex: 1000,
       display: "flex",
       flexDirection: "column",
@@ -2673,15 +3278,7 @@ useEffect(() => {
                 border: "3px solid color-mix(in srgb, var(--surface-panel) 78%, transparent)"
               }}
             >
-              <img
-                src={sidebarTeacherImage}
-                alt={sidebarTeacherName}
-                onError={(event) => {
-                  event.currentTarget.onerror = null;
-                  event.currentTarget.src = "/default-profile.png";
-                }}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              />
+              <ProfileAvatar src={sidebarTeacherImage} name={sidebarTeacherName} alt={sidebarTeacherName} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
 
             <h2 style={{ margin: 0, color: "var(--on-accent)", fontSize: 14, fontWeight: 800 }}>
@@ -2804,177 +3401,170 @@ useEffect(() => {
 {/* ================= DETAILS TAB ================= */}
 
 
-{activeTab === "details" && selectedTeacher && (
-  <div
-    style={{
-      padding: "12px",
-      ...rightDrawerCardStyle,
-      margin: "0 auto",
-      maxWidth: 380
-    }}
-  >
-    <h3 style={{
-      margin: 0,
-      marginBottom: 6,
-      color: "var(--text-primary)",
-      fontWeight: 800,
-      letterSpacing: "0.1px",
-      fontSize: 12,
-      textAlign: "left"
-    }}>
-      Teacher Profile
-    </h3>
-    <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
-      ID: <b style={{ color: "var(--text-primary)" }}>{String(selectedTeacher.teacherId || "").replace(/^[-]+/, "")}</b>
-    </div>
+{activeTab === "details" && selectedTeacher && (() => {
+  const teacherIdLabel = String(selectedTeacher.teacherId || "").replace(/^[-]+/, "") || "N/A";
+  const statusValue = selectedTeacherUser?.isActive === false ? "Inactive" : "Active";
+  const statusTone = statusValue === "Active" ? "var(--success)" : "var(--danger)";
+  const subjectList = Array.from(new Set((selectedTeacher?.subjectsUnique || []).map((item) => String(item || "").trim()).filter(Boolean)));
+  const classMap = new Map();
 
-    {/* Activate/Deactivate Button */}
-    <button
-      type="button"
-      disabled={deactivating}
-      style={{
-        background: selectedTeacherUser?.isActive === false ? "var(--success)" : "var(--danger)",
-        color: "#fff",
-        border: "none",
-        padding: "7px 16px",
-        borderRadius: "8px",
-        fontWeight: 700,
-        fontSize: "11px",
-        marginBottom: 10,
-        cursor: deactivating ? "not-allowed" : "pointer",
-        opacity: deactivating ? 0.7 : 1,
-        width: "100%"
-      }}
-      onClick={handleToggleActiveTeacher}
-    >
-      {deactivating
-        ? (selectedTeacherUser?.isActive === false ? "Activating..." : "Deactivating...")
-        : (selectedTeacherUser?.isActive === false ? "Activate Teacher" : "Deactivate Teacher")}
-    </button>
+  (selectedTeacher?.gradesSubjects || []).forEach((gs) => {
+    const grade = String(gs?.grade ?? "").trim();
+    const section = String(gs?.section ?? "").trim();
+    const subject = String(gs?.subject ?? "").trim();
+    if (!grade) return;
+    const classKey = section ? `Grade ${grade}${section}` : `Grade ${grade}`;
+    if (!classMap.has(classKey)) classMap.set(classKey, new Set());
+    if (subject) classMap.get(classKey).add(subject);
+  });
 
-    {/* Info GRID */}
+  const classEntries = Array.from(classMap.entries())
+    .map(([label, subjects]) => ({
+      label,
+      subjects: Array.from(subjects).sort((a, b) => a.localeCompare(b)).join(", "),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+
+  const contactRows = [
+    { label: "Email", value: selectedTeacherUser?.email || selectedTeacher.email || "N/A" },
+    { label: "Phone", value: selectedTeacherUser?.phone || selectedTeacher.phone || selectedTeacher.phoneNumber || "N/A" },
+    { label: "Gender", value: selectedTeacherUser?.gender || selectedTeacher.gender || "N/A" },
+  ];
+
+  const sectionCardStyle = {
+    background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 16,
+    padding: 14,
+    boxShadow: "var(--shadow-soft)",
+  };
+
+  return (
     <div
       style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 8,
-        marginBottom: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        margin: "0 auto",
+        maxWidth: 380,
       }}
     >
-      {[
-        { label: "Email", icon: "📧", value: selectedTeacherUser?.email || selectedTeacher.email },
-        { label: "Gender", icon: (selectedTeacherUser?.gender || selectedTeacher.gender) === "male" ? "♂️" : (selectedTeacherUser?.gender || selectedTeacher.gender) === "female" ? "♀️" : "⚧", value: selectedTeacherUser?.gender || selectedTeacher.gender || "N/A" },
-        { label: "Phone", icon: "📱", value: selectedTeacherUser?.phone || selectedTeacher.phone || selectedTeacher.phoneNumber || "N/A" },
-        { label: "Status", icon: "✅", value: selectedTeacher.status || "Active" },
-        {
-          label: "Class(es)",
-          icon: "🏫",
-          value: (() => {
-            const buckets = new Set();
-            (selectedTeacher?.gradesSubjects || []).forEach((gs) => {
-              const grade = (gs?.grade ?? "").toString().trim();
-              const section = (gs?.section ?? "").toString().trim();
-              if (grade && section) buckets.add(`Grade ${grade}${section}`);
-              else if (grade) buckets.add(`Grade ${grade}`);
-            });
-            return Array.from(buckets).join(", ");
-          })()
-        },
-        { label: "Subject(s)", icon: "📚", value: selectedTeacher.subjectsUnique?.join(", ") },
-        { label: "Teacher ID", icon: "🆔", value: String(selectedTeacher.teacherId || "").replace(/^[-]+/, "") },
-      ].map((item, i) => (
-        <div
-          key={i}
-          style={{
-            alignItems: "center",
-            justifyContent: "flex-start",
-            display: "flex",
-            background: "var(--surface-panel)",
-            padding: "8px",
-            borderRadius: 10,
-            border: "1px solid var(--border-soft)",
-            boxShadow: "none",
-            minHeight: 36,
-          }}
-        >
-          <span style={{
-            fontSize: 14,
-            marginRight: 8,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--text-muted)"
-          }}>{item.icon}</span>
-          <div>
-            <div style={{
-              fontSize: "9px",
-              fontWeight: 700,
-              letterSpacing: "0.4px",
-              color: "var(--text-muted)",
-              textTransform: "uppercase"
-            }}>
-              {item.label}
+      <div
+        style={{
+          ...rightDrawerCardStyle,
+          borderRadius: 18,
+          overflow: "hidden",
+          background: "linear-gradient(180deg, #ffffff 0%, #f9fbff 100%)",
+        }}
+      >
+        <div style={{ padding: "16px 16px 14px", borderBottom: "1px solid var(--border-soft)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>Teacher profile</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Clear profile, contact, and teaching assignment summary.</div>
             </div>
-            <div style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: item.label === "Status"
-                ? (item.value && String(item.value).toLowerCase() === "active" ? "var(--success)" : "var(--danger)")
-                : "var(--text-primary)",
-              marginTop: 2,
-              wordBreak: "break-word"
-            }}>
-              {item.value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: statusTone, fontSize: 11, fontWeight: 900, whiteSpace: "nowrap" }}>
+              <span style={{ width: 8, height: 8, borderRadius: 999, background: statusTone }} />
+              {statusValue}
             </div>
+          </div>
+
+          <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 14, background: "var(--surface-soft)", border: "1px solid var(--border-soft)" }}>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.45px" }}>Teacher ID</div>
+              <div style={{ fontSize: 15, color: "var(--text-primary)", fontWeight: 900, marginTop: 4 }}>{teacherIdLabel}</div>
+            </div>
+            <button
+              type="button"
+              disabled={deactivating}
+              style={{
+                background: selectedTeacherUser?.isActive === false ? "var(--success)" : "var(--danger)",
+                color: "#fff",
+                border: "none",
+                padding: "9px 14px",
+                borderRadius: "12px",
+                fontWeight: 800,
+                fontSize: "11px",
+                cursor: deactivating ? "not-allowed" : "pointer",
+                opacity: deactivating ? 0.7 : 1,
+                whiteSpace: "nowrap",
+              }}
+              onClick={handleToggleActiveTeacher}
+            >
+              {deactivating
+                ? (selectedTeacherUser?.isActive === false ? "Activating..." : "Deactivating...")
+                : (selectedTeacherUser?.isActive === false ? "Activate" : "Deactivate")}
+            </button>
           </div>
         </div>
-      ))}
-    </div>
 
-    {/* Teaching by class */}
-    {(() => {
-      const byClass = new Map();
-      (selectedTeacher?.gradesSubjects || []).forEach((gs) => {
-        const grade = (gs?.grade ?? "").toString().trim();
-        const section = (gs?.section ?? "").toString().trim();
-        const subject = (gs?.subject ?? "").toString().trim();
-        if (!grade || !section || !subject) return;
-        const classKey = `Grade ${grade}${section}`;
-        if (!byClass.has(classKey)) byClass.set(classKey, new Set());
-        byClass.get(classKey).add(subject);
-      });
-
-      const classKeys = Array.from(byClass.keys()).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-      if (!classKeys.length) return null;
-
-      return (
-        <div
-          style={{
-            background: "var(--surface-panel)",
-            borderRadius: 12,
-            padding: 10,
-            border: "1px solid var(--border-soft)",
-            boxShadow: "none",
-          }}
-        >
-          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.4px", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8 }}>
-            Teaching by class
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {classKeys.map((ck) => (
-              <div key={ck} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <div style={{ minWidth: 110, fontWeight: 800, color: "var(--text-primary)" }}>{ck}</div>
-                <div style={{ color: "var(--text-primary)", fontWeight: 600, lineHeight: 1.35, wordBreak: "break-word" }}>
-                  {Array.from(byClass.get(ck) || []).sort((a, b) => a.localeCompare(b)).join(", ")}
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+            {[
+              { label: "Subjects", value: subjectList.length || 0 },
+              { label: "Classes", value: classEntries.length || 0 },
+              { label: "Status", value: statusValue },
+            ].map((item) => (
+              <div
+                key={item.label}
+                style={{
+                  background: "var(--surface-soft)",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: 14,
+                  padding: "12px 10px",
+                  textAlign: "center",
+                }}
+              >
+                <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>{item.label}</div>
+                <div style={{ fontSize: item.label === "Status" ? 13 : 22, fontWeight: 900, color: item.label === "Status" ? statusTone : "var(--text-primary)", marginTop: 6 }}>
+                  {item.value}
                 </div>
               </div>
             ))}
           </div>
+
+          <div style={sectionCardStyle}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px", marginBottom: 10 }}>Contact</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {contactRows.map((item) => (
+                <div key={item.label} style={{ display: "grid", gridTemplateColumns: "86px 1fr", gap: 12, alignItems: "start", paddingBottom: 10, borderBottom: "1px solid color-mix(in srgb, var(--border-soft) 70%, white)" }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.35px" }}>{item.label}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", wordBreak: "break-word", lineHeight: 1.45 }}>{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={sectionCardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Teaching load</div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#005bc2" }}>{classEntries.length} class{classEntries.length === 1 ? "" : "es"}</div>
+            </div>
+
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginBottom: classEntries.length ? 12 : 0 }}>
+              {subjectList.length ? subjectList.join(", ") : "No assigned subjects yet."}
+            </div>
+
+            {classEntries.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {classEntries.map((entry) => (
+                  <div key={entry.label} style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 12, alignItems: "start", padding: "10px 12px", borderRadius: 14, background: "var(--surface-soft)", border: "1px solid var(--border-soft)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-primary)" }}>{entry.label}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>{entry.subjects || "No subjects recorded"}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", color: "var(--text-muted)", padding: "16px 12px", borderRadius: 14, background: "var(--surface-soft)", border: "1px dashed var(--border-soft)" }}>
+                No class assignments yet.
+              </div>
+            )}
+          </div>
         </div>
-      );
-    })()}
-  </div>
-)}
+      </div>
+    </div>
+  );
+})()}
 
       
 {/* ================= SCHEDULE TAB ================= */}
@@ -3968,234 +4558,25 @@ useEffect(() => {
 
         return (
           <>
-            {planAnnualOpen && (
-              <div
-                role="dialog"
-                aria-modal="true"
-                style={{
-                  position: 'fixed',
-                  inset: 0,
-                  zIndex: 5000,
-                  background: 'color-mix(in srgb, var(--text-primary) 38%, transparent)',
-                  padding: 16,
-                }}
-                onClick={() => setPlanAnnualOpen(false)}
-              >
-                <div
-                  style={{
-                    position: 'relative',
-                    width: '100%',
-                    height: '100%',
-                    background: 'var(--page-bg)',
-                    borderRadius: 16,
-                    overflow: 'hidden',
-                    boxShadow: 'var(--shadow-panel)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div
-                    style={{
-                      position: 'sticky',
-                      top: 0,
-                      zIndex: 1,
-                      background: 'var(--surface-panel)',
-                      borderBottom: '1px solid var(--border-soft)',
-                      padding: 8,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 900, fontSize: 12, color: 'var(--text-primary)' }}>Annual Lesson Plan</div>
-                      <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>
-                        Showing: <strong style={{ color: 'var(--text-primary)' }}>{selectedCourseLabel}</strong>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'center' }}>
-                      <div style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 800, whiteSpace: 'nowrap' }}>Subject</div>
-                      <select
-                        value={planSelectedCourseId}
-                        onChange={(e) => setPlanSelectedCourseId(e.target.value)}
-                        style={{
-                          width: 'min(520px, 100%)',
-                          padding: '5px 6px',
-                          borderRadius: 10,
-                          border: '1px solid var(--border-soft)',
-                          background: 'var(--surface-soft)',
-                          outline: 'none',
-                          fontSize: 10,
-                          color: 'var(--text-primary)',
-                        }}
-                      >
-                        {courseOptions.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                      <button
-                        className="btn btn-ghost"
-                        onClick={downloadAnnualExcel}
-                        disabled={!annualWeeks.length}
-                        style={{
-                          borderRadius: 12,
-                          background: annualWeeks.length ? 'linear-gradient(135deg,var(--success), color-mix(in srgb, var(--success) 75%, var(--surface-panel)))' : 'var(--surface-strong)',
-                          color: annualWeeks.length ? 'var(--on-accent)' : 'var(--text-muted)',
-                          padding: '6px 8px',
-                          fontSize: 10,
-                          fontWeight: 900,
-                          cursor: annualWeeks.length ? 'pointer' : 'not-allowed',
-                        }}
-                      >
-                        Download Excel
-                      </button>
-
-                      <button
-                        className="btn btn-ghost"
-                        onClick={() => setPlanAnnualOpen(false)}
-                        style={{
-                          borderRadius: 12,
-                          background: 'var(--text-primary)',
-                          color: 'var(--on-accent)',
-                          padding: '6px 8px',
-                          fontSize: 10,
-                        }}
-                      >
-                        Close
-                      </button>
-                    </div>
-                  </div>
-
-                  <div style={{ padding: 10, overflowY: 'auto', flex: 1 }}>
-                    {!annualWeeks.length && (
-                      <div style={{ padding: 8, borderRadius: 8, background: 'var(--surface-panel)', border: '1px solid var(--border-soft)', color: 'var(--text-muted)', fontSize: 10 }}>
-                        No annual lesson plan found for this selection.
-                      </div>
-                    )}
-
-                    {!!annualWeeks.length && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                        {annualMonthKeys.map((mKey) => {
-                          const monthWeeks = (annualByMonth[mKey] || []).slice().sort((a, b) => getWeekSortValue(a) - getWeekSortValue(b));
-                          const normalizeText = (v) => {
-                            if (v === undefined || v === null) return '';
-                            if (Array.isArray(v)) return v.map((x) => String(x ?? '').trim()).filter(Boolean).join('; ');
-                            return String(v).trim();
-                          };
-
-                          const uniqJoin = (vals) => {
-                            const out = Array.from(new Set((vals || []).map((x) => normalizeText(x)).filter(Boolean)));
-                            return out.join('; ');
-                          };
-
-                          return (
-                            <div key={mKey} style={{ background: 'var(--surface-panel)', borderRadius: 12, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-soft)' }}>
-                              <div style={{ padding: 8, borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-                                <div style={{ fontWeight: 900, fontSize: 12, color: 'var(--text-primary)' }}>{mKey}</div>
-                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{monthWeeks.length} week(s)</div>
-                              </div>
-
-                              <div style={{ padding: 8 }}>
-                                <div style={{ width: '100%', overflowX: 'auto', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
-                                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 700, background: 'var(--surface-panel)' }}>
-                                    <thead>
-                                      <tr style={{ background: 'var(--surface-soft)' }}>
-                                        {['Week', 'Topic', 'Objective', 'Method', 'Material', 'Assessment'].map((h) => (
-                                          <th
-                                            key={h}
-                                            style={{
-                                              textAlign: 'left',
-                                              padding: '6px 8px',
-                                              fontSize: 9,
-                                              color: 'var(--text-muted)',
-                                              fontWeight: 900,
-                                              borderBottom: '1px solid var(--border-soft)',
-                                              position: 'sticky',
-                                              top: 0,
-                                              background: 'var(--surface-soft)',
-                                              zIndex: 1,
-                                            }}
-                                          >
-                                            {h}
-                                          </th>
-                                        ))}
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {monthWeeks.map((wk, wi) => {
-                                        const weekLabel = wk?.week ? `Week ${wk.week}` : '-';
-                                        const days = Array.isArray(wk?.weekDays) ? wk.weekDays : [];
-
-                                        const topic = normalizeText(wk?.topic) || uniqJoin(days.map((d) => d?.topic));
-                                        const objective =
-                                          normalizeText(wk?.objective) ||
-                                          normalizeText(wk?.objectives) ||
-                                          uniqJoin(days.map((d) => d?.objective ?? d?.objectives));
-                                        const method = normalizeText(wk?.method) || uniqJoin(days.map((d) => d?.method));
-                                        const material =
-                                          normalizeText(wk?.material) ||
-                                          normalizeText(wk?.materials) ||
-                                          normalizeText(wk?.aids) ||
-                                          uniqJoin(days.map((d) => d?.material ?? d?.materials ?? d?.aids));
-                                        const assessment = normalizeText(wk?.assessment) || uniqJoin(days.map((d) => d?.assessment));
-
-                                        const agg = (() => {
-                                          const c = { submitted: 0, missed: 0, pending: 0, total: 0 };
-                                          (days || []).forEach((d) => {
-                                            const ds = getDayStatus(wk?.courseId, wk?.week, d);
-                                            c[ds.status] = (c[ds.status] || 0) + 1;
-                                            c.total += 1;
-                                          });
-                                          return c;
-                                        })();
-
-                                        const isMissed = agg.missed > 0;
-                                        const isSubmitted = !isMissed && agg.submitted > 0;
-
-                                        const rowBg = isMissed
-                                          ? 'color-mix(in srgb, var(--danger) 12%, var(--surface-panel))'
-                                          : isSubmitted
-                                            ? 'color-mix(in srgb, var(--success) 10%, var(--surface-panel))'
-                                            : (wi % 2 === 0 ? 'var(--surface-panel)' : 'color-mix(in srgb, var(--surface-soft) 58%, var(--surface-panel))');
-
-                                        const accent = isMissed
-                                          ? 'var(--danger)'
-                                          : isSubmitted
-                                            ? 'var(--success)'
-                                            : 'var(--border-soft)';
-
-                                        return (
-                                          <tr key={`${wk?.courseId || 'c'}-${wk?.week || 'w'}-${wi}`} style={{ background: rowBg }}>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-soft)', fontWeight: 900, whiteSpace: 'nowrap', borderLeft: `6px solid ${accent}` }}>
-                                              {weekLabel}
-                                            </td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{topic || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{objective || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{method || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{material || '-'}</td>
-                                            <td style={{ padding: '6px 8px', fontSize: 10, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{assessment || '-'}</td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+            <LessonPlanInsightsModal
+              open={planAnnualOpen}
+              onClose={() => setPlanAnnualOpen(false)}
+              teacherName={selectedTeacher?.name || 'Teacher'}
+              selectedCourseId={planSelectedCourseId}
+              onCourseChange={setPlanSelectedCourseId}
+              courseOptions={courseOptions}
+              selectedCourseLabel={selectedCourseLabel}
+              annualWeeks={annualWeeks}
+              annualByMonth={annualByMonth}
+              annualMonthKeys={annualMonthKeys}
+              currentMonthName={currentMonthName}
+              currentMonthWeeks={currentMonthWeeks}
+              visibleDailyPlans={visibleDailyPlans}
+              planLoading={planLoading}
+              planError={planError}
+              downloadAnnualExcel={downloadAnnualExcel}
+              getDayStatus={getDayStatus}
+            />
 
             <div className="right-sidebar" style={{ width: '100%', minWidth: 320, padding: 14, background: 'var(--surface-soft)', border: '1px solid var(--border-soft)', borderRadius: 20, boxShadow: 'var(--shadow-panel)', display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0, fontSize: 12 }}>
               {planSidebarOpen ? (

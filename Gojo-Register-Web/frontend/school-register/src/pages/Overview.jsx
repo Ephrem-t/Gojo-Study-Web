@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { loadSchoolParentsNode, loadSchoolStudentsNode } from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
 
 export default function OverviewPage() {
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
@@ -32,30 +35,23 @@ export default function OverviewPage() {
     const loadOverview = async () => {
       try {
         setLoading(true);
-        const [studentsRes, usersRes, parentsRes, postsRes] = await Promise.all([
-          axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/Parents.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/posts.json`).catch(() => ({ data: {} })),
+        const [studentsObj, parentsObj, postsObj] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_URL }),
+          loadSchoolParentsNode({ rtdbBase: DB_URL }),
+          fetchCachedJson(`${DB_URL}/posts.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
-        const studentsObj = studentsRes.data || {};
-        const usersObj = usersRes.data || {};
-        const parentsObj = parentsRes.data || {};
-        const postsObj = postsRes.data || {};
-
         const studentRows = Object.entries(studentsObj).map(([studentId, studentNode]) => {
-          const user = usersObj?.[studentNode?.userId] || {};
           return {
             studentId,
             userId: studentNode?.userId || "",
-            name: user?.name || user?.username || "No Name",
-            profileImage: user?.profileImage || "/default-profile.png",
+            name: studentNode?.name || [studentNode?.firstName, studentNode?.middleName, studentNode?.lastName].filter(Boolean).join(" ") || studentNode?.basicStudentInformation?.name || "No Name",
+            profileImage: studentNode?.profileImage || "/default-profile.png",
             grade: studentNode?.grade || "-",
             section: studentNode?.section || "-",
-            gender: String(studentNode?.gender || user?.gender || "").trim().toLowerCase(),
+            gender: String(studentNode?.gender || "").trim().toLowerCase(),
             status: String(studentNode?.status || "active").toLowerCase(),
-            createdAt: studentNode?.createdAt || studentNode?.registeredAt || user?.createdAt || null,
+            createdAt: studentNode?.createdAt || studentNode?.registeredAt || null,
           };
         });
 
@@ -207,7 +203,7 @@ export default function OverviewPage() {
                 <div style={{ display: "grid", gap: 8 }}>
                   {summary.recentStudents.map((student) => (
                     <div key={student.studentId} style={{ ...softRowStyle, gridTemplateColumns: isNarrow ? "42px 1fr" : "42px 1fr auto" }}>
-                      <img src={student.profileImage} alt={student.name} style={{ width: 40, height: 40, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border-strong)" }} />
+                      <ProfileAvatar imageUrl={student.profileImage} name={student.name} size={40} style={{ border: "2px solid var(--border-strong)" }} />
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{student.name}</div>
                         <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>

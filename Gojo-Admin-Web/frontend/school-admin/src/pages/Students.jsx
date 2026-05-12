@@ -12,7 +12,156 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
-import Sidebar from "../components/Sidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import {
+  buildChatKeyCandidates,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  normalizeChatSummaryValue,
+  uniqueNonEmptyValues,
+} from "../utils/chatRtdb";
+import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
+import { schoolNodeBase } from "../utils/schoolDbRouting";
+
+const normalizeCourseToken = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const buildGeneratedCourseId = (gradeValue, sectionValue, subjectToken) =>
+  `gm_${normalizeCourseToken(gradeValue)}_${normalizeCourseToken(sectionValue)}_${normalizeCourseToken(subjectToken)}`;
+
+const normalizeGradeSubjectEntries = (subjectsNode) => {
+  if (Array.isArray(subjectsNode)) {
+    return subjectsNode
+      .map((subjectItem) => {
+        if (!subjectItem) return null;
+        if (typeof subjectItem === "string") {
+          return { key: normalizeCourseToken(subjectItem), name: subjectItem };
+        }
+        if (typeof subjectItem === "object") {
+          const displayName = subjectItem.name || subjectItem.subject || subjectItem.code || "";
+          const subjectKey = normalizeCourseToken(subjectItem.key || subjectItem.id || displayName);
+          if (!subjectKey || !displayName) return null;
+          return { key: subjectKey, name: displayName };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  if (subjectsNode && typeof subjectsNode === "object") {
+    return Object.entries(subjectsNode)
+      .map(([subjectKey, subjectValue]) => {
+        if (subjectValue && typeof subjectValue === "object") {
+          const displayName = subjectValue.name || subjectValue.subject || subjectKey;
+          return {
+            key: normalizeCourseToken(subjectKey || displayName),
+            name: displayName,
+          };
+        }
+        if (typeof subjectValue === "string") {
+          return {
+            key: normalizeCourseToken(subjectKey || subjectValue),
+            name: subjectValue,
+          };
+        }
+        return {
+          key: normalizeCourseToken(subjectKey),
+          name: subjectKey,
+        };
+      })
+      .filter((entry) => entry.key && entry.name);
+  }
+
+  return [];
+};
+
+const buildGradeSubjectsByGrade = (gradesNode) => {
+  const result = {};
+  const gradeEntries = Array.isArray(gradesNode)
+    ? gradesNode
+    : Object.entries(gradesNode || {}).map(([gradeKey, gradeValue]) => ({
+        grade: gradeValue?.grade ?? gradeKey,
+        ...(gradeValue && typeof gradeValue === "object" ? gradeValue : {}),
+      }));
+
+  gradeEntries.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") return;
+
+    const grade = String(entry.grade ?? (Array.isArray(gradesNode) ? String(index + 1) : "")).trim();
+    if (!grade) return;
+
+    const subjectMap = new Map();
+    normalizeGradeSubjectEntries(entry.subjects).forEach((subjectEntry) => {
+      subjectMap.set(normalizeCourseToken(subjectEntry.key || subjectEntry.name), subjectEntry);
+    });
+
+    const sectionSubjectTeachers =
+      entry.sectionSubjectTeachers && typeof entry.sectionSubjectTeachers === "object"
+        ? entry.sectionSubjectTeachers
+        : {};
+
+    Object.values(sectionSubjectTeachers).forEach((sectionNode) => {
+      Object.entries(sectionNode || {}).forEach(([subjectKey, assignment]) => {
+        const displayName =
+          assignment && typeof assignment === "object" && (assignment.subject || assignment.name)
+            ? assignment.subject || assignment.name
+            : subjectKey;
+        const token = normalizeCourseToken(
+          assignment && typeof assignment === "object"
+            ? assignment.key || assignment.id || displayName || subjectKey
+            : displayName || subjectKey
+        );
+        if (!token) return;
+        subjectMap.set(token, {
+          key: token,
+          name: String(displayName || subjectKey || "").trim(),
+        });
+      });
+    });
+
+    result[grade] = [...subjectMap.values()].filter((entry) => entry?.key);
+  });
+
+  return result;
+};
+
+const getStudentCourseIds = ({ student = {}, gradeSubjectsByGrade = {} } = {}) => {
+  const grade = String(student?.grade || student?.basicStudentInformation?.grade || "").trim();
+  const section = String(student?.section || student?.secation || student?.basicStudentInformation?.section || "").trim().toUpperCase();
+  if (!grade || !section) return [];
+
+  return [...new Set(
+    (gradeSubjectsByGrade[grade] || [])
+      .map((subjectEntry) => buildGeneratedCourseId(grade, section, subjectEntry?.key || subjectEntry?.name))
+      .filter(Boolean)
+  )];
+};
+
+const findStudentScopedNode = (records = {}, student = {}) => {
+  const candidateKeys = new Set(uniqueNonEmptyValues([
+    student?.studentId,
+    student?.userId,
+    student?.userId ? `student_${student.userId}` : "",
+  ]));
+
+  for (const candidate of candidateKeys) {
+    if (records?.[candidate]) {
+      return records[candidate];
+    }
+  }
+
+  return Object.values(records || {}).find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      (candidateKeys.has(String(record.userId || "").trim()) || candidateKeys.has(String(record.studentId || "").trim()))
+  ) || null;
+};
 
 
 function StudentsPage() {
@@ -39,6 +188,8 @@ function StudentsPage() {
   const [studentsLoading, setStudentsLoading] = useState(true);
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [gradeOptions, setGradeOptions] = useState([]);
+  const [gradeSubjectsByGrade, setGradeSubjectsByGrade] = useState({});
+  const [gradeSubjectsLoaded, setGradeSubjectsLoaded] = useState(false);
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -55,7 +206,6 @@ function StudentsPage() {
   const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
   const [studentMenuOpen, setStudentMenuOpen] = useState(true);
   const navigate = useNavigate();
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 
   // Prefer the best available session payload. Sometimes `finance` can be stale/empty
   // while `admin` still contains a valid adminId/userId (or vice-versa).
@@ -68,17 +218,14 @@ function StudentsPage() {
       }
     };
 
-    const rawFinance = localStorage.getItem("registrar");
     const rawAdmin = localStorage.getItem("admin");
-    const financeObj = parse(rawFinance);
     const adminObj = parse(rawAdmin);
 
     const hasIdentity = (obj) => Boolean(obj && (obj.financeId || obj.adminId || obj.userId));
 
-    if (hasIdentity(financeObj)) return { raw: rawFinance, data: financeObj, source: "finance" };
     if (hasIdentity(adminObj)) return { raw: rawAdmin, data: adminObj, source: "admin" };
 
-    return { raw: rawFinance || rawAdmin, data: financeObj || adminObj || {}, source: rawFinance ? "registrar" : "admin" };
+    return { raw: rawAdmin, data: adminObj || {}, source: "admin" };
   };
 
   const toggleStudentActive = async () => {
@@ -88,20 +235,33 @@ function StudentsPage() {
     try {
       const payload = { isActive: newActive };
       if (selectedStudent.studentId) {
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
       }
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
+      }
+      if (selectedStudent.studentId) {
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, payload).catch(() => undefined);
+        writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
+          ...previousEntry,
+          ...payload,
+        }));
       }
       const updated = { ...(selectedStudent || {}), ...payload };
       setSelectedStudent(updated);
-      setStudents((prev) =>
-        prev.map((p) =>
+      setStudents((prev) => {
+        const nextStudents = prev.map((p) =>
           p.studentId === selectedStudent.studentId || p.userId === selectedStudent.userId
             ? { ...(p || {}), ...payload }
             : p
-        )
-      );
+        );
+        writeStudentsCache({
+          studentList: nextStudents,
+          gradeOptions,
+          currentAcademicYear,
+        });
+        return nextStudents;
+      });
     } catch (err) {
       console.error("Toggle active error:", err);
       alert("Could not update student status: " + (err.message || err));
@@ -137,11 +297,53 @@ function StudentsPage() {
     return getStoredAuth().data || {};
   })();
 
-  const schoolCode = _storedFinance.schoolCode || "";
-  const DB_URL = schoolCode
-    ? `${DB_BASE}/Platform1/Schools/${schoolCode}`
-    : DB_BASE;
-  const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
+  const initialSchoolCode = _storedFinance.schoolCode || "";
+  const DB_URL = schoolNodeBase(initialSchoolCode);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode: effectiveSchoolCode, path },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+  const patchSchoolNodeApi = async (path, patchValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      throw new Error("Missing schoolCode");
+    }
+    const currentValue = await readSchoolNodeApi(path, {});
+    const baseValue =
+      currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+        ? currentValue
+        : {};
+    const nextValue = {
+      ...baseValue,
+      ...(patchValue || {}),
+    };
+
+    await axios.put(
+      `${API_BASE}/school-node`,
+      {
+        schoolCode: effectiveSchoolCode,
+        path,
+        value: nextValue,
+      },
+      { timeout: 12000 }
+    );
+
+    return nextValue;
+  };
+  const STUDENTS_CACHE_KEY = `students_page_cache_${initialSchoolCode || "global"}`;
+  const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
   const readStudentsCache = () => {
     try {
@@ -173,6 +375,34 @@ function StudentsPage() {
     }
   };
 
+  const persistStudentList = (studentList, nextGradeOptions = gradeOptions, nextCurrentAcademicYear = currentAcademicYear) => {
+    setStudents(studentList);
+    writeStudentsCache({
+      studentList,
+      gradeOptions: Array.isArray(nextGradeOptions) ? nextGradeOptions : [],
+      currentAcademicYear: nextCurrentAcademicYear || "",
+    });
+  };
+
+  const writeStudentDirectoryEntryToCache = (studentId, updater) => {
+    if (!studentId) {
+      return;
+    }
+
+    const currentDirectory = readCachedJson(STUDENT_DIRECTORY_URL, {
+      ttlMs: 15 * 60 * 1000,
+    });
+    if (!currentDirectory || typeof currentDirectory !== "object") {
+      return;
+    }
+
+    const previousEntry = currentDirectory[studentId] || {};
+    writeCachedJson(STUDENT_DIRECTORY_URL, {
+      ...currentDirectory,
+      [studentId]: typeof updater === "function" ? updater(previousEntry) : { ...previousEntry, ...(updater || {}) },
+    });
+  };
+
   const [finance, setFinance] = useState({
     financeId: _storedFinance.financeId || _storedFinance.adminId || "",
     userId: _storedFinance.userId || "",
@@ -197,6 +427,7 @@ function StudentsPage() {
 
   const adminId = admin?.adminId || admin?.userId || null;
   const adminUserId = admin?.userId || null;
+  const activeSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
 
   const [loadingFinance, setLoadingFinance] = useState(true);
   // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
@@ -218,14 +449,14 @@ function StudentsPage() {
       if (financeKey) {
         let res = null;
         try {
-          res = (await axios.get(`${DB_URL}/Finance/${financeKey}.json`)) || null;
+          res = { data: await readSchoolNodeApi(`Finance/${financeKey}`, null) };
         } catch (err) {
           res = null;
         }
 
         if (!res || !res.data) {
           try {
-            res = (await axios.get(`${DB_URL}/Academics/${financeKey}.json`)) || null;
+            res = { data: await readSchoolNodeApi(`Academics/${financeKey}`, null) };
           } catch (err) {
             res = null;
           }
@@ -237,7 +468,7 @@ function StudentsPage() {
 
           if (userId) {
             try {
-              const userRes = await axios.get(`${DB_URL}/Users/${userId}.json`);
+              const userRes = { data: await readSchoolNodeApi(`Users/${userId}`, {}) };
               const nextFinance = {
                 financeId: financeKey,
                 userId,
@@ -274,7 +505,7 @@ function StudentsPage() {
 
       if (possibleUserId) {
         try {
-          const userRes = await axios.get(`${DB_URL}/Users/${possibleUserId}.json`);
+          const userRes = { data: await readSchoolNodeApi(`Users/${possibleUserId}`, {}) };
           const nextFinance = {
             financeId: financeData.financeId || financeData.adminId || "",
             userId: possibleUserId,
@@ -342,10 +573,14 @@ function StudentsPage() {
   const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
 
+  const DEFAULT_STUDENT_PROFILE_IMAGE = "/default-profile.png";
+
   const isWebImageUrl = (value) => {
     const normalized = String(value || "").trim();
-    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized);
+    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized) || /^blob:/i.test(normalized) || normalized.startsWith("/");
   };
+
+  const isPlaceholderProfileImage = (value) => String(value || "").trim() === DEFAULT_STUDENT_PROFILE_IMAGE;
 
   const getSafeImage = (...candidates) => {
     for (const candidate of candidates) {
@@ -353,10 +588,161 @@ function StudentsPage() {
       const normalized = String(candidate).trim();
       if (isWebImageUrl(normalized)) return normalized;
     }
-    return "/default-profile.png";
+    return DEFAULT_STUDENT_PROFILE_IMAGE;
+  };
+
+  const hasDatabaseProfileImage = (value) => {
+    const normalized = String(value || "").trim();
+    return Boolean(normalized && isWebImageUrl(normalized) && !isPlaceholderProfileImage(normalized));
+  };
+
+  const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
+  const DIRECTORY_CACHE_TTL_MS = 15 * 60 * 1000;
+  const CHAT_INDEX_CACHE_TTL_MS = 60 * 1000;
+
+  const normalizeStudentSummary = (studentId, student = {}) => ({
+    studentId: String(student?.studentId || studentId || "").trim(),
+    userId: String(student?.userId || "").trim(),
+    name:
+      String(student?.name || "").trim() ||
+      String(student?.studentName || "").trim() ||
+      "No Name",
+    profileImage: getSafeImage(
+      student?.profileImage,
+      student?.basicStudentInformation?.studentPhoto,
+      student?.studentPhoto
+    ),
+    grade: String(student?.grade || student?.basicStudentInformation?.grade || "").trim(),
+    section: String(student?.section || student?.basicStudentInformation?.section || "").trim(),
+    academicYear: String(student?.academicYear || student?.basicStudentInformation?.academicYear || "").trim(),
+    email: String(student?.email || "").trim(),
+    isActive: student?.isActive !== false,
+  });
+
+  const hydrateMissingStudentProfileImages = async (studentList = []) => {
+    if (!Array.isArray(studentList) || studentList.length === 0) {
+      return [];
+    }
+
+    return mapInBatches(studentList, 8, async (studentItem) => {
+      if (hasDatabaseProfileImage(studentItem?.profileImage)) {
+        return studentItem;
+      }
+
+      let userRecord = {};
+      if (studentItem?.userId) {
+        userRecord = await readSchoolNodeApi(`Users/${studentItem.userId}`, {});
+      }
+
+      let nextProfileImage = getSafeImage(userRecord?.profileImage, studentItem?.profileImage);
+      let studentRecord = {};
+
+      if (!hasDatabaseProfileImage(nextProfileImage) && studentItem?.studentId) {
+        studentRecord = await readSchoolNodeApi(`Students/${studentItem.studentId}`, {});
+
+        nextProfileImage = getSafeImage(
+          studentRecord?.profileImage,
+          studentRecord?.basicStudentInformation?.studentPhoto,
+          studentRecord?.studentPhoto,
+          userRecord?.profileImage,
+          studentItem?.profileImage
+        );
+      }
+
+      if (!hasDatabaseProfileImage(nextProfileImage)) {
+        return studentItem;
+      }
+
+      return {
+        ...studentItem,
+        name:
+          String(userRecord?.name || userRecord?.username || studentRecord?.name || studentRecord?.basicStudentInformation?.studentFullName || "").trim() ||
+          studentItem.name,
+        email: userRecord?.email || studentRecord?.email || studentItem.email || "",
+        profileImage: nextProfileImage,
+      };
+    });
+  };
+
+  const getStudentIdentityCandidates = (studentLike = {}) => uniqueNonEmptyValues([
+    studentLike?.userId,
+    studentLike?.studentId,
+    studentLike?.id,
+  ]);
+
+  const findStudentSummary = (ownerSummaries, studentLike = {}) => {
+    const studentKeys = new Set(
+      getStudentIdentityCandidates(studentLike).map((studentKey) => String(studentKey || "").trim().toLowerCase())
+    );
+
+    let matchedSummary = null;
+    Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
+      const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+      const otherUserId = String(summary.otherUserId || "").trim().toLowerCase();
+      if (!otherUserId || !studentKeys.has(otherUserId)) {
+        return;
+      }
+
+      if (!matchedSummary || summary.lastMessageTime >= matchedSummary.lastMessageTime) {
+        matchedSummary = summary;
+      }
+    });
+
+    return matchedSummary;
+  };
+
+  const findExistingChatKey = (chatKeySet, currentUserCandidates, otherUserCandidates) => {
+    if (!(chatKeySet instanceof Set)) {
+      return "";
+    }
+
+    for (const currentUserCandidate of currentUserCandidates || []) {
+      for (const otherUserCandidate of otherUserCandidates || []) {
+        const matchedKey = buildChatKeyCandidates(currentUserCandidate, otherUserCandidate)
+          .find((candidateKey) => chatKeySet.has(candidateKey));
+
+        if (matchedKey) {
+          return matchedKey;
+        }
+      }
+    }
+
+    return "";
+  };
+
+  const resolveStudentChatKey = async (studentLike = {}) => {
+    const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+      ttlMs: 30 * 1000,
+      fallbackValue: {},
+    });
+    const existingSummary = findStudentSummary(ownerSummaries, studentLike);
+    if (existingSummary?.chatId) {
+      return existingSummary.chatId;
+    }
+
+    const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
+      ttlMs: CHAT_INDEX_CACHE_TTL_MS,
+      fallbackValue: {},
+    });
+    const chatKeySet = new Set(Object.keys(chatIndex || {}));
+    const currentUserCandidates = uniqueNonEmptyValues([adminUserId, adminId]);
+    const otherUserCandidates = getStudentIdentityCandidates(studentLike);
+    const existingChatKey = findExistingChatKey(chatKeySet, currentUserCandidates, otherUserCandidates);
+
+    if (existingChatKey) {
+      return existingChatKey;
+    }
+
+    const fallbackCurrentUserId = currentUserCandidates[0] || "";
+    const fallbackOtherUserId = otherUserCandidates[0] || "";
+    return buildChatKeyCandidates(fallbackCurrentUserId, fallbackOtherUserId)[0] || "";
   };
 
   const [studentMarks, setStudentMarks] = useState({});
+  const selectedStudentCourseIds = useMemo(
+    () => getStudentCourseIds({ student: selectedStudent, gradeSubjectsByGrade }),
+    [gradeSubjectsByGrade, selectedStudent?.grade, selectedStudent?.section, selectedStudent?.secation]
+  );
   const studentMarksFlattened = useMemo(() => {
     const src = studentMarks || {};
     const out = {};
@@ -420,12 +806,37 @@ function StudentsPage() {
   }, []);
 
   useEffect(() => {
+    if (loadingFinance || !activeSchoolCode) {
+      return undefined;
+    }
+
+    let cancelled = false;
     const cached = readStudentsCache();
-    if (!cached) return;
+    if (!cached) return undefined;
 
     if (Array.isArray(cached.studentList) && cached.studentList.length) {
-      setStudents(cached.studentList);
+      const cachedStudentList = cached.studentList;
+      setStudents(cachedStudentList);
       setStudentsLoading(false);
+
+      hydrateMissingStudentProfileImages(cachedStudentList).then((hydratedStudentList) => {
+        if (cancelled || !Array.isArray(hydratedStudentList) || hydratedStudentList.length === 0) {
+          return;
+        }
+
+        const hasProfileFix = hydratedStudentList.some(
+          (studentItem, index) => studentItem?.profileImage !== cachedStudentList[index]?.profileImage
+        );
+        if (!hasProfileFix) {
+          return;
+        }
+
+        persistStudentList(
+          hydratedStudentList,
+          Array.isArray(cached.gradeOptions) ? cached.gradeOptions : gradeOptions,
+          String(cached.currentAcademicYear || currentAcademicYear || "")
+        );
+      });
     }
 
     if (Array.isArray(cached.gradeOptions)) {
@@ -435,6 +846,10 @@ function StudentsPage() {
     if (typeof cached.currentAcademicYear === "string") {
       setCurrentAcademicYear(cached.currentAcademicYear);
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // If we have a `finance.userId`, fetch the Users record to ensure
@@ -446,7 +861,7 @@ function StudentsPage() {
 
     const refreshUser = async () => {
       try {
-        const res = await axios.get(`${DB_URL}/Users/${finance.userId}.json`);
+        const res = { data: await readSchoolNodeApi(`Users/${finance.userId}`, {}) };
         if (cancelled) return;
         const user = res.data || {};
         setFinance((prev) => ({
@@ -473,71 +888,20 @@ function StudentsPage() {
   const handleSelectStudent = async (s) => {
     const requestId = studentSelectionRequestRef.current + 1;
     studentSelectionRequestRef.current = requestId;
-    setSelectedStudent((prev) => ({ ...(prev || {}), ...s }));
+    setStudentMarks({});
+    setAttendance([]);
+    setPaymentHistory({});
+    setSelectedStudent((prev) => ({ ...(prev || {}), ...s, attendance: [] }));
     setRightSidebarOpen(true);
     try {
-      // 1️⃣ Fetch user info
-      const userRes = await axios.get(`${DB_URL}/Users/${s.userId}.json`);
-      const user = userRes.data || {};
-
-      // 2️⃣ Fetch ClassMarks from Firebase
-      const marksRes = await axios.get(`${DB_URL}/ClassMarks.json`);
-      const classMarks = marksRes.data || {};
-
-      const studentMarksObj = {};
-      const courseTeacherMap = {};
-
-      // Loop through all courses
-      Object.entries(classMarks).forEach(([courseId, studentsObj]) => {
-        // There are two common ways to key student records under a course:
-        // 1) by the Students node key (student_123) -> that's stored in s.studentId
-        // 2) by a nested object where student objects might include userId properties
-        // We'll prefer matching by s.studentId (the RTDB Students key).
-        const studentMark =
-          studentsObj?.[s.studentId] ||
-          // fallback: try to find a student object whose userId matches s.userId
-          Object.values(studentsObj || {}).find(
-            (st) => st && (st.userId === s.userId || st.studentId === s.studentId)
-          );
-
-        if (studentMark) {
-          studentMarksObj[courseId] = studentMark;
-          courseTeacherMap[courseId] = studentMark.teacherName || "Teacher";
-        }
-      });
-
-      // 3️⃣ Fetch Attendance (optional)
-      const attendanceRes = await axios.get(`${DB_URL}/Attendance.json`);
-      const attendanceRaw = attendanceRes.data || {};
-
-      const attendanceData = [];
-      Object.entries(attendanceRaw).forEach(([courseId, datesObj]) => {
-        Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-          const status = studentsObj?.[s.studentId];
-          if (status) {
-            attendanceData.push({
-              courseId,
-              date,
-              status,
-              teacherName: courseTeacherMap[courseId] || "Teacher",
-            });
-          }
-        });
-      });
-
-      // 4️⃣ Fetch student RTDB record (to read parents / dob if available)
-      let rtStudent = {};
-      try {
-        if (s.studentId) {
-          const rtRes = await axios.get(
-            `${DB_URL}/Students/${s.studentId}.json`
-          );
-          rtStudent = rtRes.data || {};
-        }
-      } catch (err) {
-        // ignore
-        rtStudent = {};
-      }
+      const [user, rtStudent] = await Promise.all([
+        s.userId
+          ? readSchoolNodeApi(`Users/${s.userId}`, {})
+          : Promise.resolve({}),
+        s.studentId
+          ? readSchoolNodeApi(`Students/${s.studentId}`, {})
+          : Promise.resolve({}),
+      ]);
 
       // compute age from DOB (check user.dob, rtStudent.dob, or s.dob)
       const dobRaw = user?.dob || rtStudent?.dob || s?.dob;
@@ -558,37 +922,31 @@ function StudentsPage() {
       const age = computeAge(dobRaw);
 
       // 5️⃣ Resolve parents: collect first parent name & phone and all parents list
-      const parentsList = [];
-      let parentName = null;
-      let parentPhone = null;
-      try {
-        const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
-        for (const pid of parentIds) {
-          try {
-            const pRes = await axios.get(`${DB_URL}/Parents/${pid}.json`);
-            const parentNode = pRes.data || {};
-            const parentUserId = parentNode.userId;
-            if (parentUserId) {
-              const uRes = await axios.get(`${DB_URL}/Users/${parentUserId}.json`);
-              const parentUser = uRes.data || {};
-              const pInfo = {
-                parentId: pid,
-                userId: parentUserId || null,
-                name: parentUser.name || parentNode.name || "Parent",
-                phone: parentUser.phone || parentUser.phoneNumber || parentNode.phone || null,
-                profileImage: parentUser.profileImage || parentNode.profileImage || "/default-profile.png",
-              };
-              parentsList.push(pInfo);
-              if (!parentName) parentName = pInfo.name;
-              if (!parentPhone) parentPhone = pInfo.phone;
-            }
-          } catch (e) {
-            // ignore per-parent errors
+      const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
+      const parentsList = (await mapInBatches(parentIds, 4, async (parentId) => {
+        try {
+          const parentNode = await readSchoolNodeApi(`Parents/${parentId}`, {});
+          const parentUserId = String(parentNode?.userId || "").trim();
+          if (!parentUserId) {
+            return null;
           }
+
+          const parentUser = await readSchoolNodeApi(`Users/${parentUserId}`, {});
+
+          return {
+            parentId,
+            userId: parentUserId,
+            name: parentUser?.name || parentNode?.name || "Parent",
+            phone: parentUser?.phone || parentUser?.phoneNumber || parentNode?.phone || null,
+            profileImage: parentUser?.profileImage || parentNode?.profileImage || "/default-profile.png",
+          };
+        } catch (error) {
+          return null;
         }
-      } catch (e) {
-        // ignore
-      }
+      })).filter(Boolean);
+      const parentName = parentsList[0]?.name || null;
+      const parentPhone = parentsList[0]?.phone || null;
+
       // 6️⃣ Set selected student state (include age & parent info)
       if (studentSelectionRequestRef.current !== requestId) {
         return;
@@ -599,8 +957,7 @@ function StudentsPage() {
         ...s,
         ...rtStudent,
         ...user,
-        marks: studentMarksObj,
-        attendance: attendanceData,
+        attendance: [],
         age: age,
         parents: parentsList,
         parentName: parentName,
@@ -640,11 +997,19 @@ function StudentsPage() {
     setSavingProfile(true);
     try {
       const payload = { ...(editForm || {}) };
+      const studentDirectoryPayload = {
+        name: payload.name,
+        email: payload.email,
+        profileImage: payload.profileImage,
+        grade: payload.grade,
+        section: payload.section,
+        academicYear: payload.academicYear,
+      };
 
       // Primary: if we have a RTDB studentId, update the Realtime DB directly
       if (selectedStudent.studentId) {
         // PATCH the Students node
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
 
         // Also update Users node when userId exists (keep profile in sync)
         if (selectedStudent.userId) {
@@ -653,13 +1018,27 @@ function StudentsPage() {
             if (typeof payload[k] !== "undefined") userPayload[k] = payload[k];
           });
           if (Object.keys(userPayload).length > 0) {
-            await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+            await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
           }
         }
 
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, studentDirectoryPayload).catch(() => undefined);
+        writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
+          ...previousEntry,
+          ...studentDirectoryPayload,
+        }));
+
         const updated = { ...(selectedStudent || {}), ...(payload || {}) };
         setSelectedStudent(updated);
-        setStudents((prev) => prev.map((p) => (p.studentId === selectedStudent.studentId ? { ...(p || {}), ...(payload || {}) } : p)));
+        setStudents((prev) => {
+          const nextStudents = prev.map((p) => (p.studentId === selectedStudent.studentId ? { ...(p || {}), ...(payload || {}) } : p));
+          writeStudentsCache({
+            studentList: nextStudents,
+            gradeOptions,
+            currentAcademicYear,
+          });
+          return nextStudents;
+        });
         setEditingProfile(false);
         setEditForm({});
         return;
@@ -667,10 +1046,18 @@ function StudentsPage() {
 
       // Secondary: if we have only a userId, update Users node
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
         const updated = { ...(selectedStudent || {}), ...(payload || {}) };
         setSelectedStudent(updated);
-        setStudents((prev) => prev.map((p) => (p.userId === selectedStudent.userId ? { ...(p || {}), ...(payload || {}) } : p)));
+        setStudents((prev) => {
+          const nextStudents = prev.map((p) => (p.userId === selectedStudent.userId ? { ...(p || {}), ...(payload || {}) } : p));
+          writeStudentsCache({
+            studentList: nextStudents,
+            gradeOptions,
+            currentAcademicYear,
+          });
+          return nextStudents;
+        });
         setEditingProfile(false);
         setEditForm({});
         return;
@@ -716,73 +1103,67 @@ function StudentsPage() {
 
 
   useEffect(() => {
-    const fetchTeachersAndUnread = async () => {
+    let cancelled = false;
+
+    setGradeSubjectsLoaded(false);
+
+    const loadGradeSubjects = async () => {
       try {
-        const [teachersRes, usersRes] = await Promise.all([
-          axios.get(`${DB_URL}/Teachers.json`),
-          axios.get(`${DB_URL}/Users.json`)
-        ]);
+        const gradesData = await readSchoolNodeApi("GradeManagement/grades", {});
 
-        const teachersData = teachersRes.data || {};
-        const usersData = usersRes.data || {};
-
-        const teacherList = Object.keys(teachersData).map(tid => {
-          const teacher = teachersData[tid];
-          const user = usersData[teacher.userId] || {};
-          return {
-            teacherId: tid,
-            userId: teacher.userId,
-            name: user.name || "No Name",
-            profileImage: user.profileImage || "/default-profile.png"
-          };
-        });
-
-        setTeachers(teacherList);
-
-        // fetch unread messages
-        const unread = {};
-        const allMessages = [];
-
-        for (const t of teacherList) {
-          const chatKey = `${t.userId}_${adminUserId}`;
-          const res = await axios.get(`${DB_URL}/Chats/${chatKey}/messages.json`);
-          const msgs = Object.values(res.data || {}).map(m => ({
-            ...m,
-            sender: m.senderId === adminUserId ? "admin" : "teacher"
-          }));
-          allMessages.push(...msgs);
-
-          const unreadCount = msgs.filter(m => m.receiverId === adminUserId && !m.seen).length;
-          if (unreadCount > 0) unread[t.userId] = unreadCount;
+        if (!cancelled) {
+          setGradeSubjectsByGrade(buildGradeSubjectsByGrade(gradesData));
         }
-
-        setPopupMessages(allMessages);
-        setUnreadTeachers(unread);
-
-      } catch (err) {
-        console.error(err);
+      } catch (error) {
+        if (!cancelled) {
+          setGradeSubjectsByGrade({});
+        }
+      } finally {
+        if (!cancelled) {
+          setGradeSubjectsLoaded(true);
+        }
       }
     };
 
-    fetchTeachersAndUnread();
-  }, [adminUserId]);
+    loadGradeSubjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [BIG_NODE_CACHE_TTL_MS, activeSchoolCode, loadingFinance]);
 
   // ------------------ FETCH STUDENTS ------------------
   useEffect(() => {
-    const fetchStudents = async () => {
-      try {
-        const [studentsRes, schoolInfoRes, gradesRes] = await Promise.all([
-          axios.get(`${DB_URL}/Students.json`),
-          axios.get(`${DB_URL}/schoolInfo.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
-        ]);
+    if (loadingFinance) {
+      return;
+    }
 
-        const studentsData = studentsRes.data || {};
-        const activeAcademicYear = (schoolInfoRes.data || {}).currentAcademicYear || "";
-        const gradesData = gradesRes.data || {};
+    if (!activeSchoolCode) {
+      setStudents([]);
+      setStudentsLoading(false);
+      return;
+    }
+
+    const fetchStudents = async () => {
+      const cached = readStudentsCache();
+      if (cached && Array.isArray(cached.studentList)) {
+        setStudents(cached.studentList);
+        setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
+        setCurrentAcademicYear(String(cached.currentAcademicYear || ""));
+        setStudentsLoading(false);
+        return;
+      }
+
+      try {
+        const [schoolInfoData, gradesData, studentDirectoryData] = await Promise.all([
+          readSchoolNodeApi("schoolInfo", {}),
+          readSchoolNodeApi("GradeManagement/grades", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
+        ]);
+        const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
 
-        const managedGrades = Object.keys(gradesData)
+        const managedGrades = Object.keys(gradesData || {})
           .filter((gradeKey) => isValidGradeKey(gradeKey))
           .sort((a, b) => Number(a) - Number(b));
         setGradeOptions(managedGrades);
@@ -791,36 +1172,33 @@ function StudentsPage() {
           return managedGrades.includes(String(prev)) ? prev : "All";
         });
 
-        const studentKeys = Object.keys(studentsData);
+        const directoryStudentList = Object.entries(studentDirectoryData || {}).map(([studentId, student]) =>
+          normalizeStudentSummary(studentId, student)
+        );
 
-        const baseStudentList = studentKeys.map((id) => {
-          const student = studentsData[id];
-          return {
-            studentId: id,
-            userId: student.userId,
-            name: student.name || student.studentName || "No Name",
-            profileImage: getSafeImage(
-              student?.basicStudentInformation?.studentPhoto,
-              student?.profileImage
-            ),
-            grade: student.grade,
-            section: student.section,
-            academicYear: student.academicYear || "",
-            email: student.email || ""
-          };
-        });
+        if (directoryStudentList.length > 0) {
+          persistStudentList(directoryStudentList, managedGrades, activeAcademicYear);
+          setStudentsLoading(false);
+          const hydratedDirectoryStudentList = await hydrateMissingStudentProfileImages(directoryStudentList);
+          persistStudentList(hydratedDirectoryStudentList, managedGrades, activeAcademicYear);
+          return;
+        }
 
-        setStudents(baseStudentList);
+        const studentsData = await readSchoolNodeApi("Students", {});
+
+        const studentKeys = Object.keys(studentsData || {});
+
+        const baseStudentList = studentKeys.map((id) => normalizeStudentSummary(id, studentsData[id]));
+
         setStudentsLoading(false);
-        writeStudentsCache({
-          studentList: baseStudentList,
-          gradeOptions: managedGrades,
-          currentAcademicYear: activeAcademicYear,
-        });
+        persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
 
         try {
-          const usersRes = await axios.get(`${DB_URL}/Users.json`);
-          const usersData = usersRes.data || {};
+          const usersData = await readSchoolNodeApi("Users", {});
+          if (!usersData || typeof usersData !== "object") {
+            return;
+          }
+
           const hydratedStudentList = baseStudentList.map((student) => {
             const user = usersData[student.userId] || {};
             return {
@@ -834,12 +1212,7 @@ function StudentsPage() {
             };
           });
 
-          setStudents(hydratedStudentList);
-          writeStudentsCache({
-            studentList: hydratedStudentList,
-            gradeOptions: managedGrades,
-            currentAcademicYear: activeAcademicYear,
-          });
+          persistStudentList(hydratedStudentList, managedGrades, activeAcademicYear);
         } catch (userErr) {
           // keep base list if users node is slow/unavailable
         }
@@ -851,7 +1224,7 @@ function StudentsPage() {
     };
 
     fetchStudents();
-  }, []);
+  }, [activeSchoolCode, loadingFinance]);
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
@@ -911,31 +1284,50 @@ function StudentsPage() {
   // ---------------- FETCH PERFORMANCE ----------------
   // This effect reads ClassMarks and stores only the entries for the selected student.
   useEffect(() => {
-    if (!selectedStudent?.studentId) {
+    if (studentTab !== "performance" || !selectedStudent?.studentId) {
       setStudentMarks({});
       return;
+    }
+
+    if (!gradeSubjectsLoaded) {
+      return undefined;
     }
 
     let cancelled = false;
 
     async function fetchMarks() {
       try {
-        const res = await axios.get(
-          `${DB_URL}/ClassMarks.json`
-        );
-
         const marksObj = {};
-        Object.entries(res.data || {}).forEach(([courseId, students]) => {
-          // Try direct key
-          if (students?.[selectedStudent.studentId]) {
-            marksObj[courseId] = students[selectedStudent.studentId];
-            return;
-          }
+        if (selectedStudentCourseIds.length > 0) {
+          const courseMarkEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseMarks = await fetchCachedJson(`${DB_URL}/ClassMarks/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseMarks];
+            })
+          );
 
-          // Fallback: try to find by userId inside student nodes
-          const found = Object.values(students || {}).find(s => s && (s.userId === selectedStudent.userId || s.studentId === selectedStudent.studentId));
-          if (found) marksObj[courseId] = found;
-        });
+          courseMarkEntries.forEach(([courseId, courseMarks]) => {
+            const found = findStudentScopedNode(courseMarks, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        } else {
+          const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(classMarks || {}).forEach(([courseId, students]) => {
+            const found = findStudentScopedNode(students, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        }
 
         if (!cancelled) {
           setStudentMarks(marksObj);
@@ -951,7 +1343,97 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedStudent]);
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
+
+  useEffect(() => {
+    if (studentTab !== "attendance" || !selectedStudent?.studentId) return undefined;
+
+    if (!gradeSubjectsLoaded) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchAttendanceData = async () => {
+      try {
+        const attendanceData = [];
+        if (selectedStudentCourseIds.length > 0) {
+          const attendanceEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseAttendance = await fetchCachedJson(`${DB_URL}/Attendance/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseAttendance];
+            })
+          );
+
+          attendanceEntries.forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
+            });
+          });
+        } else {
+          const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
+            });
+          });
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        setAttendance(attendanceData);
+        setSelectedStudent((prev) => {
+          if (!prev || String(prev.studentId) !== String(selectedStudent.studentId)) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            attendance: attendanceData,
+          };
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setAttendance([]);
+        }
+      }
+    };
+
+    fetchAttendanceData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
 
   useEffect(() => {
     if (studentTab !== "payment" || !selectedStudent) return;
@@ -966,8 +1448,10 @@ function StudentsPage() {
         months.map(async (m) => {
           const key = `${year}-${m}`;
           try {
-            const res = await axios.get(`${DB_URL}/monthlyPaid/${key}.json`).catch(() => ({ data: {} }));
-            const node = res.data || {};
+            const node = await fetchCachedJson(`${DB_URL}/monthlyPaid/${key}.json`, {
+              ttlMs: BIG_NODE_CACHE_TTL_MS,
+              fallbackValue: {},
+            });
             out[key] = !!(node && (node[studentKey] || node[String(studentKey)]));
           } catch {
             out[key] = false;
@@ -979,59 +1463,43 @@ function StudentsPage() {
     };
 
     fetchPaymentHistory();
-  }, [studentTab, selectedStudent, DB_URL]);
+  }, [studentTab, selectedStudent?.studentId, selectedStudent?.userId, selectedStudent?.id, DB_URL]);
 
 
   //-------------------------Fetch unread status for each student--------------
   useEffect(() => {
     const fetchUnread = async () => {
-      const map = {};
+      const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+        ttlMs: 30 * 1000,
+        fallbackValue: {},
+      });
+      const unreadEntries = students.map((studentItem) => {
+        const studentKeys = getStudentIdentityCandidates(studentItem);
+        const summary = findStudentSummary(ownerSummaries, studentItem);
 
-      for (const s of students) {
-        const key = `${s.studentId}_${admin.userId}`;
+        return {
+          studentKeys,
+          hasUnread: Number(summary?.unreadCount || 0) > 0,
+        };
+      });
 
-        const res = await axios.get(
-          `${DB_URL}/Chats/${key}/messages.json`
-        );
+      const nextMap = unreadEntries.reduce((acc, entry) => {
+        (entry?.studentKeys || []).forEach((studentKey) => {
+          acc[studentKey] = Boolean(entry?.hasUnread);
+        });
+        return acc;
+      }, {});
 
-        const msgs = res.data || {};
-        map[s.studentId] = Object.values(msgs).some(
-          m => m.senderId === s.studentId && m.seenByAdmin === false
-        );
-
-      }
-
-      setUnreadMap(map);
+      setUnreadMap(nextMap);
     };
 
-    if (students.length > 0) fetchUnread();
-  }, [students]);
+    if (students.length > 0 && adminUserId) {
+      fetchUnread();
+      return;
+    }
 
-  // ---------------- FETCH CHAT MESSAGES ----------------
-  useEffect(() => {
-    if (!studentChatOpen || !selectedStudent) return;
-
-    const chatKey = getChatKey(selectedStudent.userId, adminUserId);
-
-    const fetchMessages = async () => {
-      try {
-        const res = await axios.get(
-          `${DB_URL}/Chats/${chatKey}/messages.json`
-        );
-
-        const msgs = Object.values(res.data || {}).map(m => ({
-          ...m,
-          sender: m.senderId === adminUserId ? "admin" : "student"
-        })).sort((a, b) => a.timeStamp - b.timeStamp);
-
-        setPopupMessages(msgs);
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchMessages();
-  }, [studentChatOpen, selectedStudent, adminUserId]);
+    setUnreadMap({});
+  }, [DB_URL, students, adminId, adminUserId]);
 
   // ---------------- SEND MESSAGE ----------------
   const sendPopupMessage = async () => {
@@ -1046,7 +1514,11 @@ function StudentsPage() {
     };
 
     try {
-      const chatKey = `${selectedStudent.userId}_${adminUserId}`;
+      const chatKey = await resolveStudentChatKey(selectedStudent);
+      if (!chatKey) {
+        return;
+      }
+
       // 1) push message
       const pushRes = await axios.post(
         `${DB_URL}/Chats/${chatKey}/messages.json`,
@@ -1066,42 +1538,71 @@ function StudentsPage() {
 
       const generatedId = pushRes.data && pushRes.data.name;
 
-      // 2) update lastMessage + participants
-      const lastMessage = {
-        text: newMessage.text,
-        senderId: newMessage.senderId,
-        seen: false,
-        timeStamp: newMessage.timeStamp,
-      };
-
       await axios.patch(
         `${DB_URL}/Chats/${chatKey}.json`,
         {
           participants: {
-            ...(/* keep existing participants if any */ {}),
             [adminUserId]: true,
             [selectedStudent.userId]: true,
           },
-          lastMessage,
         }
       );
 
-      // 3) increment unread for receiver
+      await Promise.all([
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]).catch(() => {});
+
+      // 3) increment unread for receiver summary
       try {
-        const unreadRes = await axios.get(
-          `${DB_URL}/Chats/${chatKey}/unread.json`
+        const summaryRes = await axios.get(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
         );
-        const unread = unreadRes.data || {};
-        const prev = Number(unread[selectedStudent.userId] || 0);
-        const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          updated
+        const summary = normalizeChatSummaryValue(summaryRes.data, {
+          chatId: chatKey,
+          otherUserId: adminUserId,
+        });
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: Number(summary.unreadCount || 0) + 1,
+          })
         );
       } catch (uErr) {
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          { [selectedStudent.userId]: 1, [adminUserId]: 0 }
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: 1,
+          })
         );
       }
 
@@ -1126,7 +1627,10 @@ function StudentsPage() {
     };
 
     try {
-      const chatKey = getChatKey(selectedStudent.userId, adminUserId);
+      const chatKey = await resolveStudentChatKey(selectedStudent);
+      if (!chatKey) {
+        return;
+      }
 
       // push message with full schema
       try {
@@ -1148,25 +1652,69 @@ function StudentsPage() {
 
         const generatedId = pushRes.data && pushRes.data.name;
 
-        // patch lastMessage + participants
-        const lastMessage = { text: newMessage.text, senderId: newMessage.senderId, seen: false, timeStamp: newMessage.timeStamp };
         await axios.patch(
           `${DB_URL}/Chats/${chatKey}.json`,
           {
             participants: { [adminUserId]: true, [selectedStudent.userId]: true },
-            lastMessage,
           }
         );
 
-        // update unread
+        await Promise.all([
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: selectedStudent.userId,
+              unreadCount: 0,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+        ]).catch(() => {});
+
+        // update receiver unread summary
         try {
-          const unreadRes = await axios.get(`${DB_URL}/Chats/${chatKey}/unread.json`);
-          const unread = unreadRes.data || {};
-          const prev = Number(unread[selectedStudent.userId] || 0);
-          const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, updated);
+          const summaryRes = await axios.get(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
+          );
+          const summary = normalizeChatSummaryValue(summaryRes.data, {
+            chatId: chatKey,
+            otherUserId: adminUserId,
+          });
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: Number(summary.unreadCount || 0) + 1,
+            })
+          );
         } catch (uErr) {
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: 1,
+            })
+          );
         }
 
         setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
@@ -1211,38 +1759,73 @@ function StudentsPage() {
   useEffect(() => {
     if (!studentChatOpen || !selectedStudent) return;
 
-    const chatKey = getChatKey(selectedStudent.userId, adminUserId);
-    const messagesRef = ref(dbRT, `Chats/${chatKey}/messages`);
+    let isActive = true;
+    let unsubscribe = () => {};
 
-    const handleSnapshot = async (snapshot) => {
-      const data = snapshot.val() || {};
-      const list = Object.entries(data)
-        .map(([id, msg]) => ({ messageId: id, ...msg }))
-        .sort((a, b) => a.timeStamp - b.timeStamp);
-      setPopupMessages(list);
-
-      // mark any unseen messages addressed to admin as seen
-      const updates = {};
-      Object.entries(data).forEach(([msgId, msg]) => {
-        if (msg && msg.receiverId === adminUserId && !msg.seen) {
-          updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
-        }
-      });
-
-      if (Object.keys(updates).length > 0) {
-        try {
-          await axios.patch(`${DB_URL}/.json`, updates);
-          // reset unread and mark lastMessage seen at chat root
-          axios.patch(`${DB_URL}/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
-        } catch (err) {
-          console.error('Failed to patch seen updates:', err);
-        }
+    const startListening = async () => {
+      const chatKey = await resolveStudentChatKey(selectedStudent);
+      if (!isActive || !chatKey) {
+        return;
       }
+
+      const messagesRef = ref(dbRT, `Chats/${chatKey}/messages`);
+      unsubscribe = onValue(messagesRef, async (snapshot) => {
+        const data = snapshot.val() || {};
+        const list = Object.entries(data)
+          .map(([id, msg]) => ({ messageId: id, ...msg }))
+          .sort((a, b) => a.timeStamp - b.timeStamp);
+        setPopupMessages(list);
+
+        const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (msg) => msg && msg.receiverId === adminUserId && !msg.seen
+        );
+        Object.entries(data).forEach(([msgId, msg]) => {
+          if (msg && msg.receiverId === adminUserId && !msg.seen) {
+            updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
+          }
+        });
+
+        if (Object.keys(updates).length > 0) {
+          try {
+            await axios.patch(`${DB_URL}/.json`, updates);
+          } catch (err) {
+            console.error('Failed to patch seen updates:', err);
+          }
+        }
+
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: Date.now(),
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadMap((previousMap) => {
+          const nextMap = { ...previousMap };
+          getStudentIdentityCandidates(selectedStudent).forEach((studentKey) => {
+            nextMap[studentKey] = false;
+          });
+          return nextMap;
+        });
+      });
     };
 
-    const unsubscribe = onValue(messagesRef, handleSnapshot);
-    return () => unsubscribe();
-  }, [studentChatOpen, selectedStudent, adminUserId]);
+    startListening();
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [DB_URL, studentChatOpen, selectedStudent?.studentId, selectedStudent?.userId, adminId, adminUserId]);
 
   const attendanceStats = useMemo(() => {
     if (!selectedStudent?.attendance) return null;
@@ -1333,7 +1916,31 @@ function StudentsPage() {
 
 
   const contentLeft = 0;
+  const mobileDrawerVisible = rightSidebarOpen || Boolean(selectedStudent);
   const rightSidebarOffset = !isPortrait ? 408 : 2;
+  const PRIMARY = "#007afb";
+  const BACKGROUND = "#ffffff";
+  const ACCENT = "#00B6A9";
+  const contentWidth = isNarrow
+    ? "100%"
+    : !isPortrait
+      ? "min(760px, max(320px, calc(100vw - 560px)))"
+      : "760px";
+  const FEED_MAX_WIDTH = "min(1320px, 100%)";
+  const shellCardStyle = {
+    background: "var(--surface-panel)",
+    border: "1px solid var(--border-soft)",
+    borderRadius: 12,
+    boxShadow: "var(--shadow-soft)",
+  };
+  const headerCardStyle = {
+    ...shellCardStyle,
+    borderRadius: 14,
+    padding: "16px 18px 14px",
+    position: "relative",
+    overflow: "hidden",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--surface-panel) 88%, white) 0%, color-mix(in srgb, var(--surface-panel) 94%, var(--surface-accent)) 100%)",
+  };
 
   const registrationSections = useMemo(() => {
     if (!selectedStudent) return null;
@@ -1595,7 +2202,7 @@ function StudentsPage() {
         ...normalizedAdditional,
       };
 
-      await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, studentPayload);
+      await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, studentPayload);
 
       if (selectedStudent.userId) {
         const userPayload = {};
@@ -1626,7 +2233,7 @@ function StudentsPage() {
         }
 
         if (Object.keys(userPayload).length > 0) {
-          await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+          await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
         }
       }
 
@@ -1678,19 +2285,14 @@ function StudentsPage() {
     whiteSpace: "nowrap",
     transition: "all 0.2s ease",
   });
-  const shellCardStyle = {
-    background: "var(--surface-panel)",
-    border: "1px solid var(--border-soft)",
-    borderRadius: 12,
-    boxShadow: "var(--shadow-soft)",
-  };
   const softPanelStyle = {
     background: "var(--surface-muted)",
     border: "1px solid var(--border-soft)",
     borderRadius: 10,
   };
   const listCardStyle = (isSelected) => ({
-    width: isNarrow ? "92%" : "560px",
+    width: contentWidth,
+    maxWidth: "100%",
     minHeight: "86px",
     borderRadius: "14px",
     padding: "12px",
@@ -1707,48 +2309,130 @@ function StudentsPage() {
     border: "1px solid var(--border-soft)",
     boxShadow: "var(--shadow-soft)",
   };
+  const sidebarSectionCardStyle = {
+    background: "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
+    borderRadius: 16,
+    border: "1px solid var(--border-soft)",
+    boxShadow: "var(--shadow-soft)",
+  };
+  const studentTabButtonStyle = (tab) => ({
+    flex: 1,
+    padding: "8px",
+    background: studentTab === tab ? "var(--surface-accent)" : "transparent",
+    border: "none",
+    cursor: "pointer",
+    fontWeight: 700,
+    color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
+    fontSize: "11px",
+    borderBottom: studentTab === tab ? "2px solid var(--accent-strong)" : "2px solid transparent",
+    transition: "all 0.2s ease",
+  });
+  const studentDetailRows = [
+    { label: "Email", key: "email" },
+    { label: "Phone", key: "phone" },
+    { label: "Gender", key: "gender" },
+    { label: "Age", key: "age" },
+    { label: "Birth Date", key: "dob" },
+    { label: "Parent Name", key: "parentName" },
+    { label: "Parent Phone", key: "parentPhone" },
+  ];
 
  return (
-   <div className="dashboard-page" style={{ background: "var(--page-bg)", minHeight: "100vh", height: "100vh", overflow: "hidden", color: "var(--text-primary)" }}>
-      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "4px 14px", height: "calc(100vh - 73px)", overflow: "hidden", background: "var(--page-bg)", width: "100%", boxSizing: "border-box" }}>
-        {/* ---------------- SIDEBAR ---------------- */}
-        <Sidebar admin={admin} />
+   <div
+      className="dashboard-page"
+      style={{
+        background: BACKGROUND,
+        minHeight: "100vh",
+        color: "var(--text-primary)",
+        "--page-bg": BACKGROUND,
+        "--page-bg-secondary": "#F7FBFF",
+        "--surface-panel": BACKGROUND,
+        "--surface-muted": "#F8FBFF",
+        "--surface-accent": "#EAF4FF",
+        "--surface-strong": "#D7E7FB",
+        "--border-soft": "#D7E7FB",
+        "--border-strong": "#B5D2F8",
+        "--text-primary": "#0f172a",
+        "--text-secondary": "#334155",
+        "--text-muted": "#64748b",
+        "--accent": PRIMARY,
+        "--accent-soft": "#E7F2FF",
+        "--accent-strong": PRIMARY,
+        "--success": ACCENT,
+        "--success-soft": "#E9FBF9",
+        "--success-border": "#AAEDE7",
+        "--warning": "#DC2626",
+        "--warning-soft": "#FEE2E2",
+        "--warning-border": "#FCA5A5",
+        "--danger": "#b91c1c",
+        "--danger-border": "#fca5a5",
+        "--sidebar-width": "clamp(230px, 16vw, 290px)",
+        "--surface-overlay": "#F1F8FF",
+        "--input-bg": BACKGROUND,
+        "--input-border": "#B5D2F8",
+        "--shadow-soft": "0 10px 24px rgba(0, 122, 251, 0.10)",
+        "--shadow-panel": "0 14px 30px rgba(0, 122, 251, 0.14)",
+        "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
+        "--on-accent": "#ffffff",
+      }}
+    >
+      <div className="google-dashboard" style={{ display: "flex", gap: 14, padding: "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
+        <div
+          className="admin-sidebar-spacer"
+          style={{
+            width: "var(--sidebar-width)",
+            minWidth: "var(--sidebar-width)",
+            flex: "0 0 var(--sidebar-width)",
+            pointerEvents: "none",
+          }}
+        />
         {/* ---------------- MAIN CONTENT ---------------- */}
         <div
           className={`main-content ${rightSidebarOpen ? "sidebar-open" : ""}`}
           style={{
-            flex: "1.08 1 0",
+            flex: "1 1 0",
             minWidth: 0,
             maxWidth: "none",
             margin: "0",
             boxSizing: "border-box",
-            alignSelf: "stretch",
-            height: "100%",
-            overflowY: "auto",
+            alignSelf: "flex-start",
+            minHeight: "calc(100vh - 24px)",
+            overflowY: "visible",
             overflowX: "hidden",
+            position: "relative",
             scrollbarWidth: "thin",
             scrollbarColor: "transparent transparent",
             padding: `0 ${rightSidebarOffset}px 0 2px`,
+            display: "flex",
+            justifyContent: "center",
           }}
         >
-          <div className="main-inner" style={{ marginLeft: 0, marginTop: 0 }}>
+          <div className="main-inner" style={{ width: "100%", maxWidth: FEED_MAX_WIDTH, margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, paddingBottom: 56 }}>
             <div
               className="section-header-card"
-              style={{
-                margin: "0 0 12px",
-                marginLeft: 0,
-                width: "min(100%, 1320px)",
-              }}
+              style={headerCardStyle}
             >
-              <h2 className="section-header-card__title" style={{ fontSize: "20px" }}>Students</h2>
-              <div className="section-header-card__meta">
-                <span>Total: {filteredStudentsBase.length}</span>
-                <span>Current Year: {currentYearStudents.length}</span>
-                <span className="section-header-card__chip">
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: "linear-gradient(90deg, var(--accent), var(--accent-strong), color-mix(in srgb, var(--accent) 68%, white))" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", position: "relative", zIndex: 1 }}>
+                <div>
+                  <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "0.01em" }}>Students</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-secondary)", maxWidth: 620, lineHeight: 1.5 }}>
+                    Manage student records, attendance, performance, payments, and communication from the same premium admin workspace used across the rest of the platform.
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, position: "relative", zIndex: 1 }}>
+                <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                  Total: {filteredStudentsBase.length}
+                </div>
+                <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                  Current Year: {currentYearStudents.length}
+                </div>
+                <div style={{ padding: "7px 12px", borderRadius: 999, background: "color-mix(in srgb, var(--surface-panel) 72%, white)", border: "1px solid var(--border-soft)", fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
                   {currentAcademicYear
                     ? `Academic Year: ${String(currentAcademicYear).replace("_", "/")}`
                     : "Academic Year: Not Set"}
-                </span>
+                </div>
               </div>
             </div>
 
@@ -1756,7 +2440,7 @@ function StudentsPage() {
             <div style={{ display: "flex", justifyContent: isNarrow ? "center" : "flex-start", marginBottom: "10px", paddingLeft: contentLeft }}>
               <div
                 style={{
-                  width: isNarrow ? "92%" : "560px",
+                  width: contentWidth,
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
@@ -1841,7 +2525,7 @@ function StudentsPage() {
             {studentsLoading ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {Array.from({ length: 6 }).map((_, idx) => (
-                    <div key={idx} style={{ width: isNarrow ? "92%" : "560px", height: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
+                    <div key={idx} style={{ width: contentWidth, maxWidth: "100%", height: "86px", borderRadius: "14px", padding: "12px", background: "var(--surface-panel)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow-soft)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-muted)" }} />
                       <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-muted)" }} />
@@ -1856,7 +2540,7 @@ function StudentsPage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
                 {currentYearStudents.length === 0 ? (
-                  <p style={{ width: isNarrow ? "92%" : "560px", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
+                  <p style={{ width: contentWidth, maxWidth: "100%", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
                 ) : (
                   currentYearStudents.map((s, i) => (
                     <div
@@ -1869,7 +2553,7 @@ function StudentsPage() {
                         <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
                           {i + 1}
                         </div>
-                        <img src={s.profileImage} alt={s.name} style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
+                        <ProfileAvatar src={s.profileImage} name={s.name} alt={s.name} loading="lazy" style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
                         <div style={{ minWidth: 0 }}>
                           <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
                           <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
@@ -1892,19 +2576,23 @@ function StudentsPage() {
       width: isPortrait ? "100%" : "380px",
       position: "fixed",
       left: isPortrait ? 0 : "auto",
-      right: 0,
-      top: isPortrait ? 0 : "55px",
-      height: isPortrait ? "100vh" : "calc(100vh - 55px)",
+      right: isPortrait ? 0 : 14,
+      top: isPortrait ? 0 : "calc(var(--topbar-height) + 18px)",
+      height: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
+      maxHeight: isPortrait ? "100vh" : "calc(100vh - var(--topbar-height) - 36px)",
       background: "var(--surface-panel)",
       zIndex: 1000,
-      display: "flex",
+      display: !isPortrait || mobileDrawerVisible ? "flex" : "none",
       flexDirection: "column",
       overflowY: "auto",
       padding: "14px",
       boxShadow: "var(--shadow-panel)",
-      borderLeft: isPortrait ? "none" : "1px solid var(--border-soft)",
+      border: isPortrait ? "none" : "1px solid var(--border-soft)",
+      borderRadius: isPortrait ? 0 : 18,
       transition: "all 0.35s ease",
       fontSize: "12px",
+      opacity: !isPortrait || mobileDrawerVisible ? 1 : 0,
+      pointerEvents: !isPortrait || mobileDrawerVisible ? "auto" : "none",
     }}
   >
     {/* Close button */}
@@ -1924,17 +2612,17 @@ function StudentsPage() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(255,255,255,0.18)",
-            border: "1px solid rgba(255,255,255,0.42)",
+            background: "color-mix(in srgb, var(--surface-panel) 22%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--surface-panel) 45%, transparent)",
             borderRadius: 999,
             backdropFilter: "blur(6px)",
             fontSize: 24,
             fontWeight: 700,
-            color: "#ffffff",
+            color: "var(--on-accent)",
             cursor: "pointer",
             padding: 0,
             lineHeight: 1,
-            boxShadow: "0 8px 22px rgba(15, 23, 42, 0.18)",
+            boxShadow: "var(--shadow-soft)",
           }}
         >
           ×
@@ -1953,8 +2641,8 @@ function StudentsPage() {
             border: "1px solid var(--border-strong)",
             background: "var(--surface-panel)",
             color: "var(--accent-strong)",
-            borderRadius: 8,
-            padding: "4px 8px",
+            borderRadius: 10,
+            padding: "6px 10px",
             fontSize: 14,
             cursor: "pointer",
             fontWeight: 800,
@@ -1971,7 +2659,7 @@ function StudentsPage() {
       style={{
         background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
         margin: "-14px -14px 12px",
-        padding: "16px 10px",
+        padding: "18px 12px 16px",
         textAlign: "center",
       }}
     >
@@ -1987,16 +2675,12 @@ function StudentsPage() {
               border: "3px solid rgba(255,255,255,0.8)",
             }}
           >
-            <img
-              src={selectedStudent.profileImage}
-              alt={selectedStudent.name}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
+            <ProfileAvatar src={selectedStudent.profileImage} name={selectedStudent.name} alt={selectedStudent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           </div>
 
-          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>{selectedStudent.name}</h2>
-          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px" }}>{selectedStudent.studentId}</p>
-          <p style={{ margin: 0, color: "#dbeafe", fontSize: "10px" }}>
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 16, fontWeight: 800 }}>{selectedStudent.name}</h2>
+          <p style={{ margin: "6px 0 2px", color: "#dbeafe", fontSize: "11px", fontWeight: 700 }}>{selectedStudent.studentId}</p>
+          <p style={{ margin: 0, color: "#dbeafe", fontSize: "11px" }}>
             Grade {selectedStudent.grade} - Section {selectedStudent.section}
           </p>
         </>
@@ -2019,11 +2703,11 @@ function StudentsPage() {
             <FaChalkboardTeacher size={30} />
           </div>
 
-          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 14, fontWeight: 800 }}>
+          <h2 style={{ margin: 0, color: "#ffffff", fontSize: 16, fontWeight: 800 }}>
             Students Workspace
           </h2>
 
-          <p style={{ margin: "4px 0", color: "#dbeafe", fontSize: "10px", fontWeight: 600 }}>
+          <p style={{ margin: "6px 0 0", color: "#dbeafe", fontSize: "11px", fontWeight: 600 }}>
             Student Overview
           </p>
         </>
@@ -2032,22 +2716,18 @@ function StudentsPage() {
 
     {/* Tabs */}
     {selectedStudent ? (
-      <div style={{ display: "flex", borderBottom: "1px solid var(--border-soft)", marginBottom: "10px" }}>
+      <div
+        style={{
+          display: "flex",
+          borderBottom: "1px solid var(--border-soft)",
+          marginBottom: "10px",
+        }}
+      >
         {["details", "attendance", "performance", "payment"].map((tab) => (
           <button
             key={tab}
             onClick={() => setStudentTab(tab)}
-            style={{
-              flex: 1,
-              padding: "6px",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-              color: studentTab === tab ? "var(--accent-strong)" : "var(--text-muted)",
-              fontSize: "10px",
-              borderBottom: studentTab === tab ? "3px solid var(--accent-strong)" : "3px solid transparent",
-            }}
+            style={studentTabButtonStyle(tab)}
           >
             {tab.toUpperCase()}
           </button>
@@ -2109,191 +2789,132 @@ function StudentsPage() {
     ) : null}
 
     {/* Tab Content */}
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {/* DETAILS TAB */}
       {studentTab === "details" && selectedStudent && (
-        <div
-          style={{
-            padding: "12px",
-            ...rightDrawerCardStyle,
-            margin: "0 auto",
-            maxWidth: 380,
-          }}
-        >
-          <div>
-            {/* STUDENT DETAILS */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3
-                style={{
-                  margin: 0,
-                  marginBottom: 6,
-                  color: "var(--text-primary)",
-                  fontWeight: 800,
-                  letterSpacing: "0.1px",
-                  fontSize: 12,
-                  textAlign: "left",
-                }}
-              >
-                Student Profile
-              </h3>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={openConfirmModal}
-                  disabled={togglingActive}
-                  style={{
-                    background: selectedStudent?.isActive ? "#ff4d4f" : "var(--accent-strong)",
-                    border: "none",
-                    color: "#fff",
-                    padding: "6px 10px",
-                    borderRadius: 8,
-                    cursor: "pointer",
-                    fontWeight: 700,
-                    fontSize: 12,
-                  }}
-                >
-                  {togglingActive
-                    ? (selectedStudent?.isActive ? "Deactivating..." : "Activating...")
-                    : (selectedStudent?.isActive ? "Deactivate" : "Activate")}
-                </button>
-                {!editingProfile ? (
-                  <button
-                    onClick={startEditProfile}
-                    style={{
-                      background: "var(--surface-panel)",
-                      border: "1px solid var(--border-strong)",
-                      color: "var(--accent-strong)",
-                      padding: "6px 10px",
-                      borderRadius: 8,
-                      cursor: "pointer",
-                      fontWeight: 700,
-                      fontSize: 12,
-                    }}
-                  >
-                    Edit Profile
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      onClick={saveProfileEdits}
-                      disabled={savingProfile}
-                      style={{
-                        background: "var(--accent-strong)",
-                        border: "none",
-                        color: "#fff",
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                        fontSize: 12,
-                      }}
-                    >
-                      {savingProfile ? "Saving..." : "Save"}
-                    </button>
-                    <button
-                      onClick={cancelEditProfile}
-                      style={{
-                        background: "var(--surface-panel)",
-                        border: "1px solid var(--border-soft)",
-                        color: "var(--text-secondary)",
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                        fontSize: 12,
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </>
-                )}
+        <div style={{ ...sidebarSectionCardStyle, padding: 14, margin: "0 auto", maxWidth: 380 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>Student profile</div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Cleaner profile and enrollment snapshot.</div>
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: selectedStudent?.isActive ? "var(--success)" : "var(--danger)", fontSize: 11, fontWeight: 900 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 999, background: selectedStudent?.isActive ? "var(--success)" : "var(--danger)" }} />
+                {selectedStudent?.isActive ? "Active" : "Inactive"}
               </div>
             </div>
 
-            <div style={{ color: "var(--text-muted)", fontSize: 9, textAlign: "left", marginBottom: 10 }}>
-              ID: <b style={{ color: "var(--text-primary)" }}>{selectedStudent?.studentId || "N/A"}</b>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                onClick={openConfirmModal}
+                disabled={togglingActive}
+                style={{
+                  background: selectedStudent?.isActive ? "#ff4d4f" : "var(--accent-strong)",
+                  border: "none",
+                  color: "#fff",
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                  fontWeight: 800,
+                  fontSize: 11,
+                }}
+              >
+                {togglingActive ? (selectedStudent?.isActive ? "Deactivating..." : "Activating...") : (selectedStudent?.isActive ? "Deactivate" : "Activate")}
+              </button>
+              {!editingProfile ? (
+                <button
+                  onClick={startEditProfile}
+                  style={{
+                    background: "var(--surface-panel)",
+                    border: "1px solid var(--border-strong)",
+                    color: "var(--accent-strong)",
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    fontWeight: 800,
+                    fontSize: 11,
+                  }}
+                >
+                  Edit Profile
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={saveProfileEdits}
+                    disabled={savingProfile}
+                    style={{
+                      background: "var(--accent-strong)",
+                      border: "none",
+                      color: "#fff",
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      fontWeight: 800,
+                      fontSize: 11,
+                    }}
+                  >
+                    {savingProfile ? "Saving..." : "Save"}
+                  </button>
+                  <button
+                    onClick={cancelEditProfile}
+                    style={{
+                      background: "var(--surface-panel)",
+                      border: "1px solid var(--border-soft)",
+                      color: "var(--text-secondary)",
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      fontWeight: 800,
+                      fontSize: 11,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+              {[
+                { label: "Grade", value: selectedStudent?.grade || "-" },
+                { label: "Section", value: selectedStudent?.section || "-" },
+                { label: "Parents", value: Array.isArray(selectedStudent?.parents) ? selectedStudent.parents.length : 0 },
+              ].map((item) => (
+                <div key={item.label} style={{ background: "var(--surface-soft)", border: "1px solid var(--border-soft)", borderRadius: 14, padding: "12px 10px", textAlign: "center" }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.4px" }}>{item.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: "var(--text-primary)", marginTop: 6 }}>{item.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ padding: "12px 14px", borderRadius: 14, background: "var(--surface-soft)", border: "1px solid var(--border-soft)" }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.45px" }}>Student ID</div>
+              <div style={{ fontSize: 15, color: "var(--text-primary)", fontWeight: 900, marginTop: 4 }}>{selectedStudent?.studentId || "N/A"}</div>
             </div>
 
             {showConfirmModal && (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background: "rgba(0,0,0,0.35)",
-                  zIndex: 1200,
-                }}
-              >
-                <div
-                  style={{
-                    width: 420,
-                    maxWidth: "92%",
-                    background: "var(--surface-panel)",
-                    padding: 18,
-                    borderRadius: 10,
-                    boxShadow: "var(--shadow-soft)",
-                    border: "1px solid var(--border-soft)",
-                  }}
-                >
-                  <h3 style={{ margin: 0, marginBottom: 8, fontSize: 14 }}>
-                    {selectedStudent?.isActive ? "Confirm Deactivation" : "Confirm Activation"}
-                  </h3>
+              <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", zIndex: 1200 }}>
+                <div style={{ width: 420, maxWidth: "92%", background: "var(--surface-panel)", padding: 18, borderRadius: 10, boxShadow: "var(--shadow-soft)", border: "1px solid var(--border-soft)" }}>
+                  <h3 style={{ margin: 0, marginBottom: 8, fontSize: 14 }}>{selectedStudent?.isActive ? "Confirm Deactivation" : "Confirm Activation"}</h3>
                   <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
-                    {selectedStudent?.isActive
-                      ? "You are about to deactivate this student and unassign their subjects. Enter admin credentials to confirm."
-                      : "You are about to activate this student. Enter admin credentials to confirm."}
+                    {selectedStudent?.isActive ? "You are about to deactivate this student and unassign their subjects. Enter admin credentials to confirm." : "You are about to activate this student. Enter admin credentials to confirm."}
                   </div>
-
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
                     <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
                       Admin username
-                      <input
-                        value={confirmAdminUsername}
-                        onChange={(e) => setConfirmAdminUsername(e.target.value)}
-                        style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }}
-                      />
+                      <input value={confirmAdminUsername} onChange={(e) => setConfirmAdminUsername(e.target.value)} style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }} />
                     </label>
                     <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
                       Admin password
-                      <input
-                        type="password"
-                        value={confirmAdminPassword}
-                        onChange={(e) => setConfirmAdminPassword(e.target.value)}
-                        style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }}
-                      />
+                      <input type="password" value={confirmAdminPassword} onChange={(e) => setConfirmAdminPassword(e.target.value)} style={{ width: "100%", padding: 8, marginTop: 6, borderRadius: 6, border: "1px solid var(--border-soft)" }} />
                     </label>
                   </div>
-
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                    <button
-                      onClick={closeConfirmModal}
-                      style={{
-                        background: "var(--surface-panel)",
-                        border: "1px solid var(--border-soft)",
-                        color: "var(--text-secondary)",
-                        padding: "8px 12px",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                      }}
-                    >
+                    <button onClick={closeConfirmModal} style={{ background: "var(--surface-panel)", border: "1px solid var(--border-soft)", color: "var(--text-secondary)", padding: "8px 12px", borderRadius: 8, cursor: "pointer", fontWeight: 700 }}>
                       Cancel
                     </button>
-                    <button
-                      onClick={confirmToggle}
-                      disabled={togglingActive}
-                      style={{
-                        background: "var(--accent-strong)",
-                        border: "none",
-                        color: "#fff",
-                        padding: "8px 12px",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                      }}
-                    >
+                    <button onClick={confirmToggle} disabled={togglingActive} style={{ background: "var(--accent-strong)", border: "none", color: "#fff", padding: "8px 12px", borderRadius: 8, cursor: "pointer", fontWeight: 700 }}>
                       {togglingActive ? "Processing..." : "Confirm"}
                     </button>
                   </div>
@@ -2301,153 +2922,43 @@ function StudentsPage() {
               </div>
             )}
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 8,
-              }}
-            >
-              {[
-                { label: "Phone", key: "phone", icon: "📱" },
-                { label: "Gender", key: "gender", icon: "⚧" },
-                { label: "Email", key: "email", icon: "📧" },
-                { label: "Grade", key: "grade", icon: "🏫" },
-                { label: "Section", key: "section", icon: "🧩" },
-                { label: "Age", key: "age", icon: "🎂" },
-                { label: "Birth Date", key: "dob", icon: "📅" },
-                { label: "Parent Name", key: "parentName", icon: "👤" },
-                { label: "Parent Phone", key: "parentPhone", icon: "☎️" },
-              ].map(({ label, key, icon }) => {
-                const value = selectedStudent?.[key];
-                return (
-                  <div
-                    key={key}
-                    style={{
-                      alignItems: "center",
-                      justifyContent: "flex-start",
-                      display: "flex",
-                      background: "var(--surface-panel)",
-                      padding: "8px",
-                      borderRadius: 10,
-                      border: "1px solid var(--border-soft)",
-                      boxShadow: "none",
-                      minHeight: 36,
-                    }}
-                  >
-                    {!editingProfile && (
-                      <span
-                        style={{
-                          fontSize: 14,
-                          marginRight: 8,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        {icon}
-                      </span>
-                    )}
-
-                    <div style={{ width: "100%" }}>
-                      <div
-                        style={{
-                          fontSize: "9px",
-                          fontWeight: 700,
-                          letterSpacing: "0.4px",
-                          color: "var(--text-muted)",
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {label}
-                      </div>
-
+            <div style={{ ...sidebarSectionCardStyle, padding: 14, boxShadow: "none" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px", marginBottom: 10 }}>Profile details</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {studentDetailRows.map((row) => {
+                  const value = selectedStudent?.[row.key];
+                  return (
+                    <div key={row.key} style={{ display: "grid", gridTemplateColumns: "92px 1fr", gap: 12, alignItems: "start", paddingBottom: 10, borderBottom: "1px solid color-mix(in srgb, var(--border-soft) 70%, white)" }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.35px", color: "var(--text-muted)", textTransform: "uppercase" }}>{row.label}</div>
                       {!editingProfile ? (
-                        <div
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 600,
-                            color:
-                              label === "Gender"
-                                ? String(value || "").toLowerCase() === "male"
-                                  ? "var(--success)"
-                                  : String(value || "").toLowerCase() === "female"
-                                  ? "var(--accent-strong)"
-                                  : "var(--text-primary)"
-                                : "var(--text-primary)",
-                            marginTop: 2,
-                            wordBreak: "break-word",
-                          }}
-                        >
+                        <div style={{ fontSize: 12, fontWeight: 700, color: row.label === "Gender" ? (String(value || "").toLowerCase() === "male" ? "var(--success)" : String(value || "").toLowerCase() === "female" ? "var(--accent-strong)" : "var(--text-primary)") : "var(--text-primary)", wordBreak: "break-word", lineHeight: 1.45 }}>
                           {value || <span style={{ color: "var(--text-muted)" }}>N/A</span>}
                         </div>
+                      ) : row.key === "gender" ? (
+                        <select
+                          value={typeof editForm[row.key] !== "undefined" ? editForm[row.key] : value || ""}
+                          onChange={(e) => setEditForm((p) => ({ ...(p || {}), [row.key]: e.target.value }))}
+                          style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--input-border)", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
+                        >
+                          <option value="">Select gender</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                        </select>
                       ) : (
-                        key === "gender" ? (
-                          <select
-                            value={typeof editForm[key] !== "undefined" ? editForm[key] : (value || "")}
-                            onChange={(e) => setEditForm((p) => ({ ...(p || {}), [key]: e.target.value }))}
-                            style={{
-                              marginTop: 6,
-                              width: "100%",
-                              padding: "8px 10px",
-                              borderRadius: 8,
-                              border: "1px solid var(--input-border)",
-                              fontSize: 12,
-                              background: "var(--input-bg)",
-                              color: "var(--text-primary)",
-                            }}
-                          >
-                            <option value="">Select gender</option>
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                          </select>
-                        ) : (
-                          <input
-                            value={typeof editForm[key] !== "undefined" ? editForm[key] : (value || "")}
-                            onChange={(e) => setEditForm((p) => ({ ...(p || {}), [key]: e.target.value }))}
-                            style={{
-                              marginTop: 6,
-                              width: "100%",
-                              padding: "8px 10px",
-                              borderRadius: 8,
-                              border: "1px solid var(--input-border)",
-                              fontSize: 12,
-                              background: "var(--input-bg)",
-                              color: "var(--text-primary)",
-                            }}
-                          />
-                        )
+                        <input
+                          value={typeof editForm[row.key] !== "undefined" ? editForm[row.key] : value || ""}
+                          onChange={(e) => setEditForm((p) => ({ ...(p || {}), [row.key]: e.target.value }))}
+                          style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--input-border)", fontSize: 12, background: "var(--input-bg)", color: "var(--text-primary)" }}
+                        />
                       )}
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
 
-            <div
-              style={{
-                background: "var(--surface-panel)",
-                borderRadius: 12,
-                padding: 10,
-                border: "1px solid var(--border-soft)",
-                boxShadow: "none",
-                marginTop: 10,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 10,
-                  fontWeight: 800,
-                  letterSpacing: "0.4px",
-                  color: "var(--text-muted)",
-                  textTransform: "uppercase",
-                  marginBottom: 8,
-                }}
-              >
-                Enrollment Summary
-              </div>
-
+            <div style={{ ...sidebarSectionCardStyle, padding: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.4px", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8 }}>Enrollment summary</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {[
                   `Grade ${selectedStudent?.grade || "-"}`,
@@ -2456,25 +2967,12 @@ function StudentsPage() {
                   `Status ${(selectedStudent?.status || "Active").toString()}`,
                   `Parents ${Array.isArray(selectedStudent?.parents) ? selectedStudent.parents.length : 0}`,
                 ].map((item, index) => (
-                  <span
-                    key={`${item}_${index}`}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 999,
-                      border: "1px solid var(--border-soft)",
-                      background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
-                      color: "var(--text-secondary)",
-                      fontSize: 10,
-                      fontWeight: 700,
-                      lineHeight: 1.2,
-                    }}
-                  >
+                  <span key={`${item}_${index}`} style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid var(--border-soft)", background: "color-mix(in srgb, var(--surface-panel) 78%, white)", color: "var(--text-secondary)", fontSize: 10, fontWeight: 700, lineHeight: 1.2 }}>
                     {item}
                   </span>
                 ))}
               </div>
             </div>
-           
           </div>
         </div>
       )}
@@ -2483,20 +2981,31 @@ function StudentsPage() {
       {studentTab === "attendance" && selectedStudent && (
         <div
           style={{
-            padding: "12px",
-            background: "var(--surface-panel)",
-            borderRadius: 12,
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow-soft)",
+            ...sidebarSectionCardStyle,
+            padding: "14px",
           }}
         >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Attendance</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Simple attendance health by subject.</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase" }}>Present rate</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: "var(--text-primary)", marginTop: 4 }}>{attendanceStats?.percent || 0}%</div>
+            </div>
+          </div>
+
           {/* VIEW SWITCH */}
           <div
             style={{
               display: "flex",
-              justifyContent: "center",
               gap: 6,
               marginBottom: 10,
+              padding: 4,
+              borderRadius: 999,
+              background: "var(--surface-soft)",
+              border: "1px solid var(--border-soft)",
             }}
           >
             {["daily", "weekly", "monthly"].map((v) => (
@@ -2505,7 +3014,7 @@ function StudentsPage() {
                 onClick={() => setAttendanceView(v)}
                 style={{
                   padding: "4px 10px",
-                  borderRadius: 8,
+                  borderRadius: 999,
                   border: "none",
                   fontWeight: 700,
                   fontSize: 10,
@@ -2546,12 +3055,12 @@ function StudentsPage() {
                   onClick={() => toggleExpand(expandKey)}
                   style={{
                     cursor: "pointer",
-                    background: "var(--surface-panel)",
-                    borderRadius: 12,
+                    background: "#ffffff",
+                    borderRadius: 14,
                     padding: 12,
                     marginBottom: 10,
                     border: "1px solid var(--border-soft)",
-                    boxShadow: "var(--shadow-soft)",
+                    boxShadow: "none",
                     position: "relative",
                     overflow: "hidden",
                   }}
@@ -2595,17 +3104,7 @@ function StudentsPage() {
                         {records[0]?.teacherName}
                       </p>
                     </div>
-                    <div
-                      style={{
-                        padding: "4px 8px",
-                        borderRadius: 999,
-                        fontSize: 10,
-                        fontWeight: 800,
-                        background: "var(--accent-soft)",
-                        color: "var(--accent-strong)",
-                        border: "1px solid var(--border-strong)",
-                      }}
-                    >
+                    <div style={{ fontSize: 11, fontWeight: 900, color: "var(--accent-strong)" }}>
                       {progress}%
                     </div>
                   </div>
@@ -2638,14 +3137,14 @@ function StudentsPage() {
                       marginBottom: 12,
                     }}
                   >
-                    Click to view {attendanceView.toUpperCase()} details
+                    Tap to view {attendanceView} details
                   </div>
                   {/* EXPANDED DAYS */}
                   {expandedCards[expandKey] && (
                     <div
                       style={{
                         marginTop: 14,
-                        background: "var(--surface-panel)",
+                        background: "var(--surface-soft)",
                         border: "1px solid var(--border-soft)",
                         borderRadius: 10,
                         padding: 10,
@@ -2706,22 +3205,26 @@ function StudentsPage() {
       {studentTab === "performance" && selectedStudent && (
         <div
           style={{
+            ...sidebarSectionCardStyle,
             position: "relative",
-            background: "var(--surface-panel)",
-            border: "1px solid var(--border-soft)",
-            borderRadius: 12,
-            boxShadow: "var(--shadow-soft)",
-            padding: 12,
+            padding: 14,
           }}
         >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Performance</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Semester scores with clearer course cards.</div>
+            </div>
+          </div>
           <div
             style={{
               display: "flex",
-              justifyContent: "center",
               gap: "12px",
               marginBottom: "12px",
-              borderBottom: "1px solid var(--border-soft)",
-              paddingBottom: "6px",
+              padding: 4,
+              borderRadius: 999,
+              background: "var(--surface-soft)",
+              border: "1px solid var(--border-soft)",
             }}
           >
             {["semester1", "semester2"].map((sem) => {
@@ -2731,14 +3234,14 @@ function StudentsPage() {
                   key={sem}
                   onClick={() => setActiveSemester(sem)}
                   style={{
-                    background: "none",
                     border: "none",
                     cursor: "pointer",
-                    fontSize: "10px",
+                    fontSize: "11px",
                     fontWeight: 700,
-                    color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
-                    padding: "6px 8px",
-                    borderBottom: isActive ? "2px solid var(--accent-strong)" : "2px solid transparent",
+                    color: isActive ? "var(--on-accent)" : "var(--text-muted)",
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    background: isActive ? "var(--text-primary)" : "transparent",
                   }}
                 >
                   {sem === "semester1" ? "Semester 1" : "Semester 2"}
@@ -2752,7 +3255,6 @@ function StudentsPage() {
               display: "grid",
               gridTemplateColumns: "1fr",
               gap: "10px",
-              padding: "10px",
             }}
           >
             {Object.keys(studentMarksFlattened || {}).length === 0 ? (
@@ -2823,20 +3325,7 @@ function StudentsPage() {
                         {courseName}
                       </div>
 
-                      <div
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          padding: "3px 8px",
-                          borderRadius: 999,
-                          fontSize: 10,
-                          fontWeight: 800,
-                          marginBottom: 10,
-                          color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e",
-                          background: hasQuarterFormatPreview ? "#dbeafe" : "#ccfbf1",
-                          border: "1px solid var(--border-soft)",
-                        }}
-                      >
+                      <div style={{ fontSize: 10, fontWeight: 800, marginBottom: 10, color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e" }}>
                         {hasQuarterFormatPreview ? "Format: Quarter-based" : "Format: Semester-based"}
                       </div>
 
@@ -2931,17 +3420,15 @@ function StudentsPage() {
       {studentTab === "payment" && (
         <div
           style={{
+            ...sidebarSectionCardStyle,
             position: "relative",
-            background: "var(--surface-panel)",
-            border: "1px solid var(--border-soft)",
-            borderRadius: 12,
-            boxShadow: "var(--shadow-soft)",
-            padding: 12,
+            padding: 14,
           }}
         >
-          <h3 style={{ margin: 0, marginBottom: 10, color: "var(--text-primary)", fontWeight: 800, fontSize: 13, textAlign: "center" }}>
-            Monthly Payment History
-          </h3>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Payments</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Monthly payment status in a simpler list.</div>
+          </div>
 
           {!selectedStudent ? (
             <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Select a student to view payment history.</p>
@@ -2960,7 +3447,7 @@ function StudentsPage() {
                         alignItems: "center",
                         justifyContent: "space-between",
                         padding: "10px 12px",
-                        borderRadius: 8,
+                        borderRadius: 12,
                         background: paid ? "var(--success-soft)" : "var(--danger-soft)",
                         border: paid ? "1px solid var(--success)" : "1px solid var(--danger)",
                       }}
@@ -3366,11 +3853,7 @@ function StudentsPage() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img
-            src={selectedStudent.profileImage || "/default-profile.png"}
-            alt={selectedStudent.name}
-            style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }}
-          />
+          <ProfileAvatar src={selectedStudent.profileImage} name={selectedStudent.name} alt={selectedStudent.name} style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }} />
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedStudent.name || "Student"}</div>
             <div style={{ fontSize: 12, opacity: 0.95 }}>{selectedStudent.studentId} • Grade {selectedStudent.grade || "-"} • Section {selectedStudent.section || "-"}</div>

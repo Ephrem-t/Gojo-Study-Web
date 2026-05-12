@@ -13,6 +13,9 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
+import { buildSchoolRtdbBase, RTDB_BASE_RAW } from "../api/rtdbScope";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { loadGradeManagementNode, loadSchoolInfoNode, loadSchoolStudentsNode } from "../utils/registerData";
 
 const PAGE_BG = "linear-gradient(150deg, var(--page-bg-secondary) 0%, var(--page-bg) 45%, color-mix(in srgb, var(--page-bg-secondary) 78%, white) 100%)";
 
@@ -85,8 +88,9 @@ export default function GredeManagement() {
   }, []);
 
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const DB_URL = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbUrl, setResolvedDbUrl] = useState(DB_URL);
 
   const [gradesMap, setGradesMap] = useState({});
   const [studentsMap, setStudentsMap] = useState({});
@@ -104,6 +108,92 @@ export default function GredeManagement() {
   const [activeAcademicYear, setActiveAcademicYear] = useState("");
 
   const notify = (type, text) => setFeedback({ type, text });
+
+  const persistResolvedSchoolSession = (nextSchoolCode, shortName = "") => {
+    if (!nextSchoolCode || typeof window === "undefined") return;
+
+    const updateStoredValue = (key) => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(key) || "{}") || {};
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({
+            ...parsed,
+            schoolCode: nextSchoolCode,
+            ...(shortName
+              ? {
+                  shortName,
+                  schoolShortName: shortName,
+                }
+              : {}),
+          })
+        );
+      } catch {
+        // Ignore storage parse failures.
+      }
+    };
+
+    updateStoredValue("registrar");
+    updateStoredValue("admin");
+  };
+
+  const resolveSchoolScope = async (requestedSchoolCode, options = {}) => {
+    const force = Boolean(options?.force);
+    const normalizedRequestedCode = String(requestedSchoolCode || "").trim();
+    const fallbackDbUrl = buildSchoolRtdbBase(normalizedRequestedCode);
+    const normalizeLookup = (value) => String(value || "").trim().toLowerCase();
+    const requestedLookup = normalizeLookup(normalizedRequestedCode);
+
+    if (!normalizedRequestedCode) {
+      return {
+        schoolCode: "",
+        dbUrl: fallbackDbUrl,
+        schoolInfo: {},
+      };
+    }
+
+    const directSchoolInfo = (await loadSchoolInfoNode({ rtdbBase: fallbackDbUrl, force })) || {};
+    if (Object.keys(directSchoolInfo).length > 0) {
+      return {
+        schoolCode: normalizedRequestedCode,
+        dbUrl: fallbackDbUrl,
+        schoolInfo: directSchoolInfo,
+      };
+    }
+
+    const schoolIndex =
+      (await fetchCachedJson(`${RTDB_BASE_RAW}/Platform1/Schools.json?shallow=true`, {
+        ttlMs: 60 * 1000,
+        fallbackValue: {},
+        force,
+      })) || {};
+
+    for (const candidateSchoolCode of Object.keys(schoolIndex || {})) {
+      const candidateDbUrl = buildSchoolRtdbBase(candidateSchoolCode);
+      const candidateSchoolInfo = (await loadSchoolInfoNode({ rtdbBase: candidateDbUrl, force })) || {};
+      const matchesRequestedSchool = [
+        candidateSchoolCode,
+        candidateSchoolInfo?.schoolCode,
+        candidateSchoolInfo?.shortName,
+      ].some((value) => normalizeLookup(value) === requestedLookup);
+
+      if (!matchesRequestedSchool) {
+        continue;
+      }
+
+      return {
+        schoolCode: candidateSchoolCode,
+        dbUrl: candidateDbUrl,
+        schoolInfo: candidateSchoolInfo,
+      };
+    }
+
+    return {
+      schoolCode: normalizedRequestedCode,
+      dbUrl: fallbackDbUrl,
+      schoolInfo: directSchoolInfo,
+    };
+  };
 
   const isValidGradeKey = (value) => {
     const n = Number(value);
@@ -192,7 +282,8 @@ export default function GredeManagement() {
     return occupancy;
   }, [studentsMap, activeAcademicYear]);
 
-  const loadData = async () => {
+  const loadData = async (options = {}) => {
+    const force = Boolean(options?.force);
     if (!schoolCode) {
       notify("error", "Missing schoolCode in session. Please login again.");
       return;
@@ -200,20 +291,33 @@ export default function GredeManagement() {
 
     setLoading(true);
     try {
-      const [gradeRes, studentsRes, activeYearRes] = await Promise.all([
-        axios.get(`${DB_URL}/GradeManagement/grades.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/Students.json`).catch(() => ({ data: {} })),
-        axios.get(`${DB_URL}/schoolInfo/currentAcademicYear.json`).catch(() => ({ data: "" })),
+      const resolvedScope = await resolveSchoolScope(schoolCode, { force });
+      const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+      const nextResolvedDbUrl = String(resolvedScope?.dbUrl || DB_URL || "").trim();
+      const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+      setResolvedSchoolCode(nextResolvedSchoolCode);
+      setResolvedDbUrl(nextResolvedDbUrl);
+
+      if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+        persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+      }
+
+      const [rawGrades, studentsData, schoolInfo] = await Promise.all([
+        loadGradeManagementNode({ rtdbBase: nextResolvedDbUrl, force }), // force only applies to grades after mutations
+        loadSchoolStudentsNode({ rtdbBase: nextResolvedDbUrl }), // always use cache — students don't change on grade mutations
+        Object.keys(resolvedSchoolInfo).length > 0
+          ? Promise.resolve(resolvedSchoolInfo)
+          : loadSchoolInfoNode({ rtdbBase: nextResolvedDbUrl }),
       ]);
 
-      const rawGrades = gradeRes.data || {};
       const nextGrades = Object.fromEntries(
-        Object.entries(rawGrades).filter(([gradeKey]) => isValidGradeKey(gradeKey))
+        Object.entries(rawGrades || {}).filter(([gradeKey]) => isValidGradeKey(gradeKey))
       );
 
       setGradesMap(nextGrades);
-      setStudentsMap(studentsRes.data || {});
-      setActiveAcademicYear(String(activeYearRes.data || ""));
+      setStudentsMap(studentsData || {});
+      setActiveAcademicYear(String(schoolInfo?.currentAcademicYear || ""));
 
       const sorted = Object.keys(nextGrades).sort((a, b) => Number(a) - Number(b));
       const firstGrade = sorted[0] || "";
@@ -241,6 +345,8 @@ export default function GredeManagement() {
   useEffect(() => {
     loadData();
   }, [schoolCode]);
+
+  const activeDbUrl = resolvedDbUrl || DB_URL;
 
   useEffect(() => {
     const nextDraft = {};
@@ -277,7 +383,7 @@ export default function GredeManagement() {
 
     setWorking(true);
     try {
-      await axios.patch(`${DB_URL}/GradeManagement/grades/${gradeKey}.json`, {
+      await axios.patch(`${activeDbUrl}/GradeManagement/grades/${gradeKey}.json`, {
         grade: gradeKey,
         sections: {},
         createdAt: new Date().toISOString(),
@@ -285,7 +391,7 @@ export default function GredeManagement() {
       setNewGrade("");
       setSelectedGrade(gradeKey);
       setSelectedSection("");
-      await loadData();
+      await loadData({ force: true });
       notify("success", `Grade ${gradeKey} created successfully.`);
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to create grade.");
@@ -321,7 +427,7 @@ export default function GredeManagement() {
 
     setWorking(true);
     try {
-      await axios.patch(`${DB_URL}/GradeManagement/grades/${selectedGrade}/sections/${sectionKey}.json`, {
+      await axios.patch(`${activeDbUrl}/GradeManagement/grades/${selectedGrade}/sections/${sectionKey}.json`, {
         section: sectionKey,
         maxStudents,
         createdAt: new Date().toISOString(),
@@ -330,7 +436,7 @@ export default function GredeManagement() {
       setNewSection("");
       setNewSectionMax("40");
       setSelectedSection(sectionKey);
-      await loadData();
+      await loadData({ force: true });
       notify("success", `Section ${sectionKey} added to Grade ${selectedGrade}.`);
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to add section.");
@@ -350,12 +456,12 @@ export default function GredeManagement() {
 
     setWorking(true);
     try {
-      await axios.patch(`${DB_URL}/GradeManagement/grades/${gradeKey}/sections/${sectionKey}.json`, {
+      await axios.patch(`${activeDbUrl}/GradeManagement/grades/${gradeKey}/sections/${sectionKey}.json`, {
         maxStudents,
         updatedAt: new Date().toISOString(),
       });
 
-      await loadData();
+      await loadData({ force: true });
       notify("success", `Section ${sectionKey} max updated to ${maxStudents}.`);
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to update max students.");
@@ -378,13 +484,13 @@ export default function GredeManagement() {
 
     setWorking(true);
     try {
-      await axios.delete(`${DB_URL}/GradeManagement/grades/${gradeKey}/sections/${sectionKey}.json`);
+      await axios.delete(`${activeDbUrl}/GradeManagement/grades/${gradeKey}/sections/${sectionKey}.json`);
 
       if (selectedGrade === gradeKey && selectedSection === sectionKey) {
         setSelectedSection("");
       }
 
-      await loadData();
+      await loadData({ force: true });
       notify("success", `Section ${sectionKey} deleted from Grade ${gradeKey}.`);
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to delete section.");
@@ -417,14 +523,14 @@ export default function GredeManagement() {
 
     setWorking(true);
     try {
-      await axios.delete(`${DB_URL}/GradeManagement/grades/${gradeKey}.json`);
+      await axios.delete(`${activeDbUrl}/GradeManagement/grades/${gradeKey}.json`);
 
       if (selectedGrade === gradeKey) {
         setSelectedGrade("");
         setSelectedSection("");
       }
 
-      await loadData();
+      await loadData({ force: true });
       notify("success", `Grade ${gradeKey} deleted.`);
     } catch (err) {
       notify("error", err?.response?.data?.message || err?.message || "Failed to delete grade.");
@@ -526,7 +632,7 @@ export default function GredeManagement() {
             <div className="section-header-card" style={{ padding: 18 }}>
               <div className="section-header-card__row">
                 <div>
-                  <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Grede Management</h1>
+                  <h1 className="section-header-card__title" style={{ fontSize: 24, fontWeight: 900 }}>Grade Management</h1>
                   <p className="section-header-card__subtitle" style={{ fontSize: 13 }}>
                     Manage grades and sections with capacity control and live section occupancy.
                   </p>
@@ -538,7 +644,7 @@ export default function GredeManagement() {
                   </div>
                   <button
                     type="button"
-                    onClick={loadData}
+                    onClick={() => loadData({ force: true })}
                     disabled={loading || working}
                     style={{
                       display: "flex",

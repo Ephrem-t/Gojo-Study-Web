@@ -1,32 +1,129 @@
 import json
 import os
 import re
-import sys
-from datetime import datetime
-from flask import Flask, request, jsonify, render_template, has_request_context
+import threading
+from datetime import datetime, timedelta, timezone
+from time import time
+from urllib.parse import unquote, urlparse
+from flask import Flask, g, jsonify, render_template, request, session, has_request_context
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
+from firebase_config import get_firebase_options, require_firebase_credentials
+from werkzeug.utils import secure_filename
+from werkzeug.security import check_password_hash, generate_password_hash
+
+
+# ---- server-side posts cache (shared across all teacher sessions) ----
+_POSTS_CACHE: dict = {}
+_POSTS_CACHE_LOCK = threading.Lock()
+_POSTS_CACHE_TTL = 2 * 60  # seconds
+
+def _pc_get(key: str):
+    with _POSTS_CACHE_LOCK:
+        entry = _POSTS_CACHE.get(key)
+        if entry and (time() - entry["ts"]) < _POSTS_CACHE_TTL:
+            return entry["data"]
+        return None
+
+def _pc_set(key: str, data):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE[key] = {"data": data, "ts": time()}
+
+def _pc_invalidate(key: str):
+    with _POSTS_CACHE_LOCK:
+        _POSTS_CACHE.pop(key, None)
+# -----------------------------------------------------------------------
+
+APP_ENV = str(os.getenv("APP_ENV") or os.getenv("FLASK_ENV") or "development").strip().lower()
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:4173",
+    "http://localhost:4173",
+)
+DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60
+TEACHER_SESSION_KEY = "teacher_auth"
+PUBLIC_API_EXACT_PATHS = {
+    "/api/health",
+    "/api/schools",
+    "/api/teacher_login",
+    "/api/teacher/logout",
+}
+
+
+def _env_flag(name, default=False):
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return bool(default)
+
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_allowed_origins():
+    raw_origins = str(os.getenv("ALLOWED_ORIGINS") or "").strip()
+    if raw_origins:
+        parsed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+        if parsed_origins:
+            return parsed_origins
+
+    return list(DEFAULT_ALLOWED_ORIGINS)
+
+
+def _read_runtime_secret_key():
+    secret_key = str(os.getenv("FLASK_SECRET_KEY") or os.getenv("APP_SECRET_KEY") or "").strip()
+    if secret_key:
+        return secret_key
+
+    if APP_ENV == "production":
+        raise RuntimeError("FLASK_SECRET_KEY or APP_SECRET_KEY must be set in production.")
+
+    return "gojo-teacher-dev-session-secret"
+
+
+def _read_session_ttl_seconds():
+    raw_value = str(os.getenv("TEACHER_SESSION_TTL_SECONDS") or "").strip()
+    if not raw_value:
+        return DEFAULT_SESSION_TTL_SECONDS
+
+    try:
+        parsed_value = int(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_TTL_SECONDS
+
+    return parsed_value if parsed_value > 0 else DEFAULT_SESSION_TTL_SECONDS
+
+
+def _read_session_cookie_samesite():
+    normalized_value = str(os.getenv("SESSION_COOKIE_SAMESITE") or "Lax").strip().title()
+    return normalized_value if normalized_value in {"Lax", "Strict", "None"} else "Lax"
+
+
+def _is_public_api_request(path):
+    normalized_path = f"/{str(path or '').strip().lstrip('/')}"
+    normalized_path = normalized_path.rstrip("/") or "/"
+    if normalized_path in PUBLIC_API_EXACT_PATHS:
+        return True
+
+    return normalized_path.startswith("/api/schools/") and normalized_path.endswith("/grades")
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+app.config.update(
+    JSON_SORT_KEYS=False,
+    SECRET_KEY=_read_runtime_secret_key(),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE=_read_session_cookie_samesite(),
+    SESSION_COOKIE_SECURE=_env_flag("SESSION_COOKIE_SECURE", APP_ENV == "production"),
+    PERMANENT_SESSION_LIFETIME=timedelta(seconds=_read_session_ttl_seconds()),
+)
+CORS(app, resources={r"/*": {"origins": _parse_allowed_origins()}}, supports_credentials=True)
 
 # ---------------- FIREBASE ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-default_local_cred = os.path.join(BASE_DIR, "bale-house-rental-firebase-adminsdk-b9crh-1d29f11aad.json")
-
-firebase_json = os.getenv("FIREBASE_CREDENTIALS") or default_local_cred
-
-if not os.path.exists(firebase_json):
-    print("Firebase JSON missing")
-    sys.exit()
-
-cred = credentials.Certificate(firebase_json)
-firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://bale-house-rental-default-rtdb.firebaseio.com/",
-    "storageBucket": "bale-house-rental.appspot.com"
-})
+firebase_credentials = require_firebase_credentials()
+cred = credentials.Certificate(firebase_credentials)
+firebase_admin.initialize_app(cred, get_firebase_options())
 
 _raw_db_reference = db.reference
 
@@ -42,18 +139,279 @@ SCOPED_ROOTS = {
     "Posts",
     "TeacherPosts",
     "Chats",
+    "Chat_Summaries",
     "StudentNotes",
     "LessonPlans",
     "LessonPlanSubmissions",
+    "AcademicYears",
+    "AssessmentTemplates",
     "Presence",
     "Curriculum",
     "Exams",
+    "SchoolExams",
     "counters",
     "Users_counters",
+    "GradeManagement",
+    "CalendarEvents",
+    "CalendarEventsByMonth",
+    "AssesmentTemplates",
+    "HR",
+    "Management",
+    "Registerers",
+    "Attendance",
+    "Schedules",
 }
 
+TEACHER_PROXY_WRITE_PREFIXES = (
+    "Chats",
+    "Chat_Summaries",
+    "TeacherPosts",
+    "LessonPlans",
+    "LessonPlanSubmissions",
+    "SchoolExams",
+)
 
-def _read_school_code_from_request():
+COURSE_STUDENTS_CACHE_TTL_SECONDS = 5 * 60
+STUDENT_ROSTER_CACHE_TTL_SECONDS = 60 * 60
+MIN_TEACHER_PASSWORD_LENGTH = 8
+student_grade_cache = {}
+parent_lookup_cache = {}
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_isoformat():
+    return _utc_now().isoformat()
+
+
+def _utc_timestamp():
+    return int(_utc_now().timestamp())
+
+
+def _normalize_password_value(value):
+    return str(value or "")
+
+
+def _looks_like_password_hash(value):
+    normalized = _normalize_password_value(value).strip()
+    return normalized.startswith(("pbkdf2:", "scrypt:", "argon2:"))
+
+
+def _password_meets_teacher_requirements(password):
+    normalized_password = _normalize_password_value(password)
+    return (
+        len(normalized_password) >= MIN_TEACHER_PASSWORD_LENGTH
+        and bool(re.search(r"[A-Za-z]", normalized_password))
+        and bool(re.search(r"[0-9]", normalized_password))
+    )
+
+
+def _build_password_hash(password):
+    return generate_password_hash(_normalize_password_value(password))
+
+
+def _verify_password_record(user_record, candidate_password):
+    normalized_candidate = _normalize_password_value(candidate_password)
+    if not isinstance(user_record, dict) or not normalized_candidate:
+        return False, False
+
+    checked_hashes = set()
+    for stored_value in (
+        _normalize_password_value(user_record.get("passwordHash")).strip(),
+        _normalize_password_value(user_record.get("password")).strip(),
+    ):
+        if not stored_value or stored_value in checked_hashes or not _looks_like_password_hash(stored_value):
+            continue
+
+        checked_hashes.add(stored_value)
+        try:
+            if check_password_hash(stored_value, normalized_candidate):
+                return True, False
+        except ValueError:
+            continue
+
+    legacy_password = _normalize_password_value(user_record.get("password"))
+    if legacy_password and legacy_password == normalized_candidate:
+        return True, True
+
+    return False, False
+
+
+def _write_user_password_hash(users_ref, user_node_key, plain_password):
+    normalized_user_key = str(user_node_key or "").strip()
+    if not normalized_user_key:
+        return ""
+
+    password_updated_at = _utc_now_isoformat()
+    password_hash = _build_password_hash(plain_password)
+    user_ref = users_ref.child(normalized_user_key)
+    user_ref.update({
+        "passwordHash": password_hash,
+        "passwordUpdatedAt": password_updated_at,
+    })
+
+    try:
+        user_ref.child("password").delete()
+    except Exception:
+        user_ref.update({"password": None})
+
+    return password_updated_at
+
+
+def _is_teacher_user_record(user_record):
+    if not isinstance(user_record, dict):
+        return False
+
+    normalized_role = str(user_record.get("role") or "").strip().lower()
+    return normalized_role in {"", "teacher"}
+
+
+def _verify_teacher_user_credentials(users_ref, user_node_key, raw_password, expected_username=None):
+    normalized_user_key = str(user_node_key or "").strip()
+    normalized_password = _normalize_password_value(raw_password)
+    normalized_expected_username = str(expected_username or "").strip().upper()
+
+    if not normalized_user_key or not normalized_password:
+        return False, {}, "Username and password required"
+
+    user_record = users_ref.child(normalized_user_key).get() or {}
+    if not isinstance(user_record, dict) or not user_record or not _is_teacher_user_record(user_record):
+        return False, {}, "Teacher account not found"
+
+    if normalized_expected_username:
+        stored_username = str(user_record.get("username") or "").strip().upper()
+        if stored_username != normalized_expected_username:
+            return False, user_record, "Teacher username does not match this account"
+
+    password_matches, needs_upgrade = _verify_password_record(user_record, normalized_password)
+    if not password_matches:
+        return False, user_record, "Invalid password"
+
+    if needs_upgrade:
+        password_updated_at = _write_user_password_hash(users_ref, normalized_user_key, normalized_password)
+        user_record = {
+            **user_record,
+            "passwordHash": "configured",
+            "passwordUpdatedAt": password_updated_at,
+        }
+        user_record.pop("password", None)
+
+    return True, user_record, ""
+
+
+def _normalize_session_identifier(value):
+    return str(value or "").strip()
+
+
+def _clear_teacher_session():
+    if not has_request_context():
+        return
+
+    session.pop(TEACHER_SESSION_KEY, None)
+    g.teacher_session = {}
+    g.teacher_session_loaded = True
+
+
+def _write_teacher_session(payload):
+    teacher_key = _normalize_session_identifier(payload.get("teacherKey") or payload.get("teacherId"))
+    teacher_id = _normalize_session_identifier(payload.get("teacherId") or teacher_key)
+    teacher_session = {
+        "teacherKey": teacher_key,
+        "teacherId": teacher_id,
+        "userId": _normalize_session_identifier(payload.get("userId")),
+        "username": _normalize_session_identifier(payload.get("username")),
+        "schoolCode": _normalize_session_identifier(payload.get("schoolCode")),
+        "name": _normalize_session_identifier(payload.get("name")),
+    }
+
+    session[TEACHER_SESSION_KEY] = teacher_session
+    session.permanent = True
+    g.teacher_session = teacher_session
+    g.teacher_session_loaded = True
+    return teacher_session
+
+
+def _get_teacher_session():
+    if not has_request_context():
+        return {}
+
+    if getattr(g, "teacher_session_loaded", False):
+        return getattr(g, "teacher_session", {}) or {}
+
+    raw_session = session.get(TEACHER_SESSION_KEY) or {}
+    if not isinstance(raw_session, dict):
+        _clear_teacher_session()
+        return {}
+
+    teacher_session = {
+        "teacherKey": _normalize_session_identifier(raw_session.get("teacherKey") or raw_session.get("teacherId")),
+        "teacherId": _normalize_session_identifier(raw_session.get("teacherId") or raw_session.get("teacherKey")),
+        "userId": _normalize_session_identifier(raw_session.get("userId")),
+        "username": _normalize_session_identifier(raw_session.get("username")),
+        "schoolCode": _normalize_session_identifier(raw_session.get("schoolCode")),
+        "name": _normalize_session_identifier(raw_session.get("name")),
+    }
+
+    if not teacher_session["teacherKey"] or not teacher_session["userId"] or not teacher_session["schoolCode"]:
+        _clear_teacher_session()
+        return {}
+
+    g.teacher_session = teacher_session
+    g.teacher_session_loaded = True
+    return teacher_session
+
+
+def _teacher_session_matches(teacher_session, *, school_code=None, user_id=None, teacher_key=None, username=None):
+    if not teacher_session:
+        return False
+
+    normalized_school_code = _normalize_session_identifier(school_code)
+    normalized_user_id = _normalize_session_identifier(user_id)
+    normalized_teacher_key = _normalize_session_identifier(teacher_key).upper()
+    normalized_username = _normalize_session_identifier(username).upper()
+
+    if normalized_school_code:
+        session_school = _resolve_requested_school_code(teacher_session.get("schoolCode"))
+        requested_school = _resolve_requested_school_code(normalized_school_code)
+        if session_school != requested_school:
+            return False
+
+    if normalized_user_id and teacher_session.get("userId") != normalized_user_id:
+        return False
+
+    if normalized_teacher_key:
+        session_teacher_keys = {
+            _normalize_session_identifier(teacher_session.get("teacherKey")).upper(),
+            _normalize_session_identifier(teacher_session.get("teacherId")).upper(),
+        }
+        if normalized_teacher_key not in session_teacher_keys:
+            return False
+
+    if normalized_username and _normalize_session_identifier(teacher_session.get("username")).upper() != normalized_username:
+        return False
+
+    return True
+
+
+def _enforce_current_teacher_scope(*, school_code=None, user_id=None, teacher_key=None, username=None, message=None):
+    if _teacher_session_matches(
+        _get_teacher_session(),
+        school_code=school_code,
+        user_id=user_id,
+        teacher_key=teacher_key,
+        username=username,
+    ):
+        return None
+
+    return jsonify({
+        "success": False,
+        "message": message or "This route is limited to the signed-in teacher.",
+    }), 403
+
+
+def _read_explicit_school_code_from_request():
     if not has_request_context():
         return str(os.getenv("DEFAULT_SCHOOL_CODE", "")).strip()
 
@@ -69,6 +427,17 @@ def _read_school_code_from_request():
 
     if not school_code:
         school_code = request.form.get("schoolCode")
+
+    return str(school_code or "").strip()
+
+
+def _read_school_code_from_request():
+    if not has_request_context():
+        return str(os.getenv("DEFAULT_SCHOOL_CODE", "")).strip()
+
+    school_code = _read_explicit_school_code_from_request()
+    if not school_code:
+        school_code = _get_teacher_session().get("schoolCode")
 
     if not school_code:
         school_code = os.getenv("DEFAULT_SCHOOL_CODE", "")
@@ -87,10 +456,450 @@ def school_reference(path, school_code=None):
     root = normalized.split("/", 1)[0]
     resolved_school = str(school_code or _read_school_code_from_request() or "").strip()
 
+    if resolved_school and not resolved_school.startswith("ET-"):
+        mapped_school = _resolve_school_code_by_short_name(resolved_school)
+        if mapped_school:
+            resolved_school = mapped_school
+
     if root in SCOPED_ROOTS and resolved_school:
         normalized = f"Platform1/Schools/{resolved_school}/{normalized}"
 
     return _raw_db_reference(normalized)
+
+
+def _resolve_requested_school_code(explicit_school_code=None):
+    resolved_school = str(explicit_school_code or _read_school_code_from_request() or "").strip()
+
+    if resolved_school and not resolved_school.startswith("ET-"):
+        mapped_school = _resolve_school_code_by_short_name(resolved_school)
+        if mapped_school:
+            resolved_school = mapped_school
+
+    return resolved_school
+
+
+@app.before_request
+def require_teacher_api_session():
+    if request.method == "OPTIONS" or not request.path.startswith("/api"):
+        return None
+
+    if _is_public_api_request(request.path):
+        return None
+
+    teacher_session = _get_teacher_session()
+    if not teacher_session:
+        return jsonify({
+            "success": False,
+            "message": "Teacher session required. Please sign in again.",
+            "errorCode": "teacher_session_required",
+        }), 401
+
+    explicit_school_code = _read_explicit_school_code_from_request()
+    if explicit_school_code and not _teacher_session_matches(
+        teacher_session,
+        school_code=explicit_school_code,
+    ):
+        return jsonify({
+            "success": False,
+            "message": "This request is outside the current teacher school scope.",
+            "errorCode": "teacher_session_scope_violation",
+        }), 403
+
+    return None
+
+
+def _read_student_grade(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("grade")
+        or (student_record.get("basicStudentInformation") or {}).get("grade")
+        or (student_record.get("academicSetup") or {}).get("grade")
+        or ""
+    ).strip()
+
+
+def _read_student_section(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("section")
+        or (student_record.get("basicStudentInformation") or {}).get("section")
+        or (student_record.get("academicSetup") or {}).get("section")
+        or ""
+    ).strip().upper()
+
+
+def _read_student_user_id(student_record):
+    if not isinstance(student_record, dict):
+        return ""
+
+    return str(
+        student_record.get("userId")
+        or (student_record.get("systemAccountInformation") or {}).get("userId")
+        or (student_record.get("account") or {}).get("userId")
+        or ""
+    ).strip()
+
+
+def _is_active_record(record):
+    if not isinstance(record, dict):
+        return False
+
+    raw_value = record.get("status")
+    if raw_value is None:
+        raw_value = record.get("isActive")
+
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    normalized_value = str(raw_value or "active").strip().lower()
+    return normalized_value in {"active", "true", "1"}
+
+
+def _cache_get(cache_store, cache_key, ttl_seconds):
+    cache_entry = cache_store.get(cache_key)
+    if not cache_entry:
+        return None
+
+    if time() - float(cache_entry.get("cached_at") or 0) > float(ttl_seconds or 0):
+        cache_store.pop(cache_key, None)
+        return None
+
+    return cache_entry.get("value")
+
+
+def _cache_set(cache_store, cache_key, value):
+    cache_store[cache_key] = {
+        "value": value,
+        "cached_at": time(),
+    }
+    return value
+
+
+def _first_snapshot_record(snapshot):
+    if isinstance(snapshot, dict):
+        for record_key, record_value in snapshot.items():
+            if isinstance(record_value, dict):
+                return str(record_key or "").strip(), record_value
+
+    return "", {}
+
+
+def _build_student_roster_cache_key(school_code):
+    return str(school_code or "__default__").strip() or "__default__"
+
+
+def _clear_student_roster_cache(school_code):
+    student_grade_cache.pop(_build_student_roster_cache_key(school_code), None)
+
+
+def _get_cached_student_grade_sections(school_code):
+    cache_key = _build_student_roster_cache_key(school_code)
+    cached_value = _cache_get(student_grade_cache, cache_key, STUDENT_ROSTER_CACHE_TTL_SECONDS)
+    if isinstance(cached_value, dict):
+        return cached_value
+
+    students_node = school_reference("Students", school_code=school_code).get() or {}
+    if not isinstance(students_node, dict):
+        students_node = {}
+
+    grade_section_index = {}
+    for student_key, student_record in students_node.items():
+        if not isinstance(student_record, dict):
+            continue
+
+        grade_section_key = f"{_read_student_grade(student_record)}|{_read_student_section(student_record)}"
+        if grade_section_key == "|":
+            continue
+
+        grade_section_index.setdefault(grade_section_key, {})[str(student_key or "").strip()] = student_record
+
+    return _cache_set(student_grade_cache, cache_key, grade_section_index)
+
+
+def _load_students_for_grade_sections(school_code, allowed_grade_sections, include_inactive=False):
+    normalized_allowed = {
+        str(value or "").strip()
+        for value in (allowed_grade_sections or set())
+        if str(value or "").strip()
+    }
+    if not school_code or not normalized_allowed:
+        return []
+
+    grade_section_index = _get_cached_student_grade_sections(school_code)
+    user_cache = {}
+    rows = []
+    seen_student_keys = set()
+
+    for grade_section_key in normalized_allowed:
+        for student_key, student_record in (grade_section_index.get(grade_section_key) or {}).items():
+            if not isinstance(student_record, dict):
+                continue
+
+            normalized_student_key = str(student_key or "").strip()
+            if not normalized_student_key or normalized_student_key in seen_student_keys:
+                continue
+
+            student_user_id = _read_student_user_id(student_record)
+            if not student_user_id:
+                continue
+
+            if not include_inactive and not _is_active_record(student_record):
+                continue
+
+            student_section = _read_student_section(student_record)
+
+            if student_user_id not in user_cache:
+                user_record = school_reference(f"Users/{student_user_id}", school_code=school_code).get() or {}
+                user_cache[student_user_id] = user_record if isinstance(user_record, dict) else {}
+
+            seen_student_keys.add(normalized_student_key)
+            rows.append({
+                "studentKey": normalized_student_key,
+                "studentId": str(student_record.get("studentId") or student_key or "").strip(),
+                "userId": student_user_id,
+                "grade": _read_student_grade(student_record),
+                "section": student_section,
+                "raw": student_record,
+                "user": user_cache.get(student_user_id) or {},
+            })
+
+    return rows
+
+
+def _load_parent_record_by_identifier(school_code, parent_identifier):
+    normalized_identifier = str(parent_identifier or "").strip()
+    if not school_code or not normalized_identifier:
+        return "", {}
+
+    cache_key = f"{str(school_code or '__default__').strip() or '__default__'}::{normalized_identifier}"
+    cached_value = _cache_get(parent_lookup_cache, cache_key, COURSE_STUDENTS_CACHE_TTL_SECONDS)
+    if isinstance(cached_value, dict):
+        record_key = str(cached_value.get("recordKey") or "").strip()
+        record = cached_value.get("record") or {}
+        return record_key, record if isinstance(record, dict) else {}
+
+    parents_ref = school_reference("Parents", school_code=school_code)
+    direct_record = parents_ref.child(normalized_identifier).get() or {}
+    if isinstance(direct_record, dict) and direct_record:
+        enriched_direct_record = {
+            **direct_record,
+            "parentId": str(direct_record.get("parentId") or normalized_identifier).strip(),
+        }
+        payload = {
+            "recordKey": normalized_identifier,
+            "record": enriched_direct_record,
+        }
+        _cache_set(parent_lookup_cache, cache_key, payload)
+        return normalized_identifier, enriched_direct_record
+
+    try:
+        record_key, record = _first_snapshot_record(
+            parents_ref.order_by_child("userId").equal_to(normalized_identifier).limit_to_first(1).get() or {}
+        )
+    except Exception:
+        record_key, record = "", {}
+
+    if not isinstance(record, dict) or not record:
+        return "", {}
+
+    enriched_record = {
+        **record,
+        "parentId": str(record.get("parentId") or record_key or normalized_identifier).strip(),
+    }
+    payload = {
+        "recordKey": record_key,
+        "record": enriched_record,
+    }
+    _cache_set(parent_lookup_cache, cache_key, payload)
+    if record_key:
+        _cache_set(
+            parent_lookup_cache,
+            f"{str(school_code or '__default__').strip() or '__default__'}::{record_key}",
+            payload,
+        )
+    parent_user_id = str(enriched_record.get("userId") or "").strip()
+    if parent_user_id:
+        _cache_set(
+            parent_lookup_cache,
+            f"{str(school_code or '__default__').strip() or '__default__'}::{parent_user_id}",
+            payload,
+        )
+
+    return record_key, enriched_record
+
+
+def _normalize_rtdb_proxy_path(path_value):
+    normalized = str(path_value or "").strip().lstrip("/")
+    if normalized.endswith(".json"):
+        normalized = normalized[:-5]
+    return normalized.strip("/")
+
+
+def _parse_rtdb_query_value(raw_value):
+    if raw_value is None:
+        return None
+
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        return None
+
+    try:
+        return json.loads(normalized)
+    except Exception:
+        return normalized
+
+
+def _apply_rtdb_proxy_query(reference):
+    order_by = request.args.get("orderBy")
+    if order_by is not None:
+        normalized_order_by = _parse_rtdb_query_value(order_by)
+        if normalized_order_by == "$key":
+            reference = reference.order_by_key()
+        elif normalized_order_by == "$value":
+            reference = reference.order_by_value()
+        elif normalized_order_by:
+            reference = reference.order_by_child(str(normalized_order_by))
+
+    if request.args.get("startAt") is not None:
+        reference = reference.start_at(_parse_rtdb_query_value(request.args.get("startAt")))
+
+    if request.args.get("endAt") is not None:
+        reference = reference.end_at(_parse_rtdb_query_value(request.args.get("endAt")))
+
+    if request.args.get("equalTo") is not None:
+        reference = reference.equal_to(_parse_rtdb_query_value(request.args.get("equalTo")))
+
+    if request.args.get("limitToFirst") is not None:
+        try:
+            reference = reference.limit_to_first(int(str(request.args.get("limitToFirst") or "0")))
+        except (TypeError, ValueError):
+            pass
+
+    if request.args.get("limitToLast") is not None:
+        try:
+            reference = reference.limit_to_last(int(str(request.args.get("limitToLast") or "0")))
+        except (TypeError, ValueError):
+            pass
+
+    return reference
+
+
+def _is_allowed_teacher_proxy_path(node_path, teacher_session):
+    normalized_path = str(node_path or "").strip().lstrip("/")
+    if not normalized_path or not teacher_session:
+        return False
+
+    normalized_school_code = _resolve_requested_school_code(teacher_session.get("schoolCode"))
+
+    if normalized_path.startswith("Platform1/schoolCodeIndex/"):
+        return request.method == "GET"
+
+    relative_path = _extract_teacher_proxy_relative_path(normalized_path, normalized_school_code)
+    if not relative_path:
+        return False
+
+    if request.method == "GET":
+        return relative_path.split("/", 1)[0] in SCOPED_ROOTS
+
+    return _is_allowed_teacher_proxy_write_path(relative_path)
+
+
+def _extract_teacher_proxy_relative_path(node_path, school_code=""):
+    normalized_path = _normalize_rtdb_proxy_path(node_path)
+    normalized_school_code = _resolve_requested_school_code(school_code)
+    if not normalized_path:
+        return ""
+
+    if not normalized_path.startswith("Platform1/Schools/"):
+        return normalized_path
+
+    path_segments = normalized_path.split("/")
+    if len(path_segments) < 4:
+        return ""
+
+    if normalized_school_code and path_segments[2] != normalized_school_code:
+        return ""
+
+    return "/".join(path_segments[3:])
+
+
+def _path_matches_prefix(path_value, prefix):
+    normalized_path = _normalize_rtdb_proxy_path(path_value)
+    normalized_prefix = _normalize_rtdb_proxy_path(prefix)
+    if not normalized_path or not normalized_prefix:
+        return False
+
+    return normalized_path == normalized_prefix or normalized_path.startswith(f"{normalized_prefix}/")
+
+
+def _is_allowed_teacher_proxy_write_path(relative_path):
+    normalized_relative_path = _normalize_rtdb_proxy_path(relative_path)
+    if not normalized_relative_path:
+        return False
+
+    if any(_path_matches_prefix(normalized_relative_path, prefix) for prefix in TEACHER_PROXY_WRITE_PREFIXES):
+        return True
+
+    if _path_matches_prefix(normalized_relative_path, "AcademicYears"):
+        return "/LessonPlans/" in f"/{normalized_relative_path}/"
+
+    return False
+
+
+@app.route("/api/rtdb-proxy/<path:node_path>", methods=["GET", "PUT", "PATCH", "POST", "DELETE"])
+def rtdb_proxy(node_path):
+    normalized_path = _normalize_rtdb_proxy_path(node_path)
+    if not normalized_path:
+        return jsonify({"success": False, "message": "RTDB path is required"}), 400
+
+    teacher_session = _get_teacher_session()
+    if not _is_allowed_teacher_proxy_path(normalized_path, teacher_session):
+        return jsonify({
+            "success": False,
+            "message": "This RTDB path is not available for the current teacher session.",
+        }), 403
+
+    try:
+        reference = school_reference(normalized_path)
+        raw_body = request.get_data(cache=True, as_text=True)
+
+        if request.method == "GET":
+            queried_reference = _apply_rtdb_proxy_query(reference)
+            return jsonify(queried_reference.get())
+
+        if request.method == "DELETE":
+            reference.delete()
+            return jsonify(None)
+
+        payload = request.get_json(silent=True)
+
+        if request.method == "PUT":
+            if str(raw_body or "").strip().lower() == "null":
+                reference.delete()
+                return jsonify(None)
+
+            if payload is None and str(raw_body or "").strip():
+                return jsonify({"success": False, "message": "Invalid JSON payload"}), 400
+
+            reference.set(payload)
+            return jsonify(payload)
+
+        if request.method == "PATCH":
+            if not isinstance(payload, dict):
+                return jsonify({"success": False, "message": "PATCH payload must be a JSON object"}), 400
+            reference.update(payload)
+            return jsonify(payload)
+
+        new_ref = reference.push(payload)
+        return jsonify({"name": new_ref.key}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 def _normalize_short_name(value):
@@ -267,7 +1076,7 @@ def _lesson_plan_migrate_submission_entries(base_ref, raw_data, teacher_id, cour
         'teacherId': meta_node.get('teacherId') or teacher_id,
         'courseId': meta_node.get('courseId') or course_id,
         'academicYear': meta_node.get('academicYear') or academic_year,
-        'updatedAt': meta_node.get('updatedAt') or datetime.utcnow().isoformat(),
+        'updatedAt': meta_node.get('updatedAt') or _utc_now_isoformat(),
     }
     if normalized_entries and meta_node != normalized_meta:
         base_ref.child('meta').set(normalized_meta)
@@ -430,9 +1239,15 @@ def _resolve_teacher_course_ids(school_code, teacher_identifiers=None, teacher_r
 
 def _extract_short_name_from_teacher_id(teacher_id):
     normalized = str(teacher_id or "").strip().upper()
-    if "T_" not in normalized:
+    if not normalized:
         return ""
-    return _normalize_short_name(normalized.split("T_", 1)[0])
+
+    first_token = normalized.split("_", 1)[0]
+    letters_only = "".join(ch for ch in first_token if ch.isalpha())
+    if letters_only.endswith("T") and len(letters_only) > 1:
+        letters_only = letters_only[:-1]
+
+    return _normalize_short_name(letters_only)
 
 
 def _resolve_school_code_by_short_name(short_name):
@@ -573,6 +1388,109 @@ def _get_default_academic_year(school_code=None):
 bucket = storage.bucket()
 
 
+def _sanitize_storage_object_name(value, fallback="user"):
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
+    return normalized or fallback
+
+
+def _upload_profile_image_to_storage(profile_file, folder, identifier):
+    if not profile_file:
+        return ""
+
+    safe_identifier = _sanitize_storage_object_name(identifier, "user")
+    original_name = secure_filename(profile_file.filename or "profile.jpg") or "profile.jpg"
+    storage_name = f"{folder}/{safe_identifier}_{_utc_timestamp()}_{original_name}"
+    blob = bucket.blob(storage_name)
+    blob.upload_from_file(profile_file, content_type=profile_file.content_type)
+    blob.make_public()
+    return blob.public_url
+
+
+def _extract_storage_object_name_from_url(public_url):
+    normalized_url = str(public_url or "").strip()
+    if not normalized_url:
+        return ""
+
+    parsed = urlparse(normalized_url)
+    bucket_name = str(getattr(bucket, "name", "") or "").strip()
+    if not bucket_name:
+        return ""
+
+    normalized_path = parsed.path.lstrip("/")
+    if parsed.netloc in {"storage.googleapis.com", "storage.cloud.google.com"}:
+        bucket_prefix = f"{bucket_name}/"
+        if normalized_path.startswith(bucket_prefix):
+            return unquote(normalized_path[len(bucket_prefix):])
+        return ""
+
+    if parsed.netloc == f"{bucket_name}.storage.googleapis.com":
+        return unquote(normalized_path)
+
+    if "firebasestorage.googleapis.com" in parsed.netloc:
+        marker = f"/b/{bucket_name}/o/"
+        if marker in parsed.path:
+            return unquote(parsed.path.split(marker, 1)[1])
+
+    return ""
+
+
+def _delete_storage_object_by_public_url(public_url):
+    object_name = _extract_storage_object_name_from_url(public_url)
+    if not object_name:
+        return False
+
+    try:
+        stale_blob = bucket.blob(object_name)
+        if stale_blob.exists():
+            stale_blob.delete()
+            return True
+    except Exception:
+        return False
+
+    return False
+
+
+@app.route('/api/storage/delete-by-url', methods=['POST'])
+def delete_storage_object_by_url():
+    try:
+        payload = request.get_json(silent=True) or {}
+        public_url = str(payload.get('publicUrl') or payload.get('url') or '').strip()
+        if not public_url:
+            return jsonify({"success": False, "message": "publicUrl is required", "deleted": False}), 400
+
+        deleted = _delete_storage_object_by_public_url(public_url)
+        return jsonify({
+            "success": True,
+            "deleted": bool(deleted),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e), "deleted": False}), 500
+
+
+def _find_user_node(users_ref, user_identifier):
+    normalized_identifier = str(user_identifier or "").strip()
+    if not normalized_identifier:
+        return None, None
+
+    direct_ref = users_ref.child(normalized_identifier)
+    direct_payload = direct_ref.get()
+    if isinstance(direct_payload, dict):
+        return normalized_identifier, direct_payload
+
+    for child_path in ("userId", "username"):
+        matched_users = (
+            users_ref.order_by_child(child_path).equal_to(normalized_identifier).limit_to_first(1).get() or {}
+        )
+        if not isinstance(matched_users, dict):
+            continue
+
+        for node_key, payload in matched_users.items():
+            if isinstance(payload, dict):
+                return str(node_key or "").strip(), payload
+
+    return None, None
+
+
 # ===================== HOME PAGE =====================
 @app.route('/')
 def home():
@@ -598,6 +1516,86 @@ def get_school_grades(school_code):
         return jsonify({"success": True, "grades": grades})
     except Exception as e:
         return jsonify({"success": False, "message": str(e), "grades": []}), 500
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "success": True,
+        "status": "ok",
+        "environment": APP_ENV,
+        "timestamp": _utc_now_isoformat(),
+    })
+
+
+@app.route('/api/users/<user_id>/profile-image', methods=['POST'])
+def upload_user_profile_image(user_id):
+    try:
+        scope_error = _enforce_current_teacher_scope(
+            user_id=user_id,
+            message="Profile image updates are limited to the signed-in teacher.",
+        )
+        if scope_error is not None:
+            return scope_error
+
+        users_ref = school_reference('Users')
+        user_node_key, user_payload = _find_user_node(users_ref, user_id)
+        if not user_node_key or not isinstance(user_payload, dict):
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        profile_file = request.files.get('profile')
+        if not profile_file:
+            return jsonify({"success": False, "message": "Profile image file is required"}), 400
+
+        role = str(user_payload.get('role') or 'teacher').strip().lower()
+        if role == 'school_admins':
+            role = 'school_admin'
+        folder = {
+            'teacher': 'teachers',
+            'school_admin': 'school_admins',
+            'management': 'school_admins',
+            'hr': 'hr',
+            'finance': 'finance',
+            'parent': 'parents',
+            'student': 'students',
+        }.get(role, 'users')
+
+        identifier = (
+            user_payload.get('teacherId')
+            or user_payload.get('schoolAdminId')
+            or user_payload.get('managementId')
+            or user_payload.get('hrId')
+            or user_payload.get('financeId')
+            or user_payload.get('studentId')
+            or user_payload.get('username')
+            or user_payload.get('userId')
+            or user_node_key
+        )
+        previous_profile_url = str(user_payload.get('profileImage') or '').strip()
+        profile_url = _upload_profile_image_to_storage(profile_file, folder, identifier)
+
+        users_ref.child(user_node_key).update({
+            'profileImage': profile_url,
+        })
+
+        teacher_user_id = str(user_payload.get('userId') or user_node_key).strip()
+        teacher_matches = (
+            school_reference('Teachers').order_by_child('userId').equal_to(teacher_user_id).limit_to_first(1).get() or {}
+        )
+        if isinstance(teacher_matches, dict):
+            for teacher_key in teacher_matches.keys():
+                school_reference('Teachers').child(teacher_key).update({'profileImage': profile_url})
+
+        if previous_profile_url and previous_profile_url != profile_url:
+            _delete_storage_object_by_public_url(previous_profile_url)
+
+        return jsonify({
+            'success': True,
+            'profileImage': profile_url,
+            'userId': user_node_key,
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 # New endpoint: reserve & return the next studentId
 @app.route("/generate/student_id", methods=["GET"])
@@ -640,7 +1638,7 @@ def generate_student_id():
         if not isinstance(new_seq, int):
             new_seq = int(new_seq)
 
-        year = datetime.utcnow().year
+        year = _utc_now().year
         year_suffix = str(year)[-2:]
         seq_padded = str(new_seq).zfill(4)
         student_id = f"GES_{seq_padded}_{year_suffix}"
@@ -654,7 +1652,7 @@ def generate_student_id():
             attempts += 1
             if attempts > 1000:
                 # fallback to timestamp-based id
-                student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                student_id = f"GES_{str(_utc_timestamp())[-6:]}_{year_suffix}"
                 break
 
         return jsonify({"success": True, "studentId": student_id})
@@ -738,7 +1736,7 @@ def register_student():
         if not isinstance(new_seq, int):
             new_seq = int(new_seq)
 
-        year = datetime.utcnow().year
+        year = _utc_now().year
         year_suffix = str(year)[-2:]
         seq_padded = str(new_seq).zfill(4)
         student_id = f"GES_{seq_padded}_{year_suffix}"
@@ -766,13 +1764,13 @@ def register_student():
             attempts += 1
             if attempts > 1000:
                 # fallback
-                student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                student_id = f"GES_{str(_utc_timestamp())[-6:]}_{year_suffix}"
                 break
     except Exception as e:
         # fallback if transaction fails
-        year = datetime.utcnow().year
+        year = _utc_now().year
         year_suffix = str(year)[-2:]
-        student_id = f"GES_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+        student_id = f"GES_{str(_utc_timestamp())[-6:]}_{year_suffix}"
 
     # If frontend supplied an explicit username, use it (but check uniqueness). Otherwise set username = student_id
     username = provided_username or student_id
@@ -823,6 +1821,7 @@ def register_student():
         'status': 'active',
     }
     students_ref.child(student_id).set(student_data)
+    _clear_student_roster_cache(_resolve_requested_school_code())
 
     return jsonify({
         'success': True,
@@ -860,6 +1859,12 @@ def register_teacher():
 
     if not all([name, password]):
         return jsonify({'success': False, 'message': 'Name and password are required.'}), 400
+
+    if not _password_meets_teacher_requirements(password):
+        return jsonify({
+            'success': False,
+            'message': 'Password must be at least 8 characters and include both letters and numbers.',
+        }), 400
 
     users_ref = school_reference('Users', school_code)
     teachers_ref = school_reference('Teachers', school_code)
@@ -925,7 +1930,7 @@ def register_teacher():
         if not isinstance(new_seq, int):
             new_seq = int(new_seq)
 
-        year = datetime.utcnow().year
+        year = _utc_now().year
         year_suffix = str(year)[-2:]
         seq_padded = str(new_seq).zfill(4)
         teacher_id = f"{school_short_name}T_{seq_padded}_{year_suffix}"
@@ -938,23 +1943,25 @@ def register_teacher():
             teacher_id = f"{school_short_name}T_{seq_padded}_{year_suffix}"
             attempts += 1
             if attempts > 1000:
-                teacher_id = f"{school_short_name}T_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+                teacher_id = f"{school_short_name}T_{str(_utc_timestamp())[-6:]}_{year_suffix}"
                 break
     except Exception:
-        year = datetime.utcnow().year
+        year = _utc_now().year
         year_suffix = str(year)[-2:]
-        teacher_id = f"{school_short_name}T_{str(int(datetime.utcnow().timestamp()))[-6:]}_{year_suffix}"
+        teacher_id = f"{school_short_name}T_{str(_utc_timestamp())[-6:]}_{year_suffix}"
 
     # final username: either provided_username or teacher_id
     username = provided_username or teacher_id
 
     # create Users entry (push key)
     new_user_ref = users_ref.push()
+    password_updated_at = _utc_now_isoformat()
     user_data = {
         'userId': new_user_ref.key,
         'username': username,
         'name': name,
-        'password': password,  # TODO: hash before production
+        'passwordHash': _build_password_hash(password),
+        'passwordUpdatedAt': password_updated_at,
         'role': 'teacher',
         'isActive': True,
         'profileImage': profile_url,
@@ -1006,19 +2013,28 @@ def register_teacher():
 @app.route("/api/teacher_login", methods=["POST"])
 def teacher_login():
     data = request.get_json(silent=True) or {}
-    username = data.get("username")
+    username = str(data.get("username") or "").strip()
     password = data.get("password")
 
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password required"}), 400
 
-    inferred_short_name = _extract_short_name_from_teacher_id(username)
-    inferred_school_code = _resolve_school_code_by_short_name(inferred_short_name)
+    inferred_short_name = _extract_short_name_from_teacher_id(username.upper())
+    if not inferred_short_name:
+        return jsonify({
+            "success": False,
+            "message": "Invalid username format. Username must begin with a 3-letter school prefix."
+        }), 400
 
-    search_codes = []
-    if inferred_school_code:
-        search_codes.append(inferred_school_code)
-    search_codes.extend(code for code in _list_school_codes() if code not in search_codes)
+    inferred_school_code = _resolve_school_code_by_short_name(inferred_short_name)
+    if not inferred_school_code:
+        return jsonify({
+            "success": False,
+            "message": f"School code '{inferred_short_name}' was not found."
+        }), 404
+
+    # Login is strictly scoped by the username prefix -> schoolCodeIndex mapping.
+    search_codes = [inferred_school_code]
 
     teacher_user = None
     teacher_key = None
@@ -1030,12 +2046,81 @@ def teacher_login():
         users_ref = school_reference("Users", candidate_school_code)
         teachers_ref = school_reference("Teachers", candidate_school_code)
 
-        all_users = users_ref.get() or {}
-        candidate_teachers = teachers_ref.get() or {}
+        normalized_username = username.upper()
+        candidate_teachers = {}
 
+        # Fast path: teacher username is commonly the teacherId, which is also the Teachers key.
+        for direct_teacher_key in {username, normalized_username}:
+            direct_teacher = teachers_ref.child(direct_teacher_key).get()
+            if not isinstance(direct_teacher, dict):
+                continue
+
+            direct_user_id = str(direct_teacher.get("userId") or "").strip()
+            if not direct_user_id:
+                continue
+
+            direct_user = users_ref.child(direct_user_id).get() or {}
+            direct_role = str(direct_user.get("role") or "").strip().lower()
+            direct_username = str(direct_user.get("username") or "").strip().upper()
+
+            is_teacher_user = direct_role in ("", "teacher")
+            matches_username = direct_username == normalized_username
+
+            if is_teacher_user and matches_username:
+                teacher_user = direct_user
+                teacher_key = direct_teacher_key
+                teacher_user_id = direct_user_id
+                school_code = candidate_school_code
+                all_teachers = {direct_teacher_key: direct_teacher}
+                break
+
+        if teacher_key and teacher_user:
+            break
+
+        # Medium path: walk Teachers first, then fetch linked user directly by userId.
+        candidate_teachers = teachers_ref.get() or {}
+        for tkey, tdata in candidate_teachers.items():
+            if not isinstance(tdata, dict):
+                continue
+
+            possible_teacher_ids = {
+                str(tkey or "").strip().upper(),
+                str(tdata.get("teacherId") or "").strip().upper(),
+                str(tdata.get("userId") or "").strip().upper(),
+            }
+            if normalized_username not in possible_teacher_ids:
+                continue
+
+            linked_user_id = str(tdata.get("userId") or "").strip()
+            if not linked_user_id:
+                continue
+
+            linked_user = users_ref.child(linked_user_id).get() or {}
+            linked_role = str(linked_user.get("role") or "").strip().lower()
+            linked_username = str(linked_user.get("username") or "").strip().upper()
+
+            if linked_role not in ("", "teacher"):
+                continue
+            if linked_username and linked_username != normalized_username and normalized_username != str(tkey).strip().upper():
+                continue
+
+            teacher_user = linked_user
+            teacher_key = tkey
+            teacher_user_id = linked_user_id
+            school_code = candidate_school_code
+            all_teachers = candidate_teachers
+            break
+
+        if teacher_key and teacher_user:
+            break
+
+        # Slow fallback: support custom usernames by scanning Users only when needed.
+        all_users = users_ref.get() or {}
         found_user_key = None
         for user_key, user in all_users.items():
-            if user.get("username") == username and user.get("role") == "teacher":
+            user_username = str(user.get("username") or "").strip().upper()
+            user_role = str(user.get("role") or "").strip().lower()
+            if user_username == normalized_username and user_role in ("", "teacher"):
                 teacher_user = user
                 found_user_key = user_key
                 break
@@ -1043,8 +2128,11 @@ def teacher_login():
         if not teacher_user:
             continue
 
+        if not candidate_teachers:
+            candidate_teachers = teachers_ref.get() or {}
+
         for tkey, tdata in candidate_teachers.items():
-            if tdata.get("userId") == found_user_key:
+            if str(tdata.get("userId") or "").strip() == str(found_user_key).strip():
                 teacher_key = tkey
                 break
 
@@ -1057,10 +2145,19 @@ def teacher_login():
         teacher_user = None
 
     if not teacher_user or not teacher_key:
-        return jsonify({"success": False, "message": "Teacher not found"}), 404
+        return jsonify({"success": False, "message": "Teacher not found for the detected school"}), 404
 
-    if teacher_user.get("password") != password:
-        return jsonify({"success": False, "message": "Invalid password"}), 401
+    users_ref = school_reference("Users", school_code)
+    credentials_valid, verified_teacher_user, auth_error = _verify_teacher_user_credentials(
+        users_ref,
+        teacher_user_id,
+        password,
+        expected_username=username,
+    )
+    if not credentials_valid:
+        return jsonify({"success": False, "message": auth_error or "Invalid password"}), 401
+
+    teacher_user = verified_teacher_user or teacher_user
 
     teacher_record = all_teachers.get(teacher_key, {}) or {}
     profile_image = (
@@ -1071,17 +2168,115 @@ def teacher_login():
         or "/default-profile.png"
     )
 
+    teacher_payload = {
+        "teacherKey": teacher_key,
+        "userId": teacher_user_id,
+        "name": teacher_user.get("name"),
+        "username": teacher_user.get("username"),
+        "profileImage": profile_image,
+        "schoolCode": school_code,
+        "teacherId": teacher_key,
+        "hasPasswordSet": bool(teacher_user.get("passwordHash") or teacher_user.get("password")),
+        "passwordUpdatedAt": teacher_user.get("passwordUpdatedAt") or None,
+    }
+
+    _write_teacher_session(teacher_payload)
+
     return jsonify({
         "success": True,
-        "teacher": {
-            "teacherKey": teacher_key,
-            "userId": teacher_user_id,
-            "name": teacher_user.get("name"),
-            "username": teacher_user.get("username"),
-            "profileImage": profile_image,
-            "schoolCode": school_code,
-            "teacherId": teacher_key,
-        }
+        "teacher": teacher_payload
+    })
+
+
+@app.route("/api/teacher/logout", methods=["POST"])
+def teacher_logout():
+    _clear_teacher_session()
+    return jsonify({"success": True})
+
+
+@app.route("/api/teacher/verify-password", methods=["POST"])
+def verify_teacher_password():
+    data = request.get_json(silent=True) or {}
+    school_code = _resolve_requested_school_code(data.get("schoolCode"))
+    user_id = str(data.get("userId") or "").strip()
+    username = str(data.get("username") or "").strip()
+    password = data.get("password")
+
+    if not school_code or not user_id or not username or not _normalize_password_value(password):
+        return jsonify({
+            "success": False,
+            "message": "schoolCode, userId, username and password are required",
+        }), 400
+
+    teacher_session = _get_teacher_session()
+    if not _teacher_session_matches(teacher_session, school_code=school_code, user_id=user_id, username=username):
+        return jsonify({
+            "success": False,
+            "message": "You can only verify the current teacher session credentials.",
+        }), 403
+
+    users_ref = school_reference("Users", school_code)
+    credentials_valid, _, auth_error = _verify_teacher_user_credentials(
+        users_ref,
+        user_id,
+        password,
+        expected_username=username,
+    )
+    if not credentials_valid:
+        return jsonify({"success": False, "message": auth_error or "Invalid password"}), 401
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/teacher/change-password", methods=["POST"])
+def change_teacher_password():
+    data = request.get_json(silent=True) or {}
+    school_code = _resolve_requested_school_code(data.get("schoolCode"))
+    user_id = str(data.get("userId") or "").strip()
+    username = str(data.get("username") or "").strip()
+    old_password = data.get("oldPassword")
+    new_password = data.get("newPassword")
+
+    if not school_code or not user_id or not username or not _normalize_password_value(old_password) or not _normalize_password_value(new_password):
+        return jsonify({
+            "success": False,
+            "message": "schoolCode, userId, username, oldPassword and newPassword are required",
+        }), 400
+
+    if _normalize_password_value(old_password) == _normalize_password_value(new_password):
+        return jsonify({
+            "success": False,
+            "message": "New password must be different from the old password",
+        }), 400
+
+    if not _password_meets_teacher_requirements(new_password):
+        return jsonify({
+            "success": False,
+            "message": "Password must be at least 8 characters and include both letters and numbers.",
+        }), 400
+
+    teacher_session = _get_teacher_session()
+    if not _teacher_session_matches(teacher_session, school_code=school_code, user_id=user_id, username=username):
+        return jsonify({
+            "success": False,
+            "message": "You can only update the current teacher session password.",
+        }), 403
+
+    users_ref = school_reference("Users", school_code)
+    credentials_valid, _, auth_error = _verify_teacher_user_credentials(
+        users_ref,
+        user_id,
+        old_password,
+        expected_username=username,
+    )
+    if not credentials_valid:
+        return jsonify({"success": False, "message": auth_error or "Invalid password"}), 401
+
+    password_updated_at = _write_user_password_hash(users_ref, user_id, new_password)
+    return jsonify({
+        "success": True,
+        "hasPasswordSet": True,
+        "passwordUpdatedAt": password_updated_at,
     })
 
 
@@ -1090,11 +2285,18 @@ def teacher_context():
     teacher_id = str(request.args.get("teacherId") or "").strip()
     user_id = str(request.args.get("userId") or "").strip()
 
-    inferred_school_code = _resolve_school_code_by_short_name(_extract_short_name_from_teacher_id(teacher_id)) if teacher_id else ""
-    search_codes = []
-    if inferred_school_code:
-        search_codes.append(inferred_school_code)
-    search_codes.extend(code for code in _list_school_codes() if code not in search_codes)
+    teacher_session = _get_teacher_session()
+    if not teacher_id and not user_id:
+        teacher_id = teacher_session.get("teacherKey") or teacher_session.get("teacherId")
+        user_id = teacher_session.get("userId")
+
+    if teacher_id and not _teacher_session_matches(teacher_session, teacher_key=teacher_id):
+        return jsonify({"success": False, "message": "Teacher context is limited to the signed-in teacher."}), 403
+
+    if user_id and not _teacher_session_matches(teacher_session, user_id=user_id):
+        return jsonify({"success": False, "message": "Teacher context is limited to the signed-in teacher."}), 403
+
+    search_codes = [_resolve_requested_school_code(teacher_session.get("schoolCode"))]
 
     for school_code in search_codes:
         teachers = school_reference("Teachers", school_code).get() or {}
@@ -1133,6 +2335,9 @@ def teacher_context():
 # ===================== GET TEACHER COURSES =====================
 @app.route('/api/teacher/<teacher_key>/courses', methods=['GET'])
 def get_teacher_courses(teacher_key):
+    if not _teacher_session_matches(_get_teacher_session(), teacher_key=teacher_key):
+        return jsonify({"success": False, "message": "Course access is limited to the signed-in teacher."}), 403
+
     courses_ref = school_reference('Courses')
     teacher_identifiers = {teacher_key}
     teachers_ref = school_reference('Teachers')
@@ -1161,6 +2366,9 @@ def get_teacher_courses(teacher_key):
 # ===================== GET TEACHER STUDENTS =====================
 @app.route("/api/teacher/<user_id>/students", methods=["GET"])
 def get_teacher_students(user_id):
+    if not _teacher_session_matches(_get_teacher_session(), user_id=user_id):
+        return jsonify({"success": False, "message": "Student access is limited to the signed-in teacher."}), 403
+
     teachers_ref = school_reference("Teachers")
     courses_ref = school_reference("Courses")
     students_ref = school_reference("Students")
@@ -1227,41 +2435,110 @@ def get_teacher_students(user_id):
     return jsonify({"courses": course_students})
 
 
+@app.route('/api/students/by-grade-sections', methods=['GET'])
+def get_students_by_grade_sections():
+    resolved_school_code = _resolve_requested_school_code()
+    allowed_grade_sections = {
+        str(value or '').strip()
+        for value in request.args.getlist('gradeSection')
+        if str(value or '').strip()
+    }
+    include_inactive = str(request.args.get('includeInactive') or '').strip().lower() in {'1', 'true', 'yes'}
+
+    if not resolved_school_code or not allowed_grade_sections:
+        return jsonify([])
+
+    return jsonify(_load_students_for_grade_sections(
+        resolved_school_code,
+        allowed_grade_sections,
+        include_inactive=include_inactive,
+    ))
+
+
+@app.route('/api/parents/by-ids', methods=['GET'])
+def get_parents_by_ids():
+    resolved_school_code = _resolve_requested_school_code()
+    parent_identifiers = []
+    seen_identifiers = set()
+
+    for raw_identifier in request.args.getlist('parentId'):
+        normalized_identifier = str(raw_identifier or '').strip()
+        if not normalized_identifier or normalized_identifier in seen_identifiers:
+            continue
+        seen_identifiers.add(normalized_identifier)
+        parent_identifiers.append(normalized_identifier)
+
+    if not resolved_school_code or not parent_identifiers:
+        return jsonify({})
+
+    records_by_identifier = {}
+    for parent_identifier in parent_identifiers:
+        _, parent_record = _load_parent_record_by_identifier(resolved_school_code, parent_identifier)
+        if isinstance(parent_record, dict) and parent_record:
+            records_by_identifier[parent_identifier] = parent_record
+
+    return jsonify(records_by_identifier)
+
+
 # ===================== GET STUDENTS OF A COURSE =====================
 @app.route('/api/course/<course_id>/students', methods=['GET'])
 def get_course_students(course_id):
-    courses_ref = school_reference('Courses')
-    students_ref = school_reference('Students')
-    users_ref = school_reference('Users')
-    marks_ref = school_reference('ClassMarks')
+    resolved_school_code = _resolve_requested_school_code()
+    courses_ref = school_reference('Courses', school_code=resolved_school_code)
+    include_marks = str(request.args.get('includeMarks') or '').strip().lower() in {'1', 'true', 'yes'}
 
     course = courses_ref.child(course_id).get()
     if not course:
         return jsonify({'students': [], 'course': None})
 
-    grade = course.get('grade')
-    section = course.get('section')
+    grade = str(course.get('grade') or '').strip()
+    section = str(course.get('section') or course.get('secation') or '').strip().upper()
 
-    all_students = students_ref.get() or {}
-    all_users = users_ref.get() or {}
+    grade_section_key = f'{grade}|{section}'
     course_students = []
 
-    for student_id, student in all_students.items():
-        if student.get('grade') == grade and student.get('section') == section:
-            user_data = all_users.get(student.get('userId'))
-            if user_data:
-                student_marks = marks_ref.child(course_id).child(student_id).get() or {}
-                course_students.append({
-                    'studentId': student_id,
-                    'name': user_data.get('name'),
-                    'username': user_data.get('username'),
-                    'marks': {
-                        'mark20': student_marks.get('mark20', 0),
-                        'mark30': student_marks.get('mark30', 0),
-                        'mark50': student_marks.get('mark50', 0),
-                        'mark100': student_marks.get('mark100', 0)
-                    }
-                })
+    for row in _load_students_for_grade_sections(
+        resolved_school_code,
+        {grade_section_key},
+        include_inactive=True,
+    ):
+        student_id = str(row.get('studentId') or '').strip()
+        student = row.get('raw') or {}
+        user_data = row.get('user') or {}
+
+        student_name = str(
+            user_data.get('name')
+            or student.get('name')
+            or (student.get('basicStudentInformation') or {}).get('name')
+            or 'Student'
+        ).strip() or 'Student'
+
+        course_student = {
+            'studentId': student_id,
+            'userId': str(row.get('userId') or '').strip(),
+            'name': student_name,
+            'username': user_data.get('username') or '',
+            'profileImage': (
+                user_data.get('profileImage')
+                or student.get('profileImage')
+                or (student.get('basicStudentInformation') or {}).get('studentPhoto')
+                or student.get('studentPhoto')
+                or ''
+            ),
+        }
+
+        if include_marks:
+            student_marks = school_reference(f'ClassMarks/{course_id}/{student_id}', school_code=resolved_school_code).get() or {}
+            course_student['marks'] = {
+                'mark20': student_marks.get('mark20', 0),
+                'mark30': student_marks.get('mark30', 0),
+                'mark50': student_marks.get('mark50', 0),
+                'mark100': student_marks.get('mark100', 0)
+            }
+
+        course_students.append(course_student)
+
+    course_students.sort(key=lambda item: str(item.get('name') or '').lower())
 
     return jsonify({
         'students': course_students,
@@ -1295,49 +2572,156 @@ def update_course_marks(course_id):
 # ===================== GET POSTS =====================
 @app.route("/api/get_posts", methods=["GET"])
 def get_posts():
+    viewer_role = str(request.args.get("viewerRole") or "").strip().lower()
+    try:
+        requested_limit = int(request.args.get("limit") or 25)
+    except (TypeError, ValueError):
+        requested_limit = 25
+    posts_limit = max(1, min(requested_limit, 100))
+
+    def _normalize_target_role(post_value):
+        if not isinstance(post_value, dict):
+            return ""
+
+        direct_target = (
+            post_value.get("targetRole")
+            or post_value.get("TargetRole")
+            or post_value.get("targetrole")
+            or post_value.get("target")
+            or post_value.get("targetUserType")
+            or post_value.get("targetAudience")
+            or ""
+        )
+
+        if isinstance(direct_target, list):
+            return ",".join(
+                str(item or "").strip().lower()
+                for item in direct_target
+                if str(item or "").strip()
+            )
+
+        return str(direct_target or "").strip().lower()
+
+    def _is_visible_to_viewer(post_value):
+        if viewer_role != "teacher":
+            return True
+
+        normalized_target = _normalize_target_role(post_value)
+        target_parts = [
+            part.strip()
+            for part in re.split(r"[\s,|]+", normalized_target)
+            if part.strip()
+        ]
+
+        if not target_parts:
+            return True
+
+        return "all" in target_parts or "teacher" in target_parts or "teachers" in target_parts
+
+    def _limited_posts_snapshot(posts_reference):
+        try:
+            posts_snapshot = posts_reference.order_by_child("time").limit_to_last(posts_limit).get() or {}
+        except Exception:
+            try:
+                posts_snapshot = posts_reference.order_by_key().limit_to_last(posts_limit).get() or {}
+            except Exception:
+                posts_snapshot = posts_reference.get() or {}
+
+        if not isinstance(posts_snapshot, dict):
+            return {}
+        return posts_snapshot
+
+    def _first_query_result(snapshot):
+        if isinstance(snapshot, dict):
+            for item_key, item_value in snapshot.items():
+                if isinstance(item_value, dict):
+                    return item_key, item_value
+        return None, None
+
+    def _load_actor_record(raw_actor_id):
+        normalized_actor_id = str(raw_actor_id or "").strip()
+        if not normalized_actor_id:
+            return None, {}, {}
+
+        school_admin_key = None
+        school_admin_record = school_admin_cache.get(normalized_actor_id)
+        if school_admin_record is None:
+            school_admin_record = school_admins_ref.child(normalized_actor_id).get() or {}
+            if isinstance(school_admin_record, dict) and school_admin_record:
+                school_admin_cache[normalized_actor_id] = school_admin_record
+            else:
+                school_admin_cache[normalized_actor_id] = {}
+
+        if isinstance(school_admin_record, dict) and school_admin_record:
+            school_admin_key = normalized_actor_id
+
+        user = users_cache.get(normalized_actor_id)
+        if user is None:
+            user = users_ref.child(normalized_actor_id).get() or {}
+            users_cache[normalized_actor_id] = user if isinstance(user, dict) else {}
+
+        if (not isinstance(user, dict) or not user) and isinstance(school_admin_record, dict):
+            admin_user_id = str(school_admin_record.get("userId") or "").strip()
+            if admin_user_id:
+                user = users_cache.get(admin_user_id)
+                if user is None:
+                    user = users_ref.child(admin_user_id).get() or {}
+                    users_cache[admin_user_id] = user if isinstance(user, dict) else {}
+
+        if not isinstance(user, dict) or not user:
+            user_query_key = f"userId:{normalized_actor_id}"
+            user = users_cache.get(user_query_key)
+            if user is None:
+                try:
+                    _, user = _first_query_result(
+                        users_ref.order_by_child("userId").equal_to(normalized_actor_id).limit_to_first(1).get()
+                    )
+                except Exception:
+                    user = {}
+                users_cache[user_query_key] = user if isinstance(user, dict) else {}
+
+        if not isinstance(school_admin_record, dict) or not school_admin_record:
+            admin_query_key = f"userId:{normalized_actor_id}"
+            cached_admin_query = school_admin_cache.get(admin_query_key)
+            if cached_admin_query is None:
+                try:
+                    school_admin_key, school_admin_record = _first_query_result(
+                        school_admins_ref.order_by_child("userId").equal_to(normalized_actor_id).limit_to_first(1).get()
+                    )
+                except Exception:
+                    school_admin_key, school_admin_record = None, {}
+                school_admin_cache[admin_query_key] = {
+                    "key": school_admin_key,
+                    "record": school_admin_record if isinstance(school_admin_record, dict) else {},
+                }
+            else:
+                school_admin_key = cached_admin_query.get("key")
+                school_admin_record = cached_admin_query.get("record") or {}
+
+        return school_admin_key, user if isinstance(user, dict) else {}, school_admin_record if isinstance(school_admin_record, dict) else {}
+
     posts_ref = school_reference("Posts")
     users_ref = school_reference("Users")
     school_admins_ref = school_reference("School_Admins")
 
-    all_posts = posts_ref.get() or {}
-    all_users = users_ref.get() or {}
-    all_school_admins = school_admins_ref.get() or {}
+    _cache_key = f"posts:{_read_school_code_from_request()}"
+    all_posts = _pc_get(_cache_key)
+    if all_posts is None:
+        all_posts = _limited_posts_snapshot(posts_ref)
+        _pc_set(_cache_key, all_posts)
+    users_cache = {}
+    school_admin_cache = {}
 
     result = []
 
     for post_id, post in all_posts.items():
+        if not isinstance(post, dict):
+            continue
+        if not _is_visible_to_viewer(post):
+            continue
+
         raw_admin_id = post.get("adminId")
-        school_admin_key = None
-        school_admin_record = None
-        user = all_users.get(raw_admin_id, {}) if raw_admin_id in all_users else {}
-
-        if not user and raw_admin_id:
-            user = next(
-                (candidate for candidate in all_users.values() if str(candidate.get("userId")) == str(raw_admin_id)),
-                {},
-            )
-
-        if raw_admin_id in all_school_admins:
-            school_admin_key = raw_admin_id
-            school_admin_record = all_school_admins.get(raw_admin_id) or {}
-            if not user and school_admin_record.get("userId"):
-                user = next(
-                    (
-                        candidate
-                        for candidate in all_users.values()
-                        if str(candidate.get("userId")) == str(school_admin_record.get("userId"))
-                    ),
-                    {},
-                )
-        else:
-            school_admin_key, school_admin_record = next(
-                (
-                    (candidate_key, candidate)
-                    for candidate_key, candidate in all_school_admins.items()
-                    if str(candidate.get("userId")) == str(raw_admin_id)
-                ),
-                (None, None),
-            )
+        school_admin_key, user, school_admin_record = _load_actor_record(raw_admin_id)
 
         admin_user_id = str(user.get("userId") or (school_admin_record or {}).get("userId") or raw_admin_id or "").strip()
 
@@ -1350,6 +2734,9 @@ def get_posts():
             "message": post.get("message", ""),
             "postUrl": post.get("postUrl"),
             "timestamp": post.get("time", ""),
+            "time": post.get("time", ""),
+            "createdAt": post.get("createdAt", ""),
+            "targetRole": _normalize_target_role(post),
             "likeCount": post.get("likeCount", 0),
             "likes": post.get("likes", {})
         })
@@ -1368,6 +2755,13 @@ def mark_teacher_post_seen():
 
         if not post_id or not teacher_id:
             return jsonify({"success": False, "message": "Missing postId or teacherId"}), 400
+
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message="Teacher post updates are limited to the signed-in teacher.",
+        )
+        if scope_error is not None:
+            return scope_error
 
         post_ref = posts_ref.child(post_id)
         post = post_ref.get()
@@ -1456,7 +2850,7 @@ def register_parent():
     parent_ref.set({
         "userId": parent_user_id,
         "status": "active",
-        "createdAt": datetime.utcnow().isoformat(),
+        "createdAt": _utc_now_isoformat(),
         "children": {}
     })
 
@@ -1477,6 +2871,8 @@ def register_parent():
             "relationship": relationship
         })
 
+    _clear_student_roster_cache(_resolve_requested_school_code())
+
     return jsonify({
         "success": True,
         "message": "Parent registered successfully",
@@ -1494,6 +2890,13 @@ def like_post():
     data = request.json
     postId = data.get("postId")
     teacherId = data.get("teacherId")
+
+    scope_error = _enforce_current_teacher_scope(
+        teacher_key=teacherId,
+        message="Post likes are limited to the signed-in teacher.",
+    )
+    if scope_error is not None:
+        return scope_error
 
     posts_ref = school_reference("Posts")
     post = posts_ref.child(postId).get()
@@ -1534,6 +2937,13 @@ def save_week_lesson_plan():
         if not teacher_id or week is None:
             return jsonify({'success': False, 'message': 'teacherId and week are required'}), 400
 
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan updates are limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
+
         if not course_id:
             return jsonify({'success': False, 'message': 'courseId is required'}), 400
 
@@ -1554,7 +2964,7 @@ def save_week_lesson_plan():
             'weekTopic': week_topic,
             'days': days,
             'dayCount': len(days),
-            'updatedAt': datetime.utcnow().isoformat()
+            'updatedAt': _utc_now_isoformat()
         }
 
         lesson_ref.set(obj)
@@ -1586,6 +2996,13 @@ def save_annual_lesson_plan():
         if not teacher_id:
             return jsonify({'success': False, 'message': 'teacherId is required'}), 400
 
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan updates are limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
+
         if not course_id:
             return jsonify({'success': False, 'message': 'courseId is required'}), 400
 
@@ -1599,7 +3016,7 @@ def save_annual_lesson_plan():
             'rows': annual_rows,
             'annualRows': annual_rows,
             'rowCount': len(annual_rows),
-            'updatedAt': datetime.utcnow().isoformat()
+            'updatedAt': _utc_now_isoformat()
         }
 
         lesson_ref.child('annual').set(obj)
@@ -1620,6 +3037,13 @@ def save_annual_lesson_plan():
 @app.route('/api/lesson-plans/<teacher_id>', methods=['GET'])
 def get_lesson_plans(teacher_id):
     try:
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan access is limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
+
         academic_year = request.args.get('academicYear') or _get_default_academic_year()
 
         lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year)
@@ -1651,6 +3075,13 @@ def migrate_lesson_plans():
 
         if not teacher_id:
             return jsonify({'success': False, 'message': 'teacherId is required'}), 400
+
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan migration is limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
 
         lesson_ref = school_reference('LessonPlans').child(teacher_id).child(academic_year)
         migrated_courses = []
@@ -1713,6 +3144,13 @@ def get_lesson_plan_submissions():
         if not teacher_id or not course_id:
             return jsonify({'success': False, 'message': 'teacherId and courseId are required'}), 400
 
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan submissions are limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
+
         ref = school_reference('LessonPlanSubmissions').child(teacher_id).child(academic_year).child(course_id)
         raw_data = ref.get() or {}
         data, _ = _lesson_plan_migrate_submission_entries(ref, raw_data, teacher_id, course_id, academic_year)
@@ -1742,10 +3180,17 @@ def submit_daily_lesson_plan():
         key = data.get('key')
         week = data.get('week')
         day_name = data.get('dayName')
-        submitted_at = data.get('submittedAt') or datetime.utcnow().isoformat()
+        submitted_at = data.get('submittedAt') or _utc_now_isoformat()
 
         if not teacher_id or not course_id or not key:
             return jsonify({'success': False, 'message': 'teacherId, courseId and key are required'}), 400
+
+        scope_error = _enforce_current_teacher_scope(
+            teacher_key=teacher_id,
+            message='Lesson plan submissions are limited to the signed-in teacher.',
+        )
+        if scope_error is not None:
+            return scope_error
 
         # sanitize child key for RTDB node name
         child = re.sub(r'[^A-Za-z0-9_\-]', '_', str(key))
@@ -1788,5 +3233,13 @@ def submit_daily_lesson_plan():
 
 # ===================== RUN APP =====================
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+    run_host = str(os.getenv('FLASK_HOST') or os.getenv('HOST') or '127.0.0.1').strip() or '127.0.0.1'
+    try:
+        run_port = int(os.getenv('FLASK_PORT') or os.getenv('PORT') or '5001')
+    except (TypeError, ValueError):
+        run_port = 5001
+
+    debug_enabled = _env_flag('FLASK_DEBUG', default=APP_ENV != 'production')
+    use_reloader = debug_enabled and _env_flag('FLASK_USE_RELOADER', default=False)
+    app.run(host=run_host, port=run_port, debug=debug_enabled, use_reloader=use_reloader)
 

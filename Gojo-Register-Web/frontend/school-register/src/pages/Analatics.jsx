@@ -5,6 +5,7 @@ import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { buildSchoolRtdbBase } from "../api/rtdbScope";
 import {
   FaHome,
   FaFileAlt,
@@ -33,8 +34,11 @@ import {
 } from "recharts";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import RegisterSidebar from "../components/RegisterSidebar";
+import ProfileAvatar from "../components/ProfileAvatar";
+import { loadSchoolStudentsNode } from "../utils/registerData";
+import { fetchCachedJson } from "../utils/rtdbCache";
+import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function Analatics() {
@@ -58,7 +62,11 @@ function Analatics() {
   });
 
   const schoolCode = finance.schoolCode || stored.schoolCode || "";
-  const DB_ROOT = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
+  const initialDbRoot = buildSchoolRtdbBase(schoolCode);
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(schoolCode);
+  const [resolvedDbRoot, setResolvedDbRoot] = useState(initialDbRoot);
+  const DB_ROOT = String(resolvedDbRoot || initialDbRoot || "").trim();
+  const activeSchoolCode = String(resolvedSchoolCode || schoolCode || "").trim();
 
   const [loading, setLoading] = useState(true);
   const [students, setStudents] = useState([]);
@@ -82,6 +90,32 @@ function Analatics() {
     dbRoot: DB_ROOT,
     currentUserId: finance.userId,
   });
+
+  useEffect(() => {
+    const resolveScope = async () => {
+      if (!schoolCode) return;
+
+      try {
+        const resolvedScope = await resolveSchoolScope(schoolCode);
+        const nextResolvedSchoolCode = String(resolvedScope?.schoolCode || schoolCode || "").trim();
+        const nextResolvedDbRoot = String(resolvedScope?.dbUrl || initialDbRoot || "").trim();
+        const resolvedSchoolInfo = resolvedScope?.schoolInfo || {};
+
+        setResolvedSchoolCode(nextResolvedSchoolCode);
+        setResolvedDbRoot(nextResolvedDbRoot);
+
+        if (nextResolvedSchoolCode && nextResolvedSchoolCode !== schoolCode) {
+          persistResolvedSchoolSession(nextResolvedSchoolCode, String(resolvedSchoolInfo?.shortName || "").trim());
+        }
+      } catch (error) {
+        console.error("Failed to resolve analytics school scope:", error);
+        setResolvedSchoolCode(String(schoolCode || "").trim());
+        setResolvedDbRoot(initialDbRoot);
+      }
+    };
+
+    resolveScope();
+  }, [schoolCode, initialDbRoot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,33 +149,32 @@ function Analatics() {
     const fetchAnalyticsData = async () => {
       try {
         setLoading(true);
-        const [studentsRes, usersRes, monthlyPaidRes] = await Promise.all([
-          axios.get(`${DB_ROOT}/Students.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/Users.json`).catch(() => ({ data: {} })),
-          axios.get(`${DB_ROOT}/monthlyPaid.json`).catch(() => ({ data: {} })),
+        const [studentsData, monthlyPaidData] = await Promise.all([
+          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
+          fetchCachedJson(`${DB_ROOT}/monthlyPaid.json`, { ttlMs: 60000 }).catch(() => ({})),
         ]);
 
         if (cancelled) return;
 
-        const studentsData = studentsRes.data || {};
-        const usersData = usersRes.data || {};
-
         const list = Object.entries(studentsData).map(([studentId, studentNode]) => {
-          const userNode = usersData?.[studentNode.userId] || {};
-          const genderRaw = userNode.gender || studentNode.gender || "Unknown";
-
+          const genderRaw = studentNode.gender || "Unknown";
+          const name =
+            studentNode.name ||
+            [studentNode.firstName, studentNode.middleName, studentNode.lastName].filter(Boolean).join(" ") ||
+            studentNode.basicStudentInformation?.name ||
+            "Student";
           return {
             studentId,
             userId: studentNode.userId || "",
             grade: String(studentNode.grade || "Unknown"),
             section: studentNode.section || "N/A",
             gender: String(genderRaw).toLowerCase(),
-            name: userNode.name || userNode.username || studentNode.name || "Student",
+            name,
           };
         });
 
         setStudents(list);
-        setMonthlyPaidRaw(monthlyPaidRes.data || {});
+        setMonthlyPaidRaw(monthlyPaidData || {});
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -662,7 +695,7 @@ function Analatics() {
                             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-muted)")}
                             onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                           >
-                            <img src={post.adminProfile || "/default-profile.png"} alt="" style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={post.adminProfile} name={post.adminName || "Admin"} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ color: "var(--text-primary)" }}>{post.adminName || "Admin"}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -711,7 +744,7 @@ function Analatics() {
                               });
                             }}
                           >
-                            <img src={sender.profileImage || "/default-profile.png"} alt={sender.name} style={{ width: 46, height: 46, borderRadius: 8, objectFit: "cover" }} />
+                            <ProfileAvatar imageUrl={sender.profileImage} name={sender.name} size={46} borderRadius={8} />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <strong style={{ display: "block", marginBottom: 4, color: "var(--text-primary)" }}>{sender.name}</strong>
                               <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>{sender.count} new message{sender.count > 1 && "s"}</p>
@@ -731,7 +764,7 @@ function Analatics() {
             {messageCount > 0 && <span className="badge">{messageCount}</span>}
           </div>
 
-          <img src={finance.profileImage || "/default-profile.png"} alt="Register Office" className="profile-img" />
+          <ProfileAvatar imageUrl={finance.profileImage} name={finance.name} size={38} className="profile-img" />
         </div>
       </nav>
 

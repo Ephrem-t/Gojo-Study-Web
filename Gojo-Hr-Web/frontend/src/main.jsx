@@ -8,11 +8,9 @@ import { ThemeProvider, applyTheme, getStoredTheme } from './theme/ThemeContext'
 applyTheme(getStoredTheme())
 
 createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
+  <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
     <ThemeProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <AppRoutes />
     </ThemeProvider>
-  </React.StrictMode>
+  </BrowserRouter>
 )

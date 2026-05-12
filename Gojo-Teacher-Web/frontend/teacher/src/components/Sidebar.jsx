@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaBookOpen,
   FaCalendarAlt,
   FaChalkboardTeacher,
+  FaChartBar,
   FaChevronDown,
   FaChevronRight,
   FaClipboardCheck,
@@ -16,8 +16,12 @@ import {
   FaUserCheck,
   FaUsers,
 } from "react-icons/fa";
+import ProfileAvatar from "./ProfileAvatar";
 import { resolveProfileImage } from "../utils/profileImage";
 import { getRtdbRoot } from "../api/rtdbScope";
+import { loadUserRecordById } from "../utils/teacherData";
+
+const TEACHER_BEFORE_APP_NAVIGATION_HANDLER = "__teacherBeforeAppNavigation";
 
 const SIDEBAR_SECTIONS = [
   {
@@ -46,9 +50,10 @@ const SIDEBAR_SECTIONS = [
     items: [
       { to: "/marks", label: "Marks", icon: FaClipboardCheck, matches: ["marks"] },
       { to: "/attendance", label: "Attendance", icon: FaUserCheck, matches: ["attendance"] },
-      { to: "/schedule", label: "Schedule", icon: FaCalendarAlt, matches: ["schedule"] },
+      { to: "/timetable", label: "Timetable", icon: FaCalendarAlt, matches: ["schedule", "timetable"] },
       { to: "/exam", label: "Exam", icon: FaFileAlt, matches: ["exam"] },
       { to: "/lesson-plan", label: "Lesson Plan", icon: FaBookOpen, matches: ["lesson-plan"] },
+      { to: "/student-feedback", label: "Student Feedback", icon: FaChartBar, matches: ["student-feedback"] },
     ],
   },
   {
@@ -69,6 +74,8 @@ const createDefaultSectionsState = () =>
   }, {});
 
 const STORAGE_KEY = "teacher_sidebar_sections_state";
+
+export const TeacherSidebarPersistenceContext = createContext(false);
 
 const readStoredSections = () => {
   const defaults = createDefaultSectionsState();
@@ -121,26 +128,19 @@ const writeCachedTeacherProfileImage = (teacherUserId, imageUrl) => {
   }
 };
 
-const buildUsersLookupUrls = (rtdbBase, schoolCode) => {
-  const urls = [`${rtdbBase}/Users.json`];
-  const scopedPrefix = schoolCode ? `/Platform1/Schools/${schoolCode}` : "";
-  const alreadyScoped = scopedPrefix && rtdbBase.includes(scopedPrefix);
-
-  if (schoolCode && !alreadyScoped) {
-    urls.push(`${rtdbBase}/Platform1/Schools/${schoolCode}/Users.json`);
-  }
-
-  return [...new Set(urls)];
-};
-
 export default function Sidebar({
   active,
   sidebarOpen,
   setSidebarOpen,
   teacher,
   handleLogout,
+  persistent = false,
 }) {
-  const RTDB_BASE = getRtdbRoot();
+  const hasPersistentSidebar = useContext(TeacherSidebarPersistenceContext);
+
+  if (hasPersistentSidebar && !persistent) {
+    return null;
+  }
   const location = useLocation();
   const navigate = useNavigate();
   const [sectionsOpen, setSectionsOpen] = useState(() => readStoredSections());
@@ -181,35 +181,18 @@ export default function Sidebar({
   }, [baseProfileImage]);
 
   useEffect(() => {
-    const schoolCode = String(teacher?.schoolCode || "").trim();
+    const schoolCode = String(teacher?.schoolCode || staticTeacherSnapshot?.schoolCode || "").trim();
     if (!effectiveTeacherUserId) return;
 
     let cancelled = false;
 
     const hydrateProfileFromUsers = async () => {
       try {
-        const urls = buildUsersLookupUrls(RTDB_BASE, schoolCode);
-
-        let matchedUser = null;
-
-        for (const url of urls) {
-          try {
-            const response = await axios.get(url);
-            const usersObj = response.data || {};
-            if (usersObj && typeof usersObj === "object") {
-              matchedUser =
-                usersObj[teacherUserId] ||
-                Object.entries(usersObj).find(([userKey, userItem]) =>
-                  String(userKey || "").trim() === effectiveTeacherUserId ||
-                  String(userItem?.userId || "").trim() === effectiveTeacherUserId
-                )?.[1] ||
-                null;
-            }
-            if (matchedUser) break;
-          } catch (error) {
-            // try next URL
-          }
-        }
+        const matchedUser = await loadUserRecordById({
+          rtdbBase: getRtdbRoot(),
+          schoolCode,
+          userId: effectiveTeacherUserId,
+        });
 
         if (!matchedUser || cancelled) return;
 
@@ -253,12 +236,12 @@ export default function Sidebar({
       cancelled = true;
     };
   }, [
-    RTDB_BASE,
     effectiveTeacherUserId,
     teacher?.schoolCode,
     teacher?.profileImage,
     teacher?.profile,
     teacher?.avatar,
+    staticTeacherSnapshot?.schoolCode,
     staticTeacherSnapshot?.profileImage,
     staticTeacherSnapshot?.profile,
     staticTeacherSnapshot?.avatar,
@@ -285,13 +268,67 @@ export default function Sidebar({
     });
   };
 
-  const onLogout = () => {
-    if (handleLogout) {
-      handleLogout();
+  const runBeforeAppNavigation = async (intent = {}) => {
+    if (typeof window === "undefined") return true;
+
+    const handler = window[TEACHER_BEFORE_APP_NAVIGATION_HANDLER];
+    if (typeof handler !== "function") {
+      return true;
+    }
+
+    try {
+      const result = await handler(intent);
+      return result !== false;
+    } catch (error) {
+      console.error("Teacher navigation guard failed:", error);
+      return false;
+    }
+  };
+
+  const handleRouteClick = async (event, to) => {
+    if (!to) return;
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.shiftKey
+    ) {
       return;
     }
 
-    localStorage.removeItem("teacher");
+    event.preventDefault();
+
+    if (to === currentPath) {
+      if (isMobile) closeSidebar();
+      return;
+    }
+
+    const canContinue = await runBeforeAppNavigation({
+      type: "route",
+      from: currentPath,
+      to,
+    });
+    if (!canContinue) return;
+
+    if (isMobile) closeSidebar();
+    navigate(to);
+  };
+
+  const onLogout = async () => {
+    const canContinue = await runBeforeAppNavigation({
+      type: "logout",
+      from: currentPath,
+    });
+    if (!canContinue) return;
+
+    if (handleLogout) {
+      await handleLogout();
+      return;
+    }
+
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
     navigate("/login", { replace: true });
   };
 
@@ -324,7 +361,7 @@ export default function Sidebar({
     gap: 6,
     padding: "14px 10px 12px",
     borderRadius: 14,
-    background: "linear-gradient(180deg, #eff6ff 0%, #ffffff 100%)",
+    background: "#ffffff",
     border: "1px solid #dbeafe",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7)",
   };
@@ -364,7 +401,7 @@ export default function Sidebar({
   };
 
   const linkActiveStyle = {
-    background: "linear-gradient(135deg, #1d4ed8, #2563eb)",
+    background: "#007AFB",
     color: "#ffffff",
     border: "1px solid #1d4ed8",
     boxShadow: "0 10px 18px rgba(29, 78, 216, 0.24)",
@@ -415,7 +452,7 @@ export default function Sidebar({
           .teacher-sidebar-link:hover {
             background: linear-gradient(135deg, #eff6ff, #eef2ff);
             border-color: #c7d2fe;
-            color: #1e3a8a;
+            color: #007AFB;
             transform: translateX(2px);
           }
           @media (max-width: 600px) {
@@ -460,21 +497,19 @@ export default function Sidebar({
               marginBottom: 2,
             }}
           >
-            <img
+            <ProfileAvatar
               src={profileImage}
+              name={profileName}
               alt="profile"
-              onError={(event) => {
-                event.currentTarget.src = "/default-profile.png";
-              }}
             />
           </div>
           <div
             style={{
               padding: "3px 8px",
               borderRadius: 999,
-              background: "#dbeafe",
-              border: "1px solid #bfdbfe",
-              color: "#1d4ed8",
+              background: "#ffffff",
+              border: "1px solid #007AFB",
+              color: "#007AFB",
               fontSize: 9,
               fontWeight: 800,
               letterSpacing: "0.08em",
@@ -519,14 +554,14 @@ export default function Sidebar({
                   }
                 >
                   <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <SectionIcon style={{ width: 14, height: 14, color: "#2563eb" }} />
+                    <SectionIcon style={{ width: 14, height: 14, color: "#007AFB" }} />
                     {section.title}
                   </span>
                   <FaChevronDown
                     style={{
                       width: 12,
                       height: 12,
-                      color: "#2563eb",
+                      color: "#007AFB",
                       transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
                       transition: "transform 160ms ease",
                     }}
@@ -571,7 +606,9 @@ export default function Sidebar({
                           key={to}
                           className="sidebar-btn teacher-sidebar-link"
                           to={to}
-                          onClick={isMobile ? closeSidebar : undefined}
+                          onClick={(event) => {
+                            void handleRouteClick(event, to);
+                          }}
                           style={isItemActive({ to, matches: [] }) ? { ...linkBaseStyle, ...linkActiveStyle } : linkBaseStyle}
                         >
                           <Icon style={{ width: 14, height: 14 }} />
