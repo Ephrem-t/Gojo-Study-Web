@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useRef, useMemo } from "react";
-import { FaChevronRight } from "react-icons/fa";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import { FaChevronRight, FaChevronLeft } from "react-icons/fa";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
+import { FixedSizeList as List } from "react-window";
 import Sidebar from "./Sidebar";
 import {
   FaHome,
@@ -26,6 +27,7 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getTeacherContext, getTeacherCourseContext } from "../api/teacherApi";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
+import { usePaginatedProxy } from "../hooks/usePaginatedProxy";
 import {
   buildChatMessageQuery,
   buildChatSummaryPath,
@@ -1223,155 +1225,168 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
 
   // ---------------- FETCH STUDENTS ----------------
   // FETCH STUDENTS + USERS + COURSES + ASSIGNMENTS + TEACHERS
-  useEffect(() => {
-    if (!teacherInfo?.userId || !resolvedSchoolCode || !rtdbBase || !teacherCourseContextReady) return;
-    let cancelled = false;
+  const fetchStudentsData = useCallback(async () => {
+    if (!teacherInfo?.userId || !resolvedSchoolCode || !rtdbBase || !teacherCourseContextReady) {
+      return [];
+    }
 
-    const fetchStudents = async () => {
-      setLoading(true);
-      try {
-        const courseContext = teacherCourseContext || EMPTY_TEACHER_COURSE_CONTEXT;
-        const schoolCode = resolvedSchoolCode || teacherSchoolCode;
+    try {
+      const courseContext = teacherCourseContext || EMPTY_TEACHER_COURSE_CONTEXT;
+      const schoolCode = resolvedSchoolCode || teacherSchoolCode;
 
-        const allowedGradeSections = new Set(
-          (courseContext?.courses || [])
-            .map((course) => buildGradeSectionKey(course?.grade, course?.section || course?.secation))
-            .filter((value) => value !== "|")
-        );
+      const allowedGradeSections = new Set(
+        (courseContext?.courses || [])
+          .map((course) => buildGradeSectionKey(course?.grade, course?.section || course?.secation))
+          .filter((value) => value !== "|")
+      );
 
-        (courseContext?.courseIds || []).forEach((courseId) => {
-          const raw = String(courseId || "").trim();
-          const body = raw.startsWith("course_") ? raw.slice("course_".length) : raw;
-          const last = body.split("_").filter(Boolean).at(-1) || "";
-          const match = last.match(/^(\d+)([A-Za-z].*)$/);
-          if (!match) return;
-          const grade = String(match[1] || "").trim();
-          const section = String(match[2] || "").trim().toUpperCase();
-          if (grade && section) {
-            allowedGradeSections.add(`${grade}|${section}`);
-          }
-        });
-
-        if (!allowedGradeSections.size) {
-          if (!cancelled) {
-            setStudents([]);
-            setAssignedGradeSections([]);
-            setError("No teacher assignment found");
-          }
-          return;
+      (courseContext?.courseIds || []).forEach((courseId) => {
+        const raw = String(courseId || "").trim();
+        const body = raw.startsWith("course_") ? raw.slice("course_".length) : raw;
+        const last = body.split("_").filter(Boolean).at(-1) || "";
+        const match = last.match(/^(\d+)([A-Za-z].*)$/);
+        if (!match) return;
+        const grade = String(match[1] || "").trim();
+        const section = String(match[2] || "").trim().toUpperCase();
+        if (grade && section) {
+          allowedGradeSections.add(`${grade}|${section}`);
         }
+      });
 
-        const studentRows = await loadStudentsByGradeSections({
-          rtdbBase,
-          schoolCode,
-          allowedGradeSections,
-        });
-
-        const fetchedUsers = (studentRows || []).reduce((result, studentRow) => {
-          if (studentRow?.userId && studentRow?.user) {
-            result[studentRow.userId] = studentRow.user;
-          }
-          return result;
-        }, {});
-
-        if (Object.keys(fetchedUsers).length) {
-          Object.entries(fetchedUsers).forEach(([userId, userRecord]) => {
-            cacheUserRecord(userId, userRecord);
-          });
-
-          setUsersData((previousUsers) => ({
-            ...(previousUsers || {}),
-            ...fetchedUsers,
-          }));
-        }
-
-        const studentsArr = (studentRows || [])
-          .map((studentRow) => {
-            const studentId = studentRow?.studentId || studentRow?.studentKey || studentRow?.userId;
-            const s = studentRow?.raw || {};
-            const studentUserId = studentRow?.userId || getStudentUserId(s);
-            const user = studentRow?.user || fetchedUsers?.[studentUserId] || usersData?.[studentUserId] || null;
-
-            const normalizedStudentGrade = normalizeGrade(s.grade || s.basicStudentInformation?.grade);
-            const normalizedStudentSection = normalizeSection(s.section || s.basicStudentInformation?.section);
-
-            const parentName =
-              s.parentName ||
-              s.parent?.name ||
-              user?.parentName ||
-              s.rawParentName ||
-              null;
-
-            const parentPhone =
-              s.parentPhone ||
-              s.parent?.phone ||
-              user?.parentPhone ||
-              s.rawParentPhone ||
-              null;
-
-            const rawDob = user?.dob || user?.birthDate || s.dob || s.birthDate || null;
-            const age = computeAge(rawDob);
-
-            return {
-              ...s,
-              studentId: s.studentId || studentId,
-              userId: studentUserId,
-              name: studentRow?.name || user?.name || s.name || s?.basicStudentInformation?.name || "Unknown",
-              email: user?.email || s.email || "",
-              profileImage: resolveProfileImage(
-                studentRow?.profileImage,
-                user?.profileImage,
-                user?.profile,
-                user?.avatar,
-                s?.profileImage,
-                s?.basicStudentInformation?.studentPhoto,
-                s?.studentPhoto
-              ),
-              phone: user?.phone || s.phone || "",
-              gender: user?.gender || s.gender || "",
-              grade: normalizedStudentGrade,
-              section: normalizedStudentSection,
-              dob: rawDob,
-              age,
-              parentName: parentName || null,
-              parentPhone: parentPhone || null,
-              raw: s,
-            };
-          })
-          .sort((a, b) => a.name.localeCompare(b.name));
-
-        const assignedPairs = [...allowedGradeSections]
-          .map((value) => {
-            const [grade, section] = String(value || "").split("|");
-            return {
-              grade: String(grade || "").trim(),
-              section: String(section || "").trim().toUpperCase(),
-            };
-          })
-          .filter((item) => item.grade && item.section)
-          .sort((a, b) => {
-            const gradeDiff = Number(a.grade) - Number(b.grade);
-            if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
-            if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
-            return a.section.localeCompare(b.section);
-          });
-
-        if (!cancelled) {
-          setStudents(studentsArr);
-          setAssignedGradeSections(assignedPairs);
-          setError(assignedPairs.length ? "" : "No teacher assignment found");
-        }
-      } catch (err) {
-        console.error(err);
-        if (!cancelled) setError("Failed to load students");
-      } finally {
-        if (!cancelled) setLoading(false);
+      if (!allowedGradeSections.size) {
+        setAssignedGradeSections([]);
+        setError("No teacher assignment found");
+        return [];
       }
-    };
 
-    fetchStudents();
-    return () => (cancelled = true);
-  }, [teacherInfo, resolvedSchoolCode, rtdbBase, teacherCourseContext, teacherCourseContextReady]);
+      const studentRows = await loadStudentsByGradeSections({
+        rtdbBase,
+        schoolCode,
+        allowedGradeSections,
+      });
+
+      const fetchedUsers = (studentRows || []).reduce((result, studentRow) => {
+        if (studentRow?.userId && studentRow?.user) {
+          result[studentRow.userId] = studentRow.user;
+        }
+        return result;
+      }, {});
+
+      if (Object.keys(fetchedUsers).length) {
+        Object.entries(fetchedUsers).forEach(([userId, userRecord]) => {
+          cacheUserRecord(userId, userRecord);
+        });
+
+        setUsersData((previousUsers) => ({
+          ...(previousUsers || {}),
+          ...fetchedUsers,
+        }));
+      }
+
+      const studentsArr = (studentRows || [])
+        .map((studentRow) => {
+          const studentId = studentRow?.studentId || studentRow?.studentKey || studentRow?.userId;
+          const s = studentRow?.raw || {};
+          const studentUserId = studentRow?.userId || getStudentUserId(s);
+          const user = studentRow?.user || fetchedUsers?.[studentUserId] || usersData?.[studentUserId] || null;
+
+          const normalizedStudentGrade = normalizeGrade(s.grade || s.basicStudentInformation?.grade);
+          const normalizedStudentSection = normalizeSection(s.section || s.basicStudentInformation?.section);
+
+          const parentName =
+            s.parentName ||
+            s.parent?.name ||
+            user?.parentName ||
+            s.rawParentName ||
+            null;
+
+          const parentPhone =
+            s.parentPhone ||
+            s.parent?.phone ||
+            user?.parentPhone ||
+            s.rawParentPhone ||
+            null;
+
+          const rawDob = user?.dob || user?.birthDate || s.dob || s.birthDate || null;
+          const age = computeAge(rawDob);
+
+          return {
+            ...s,
+            studentId: s.studentId || studentId,
+            userId: studentUserId,
+            name: studentRow?.name || user?.name || s.name || s?.basicStudentInformation?.name || "Unknown",
+            email: user?.email || s.email || "",
+            profileImage: resolveProfileImage(
+              studentRow?.profileImage,
+              user?.profileImage,
+              user?.profile,
+              user?.avatar,
+              s?.profileImage,
+              s?.basicStudentInformation?.studentPhoto,
+              s?.studentPhoto
+            ),
+            phone: user?.phone || s.phone || "",
+            gender: user?.gender || s.gender || "",
+            grade: normalizedStudentGrade,
+            section: normalizedStudentSection,
+            dob: rawDob,
+            age,
+            parentName: parentName || null,
+            parentPhone: parentPhone || null,
+            raw: s,
+          };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const assignedPairs = [...allowedGradeSections]
+        .map((value) => {
+          const [grade, section] = String(value || "").split("|");
+          return {
+            grade: String(grade || "").trim(),
+            section: String(section || "").trim().toUpperCase(),
+          };
+        })
+        .filter((item) => item.grade && item.section)
+        .sort((a, b) => {
+          const gradeDiff = Number(a.grade) - Number(b.grade);
+          if (!Number.isNaN(gradeDiff) && gradeDiff !== 0) return gradeDiff;
+          if (a.grade !== b.grade) return a.grade.localeCompare(b.grade);
+          return a.section.localeCompare(b.section);
+        });
+
+      setAssignedGradeSections(assignedPairs);
+      setError(assignedPairs.length ? "" : "No teacher assignment found");
+
+      return studentsArr;
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load students");
+      return [];
+    }
+  }, [teacherInfo, resolvedSchoolCode, rtdbBase, teacherCourseContext, teacherCourseContextReady, teacherSchoolCode, usersData]);
+
+  const {
+    items: paginatedStudents,
+    allItems: allStudents,
+    isLoading,
+    isError,
+    pageIndex,
+    goNext,
+    goPrev,
+    hasNext,
+    hasPrev,
+    totalPages,
+  } = usePaginatedProxy(
+    fetchStudentsData,
+    // Include userId so a new teacher gets a fresh fetch, not a stale cache
+    ['students', teacherInfo?.userId || null],
+    // Block the query until all required deps are loaded
+    { enabled: !!teacherInfo?.userId && !!resolvedSchoolCode && !!rtdbBase && teacherCourseContextReady },
+  );
+
+  useEffect(() => {
+    setLoading(isLoading);
+  }, [isLoading]);
 
   // When user picks a student, set immediate fallback details (so UI won't crash),
   // then fetch Users node and resolve authoritative details (phone/gender/email/parent/dob->age).
@@ -1579,10 +1594,10 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
         setSelectedSection(gradeSections[0]);
       }
     }
-  }, [selectedGrade, students, selectedSection]);
+  }, [selectedGrade, allStudents, selectedSection]);
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
-  const filteredStudents = students.filter((s) => {
+  const filteredStudents = allStudents.filter((s) => {
     if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
     if (selectedSection !== "All" && s.section !== selectedSection) return false;
     if (!normalizedSearch) return true;
@@ -1602,7 +1617,50 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     return haystack.includes(normalizedSearch);
   });
 
-  const grades = [...new Set(students.map((s) => s.grade))].sort();
+  // Apply filters to ALL students first (before pagination)
+  // This ensures grade/section dropdowns are accurate for ALL data, not just current page
+  const allFilteredStudents = allStudents.filter((s) => {
+    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
+    if (selectedSection !== "All" && s.section !== selectedSection) return false;
+    if (!normalizedSearch) return true;
+
+    const haystack = [
+      s.name,
+      s.studentId,
+      s.userId,
+      s.email,
+      s.grade,
+      s.section,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  });
+
+  // Apply filters to the paginated items for display
+  const displayedStudents = paginatedStudents.filter((s) => {
+    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
+    if (selectedSection !== "All" && s.section !== selectedSection) return false;
+    if (!normalizedSearch) return true;
+
+    const haystack = [
+      s.name,
+      s.studentId,
+      s.userId,
+      s.email,
+      s.grade,
+      s.section,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  });
+
+  const grades = [...new Set(allStudents.map((s) => s.grade))].sort();
   const assignedGrades = [...new Set(assignedGradeSections.map((item) => item.grade))].sort((leftGrade, rightGrade) => {
     const numericDiff = Number(leftGrade) - Number(rightGrade);
     if (!Number.isNaN(numericDiff) && numericDiff !== 0) return numericDiff;
@@ -2760,6 +2818,82 @@ React.useEffect(() => {
                 }
               }
             `}</style>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Pagination Controls */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 12px',
+                background: '#f8fafc',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 600,
+              }}>
+                <button
+                  onClick={goPrev}
+                  disabled={!hasPrev}
+                  style={{
+                    padding: '6px 10px',
+                    background: hasPrev ? 'var(--accent-strong)' : '#cbd5e1',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: hasPrev ? 'pointer' : 'not-allowed',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                  }}
+                >
+                  <FaChevronLeft size={10} /> Prev
+                </button>
+                <span style={{ color: '#64748b' }}>
+                  Page {pageIndex + 1} of {totalPages || 1}
+                </span>
+                <button
+                  onClick={goNext}
+                  disabled={!hasNext}
+                  style={{
+                    padding: '6px 10px',
+                    background: hasNext ? 'var(--accent-strong)' : '#cbd5e1',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: hasNext ? 'pointer' : 'not-allowed',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                  }}
+                >
+                  Next <FaChevronRight size={10} />
+                </button>
+              </div>
+
+              {/* Student List with FixedSizeList */}
+              <div className="student-list-responsive">
+                <List
+                  height={500}
+                  itemCount={displayedStudents.length}
+                  itemSize={84}
+                  width="100%"
+                >
+                  {({ index, style }) => (
+                    <div style={{ ...style, paddingBottom: 8 }}>
+                      <StudentItem
+                        student={displayedStudents[index]}
+                        number={pageIndex * 20 + index + 1}
+                        selected={selectedStudent?.userId === displayedStudents[index]?.userId}
+                        onClick={() => setSelectedStudent(displayedStudents[index])}
+                      />
+                    </div>
+                  )}
+                </List>
+              </div>
+            </div>
+
+            {/* OLD RENDERING - REPLACED ABOVE
             <div className="student-list-responsive">
               {filteredStudents.map((s, index) => (
                 <StudentItem
@@ -2772,6 +2906,7 @@ React.useEffect(() => {
               ))}
               <div aria-hidden="true" style={{ height: 18 }} />
             </div>
+            */}
           </div>
 
           {/* RIGHT SIDEBAR */}
