@@ -1,3 +1,6 @@
+import base64
+import binascii
+import json
 import mimetypes
 import os
 from functools import lru_cache
@@ -25,6 +28,10 @@ DEFAULT_STORAGE_BUCKET = "gojo-education.firebasestorage.app"
 DEFAULT_PLATFORM_ROOT = "Platform1"
 DEFAULT_SCHOOLS_ROOT = "Schools"
 LOCAL_UPLOAD_ROOT = os.path.join(BASE_DIR, "uploaded_assets")
+DEFAULT_CORS_ORIGIN_PATTERNS = (
+    r"http://localhost:\d+",
+    r"http://127\.0\.0\.1:\d+",
+)
 
 DEFAULT_SCHOOL_DEPARTMENTS = {
     "DEP_ACADEMIC": {
@@ -69,15 +76,40 @@ DEFAULT_SCHOOL_POSITIONS = {
 }
 
 
+@lru_cache(maxsize=1)
+def _configured_cors_origins():
+    origins = []
+
+    for env_name in ("FRONTEND_URL", "RENDER_EXTERNAL_URL"):
+        origin = str(os.getenv(env_name, "")).strip().rstrip("/")
+        if origin:
+            origins.append(origin)
+
+    for raw_origin in str(os.getenv("CORS_ALLOWED_ORIGINS", "")).split(","):
+        origin = raw_origin.strip().rstrip("/")
+        if origin:
+            origins.append(origin)
+
+    unique_origins = []
+    seen = set()
+    for origin in origins:
+        if origin not in seen:
+            seen.add(origin)
+            unique_origins.append(origin)
+
+    return tuple(unique_origins)
+
+
+def _cors_resource_origins():
+    return list(DEFAULT_CORS_ORIGIN_PATTERNS) + list(_configured_cors_origins())
+
+
 app = Flask(__name__)
 CORS(
     app,
     resources={
         r"/api/*": {
-            "origins": [
-                r"http://localhost:\d+",
-                r"http://127\.0\.0\.1:\d+",
-            ]
+            "origins": _cors_resource_origins(),
         }
     },
 )
@@ -112,6 +144,17 @@ def _is_allowed_local_dev_origin(origin):
     return parsed_ip.is_loopback or parsed_ip.is_private
 
 
+def _is_allowed_cors_origin(origin):
+    normalized_origin = str(origin or "").strip().rstrip("/")
+    if not normalized_origin:
+        return False
+
+    if _is_allowed_local_dev_origin(normalized_origin):
+        return True
+
+    return normalized_origin in _configured_cors_origins()
+
+
 def _credential_path():
     configured = str(os.getenv("FIREBASE_CREDENTIALS", "")).strip()
     if configured:
@@ -119,17 +162,40 @@ def _credential_path():
     return os.path.join(BASE_DIR, DEFAULT_CREDENTIAL_FILE)
 
 
-def _initialize_firebase():
-    credential_path = _credential_path()
-    if not os.path.exists(credential_path):
-        raise FileNotFoundError(
-            "Firebase credential JSON not found. Set FIREBASE_CREDENTIALS or place the file in backend/."
-        )
+def _firebase_credential_payload():
+    encoded_payload = str(os.getenv("FIREBASE_CREDENTIALS_JSON_B64", "")).strip()
+    if encoded_payload:
+        try:
+            decoded_payload = base64.b64decode(encoded_payload, validate=True).decode("utf-8")
+            return json.loads(decoded_payload)
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("FIREBASE_CREDENTIALS_JSON_B64 must be valid base64-encoded JSON") from exc
 
+    raw_payload = str(os.getenv("FIREBASE_CREDENTIALS_JSON", "")).strip()
+    if raw_payload:
+        try:
+            return json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("FIREBASE_CREDENTIALS_JSON must be valid JSON") from exc
+
+    return None
+
+
+def _initialize_firebase():
     if firebase_admin._apps:
         return firebase_admin.get_app()
 
-    credential = credentials.Certificate(credential_path)
+    credential_payload = _firebase_credential_payload()
+    if credential_payload is not None:
+        credential = credentials.Certificate(credential_payload)
+    else:
+        credential_path = _credential_path()
+        if not os.path.exists(credential_path):
+            raise FileNotFoundError(
+                "Firebase credential JSON not found. Set FIREBASE_CREDENTIALS_JSON_B64, FIREBASE_CREDENTIALS_JSON, FIREBASE_CREDENTIALS, or place the file in backend/."
+            )
+        credential = credentials.Certificate(credential_path)
+
     return firebase_admin.initialize_app(
         credential,
         {
@@ -1223,9 +1289,9 @@ def _school_detail_payload(school_code, school_data):
 
 
 @app.after_request
-def _apply_local_dev_cors_headers(response):
+def _apply_cors_headers(response):
     origin = str(request.headers.get("Origin") or "").strip()
-    if _is_allowed_local_dev_origin(origin):
+    if _is_allowed_cors_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
@@ -3798,4 +3864,5 @@ def save_company_exam_record():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+    debug_enabled = str(os.getenv("FLASK_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=debug_enabled)

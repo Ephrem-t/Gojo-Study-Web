@@ -2,3 +2,4 @@ flask
 firebase-admin
 flask-cors
 pypdf
+gunicorn

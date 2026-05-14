@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { API_BASE_URL } from '../apiBaseUrl'
 import CompanySidebar from '../components/CompanySidebar'
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000').replace(/\/$/, '')
 const DRAFT_STORAGE_PREFIX = 'gojo-company-exam-draft'
 
 const SUBJECT_CODE_MAP = {
