@@ -83,7 +83,7 @@ function MyPosts() {
     }
   }, [token]);
 
-  const RTDB_BASE_RAW = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const RTDB_BASE_RAW = "https://gojo-education-default-rtdb.firebaseio.com";
   const schoolCode = finance.schoolCode || _storedFinance.schoolCode || "";
   const DB_ROOT = schoolCode
     ? `${RTDB_BASE_RAW}/Platform1/Schools/${schoolCode}`

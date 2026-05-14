@@ -1,4 +1,4 @@
-export const FINANCE_RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+export const FINANCE_RTDB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
 
 function safeParse(rawValue) {
   if (!rawValue) return {};

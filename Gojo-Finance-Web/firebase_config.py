@@ -1,29 +1,20 @@
-from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 
-def _load_shared_service_account():
-    current_file = Path(__file__).resolve()
-    for parent in current_file.parents:
-        candidate = parent / 'serviceAccountKey.py'
-        if not candidate.exists():
-            continue
-
-        spec = spec_from_file_location('gojo_service_account_key', candidate)
-        if spec is None or spec.loader is None:
-            continue
-
-        module = module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    raise FileNotFoundError('serviceAccountKey.py not found in parent directories.')
+FIREBASE_CREDENTIALS = str((Path(__file__).resolve().parent / "gojo-education-firebase-adminsdk-fbsvc-dd7c417a41.json"))
+FIREBASE_DATABASE_URL = "https://gojo-education-default-rtdb.firebaseio.com"
+FIREBASE_STORAGE_BUCKET = "gojo-education.firebasestorage.app"
 
 
-_SHARED = _load_shared_service_account()
+def get_firebase_options():
+    return {
+        "databaseURL": FIREBASE_DATABASE_URL,
+        "storageBucket": FIREBASE_STORAGE_BUCKET,
+    }
 
-FIREBASE_CREDENTIALS = _SHARED.FIREBASE_CREDENTIALS
-FIREBASE_DATABASE_URL = _SHARED.FIREBASE_DATABASE_URL
-FIREBASE_STORAGE_BUCKET = _SHARED.FIREBASE_STORAGE_BUCKET
-get_firebase_options = _SHARED.get_firebase_options
-require_firebase_credentials = _SHARED.require_firebase_credentials
+
+def require_firebase_credentials():
+    cred_path = Path(FIREBASE_CREDENTIALS)
+    if not cred_path.exists():
+        raise FileNotFoundError(f"Firebase credentials file not found: {cred_path}")
+    return str(cred_path)

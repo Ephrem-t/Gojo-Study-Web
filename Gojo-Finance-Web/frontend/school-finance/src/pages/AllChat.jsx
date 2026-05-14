@@ -6,7 +6,7 @@ import "../styles/global.css";
 import { useFinanceShell } from "../context/FinanceShellContext";
 import { loadSchoolPeople } from "../utils/chatRtdb";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const DB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
 
 function AllChat() {
   const location = useLocation();

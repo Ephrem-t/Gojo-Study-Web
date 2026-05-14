@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
 /* Auth.css */
 
 .auth-container {
@@ -182,7 +184,6 @@
 .auth-box p.subtle { color: #475569; margin-top: 4px; margin-bottom: 18px; font-size: 13px; }
 
 /* Finance Login V2 */
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
 .finance-login-page {
   --fl-bg: #ffffff;
