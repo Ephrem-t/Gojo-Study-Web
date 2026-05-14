@@ -13,7 +13,7 @@ from firebase_config import FIREBASE_CREDENTIALS, get_firebase_options, require_
 app = Flask(__name__)
 CORS(app)
 
-# Path to your Firebase service account JSON (managed centrally via serviceAccountKey.py)
+# Path to your Firebase service account JSON (managed via firebase_config.py)
 firebase_json = require_firebase_credentials()
 if not os.path.exists(firebase_json):
     print(f"Firebase JSON missing at {firebase_json}")
@@ -475,27 +475,165 @@ def get_students():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+def _normalize_order_value(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, (int, float)):
+        return value
+
+    text = str(value or "").strip()
+
+    try:
+        if "." in text:
+            return float(text)
+        return int(text)
+    except Exception:
+        return text.lower()
+
+
+def _build_sorted_rows(node_data, order_by):
+    rows = []
+
+    for key, value in (node_data or {}).items():
+        item = value or {}
+        rows.append({"key": key, **item})
+
+    def sort_key(item):
+        raw_value = item.get(order_by) if order_by != "key" else item.get("key")
+        return (_normalize_order_value(raw_value), str(item.get("key") or ""))
+
+    rows.sort(key=sort_key)
+    return rows
+
+
+def _apply_start_at(rows, order_by, start_at_value, start_at_key):
+    if start_at_value in (None, ""):
+        return rows
+
+    normalized_start_value = _normalize_order_value(start_at_value)
+    normalized_start_key = str(start_at_key or "")
+    filtered = []
+
+    for item in rows:
+        raw_value = item.get(order_by) if order_by != "key" else item.get("key")
+        item_value = _normalize_order_value(raw_value)
+        item_key = str(item.get("key") or "")
+
+        if item_value > normalized_start_value:
+            filtered.append(item)
+            continue
+
+        if item_value == normalized_start_value and item_key >= normalized_start_key:
+            filtered.append(item)
+
+    return filtered
+
+
+@app.route("/api/like_post", methods=["POST"])
+def like_post():
+    try:
+        payload = request.get_json(silent=True) or {}
+        post_id = str(payload.get("postId") or "").strip()
+        liker_id = str(payload.get("adminId") or payload.get("userId") or payload.get("financeId") or "").strip()
+        school_code = str(payload.get("schoolCode") or "").strip()
+
+        if not post_id:
+            return jsonify({"success": False, "message": "postId is required"}), 400
+
+        if not liker_id:
+            return jsonify({"success": False, "message": "liker id is required"}), 400
+
+        if not school_code:
+            all_schools = schools_data()
+            for code, school_node in (all_schools or {}).items():
+                posts_node = (school_node or {}).get("Posts") or {}
+                if str(post_id) in posts_node:
+                    school_code = str(code)
+                    break
+
+        if not school_code:
+            return jsonify({"success": False, "message": "schoolCode is required"}), 400
+
+        post_ref = school_ref(school_code).child(f"Posts/{post_id}")
+        post_obj = post_ref.get() or {}
+
+        if not post_obj:
+            return jsonify({"success": False, "message": "Post not found"}), 404
+
+        likes = post_obj.get("likes") or {}
+        liked = False
+
+        if likes.get(liker_id):
+            likes.pop(liker_id, None)
+            liked = False
+        else:
+            likes[liker_id] = True
+            liked = True
+
+        like_count = len([value for value in (likes or {}).values() if value])
+
+        post_ref.update({
+            "likes": likes,
+            "likeCount": like_count,
+        })
+
+        invalidate_cached_node(school_code, "Posts")
+
+        return jsonify({
+            "success": True,
+            "liked": liked,
+            "likeCount": like_count,
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Shared node proxy endpoints — all finance users share one server-side cache
 # (30-min TTL for Students/Parents). 100 users → 1 Firebase read per window.
 # ---------------------------------------------------------------------------
 
-@app.route("/api/nodes/Students", methods=["GET"])
-def get_students_node():
+@app.route("/api/nodes/<node_name>", methods=["GET"])
+def get_school_node(node_name):
     school_code = (request.args.get("schoolCode") or "").strip()
     if not school_code:
         return jsonify({"success": False, "message": "schoolCode is required"}), 400
-    data = get_school_node_cached(school_code, "Students")
+    data = get_school_node_cached(school_code, node_name)
     return jsonify(data), 200
 
 
-@app.route("/api/nodes/Parents", methods=["GET"])
-def get_parents_node():
+@app.route("/api/nodes/<node_name>/paged", methods=["GET"])
+def get_school_node_paged(node_name):
     school_code = (request.args.get("schoolCode") or "").strip()
+    order_by = (request.args.get("orderBy") or "key").strip()
+    start_at_value = request.args.get("startAtValue")
+    start_at_key = (request.args.get("startAtKey") or "").strip()
+
+    try:
+        limit = int(request.args.get("limit") or 21)
+    except Exception:
+        limit = 21
+
+    limit = max(1, min(limit, 200))
+
     if not school_code:
         return jsonify({"success": False, "message": "schoolCode is required"}), 400
-    data = get_school_node_cached(school_code, "Parents")
-    return jsonify(data), 200
+
+    data = get_school_node_cached(school_code, node_name) or {}
+    rows = _build_sorted_rows(data, order_by)
+    rows = _apply_start_at(rows, order_by, start_at_value, start_at_key)
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+
+    return jsonify({
+        "items": page_rows,
+        "hasMore": has_more,
+    }), 200
 
 
 if __name__ == "__main__":

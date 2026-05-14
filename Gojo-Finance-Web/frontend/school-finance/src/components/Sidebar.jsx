@@ -75,7 +75,7 @@ function Sidebar() {
     position: "fixed",
     top: "calc(var(--topbar-height, 0px) + 8px)",
     left: 12,
-    zIndex: 40,
+    zIndex: 5000,
     borderRadius: 18,
     border: "1px solid #dbe2f0",
     boxSizing: "border-box",

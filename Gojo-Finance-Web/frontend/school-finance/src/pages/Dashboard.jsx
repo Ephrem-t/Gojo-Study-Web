@@ -14,7 +14,7 @@ import { invalidateScopedPosts, loadScopedPosts } from "../utils/postData";
 
 function Dashboard() {
   const API_BASE = `${BACKEND_BASE}/api`;
-  const DB_URL = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const DB_URL = "https://gojo-education-default-rtdb.firebaseio.com";
   // ---------------- STATE ----------------
   const _storedFinance = (() => {
     try {
@@ -423,10 +423,16 @@ function Dashboard() {
   // ---------------- HANDLE LIKE ----------------
   const handleLike = async (postId) => {
     try {
+      const likerId = admin.userId || admin.adminId;
+      if (!likerId) {
+        return;
+      }
+
       // ✅ Use full backend URL
       const res = await axios.post(`${API_BASE}/like_post`, {
         postId,
-        adminId: admin.userId, // or admin.adminId if your backend expects it
+        adminId: likerId,
+        schoolCode,
       });
 
       if (res.data.success) {
@@ -435,16 +441,22 @@ function Dashboard() {
 
         setPosts((prevPosts) =>
           prevPosts.map((post) =>
-            post.postId === postId
-              ? {
-                  ...post,
-                  likeCount,
-                  likes: {
-                    ...post.likes,
-                    [admin.userId]: liked ? true : undefined,
-                  },
-                }
-              : post
+            post.postId !== postId
+              ? post
+              : (() => {
+                  const nextLikes = { ...(post.likes || {}) };
+                  if (liked) {
+                    nextLikes[likerId] = true;
+                  } else {
+                    delete nextLikes[likerId];
+                  }
+
+                  return {
+                    ...post,
+                    likeCount,
+                    likes: nextLikes,
+                  };
+                })()
           )
         );
       }

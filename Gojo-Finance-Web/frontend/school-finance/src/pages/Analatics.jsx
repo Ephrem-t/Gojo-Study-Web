@@ -34,7 +34,7 @@ import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import { getOrLoad } from "../utils/requestCache";
 import { loadManagedGrades, loadSchoolPeople, sortGradeValues } from "../utils/chatRtdb";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const DB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function Analatics() {

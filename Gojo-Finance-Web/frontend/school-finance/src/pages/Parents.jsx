@@ -16,19 +16,29 @@ import {
   FaChartLine,
 } from "react-icons/fa";
 import axios from "axios";
+import { FixedSizeList } from "react-window";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import usePaginatedRTDB from "../hooks/usePaginatedRTDB";
 import { getOrLoad } from "../utils/requestCache";
-import { loadSchoolPeople, loadUserProfile } from "../utils/chatRtdb";
+import { loadUserProfile } from "../utils/chatRtdb";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const DB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
 const getChatId = (a, b) => [a, b].sort().join("_");
+const LIST_ITEM_SIZE = 98;
 
 function Parent() {
   const API_BASE = `${BACKEND_BASE}/api`;
-  const [parents, setParents] = useState([]);
-  const [loadingParents, setLoadingParents] = useState(true);
+  const {
+    items: parentItems,
+    isLoading: loadingParents,
+    pageIndex,
+    goNext,
+    goPrev,
+    hasNext,
+    hasPrev,
+  } = usePaginatedRTDB("Parents", "userId");
   const [searchTerm, setSearchTerm] = useState("");
   const [parentTab, setParentTab] = useState("Details");
   const [parentChatOpen, setParentChatOpen] = useState(false);
@@ -125,37 +135,6 @@ function Parent() {
   useEffect(() => {
     setSidebarVisible(windowW > 900);
   }, [windowW]);
-
-  // Fetch parents
-  useEffect(() => {
-    const fetchParents = async () => {
-      setLoadingParents(true);
-      try {
-        const parentContacts = await loadSchoolPeople(DB, "parent");
-        const parentList = (parentContacts || []).map((parentContact) => ({
-          ...parentContact,
-          parentId: parentContact.parentId || parentContact.id,
-          email: parentContact.email || "N/A",
-          childName: parentContact.childName || "N/A",
-          childRelationship: parentContact.childRelationship || "N/A",
-          profileImage: parentContact.profileImage || "/default-profile.png",
-          phone: parentContact.phone || "N/A",
-          age: parentContact.age || null,
-          city: parentContact.city || null,
-          citizenship: parentContact.citizenship || null,
-          job: parentContact.job || null,
-          address: parentContact.address || null,
-        }));
-        setParents(parentList);
-      } catch (err) {
-        console.error("Error fetching parents:", err);
-        setParents([]);
-      } finally {
-        setLoadingParents(false);
-      }
-    };
-    fetchParents();
-  }, [DB]);
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -514,6 +493,23 @@ function Parent() {
 
   // allow rendering even if no admin/userId is present; effects will no-op when adminId is falsy
 
+  const parents = useMemo(() => {
+    return (parentItems || []).map((parentRecord) => ({
+      ...parentRecord,
+      parentId: parentRecord.parentId || parentRecord.id || parentRecord.userId,
+      email: parentRecord.email || "N/A",
+      childName: parentRecord.childName || "N/A",
+      childRelationship: parentRecord.childRelationship || "N/A",
+      profileImage: parentRecord.profileImage || "/default-profile.png",
+      phone: parentRecord.phone || "N/A",
+      age: parentRecord.age || null,
+      city: parentRecord.city || null,
+      citizenship: parentRecord.citizenship || null,
+      job: parentRecord.job || null,
+      address: parentRecord.address || null,
+    }));
+  }, [parentItems]);
+
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredParents = useMemo(() => {
     if (!normalizedSearch) return parents;
@@ -549,6 +545,66 @@ function Parent() {
     transition: "all 0.25s ease",
     width: "100%",
     boxSizing: "border-box",
+  };
+
+  const ParentRow = ({ index, style, data }) => {
+    const p = data[index];
+    if (!p) return null;
+
+    return (
+      <div style={{ ...style, display: "flex", alignItems: "stretch", paddingBottom: 12 }}>
+        <div
+          onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
+          style={{
+            ...parentCardBase,
+            width: isNarrow ? "92%" : "560px",
+            background: selectedParent?.userId === p.userId ? "#eef4ff" : "#fff",
+            border: selectedParent?.userId === p.userId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
+            boxShadow: selectedParent?.userId === p.userId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "#dbeafe",
+                color: "#2563eb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 800,
+                fontSize: 13,
+                flex: "0 0 auto",
+              }}
+            >
+              {index + 1}
+            </div>
+            <img
+              src={p.profileImage}
+              alt={p.name}
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: "50%",
+                objectFit: "cover",
+                border: selectedParent?.userId === p.userId ? "3px solid #2563eb" : "3px solid #e5e7eb",
+                transition: "all 0.3s ease",
+              }}
+            />
+            <div style={{ minWidth: 0 }}>
+              <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {p.name}
+              </h3>
+              <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -772,59 +828,50 @@ function Parent() {
             <p style={{ textAlign: "center", color: "#555" }}>No parents found.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", marginLeft: isNarrow ? 0 : '64px' }}>
-              {filteredParents.map((p, i) => (
-                <div
-                  key={p.userId}
-                  onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
+              <FixedSizeList
+                height={500}
+                itemCount={filteredParents.length}
+                itemSize={LIST_ITEM_SIZE}
+                itemData={filteredParents}
+                width={isNarrow ? 360 : 560}
+              >
+                {ParentRow}
+              </FixedSizeList>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                <button
+                  onClick={goPrev}
+                  disabled={!hasPrev}
                   style={{
-                    ...parentCardBase,
-                    width: isNarrow ? "92%" : "560px",
-                    background: selectedParent?.userId === p.userId ? "#eef4ff" : "#fff",
-                    border: selectedParent?.userId === p.userId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
-                    boxShadow: selectedParent?.userId === p.userId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
+                    padding: "6px 12px",
+                    borderRadius: "999px",
+                    border: "1px solid #dbeafe",
+                    background: hasPrev ? "#eef2ff" : "#f3f4f6",
+                    color: hasPrev ? "#1e3a8a" : "#9ca3af",
+                    cursor: hasPrev ? "pointer" : "not-allowed",
+                    fontSize: 11,
+                    fontWeight: 700,
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <div
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
-                        background: "#dbeafe",
-                        color: "#2563eb",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: 800,
-                        fontSize: 13,
-                        flex: "0 0 auto",
-                      }}
-                    >
-                      {i + 1}
-                    </div>
-                    <img
-                      src={p.profileImage}
-                      alt={p.name}
-                      style={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: "50%",
-                        objectFit: "cover",
-                        border: selectedParent?.userId === p.userId ? "3px solid #2563eb" : "3px solid #e5e7eb",
-                        transition: "all 0.3s ease",
-                      }}
-                    />
-                    <div style={{ minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {p.name}
-                      </h3>
-                      <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  Previous
+                </button>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#1f2937" }}>Page {pageIndex + 1}</span>
+                <button
+                  onClick={goNext}
+                  disabled={!hasNext}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "999px",
+                    border: "1px solid #dbeafe",
+                    background: hasNext ? "#eef2ff" : "#f3f4f6",
+                    color: hasNext ? "#1e3a8a" : "#9ca3af",
+                    cursor: hasNext ? "pointer" : "not-allowed",
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
         </main>

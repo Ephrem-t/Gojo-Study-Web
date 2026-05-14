@@ -7,20 +7,32 @@ import {
 import axios from "axios";
 import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
 import { useMemo } from "react";
+import { FixedSizeList } from "react-window";
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
 
 import { db as dbRT } from "../firebase";
 import { BACKEND_BASE } from "../config.js";
 import { useFinanceShell } from "../context/FinanceShellContext";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import usePaginatedRTDB from "../hooks/usePaginatedRTDB";
 import { getOrLoad } from "../utils/requestCache";
-import { loadManagedGrades, loadSchoolPeople, sortGradeValues } from "../utils/chatRtdb";
+import { loadManagedGrades, sortGradeValues } from "../utils/chatRtdb";
+
+const LIST_ITEM_SIZE = 98;
 
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
+  const {
+    items: students,
+    isLoading: studentsLoading,
+    pageIndex,
+    goNext,
+    goPrev,
+    hasNext,
+    hasPrev,
+  } = usePaginatedRTDB("Students", "name");
   // ------------------ STATES ------------------
-  const [students, setStudents] = useState([]); // List of all students
   const [gradeOptions, setGradeOptions] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
@@ -38,7 +50,6 @@ function StudentsPage() {
   const [studentTab, setStudentTab] = useState("details");
   const [attendance, setAttendance] = useState([]);
   const [marks, setMarks] = useState({});
-  const [studentsLoading, setStudentsLoading] = useState(true);
   const [unreadMap, setUnreadMap] = useState({});
   // Local cached paid/unpaid map (persisted to localStorage)
   const [paidMap, setPaidMap] = useState({});
@@ -46,7 +57,7 @@ function StudentsPage() {
   // pending undoable toggle info { id, prev, newPaid, key, timer, studentName }
   const [undoInfo, setUndoInfo] = useState(null);
   const navigate = useNavigate();
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const DB_BASE = "https://gojo-education-default-rtdb.firebaseio.com";
 
   // Prefer the best available session payload. Sometimes `finance` can be stale/empty
   // while `admin` still contains a valid adminId/userId (or vice-versa).
@@ -697,31 +708,21 @@ useEffect(() => {
 
 
 
-  // ------------------ FETCH STUDENTS ------------------
+  // ------------------ FETCH GRADE OPTIONS ------------------
   useEffect(() => {
-    const fetchStudents = async () => {
+    const fetchGrades = async () => {
       try {
-        setStudentsLoading(true);
-        const [studentList, managedGrades] = await Promise.all([
-          loadSchoolPeople(DB_URL, "student"),
-          loadManagedGrades(DB_URL),
-        ]);
-
-        const fallbackGrades = sortGradeValues(studentList.map((student) => student?.grade));
-
-        setStudents(studentList);
+        const managedGrades = await loadManagedGrades(DB_URL);
+        const fallbackGrades = sortGradeValues(students.map((student) => student?.grade));
         setGradeOptions(managedGrades.length ? managedGrades : fallbackGrades);
       } catch (err) {
-        console.error("Error fetching students:", err);
-        setStudents([]);
+        console.error("Error fetching grades:", err);
         setGradeOptions([]);
-      } finally {
-        setStudentsLoading(false);
       }
     };
 
-    fetchStudents();
-  }, [DB_URL]);
+    fetchGrades();
+  }, [DB_URL, students]);
 
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
@@ -1135,6 +1136,92 @@ useEffect(() => {
     transition: "all 0.2s ease",
   });
 
+  const StudentRow = ({ index, style, data }) => {
+    const s = data[index];
+    if (!s) return null;
+
+    return (
+      <div style={{ ...style, display: "flex", alignItems: "stretch", paddingBottom: 12 }}>
+        <div
+          onClick={() => handleSelectStudent(s)}
+          className="student-card"
+          style={{
+            width: "100%",
+            minHeight: "86px",
+            borderRadius: "14px",
+            padding: "12px",
+            background: selectedStudent?.studentId === s.studentId ? "#eef4ff" : "#fff",
+            border: selectedStudent?.studentId === s.studentId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
+            boxShadow: selectedStudent?.studentId === s.studentId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
+            cursor: "pointer",
+            transition: "all 0.25s ease",
+            position: "relative",
+            boxSizing: "border-box",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "#dbeafe",
+                color: "#2563eb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 800,
+                fontSize: 13,
+                flex: "0 0 auto",
+              }}
+            >
+              {index + 1}
+            </div>
+            <img
+              src={s.profileImage}
+              alt={s.name}
+              style={{
+                width: "48px",
+                height: "48px",
+                borderRadius: "50%",
+                border: selectedStudent?.studentId === s.studentId ? "3px solid #2563eb" : "3px solid #e5e7eb",
+                objectFit: "cover",
+                transition: "all 0.3s ease",
+              }}
+            />
+            <div style={{ minWidth: 0 }}>
+              <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
+              <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4 }}>
+                Grade {s.grade} • Section {s.section}
+              </div>
+            </div>
+          </div>
+
+          {/* payment toggle button (cached locally) */}
+          <button
+            onClick={(e) => { e.stopPropagation(); togglePaid(s); }}
+            style={{
+              position: "absolute",
+              right: 12,
+              top: 12,
+              padding: "7px 12px",
+              borderRadius: 999,
+              border: "none",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 700,
+              background: paidMap[s.studentId || s.userId] ? "#059669" : "#f97316",
+              color: "#fff",
+              boxShadow: paidMap[s.studentId || s.userId] ? "0 6px 14px rgba(5,150,105,0.24)" : "0 6px 14px rgba(249,115,22,0.24)",
+            }}
+          >
+            {paidMap[s.studentId || s.userId] ? "Paid" : "Unpaid"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
  return (
     <div className="dashboard-page" style={{ background: "#f5f8ff", minHeight: "100vh" }}>
       {undoInfo && (
@@ -1418,84 +1505,50 @@ useEffect(() => {
               <p style={{ textAlign: "center", color: "#555" }}>No students found for this selection.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {filteredStudents.map((s, i) => (
-                  <div
-                    key={s.userId}
-                    onClick={() => handleSelectStudent(s)}
-                    className="student-card"
+                <FixedSizeList
+                  height={500}
+                  itemCount={filteredStudents.length}
+                  itemSize={LIST_ITEM_SIZE}
+                  itemData={filteredStudents}
+                  width={isNarrow ? 360 : 560}
+                >
+                  {StudentRow}
+                </FixedSizeList>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                  <button
+                    onClick={goPrev}
+                    disabled={!hasPrev}
                     style={{
-                      width: isNarrow ? "92%" : "560px",
-                      minHeight: "86px",
-                      borderRadius: "14px",
-                      padding: "12px",
-                      background: selectedStudent?.studentId === s.studentId ? "#eef4ff" : "#fff",
-                      border: selectedStudent?.studentId === s.studentId ? "2px solid #1d4ed8" : "1px solid #e5e7eb",
-                      boxShadow: selectedStudent?.studentId === s.studentId ? "0 10px 24px rgba(29,78,216,0.24)" : "0 8px 18px rgba(15,23,42,0.08)",
-                      cursor: "pointer",
-                      transition: "all 0.25s ease",
-                      position: "relative",
+                      padding: "6px 12px",
+                      borderRadius: "999px",
+                      border: "1px solid #dbeafe",
+                      background: hasPrev ? "#eef2ff" : "#f3f4f6",
+                      color: hasPrev ? "#1e3a8a" : "#9ca3af",
+                      cursor: hasPrev ? "pointer" : "not-allowed",
+                      fontSize: 11,
+                      fontWeight: 700,
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 10,
-                          background: "#dbeafe",
-                          color: "#2563eb",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: 800,
-                          fontSize: 13,
-                          flex: "0 0 auto",
-                        }}
-                      >
-                        {i + 1}
-                      </div>
-                      <img
-                        src={s.profileImage}
-                        alt={s.name}
-                        style={{
-                          width: "48px",
-                          height: "48px",
-                          borderRadius: "50%",
-                          border: selectedStudent?.studentId === s.studentId ? "3px solid #2563eb" : "3px solid #e5e7eb",
-                          objectFit: "cover",
-                          transition: "all 0.3s ease",
-                        }}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: 4 }}>
-                          Grade {s.grade} • Section {s.section}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* payment toggle button (cached locally) */}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); togglePaid(s); }}
-                      style={{
-                        position: "absolute",
-                        right: 12,
-                        top: 12,
-                        padding: "7px 12px",
-                        borderRadius: 999,
-                        border: "none",
-                        cursor: "pointer",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        background: paidMap[s.studentId || s.userId] ? "#059669" : "#f97316",
-                        color: "#fff",
-                        boxShadow: paidMap[s.studentId || s.userId] ? "0 6px 14px rgba(5,150,105,0.24)" : "0 6px 14px rgba(249,115,22,0.24)",
-                      }}
-                    >
-                      {paidMap[s.studentId || s.userId] ? "Paid" : "Unpaid"}
-                    </button>
-                  </div>
-                ))}
+                    Previous
+                  </button>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#1f2937" }}>Page {pageIndex + 1}</span>
+                  <button
+                    onClick={goNext}
+                    disabled={!hasNext}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "999px",
+                      border: "1px solid #dbeafe",
+                      background: hasNext ? "#eef2ff" : "#f3f4f6",
+                      color: hasNext ? "#1e3a8a" : "#9ca3af",
+                      cursor: hasNext ? "pointer" : "not-allowed",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </div>
