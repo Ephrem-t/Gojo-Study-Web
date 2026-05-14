@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import { FixedSizeList as List } from "react-window";
 import {
   FaBookOpen,
   FaCheckCircle,
@@ -65,6 +66,55 @@ const setStoredSemesterId = (teacherUserId, courseId, semesterId) => {
   if (typeof window === "undefined" || !teacherUserId || !courseId || !semesterId) return;
   window.localStorage.setItem(`${QUICK_CHECK_SEMESTER_STORAGE_KEY}_${teacherUserId}_${courseId}`, String(semesterId));
 };
+
+const QUICK_PLAN_ITEM_SIZE = 82;
+const QUICK_PLAN_MAX_LIST_HEIGHT = 328;
+
+const buildQuickPlanListHeight = (count) => {
+  const safeCount = Math.max(1, Number(count) || 1);
+  return Math.min(QUICK_PLAN_MAX_LIST_HEIGHT, safeCount * QUICK_PLAN_ITEM_SIZE);
+};
+
+function PendingLogRow({ index, style, data }) {
+  const log = data.logs[index];
+  if (!log) return null;
+
+  return (
+    <div style={style}>
+      <div className="settings-quick-plan-item">
+        <div>
+          <strong>{formatDateLabel(log.date, log.dayName)}</strong>
+          <span>{log.topic || log.method || "Daily lesson entry ready to submit"}</span>
+        </div>
+        <button
+          type="button"
+          className="settings-primary-button"
+          disabled={data.saving || data.submittingDate === log.date || data.submittingAll}
+          onClick={() => data.onSubmit(log.date)}
+        >
+          {data.submittingDate === log.date ? "Submitting..." : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SubmittedLogRow({ index, style, data }) {
+  const log = data.logs[index];
+  if (!log) return null;
+
+  return (
+    <div style={style}>
+      <div className="settings-quick-plan-item is-submitted">
+        <div>
+          <strong>{formatDateLabel(log.date, log.dayName)}</strong>
+          <span>{log.topic || log.method || "Submitted lesson entry"}</span>
+        </div>
+        <span className="settings-quick-plan-status">Submitted</span>
+      </div>
+    </div>
+  );
+}
 
 export default function QuickLessonPlanCheckModal({
   open,
@@ -364,6 +414,8 @@ export default function QuickLessonPlanCheckModal({
     () => sortedLogs.filter((log) => !submittedSet.has(log.date)),
     [sortedLogs, submittedSet]
   );
+  const pendingLogListHeight = useMemo(() => buildQuickPlanListHeight(pendingLogs.length), [pendingLogs.length]);
+  const submittedLogListHeight = useMemo(() => buildQuickPlanListHeight(submittedLogs.length), [submittedLogs.length]);
 
   const expectedDays = Number(currentWeek?.expectedDays || 0);
   const submittedCount = Number(currentWeek?.submittedCount || 0);
@@ -384,7 +436,6 @@ export default function QuickLessonPlanCheckModal({
       loading
     )
   );
-
   const handleSubmitOne = async (date) => {
     if (!currentWeek || !date) return;
     setSubmittingDate(date);
@@ -430,6 +481,15 @@ export default function QuickLessonPlanCheckModal({
     onClose?.();
     navigate("/lesson-plan");
   };
+
+  const pendingLogListData = useMemo(() => ({
+    logs: pendingLogs,
+    saving,
+    submittingDate,
+    submittingAll,
+    onSubmit: handleSubmitOne,
+  }), [handleSubmitOne, pendingLogs, saving, submittingAll, submittingDate]);
+  const submittedLogListData = useMemo(() => ({ logs: submittedLogs }), [submittedLogs]);
 
   if (!open) return null;
 
@@ -563,22 +623,16 @@ export default function QuickLessonPlanCheckModal({
                   {!logsLoading ? (
                     pendingLogs.length ? (
                       <div className="settings-quick-plan-list">
-                        {pendingLogs.map((log) => (
-                          <div key={log.date} className="settings-quick-plan-item">
-                            <div>
-                              <strong>{formatDateLabel(log.date, log.dayName)}</strong>
-                              <span>{log.topic || log.method || "Daily lesson entry ready to submit"}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="settings-primary-button"
-                              disabled={saving || submittingDate === log.date || submittingAll}
-                              onClick={() => handleSubmitOne(log.date)}
-                            >
-                              {submittingDate === log.date ? "Submitting..." : "Submit"}
-                            </button>
-                          </div>
-                        ))}
+                        <List
+                          height={pendingLogListHeight}
+                          itemCount={pendingLogs.length}
+                          itemData={pendingLogListData}
+                          itemKey={(index, data) => data.logs[index]?.date || index}
+                          itemSize={QUICK_PLAN_ITEM_SIZE}
+                          width="100%"
+                        >
+                          {PendingLogRow}
+                        </List>
                       </div>
                     ) : (
                       <div className="settings-empty-state">No ready entries for this week.</div>
@@ -594,15 +648,16 @@ export default function QuickLessonPlanCheckModal({
 
                   {submittedLogs.length ? (
                     <div className="settings-quick-plan-list">
-                      {submittedLogs.map((log) => (
-                        <div key={log.date} className="settings-quick-plan-item is-submitted">
-                          <div>
-                            <strong>{formatDateLabel(log.date, log.dayName)}</strong>
-                            <span>{log.topic || log.method || "Submitted lesson entry"}</span>
-                          </div>
-                          <span className="settings-quick-plan-status">Submitted</span>
-                        </div>
-                      ))}
+                      <List
+                        height={submittedLogListHeight}
+                        itemCount={submittedLogs.length}
+                        itemData={submittedLogListData}
+                        itemKey={(index, data) => data.logs[index]?.date || index}
+                        itemSize={QUICK_PLAN_ITEM_SIZE}
+                        width="100%"
+                      >
+                        {SubmittedLogRow}
+                      </List>
                     </div>
                   ) : (
                     <div className="settings-empty-state">Nothing has been submitted for this week yet.</div>

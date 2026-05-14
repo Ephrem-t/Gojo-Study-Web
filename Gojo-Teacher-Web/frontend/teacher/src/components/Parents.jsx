@@ -165,6 +165,14 @@ const isActiveRecord = (record = {}) => {
 };
 
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const EMPTY_TEACHER_COURSE_CONTEXT = {
+  success: false,
+  teacherKey: "",
+  teacherRecord: null,
+  courses: [],
+  courseIds: [],
+  assignmentsByCourseId: {},
+};
 
 const getInitials = (name) => {
   const words = String(name || "")
@@ -305,6 +313,8 @@ const [children, setChildren] = useState([]);
     const [conversations, setConversations] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
+  const [teacherCourseContext, setTeacherCourseContext] = useState(EMPTY_TEACHER_COURSE_CONTEXT);
+  const [teacherCourseContextReady, setTeacherCourseContextReady] = useState(false);
   const [quickChatLoading, setQuickChatLoading] = useState(false);
   const [quickChatLoadingOlder, setQuickChatLoadingOlder] = useState(false);
   const [quickChatHasOlder, setQuickChatHasOlder] = useState(false);
@@ -378,6 +388,42 @@ const [children, setChildren] = useState([]);
     }
     return getRtdbRoot();
   }, [resolvedSchoolCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTeacherCourseContext = async () => {
+      if (!teacher || !RTDB_BASE) {
+        setTeacherCourseContext(EMPTY_TEACHER_COURSE_CONTEXT);
+        setTeacherCourseContextReady(false);
+        return;
+      }
+
+      setTeacherCourseContextReady(false);
+
+      try {
+        const nextCourseContext = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        if (cancelled) return;
+
+        setTeacherCourseContext(nextCourseContext || EMPTY_TEACHER_COURSE_CONTEXT);
+      } catch (error) {
+        if (cancelled) return;
+
+        console.error("Failed to resolve parent course context:", error);
+        setTeacherCourseContext(EMPTY_TEACHER_COURSE_CONTEXT);
+      } finally {
+        if (!cancelled) {
+          setTeacherCourseContextReady(true);
+        }
+      }
+    };
+
+    loadTeacherCourseContext();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacher, RTDB_BASE]);
 
   const handleLogout = async () => {
     await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
@@ -488,12 +534,11 @@ const [children, setChildren] = useState([]);
 
   // Create fetchParentsData callback to be used with usePaginatedProxy
   const fetchParentsData = useCallback(async () => {
-    if (!teacher || !RTDB_BASE) return [];
+    if (!teacher || !RTDB_BASE || !teacherCourseContextReady) return [];
 
     try {
       const schoolCode = normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode);
-      const courseContext = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
-      const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(courseContext);
+      const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(teacherCourseContext);
 
       if (!allowedGradeSections.size) {
         return [];
@@ -680,28 +725,52 @@ const [children, setChildren] = useState([]);
       return finalParents;
     } catch (err) {
       console.error("Error fetching parents:", err);
-      return [];
+      throw (err instanceof Error ? err : new Error("Failed to load parents"));
     }
-  }, [teacher, RTDB_BASE, resolvedSchoolCode]);
+  }, [teacher, RTDB_BASE, resolvedSchoolCode, teacherCourseContext, teacherCourseContextReady]);
+
+  const normalizedSearch = (searchTerm || "").trim().toLowerCase();
+  const parentMatchesFilters = useCallback((parent) => {
+    if (!normalizedSearch) return true;
+
+    const childText = (parent.children || [])
+      .map((child) => `${child.name} ${child.studentId} ${child.grade} ${child.section}`)
+      .join(" ");
+    const haystack = `${parent.name || ""} ${parent.userId || ""} ${parent.email || ""} ${parent.phone || ""} ${childText}`
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  }, [normalizedSearch]);
 
   // Use paginated proxy for parents
   const {
     items: paginatedParents,
     allItems: allParents,
+    filteredItems: filteredParents,
     isLoading: isLoadingParents,
     isError: isErrorParents,
-    pageIndex,
+    error: parentsQueryError,
     goNext,
-    goPrev,
-    hasNext,
-    hasPrev,
-    totalPages,
+    hasMore,
+    isLoadingNext,
   } = usePaginatedProxy(
     fetchParentsData,
-    // Include userId so a new teacher gets a fresh fetch, not a stale cache
-    ['parents', teacher?.userId || null],
+    [
+      'parents',
+      {
+        teacherUserId: teacher?.userId || null,
+        schoolCode: normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode),
+        rtdbBase: RTDB_BASE || null,
+        courseIds: [...(teacherCourseContext?.courseIds || [])].sort(),
+      },
+    ],
     // Block the query until teacher and RTDB are available
-    { enabled: !!teacher?.userId && !!RTDB_BASE },
+    {
+      enabled: !!teacher?.userId && !!RTDB_BASE && teacherCourseContextReady,
+      filterFn: parentMatchesFilters,
+      resetKeys: [searchTerm],
+      infiniteScroll: true,
+    },
   );
 
   useEffect(() => {
@@ -1188,17 +1257,9 @@ const [children, setChildren] = useState([]);
     return () => document.body.classList.remove("sidebar-open");
   }, [selectedParent]);
 
-  const normalizedSearch = (searchTerm || "").trim().toLowerCase();
-
-  // Apply search filtering to paginated items
-  const filteredParents = useMemo(() => {
-    if (!normalizedSearch) return paginatedParents;
-    return paginatedParents.filter((p) => {
-      const childText = (p.children || []).map(c => `${c.name} ${c.studentId} ${c.grade} ${c.section}`).join(" ");
-      const hay = `${p.name || ""} ${p.userId || ""} ${p.email || ""} ${p.phone || ""} ${childText}`.toLowerCase();
-      return hay.includes(normalizedSearch);
-    });
-  }, [paginatedParents, normalizedSearch]);
+  const parentListError = isErrorParents
+    ? (parentsQueryError?.message || "Failed to load parents")
+    : "";
 
   const listShellWidth = isPortrait ? "92%" : "560px";
 
@@ -1303,6 +1364,8 @@ const [children, setChildren] = useState([]);
 
               {isLoadingParents ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#555" }}>Loading...</p>
+              ) : parentListError ? (
+                <p style={{ textAlign: "center", fontSize: 18, color: "#dc2626" }}>{parentListError}</p>
               ) : (filteredParents.length === 0) ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#999" }}>No parents found.</p>
               ) : (
@@ -1362,91 +1425,41 @@ const [children, setChildren] = useState([]);
                     }
                   `}</style>
                   
-                  {/* Pagination Controls */}
-                  <div style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "12px 16px",
-                    borderBottom: "1px solid #e2e8f0",
-                    background: "#ffffff",
-                  }}>
-                    <button
-                      onClick={goPrev}
-                      disabled={!hasPrev}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "8px 12px",
-                        border: "1px solid #cbd5e1",
-                        borderRadius: "6px",
-                        background: "#ffffff",
-                        cursor: hasPrev ? "pointer" : "not-allowed",
-                        opacity: hasPrev ? 1 : 0.5,
-                        fontSize: 14,
-                        color: "#334155",
-                        fontWeight: 600,
-                        transition: "all 0.2s ease",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (hasPrev) {
-                          e.currentTarget.style.background = "#f1f5f9";
-                          e.currentTarget.style.borderColor = "#94a3b8";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = "#ffffff";
-                        e.currentTarget.style.borderColor = "#cbd5e1";
-                      }}
-                    >
-                      <FaChevronLeft /> Prev
-                    </button>
-                    <span style={{ fontSize: 13, color: "#64748b", fontWeight: 600 }}>
-                      Page {pageIndex + 1} of {totalPages || 1}
-                    </span>
-                    <button
-                      onClick={goNext}
-                      disabled={!hasNext}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "8px 12px",
-                        border: "1px solid #cbd5e1",
-                        borderRadius: "6px",
-                        background: "#ffffff",
-                        cursor: hasNext ? "pointer" : "not-allowed",
-                        opacity: hasNext ? 1 : 0.5,
-                        fontSize: 14,
-                        color: "#334155",
-                        fontWeight: 600,
-                        transition: "all 0.2s ease",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (hasNext) {
-                          e.currentTarget.style.background = "#f1f5f9";
-                          e.currentTarget.style.borderColor = "#94a3b8";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = "#ffffff";
-                        e.currentTarget.style.borderColor = "#cbd5e1";
-                      }}
-                    >
-                      Next <FaChevronRight />
-                    </button>
-                  </div>
-
-                  {/* Virtualized Parent List */}
+                  
+                  {/* Virtualized Parent List - Infinite Scroll */}
                   <List
                     height={500}
-                    itemCount={filteredParents.length}
+                    itemCount={paginatedParents.length + (isLoadingNext ? 1 : 0)}
                     itemSize={84}
                     width="100%"
+                    onItemsRendered={({ visibleStopIndex }) => {
+                      // Load next batch when user scrolls within 3 items of the end
+                      if (visibleStopIndex >= paginatedParents.length - 3 && hasMore && !isLoadingNext) {
+                        goNext();
+                      }
+                    }}
                   >
                     {({ index, style }) => {
-                      const p = filteredParents[index];
+                      // Render loading spinner at the bottom
+                      if (index === paginatedParents.length) {
+                        return (
+                          <div style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#64748b' }}>
+                              <span style={{
+                                width: 16,
+                                height: 16,
+                                border: '2px solid #e2e8f0',
+                                borderTop: '2px solid #007AFB',
+                                borderRadius: '50%',
+                                animation: 'spin 0.6s linear infinite',
+                              }} />
+                              Loading...
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      const p = paginatedParents[index];
                       if (!p) return null;
                       return (
                         <div style={{ ...style, paddingBottom: 8 }}>
@@ -1505,6 +1518,12 @@ const [children, setChildren] = useState([]);
                       );
                     }}
                   </List>
+                  <style>{`
+                    @keyframes spin {
+                      from { transform: rotate(0deg); }
+                      to { transform: rotate(360deg); }
+                    }
+                  `}</style>
                   <div style={{ height: 8 }} />
                 </>
               )}

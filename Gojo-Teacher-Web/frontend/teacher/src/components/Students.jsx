@@ -534,7 +534,6 @@ function StudentsPage() {
     handleResize();
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-  const [students, setStudents] = useState([]);
   const [error, setError] = useState("");
   const [selectedGrade, setSelectedGrade] = useState("All");
   const [selectedSection, setSelectedSection] = useState("All");
@@ -1361,27 +1360,65 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     } catch (err) {
       console.error(err);
       setError("Failed to load students");
-      return [];
+      throw (err instanceof Error ? err : new Error("Failed to load students"));
     }
   }, [teacherInfo, resolvedSchoolCode, rtdbBase, teacherCourseContext, teacherCourseContextReady, teacherSchoolCode, usersData]);
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const studentMatchesFilters = useCallback((student) => {
+    if (selectedGrade !== "All" && student.grade !== selectedGrade) return false;
+    if (selectedSection !== "All" && student.section !== selectedSection) return false;
+    if (!normalizedSearch) return true;
+
+    const haystack = [
+      student.name,
+      student.studentId,
+      student.userId,
+      student.email,
+      student.grade,
+      student.section,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  }, [normalizedSearch, selectedGrade, selectedSection]);
 
   const {
     items: paginatedStudents,
     allItems: allStudents,
+    filteredItems: filteredStudents,
     isLoading,
     isError,
-    pageIndex,
+    error: queryError,
     goNext,
-    goPrev,
-    hasNext,
-    hasPrev,
-    totalPages,
+    hasMore,
+    isLoadingNext,
   } = usePaginatedProxy(
     fetchStudentsData,
-    // Include userId so a new teacher gets a fresh fetch, not a stale cache
-    ['students', teacherInfo?.userId || null],
+    [
+      'students',
+      {
+        teacherUserId: teacherInfo?.userId || null,
+        schoolCode: resolvedSchoolCode || teacherSchoolCode || null,
+        rtdbBase: rtdbBase || null,
+        teacherCourseContextReady,
+        courseIds: [...(teacherCourseContext?.courseIds || [])].sort(),
+        allowedGradeSections: [...new Set(
+          (teacherCourseContext?.courses || [])
+            .map((course) => buildGradeSectionKey(course?.grade, course?.section || course?.secation))
+            .filter((value) => value !== '|')
+        )].sort(),
+      },
+    ],
     // Block the query until all required deps are loaded
-    { enabled: !!teacherInfo?.userId && !!resolvedSchoolCode && !!rtdbBase && teacherCourseContextReady },
+    {
+      enabled: !!teacherInfo?.userId && !!resolvedSchoolCode && !!rtdbBase && teacherCourseContextReady,
+      filterFn: studentMatchesFilters,
+      resetKeys: [searchTerm, selectedGrade, selectedSection],
+      infiniteScroll: true,
+    },
   );
 
   useEffect(() => {
@@ -1583,7 +1620,7 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     } else {
       const gradeSections = [
         ...new Set(
-          students.filter((s) => s.grade === selectedGrade).map((s) => s.section)
+          allStudents.filter((s) => s.grade === selectedGrade).map((s) => s.section)
         ),
       ];
       setSections(gradeSections);
@@ -1596,69 +1633,11 @@ const [attendanceRecords, setAttendanceRecords] = useState([]);
     }
   }, [selectedGrade, allStudents, selectedSection]);
 
-  const normalizedSearch = searchTerm.trim().toLowerCase();
-  const filteredStudents = allStudents.filter((s) => {
-    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
-    if (selectedSection !== "All" && s.section !== selectedSection) return false;
-    if (!normalizedSearch) return true;
-
-    const haystack = [
-      s.name,
-      s.studentId,
-      s.userId,
-      s.email,
-      s.grade,
-      s.section,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(normalizedSearch);
-  });
-
-  // Apply filters to ALL students first (before pagination)
-  // This ensures grade/section dropdowns are accurate for ALL data, not just current page
-  const allFilteredStudents = allStudents.filter((s) => {
-    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
-    if (selectedSection !== "All" && s.section !== selectedSection) return false;
-    if (!normalizedSearch) return true;
-
-    const haystack = [
-      s.name,
-      s.studentId,
-      s.userId,
-      s.email,
-      s.grade,
-      s.section,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(normalizedSearch);
-  });
-
-  // Apply filters to the paginated items for display
-  const displayedStudents = paginatedStudents.filter((s) => {
-    if (selectedGrade !== "All" && s.grade !== selectedGrade) return false;
-    if (selectedSection !== "All" && s.section !== selectedSection) return false;
-    if (!normalizedSearch) return true;
-
-    const haystack = [
-      s.name,
-      s.studentId,
-      s.userId,
-      s.email,
-      s.grade,
-      s.section,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(normalizedSearch);
-  });
+  const allFilteredStudents = filteredStudents;
+  const displayedStudents = paginatedStudents;
+  const studentListError = isError
+    ? (queryError?.message || error || "Failed to load students")
+    : error;
 
   const grades = [...new Set(allStudents.map((s) => s.grade))].sort();
   const assignedGrades = [...new Set(assignedGradeSections.map((item) => item.grade))].sort((leftGrade, rightGrade) => {
@@ -2782,11 +2761,11 @@ React.useEffect(() => {
               {selectedFilterLabel}
             </div>
             {loading && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>Loading students...</p>}
-            {error && <p style={{ color: "#dc2626", marginTop: 2 }}>{error}</p>}
-            {!loading && !error && selectedGrade !== "All" && selectedSection === "All" && (
+            {studentListError && <p style={{ color: "#dc2626", marginTop: 2 }}>{studentListError}</p>}
+            {!loading && !studentListError && selectedGrade !== "All" && selectedSection === "All" && (
               <p style={{ color: "var(--text-muted)", marginTop: 2 }}>{`Showing all students in Grade ${selectedGrade}. Select a section to narrow down.`}</p>
             )}
-            {!loading && !error && filteredStudents.length === 0 && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No students found.</p>}
+            {!loading && !studentListError && filteredStudents.length === 0 && <p style={{ color: "var(--text-muted)", marginTop: 2 }}>No students found.</p>}
             <style>{`
               .student-list-responsive {
                 display: flex;
@@ -2819,78 +2798,58 @@ React.useEffect(() => {
               }
             `}</style>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {/* Pagination Controls */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '8px 12px',
-                background: '#f8fafc',
-                borderRadius: '8px',
-                fontSize: '12px',
-                fontWeight: 600,
-              }}>
-                <button
-                  onClick={goPrev}
-                  disabled={!hasPrev}
-                  style={{
-                    padding: '6px 10px',
-                    background: hasPrev ? 'var(--accent-strong)' : '#cbd5e1',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: hasPrev ? 'pointer' : 'not-allowed',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    fontSize: '11px',
-                  }}
-                >
-                  <FaChevronLeft size={10} /> Prev
-                </button>
-                <span style={{ color: '#64748b' }}>
-                  Page {pageIndex + 1} of {totalPages || 1}
-                </span>
-                <button
-                  onClick={goNext}
-                  disabled={!hasNext}
-                  style={{
-                    padding: '6px 10px',
-                    background: hasNext ? 'var(--accent-strong)' : '#cbd5e1',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: hasNext ? 'pointer' : 'not-allowed',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    fontSize: '11px',
-                  }}
-                >
-                  Next <FaChevronRight size={10} />
-                </button>
-              </div>
-
-              {/* Student List with FixedSizeList */}
+              {/* Student List with FixedSizeList - Infinite Scroll */}
               <div className="student-list-responsive">
                 <List
                   height={500}
-                  itemCount={displayedStudents.length}
+                  itemCount={displayedStudents.length + (isLoadingNext ? 1 : 0)}
                   itemSize={84}
                   width="100%"
+                  onItemsRendered={({ visibleStopIndex }) => {
+                    // Load next batch when user scrolls within 3 items of the end
+                    if (visibleStopIndex >= displayedStudents.length - 3 && hasMore && !isLoadingNext) {
+                      goNext();
+                    }
+                  }}
                 >
-                  {({ index, style }) => (
-                    <div style={{ ...style, paddingBottom: 8 }}>
-                      <StudentItem
-                        student={displayedStudents[index]}
-                        number={pageIndex * 20 + index + 1}
-                        selected={selectedStudent?.userId === displayedStudents[index]?.userId}
-                        onClick={() => setSelectedStudent(displayedStudents[index])}
-                      />
-                    </div>
-                  )}
+                  {({ index, style }) => {
+                    // Render loading spinner at the bottom
+                    if (index === displayedStudents.length) {
+                      return (
+                        <div style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#64748b' }}>
+                            <span style={{
+                              width: 16,
+                              height: 16,
+                              border: '2px solid #e2e8f0',
+                              borderTop: '2px solid #007AFB',
+                              borderRadius: '50%',
+                              animation: 'spin 0.6s linear infinite',
+                            }} />
+                            Loading...
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div style={{ ...style, paddingBottom: 8 }}>
+                        <StudentItem
+                          student={displayedStudents[index]}
+                          number={index + 1}
+                          selected={selectedStudent?.userId === displayedStudents[index]?.userId}
+                          onClick={() => setSelectedStudent(displayedStudents[index])}
+                        />
+                      </div>
+                    );
+                  }}
                 </List>
               </div>
+              <style>{`
+                @keyframes spin {
+                  from { transform: rotate(0deg); }
+                  to { transform: rotate(360deg); }
+                }
+              `}</style>
             </div>
 
             {/* OLD RENDERING - REPLACED ABOVE
@@ -3468,7 +3427,7 @@ marginRight: 0,
               Click to view {attendanceView.toUpperCase()} details
             </div>
 
-            {/* EXPANDED DAYS */}
+            {/* EXPANDED DAYS - VIRTUALIZED */}
             {expandedCards[expandKey] && (
               <div
                 style={{
@@ -3476,53 +3435,70 @@ marginRight: 0,
                   background: "var(--surface-muted)",
                   borderRadius: 12,
                   padding: 10,
+                  overflow: "hidden",
                 }}
               >
-                {displayRecords.map((r, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      padding: "8px 6px",
-                      borderBottom:
-                        i !== displayRecords.length - 1
-                          ? "1px solid var(--border-soft)"
-                          : "none",
-                    }}
+                {displayRecords.length > 0 ? (
+                  <List
+                    height={Math.min(displayRecords.length * 28, 280)}
+                    itemCount={displayRecords.length}
+                    itemSize={28}
+                    width="100%"
                   >
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
-                        📅 {new Date(r.date).toDateString()}
-                      </span>
-                     
-                    </div>
+                    {({ index, style }) => {
+                      const r = displayRecords[index];
+                      return (
+                        <div
+                          style={{
+                            ...style,
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            padding: "8px 6px",
+                            borderBottom:
+                              index !== displayRecords.length - 1
+                                ? "1px solid var(--border-soft)"
+                                : "none",
+                            boxSizing: "border-box",
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column" }}>
+                            <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
+                              📅 {new Date(r.date).toDateString()}
+                            </span>
+                          </div>
 
-                    <span
-                      style={{
-                        padding: "4px 8px",
-                        borderRadius: 999,
-                        fontSize: 10,
-                        fontWeight: 800,
-                        background:
-                          r.status === "present"
-                            ? "#dcfce7"
-                            : r.status === "late"
-                            ? "#fef3c7"
-                            : "#fee2e2",
-                        color:
-                          r.status === "present"
-                            ? "#166534"
-                            : r.status === "late"
-                            ? "#92400e"
-                            : "#991b1b",
-                      }}
-                    >
-                      {r.status.toUpperCase()}
-                    </span>
+                          <span
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              fontSize: 10,
+                              fontWeight: 800,
+                              background:
+                                r.status === "present"
+                                  ? "#dcfce7"
+                                  : r.status === "late"
+                                  ? "#fef3c7"
+                                  : "#fee2e2",
+                              color:
+                                r.status === "present"
+                                  ? "#166534"
+                                  : r.status === "late"
+                                  ? "#92400e"
+                                  : "#991b1b",
+                            }}
+                          >
+                            {r.status.toUpperCase()}
+                          </span>
+                        </div>
+                      );
+                    }}
+                  </List>
+                ) : (
+                  <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "8px 6px" }}>
+                    No records for selected period
                   </div>
-                ))}
+                )}
               </div>
             )}
           </div>

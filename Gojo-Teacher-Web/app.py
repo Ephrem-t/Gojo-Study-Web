@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import re
+import secrets
 import threading
 from datetime import datetime, timedelta, timezone
 from time import time
@@ -8,7 +10,7 @@ from urllib.parse import unquote, urlparse
 from flask import Flask, g, jsonify, render_template, request, session, has_request_context
 from flask_cors import CORS
 import firebase_admin
-from firebase_admin import credentials, db, storage
+from firebase_admin import credentials, db, messaging, storage
 from firebase_config import get_firebase_options, require_firebase_credentials
 from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -78,7 +80,7 @@ def _read_runtime_secret_key():
     if APP_ENV == "production":
         raise RuntimeError("FLASK_SECRET_KEY or APP_SECRET_KEY must be set in production.")
 
-    return "gojo-teacher-dev-session-secret"
+    return secrets.token_hex(32)
 
 
 def _read_session_ttl_seconds():
@@ -119,11 +121,21 @@ app.config.update(
 )
 CORS(app, resources={r"/*": {"origins": _parse_allowed_origins()}}, supports_credentials=True)
 
+logger = logging.getLogger("gojo_teacher_backend")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
 # ---------------- FIREBASE ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 firebase_credentials = require_firebase_credentials()
 cred = credentials.Certificate(firebase_credentials)
-firebase_admin.initialize_app(cred, get_firebase_options())
+try:
+    firebase_admin.get_app()
+except ValueError:
+    firebase_admin.initialize_app(cred, get_firebase_options())
 
 _raw_db_reference = db.reference
 
@@ -170,6 +182,20 @@ TEACHER_PROXY_WRITE_PREFIXES = (
     "LessonPlanSubmissions",
     "SchoolExams",
 )
+
+CALENDAR_PROXY_WRITE_PREFIXES = (
+    "CalendarEvents",
+    "CalendarEventsByMonth",
+)
+
+CALENDAR_MANAGER_ROLES = {
+    "admin",
+    "director",
+    "school_admin",
+    "school-admin",
+    "registerer",
+    "registrar",
+}
 
 COURSE_STUDENTS_CACHE_TTL_SECONDS = 5 * 60
 STUDENT_ROSTER_CACHE_TTL_SECONDS = 60 * 60
@@ -324,6 +350,7 @@ def _write_teacher_session(payload):
         "username": _normalize_session_identifier(payload.get("username")),
         "schoolCode": _normalize_session_identifier(payload.get("schoolCode")),
         "name": _normalize_session_identifier(payload.get("name")),
+        "role": _normalize_session_identifier(payload.get("role")).lower(),
     }
 
     session[TEACHER_SESSION_KEY] = teacher_session
@@ -352,6 +379,7 @@ def _get_teacher_session():
         "username": _normalize_session_identifier(raw_session.get("username")),
         "schoolCode": _normalize_session_identifier(raw_session.get("schoolCode")),
         "name": _normalize_session_identifier(raw_session.get("name")),
+        "role": _normalize_session_identifier(raw_session.get("role")).lower(),
     }
 
     if not teacher_session["teacherKey"] or not teacher_session["userId"] or not teacher_session["schoolCode"]:
@@ -478,6 +506,15 @@ def _resolve_requested_school_code(explicit_school_code=None):
     return resolved_school
 
 
+def _mask_device_token(token_value):
+    token_text = str(token_value or "").strip()
+    if not token_text:
+        return "<missing>"
+    if len(token_text) <= 14:
+        return token_text
+    return f"{token_text[:8]}...{token_text[-6:]}"
+
+
 @app.before_request
 def require_teacher_api_session():
     if request.method == "OPTIONS" or not request.path.startswith("/api"):
@@ -506,6 +543,15 @@ def require_teacher_api_session():
         }), 403
 
     return None
+
+
+@app.after_request
+def apply_fcm_no_cache_headers(response):
+    if request.path.startswith("/api/fcm"):
+        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def _read_student_grade(student_record):
@@ -805,7 +851,7 @@ def _is_allowed_teacher_proxy_path(node_path, teacher_session):
     if request.method == "GET":
         return relative_path.split("/", 1)[0] in SCOPED_ROOTS
 
-    return _is_allowed_teacher_proxy_write_path(relative_path)
+    return _is_allowed_teacher_proxy_write_path(relative_path, teacher_session)
 
 
 def _extract_teacher_proxy_relative_path(node_path, school_code=""):
@@ -836,13 +882,42 @@ def _path_matches_prefix(path_value, prefix):
     return normalized_path == normalized_prefix or normalized_path.startswith(f"{normalized_prefix}/")
 
 
-def _is_allowed_teacher_proxy_write_path(relative_path):
+def _read_teacher_session_role(teacher_session):
+    role_value = _normalize_session_identifier((teacher_session or {}).get("role")).lower()
+    if role_value:
+        return "school_admin" if role_value == "school_admins" else role_value
+
+    school_code = _resolve_requested_school_code((teacher_session or {}).get("schoolCode"))
+    user_id = _normalize_session_identifier((teacher_session or {}).get("userId"))
+    if not school_code or not user_id:
+        return ""
+
+    try:
+        user_record = school_reference(f"Users/{user_id}", school_code=school_code).get() or {}
+    except Exception:
+        return ""
+
+    if not isinstance(user_record, dict):
+        return ""
+
+    resolved_role = _normalize_session_identifier(user_record.get("role")).lower()
+    return "school_admin" if resolved_role == "school_admins" else resolved_role
+
+
+def _teacher_can_manage_calendar(teacher_session):
+    return _read_teacher_session_role(teacher_session) in CALENDAR_MANAGER_ROLES
+
+
+def _is_allowed_teacher_proxy_write_path(relative_path, teacher_session=None):
     normalized_relative_path = _normalize_rtdb_proxy_path(relative_path)
     if not normalized_relative_path:
         return False
 
     if any(_path_matches_prefix(normalized_relative_path, prefix) for prefix in TEACHER_PROXY_WRITE_PREFIXES):
         return True
+
+    if any(_path_matches_prefix(normalized_relative_path, prefix) for prefix in CALENDAR_PROXY_WRITE_PREFIXES):
+        return _teacher_can_manage_calendar(teacher_session)
 
     if _path_matches_prefix(normalized_relative_path, "AcademicYears"):
         return "/LessonPlans/" in f"/{normalized_relative_path}/"
@@ -897,8 +972,7 @@ def rtdb_proxy(node_path):
         new_ref = reference.push(payload)
         return jsonify({"name": new_ref.key}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("RTDB proxy request failed")
         return jsonify({"success": False, "message": str(e)}), 500
 
 
@@ -2173,6 +2247,7 @@ def teacher_login():
         "userId": teacher_user_id,
         "name": teacher_user.get("name"),
         "username": teacher_user.get("username"),
+        "role": teacher_user.get("role") or "teacher",
         "profileImage": profile_image,
         "schoolCode": school_code,
         "teacherId": teacher_key,
@@ -2775,8 +2850,7 @@ def mark_teacher_post_seen():
 
         return jsonify({"success": True}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to mark teacher post seen")
         return jsonify({"success": False, "message": str(e)}), 500
 
 
@@ -2978,8 +3052,7 @@ def save_week_lesson_plan():
 
         return jsonify({'success': True, 'message': 'Week plan saved', 'data': obj}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to save week lesson plan")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3029,8 +3102,7 @@ def save_annual_lesson_plan():
 
         return jsonify({'success': True, 'message': 'Annual plan saved', 'data': obj}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to save annual lesson plan")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3060,8 +3132,7 @@ def get_lesson_plans(teacher_id):
         data = lesson_ref.get() or {}
         return jsonify({'success': True, 'data': data}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to fetch lesson plans")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3128,8 +3199,7 @@ def migrate_lesson_plans():
             }
         }), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to migrate lesson plans")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3165,8 +3235,7 @@ def get_lesson_plan_submissions():
 
         return jsonify({'success': True, 'data': results}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to fetch lesson plan submissions")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3225,9 +3294,74 @@ def submit_daily_lesson_plan():
 
         return jsonify({'success': True, 'message': 'Submission saved', 'data': obj}), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to submit daily lesson plan")
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/fcm/health', methods=['GET'])
+def fcm_health():
+    logger.info("FCM health check requested")
+    return jsonify({'success': True, 'message': 'FCM endpoint ready'}), 200
+
+
+@app.route('/api/fcm/send', methods=['POST'])
+def send_fcm_notification():
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get('token') or '').strip()
+    title = str(payload.get('title') or '').strip()
+    body = str(payload.get('body') or '').strip()
+    data = payload.get('data') or {}
+
+    if not token or not title or not body:
+        return jsonify({
+            'success': False,
+            'message': 'token, title, and body are required',
+        }), 400
+
+    if not isinstance(data, dict):
+        return jsonify({
+            'success': False,
+            'message': 'data must be an object when provided',
+        }), 400
+
+    normalized_data = {
+        str(key): str(value)
+        for key, value in data.items()
+        if key is not None and value is not None
+    }
+
+    masked_token = _mask_device_token(token)
+    logger.info(
+        "FCM send attempt token=%s title=%s body=%s data_keys=%s",
+        masked_token,
+        title,
+        body,
+        sorted(normalized_data.keys()),
+    )
+
+    try:
+        message = messaging.Message(
+            token=token,
+            notification=messaging.Notification(title=title, body=body),
+            data=normalized_data,
+        )
+        message_id = messaging.send(message)
+        logger.info("FCM send success token=%s message_id=%s", masked_token, message_id)
+        return jsonify({
+            'success': True,
+            'messageId': message_id,
+        }), 200
+    except Exception as exc:
+        logger.exception(
+            "FCM send failure token=%s error=%s",
+            masked_token,
+            str(exc),
+        )
+        return jsonify({
+            'success': False,
+            'message': 'Failed to send FCM notification',
+            'error': str(exc),
+        }), 500
 
 
 
